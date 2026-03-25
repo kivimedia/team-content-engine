@@ -83,7 +83,23 @@ class AgentBase(ABC):
         temperature: float = 0.7,
     ) -> anthropic.types.Message:
         """Call the Anthropic API with automatic retry and cost recording."""
+        from tce.services.resilience import resilience_manager
+
         model = model or self.default_model
+
+        # Check if we should use a fallback model (PRD Section 42.3)
+        use_fallback, fallback_model = (
+            resilience_manager.should_use_fallback(model)
+        )
+        if use_fallback and fallback_model:
+            logger.warning(
+                "agent.model_fallback",
+                agent=self.name,
+                from_model=model,
+                to_model=fallback_model,
+            )
+            model = fallback_model
+
         start = time.monotonic()
 
         # Resolve system prompt from prompt library if not provided
