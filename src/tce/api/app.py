@@ -17,6 +17,7 @@ from tce.api.routers import (
     feedback,
     health,
     notifications,
+    onboarding,
     patterns,
     pipeline,
     profiles,
@@ -87,6 +88,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix=prefix)
     app.include_router(notifications.router, prefix=prefix)
     app.include_router(experiments.router, prefix=prefix)
+    app.include_router(onboarding.router, prefix=prefix)
 
     return app
 
