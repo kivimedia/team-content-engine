@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from tce.api.routers import (
     admin,
     briefs,
+    calendar,
     content,
     costs,
     documents,
@@ -19,6 +20,9 @@ from tce.api.routers import (
     prompts,
     qa,
     trends,
+)
+from tce.api.routers import (
+    scheduler as scheduler_router,
 )
 from tce.db.session import async_session
 from tce.services.seed import seed_database
@@ -75,6 +79,8 @@ def create_app() -> FastAPI:
     app.include_router(feedback.router, prefix=prefix)
     app.include_router(trends.router, prefix=prefix)
     app.include_router(admin.router, prefix=prefix)
+    app.include_router(calendar.router, prefix=prefix)
+    app.include_router(scheduler_router.router, prefix=prefix)
 
     return app
 

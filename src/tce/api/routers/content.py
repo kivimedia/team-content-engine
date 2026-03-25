@@ -80,6 +80,30 @@ async def reject_package(
     return pkg
 
 
+@router.post("/packages/{package_id}/export")
+async def export_package(
+    package_id: uuid.UUID,
+    platform: str = "manual",
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Export a package for publishing (copy-paste ready)."""
+    from tce.services.publishing import get_adapter
+
+    pkg = await db.get(PostPackage, package_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Package not found")
+
+    adapter = get_adapter(platform)
+    package_dict = {
+        "facebook_post": pkg.facebook_post,
+        "linkedin_post": pkg.linkedin_post,
+        "hook_variants": pkg.hook_variants,
+        "cta_keyword": pkg.cta_keyword,
+        "dm_flow": pkg.dm_flow,
+    }
+    return await adapter.publish(package_dict)
+
+
 # Weekly guides
 @router.post("/guides", response_model=WeeklyGuideRead)
 async def create_guide(
