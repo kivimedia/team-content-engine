@@ -373,8 +373,27 @@ def upgrade() -> None:
     )
     op.create_index("ix_content_calendar_date", "content_calendar", ["date"])
 
+    # --- Notifications ---
+
+    op.create_table(
+        "notifications",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("notification_type", sa.String(50), nullable=False),
+        sa.Column("title", sa.String(500), nullable=False),
+        sa.Column("message", sa.Text(), nullable=False),
+        sa.Column("severity", sa.String(20), nullable=False, server_default="info"),
+        sa.Column("channel", sa.String(20), nullable=False, server_default="in_app"),
+        sa.Column("read", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("dismissed", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("data", postgresql.JSONB(), nullable=True),
+        sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+    )
+
 
 def downgrade() -> None:
+    op.drop_table("notifications")
     op.drop_table("content_calendar")
     op.drop_table("learning_events")
     op.drop_table("operator_feedback")
