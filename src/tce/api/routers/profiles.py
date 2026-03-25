@@ -9,7 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce.db.session import get_db
 from tce.models.creator_profile import CreatorProfile
 from tce.models.founder_voice_profile import FounderVoiceProfile
-from tce.schemas.creator_profile import CreatorProfileCreate, CreatorProfileRead, CreatorProfileUpdate
+from tce.schemas.creator_profile import (
+    CreatorProfileCreate,
+    CreatorProfileRead,
+    CreatorProfileUpdate,
+)
 from tce.schemas.founder_voice_profile import FounderVoiceProfileCreate, FounderVoiceProfileRead
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])

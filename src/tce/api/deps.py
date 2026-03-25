@@ -4,7 +4,6 @@ from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tce.db.session import get_db
 from tce.services.cost_tracker import CostTracker
 from tce.services.prompt_manager import PromptManager
 from tce.settings import Settings, settings

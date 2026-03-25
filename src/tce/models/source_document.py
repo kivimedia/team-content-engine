@@ -1,6 +1,5 @@
 """SourceDocument model — uploaded corpus files (DOCX, PDF, text)."""
 
-import uuid
 
 from sqlalchemy import Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB

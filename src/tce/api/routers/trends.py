@@ -1,6 +1,5 @@
 """Trend Scout specific endpoints — trigger scans and view results."""
 
-from datetime import date
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel

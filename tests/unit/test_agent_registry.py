@@ -1,23 +1,28 @@
 """Tests for agent registry."""
 
-# Import all agents to trigger registration
+# Import all agent modules to trigger @register_agent decorators
+import tce.agents.corpus_analyst  # noqa: F401
+import tce.agents.creative_director  # noqa: F401
+import tce.agents.cta_agent  # noqa: F401
+import tce.agents.docx_guide_builder  # noqa: F401
+import tce.agents.engagement_scorer  # noqa: F401
+import tce.agents.learning_loop  # noqa: F401
+import tce.agents.pattern_miner  # noqa: F401
+import tce.agents.platform_writer  # noqa: F401
+import tce.agents.qa_agent  # noqa: F401
+import tce.agents.research_agent  # noqa: F401
+import tce.agents.story_strategist  # noqa: F401
+import tce.agents.trend_scout  # noqa: F401
 from tce.agents.corpus_analyst import CorpusAnalyst
-from tce.agents.creative_director import CreativeDirector
-from tce.agents.cta_agent import CTAAgent
-from tce.agents.docx_guide_builder import DocxGuideBuilder
 from tce.agents.engagement_scorer import EngagementScorer
-from tce.agents.learning_loop import LearningLoop
-from tce.agents.pattern_miner import PatternMiner
 from tce.agents.platform_writer import FacebookWriter, LinkedInWriter
 from tce.agents.qa_agent import QAAgent
-from tce.agents.research_agent import ResearchAgent
+from tce.agents.registry import agent_registry, get_agent_class
 from tce.agents.story_strategist import StoryStrategist
-from tce.agents.trend_scout import TrendScout
-from tce.agents.registry import get_agent_class, agent_registry
 
 
 def test_all_agents_registered():
-    """All 12 agents should be in the registry."""
+    """All 13 agents should be in the registry."""
     registry = agent_registry()
     expected = [
         "corpus_analyst",

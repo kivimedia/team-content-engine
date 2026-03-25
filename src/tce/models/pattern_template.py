@@ -1,6 +1,5 @@
 """PatternTemplate model — reusable post structures mined from the corpus."""
 
-import uuid
 
 from sqlalchemy import Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB

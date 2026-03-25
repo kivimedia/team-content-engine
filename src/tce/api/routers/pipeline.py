@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce.db.session import get_db
 from tce.orchestrator.engine import PipelineOrchestrator
 from tce.orchestrator.workflows import WORKFLOWS
-from tce.settings import Settings, settings
+from tce.settings import settings
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 

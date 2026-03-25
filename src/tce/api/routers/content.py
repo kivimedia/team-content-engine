@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce.db.session import get_db
 from tce.models.post_package import PostPackage
 from tce.models.weekly_guide import WeeklyGuide
-from tce.schemas.post_package import PostPackageCreate, PostPackageRead, PostPackageUpdate
+from tce.schemas.post_package import PostPackageRead, PostPackageUpdate
 from tce.schemas.weekly_guide import WeeklyGuideCreate, WeeklyGuideRead
 
 router = APIRouter(prefix="/content", tags=["content"])

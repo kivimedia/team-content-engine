@@ -70,8 +70,12 @@ class CorpusAnalyst(AgentBase):
                 messages=[
                     {
                         "role": "user",
-                        "content": f"Parse the following corpus section into structured post examples.\n\n"
-                        f"DOCUMENT SECTION {i + 1}/{len(chunks)}:\n\n{chunk}",
+                        "content": (
+                            f"Parse the following corpus section into "
+                            f"structured post examples.\n\n"
+                            f"DOCUMENT SECTION {i + 1}/{len(chunks)}:"
+                            f"\n\n{chunk}"
+                        ),
                     }
                 ],
                 system=SYSTEM_PROMPT,

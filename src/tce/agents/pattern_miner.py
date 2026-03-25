@@ -72,8 +72,11 @@ class PatternMiner(AgentBase):
             messages=[
                 {
                     "role": "user",
-                    "content": f"Analyze these top-performing posts and extract reusable templates.\n\n"
-                    f"SCORED EXAMPLES:\n{examples_text}",
+                    "content": (
+                        f"Analyze these top-performing posts and "
+                        f"extract reusable templates.\n\n"
+                        f"SCORED EXAMPLES:\n{examples_text}"
+                    ),
                 }
             ],
             system=SYSTEM_PROMPT,

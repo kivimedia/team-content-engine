@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import docx
-from docx.shared import Inches, Pt
+from docx.shared import Pt
 
 
 def create_guide_docx(

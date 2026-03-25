@@ -1,6 +1,5 @@
 """ResearchBrief model — verified evidence for a topic."""
 
-import uuid
 
 from sqlalchemy import String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB

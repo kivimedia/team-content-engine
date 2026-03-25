@@ -1,6 +1,5 @@
 """TrendBrief model — daily/weekly trend scanning output (PRD Section 49)."""
 
-import uuid
 from datetime import date
 
 from sqlalchemy import Date, String, Text

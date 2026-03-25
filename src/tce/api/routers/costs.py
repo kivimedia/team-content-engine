@@ -26,7 +26,11 @@ async def get_daily_costs(
         "total_cost_usd": total,
         "daily_budget_usd": float(settings.daily_budget_usd),
         "budget_remaining_usd": float(settings.daily_budget_usd) - total,
-        "budget_pct_used": (total / float(settings.daily_budget_usd) * 100) if float(settings.daily_budget_usd) > 0 else 0,
+        "budget_pct_used": (
+            (total / float(settings.daily_budget_usd) * 100)
+            if float(settings.daily_budget_usd) > 0
+            else 0
+        ),
     }
 
 
@@ -42,7 +46,11 @@ async def get_monthly_costs(
         "total_cost_usd": total,
         "monthly_budget_usd": float(settings.monthly_budget_usd),
         "budget_remaining_usd": float(settings.monthly_budget_usd) - total,
-        "budget_pct_used": (total / float(settings.monthly_budget_usd) * 100) if float(settings.monthly_budget_usd) > 0 else 0,
+        "budget_pct_used": (
+            (total / float(settings.monthly_budget_usd) * 100)
+            if float(settings.monthly_budget_usd) > 0
+            else 0
+        ),
     }
 
 

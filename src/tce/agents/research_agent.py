@@ -56,7 +56,8 @@ class ResearchAgent(AgentBase):
 
         if evidence_requirements:
             prompt_parts.append(
-                f"The Story Strategist requires verification of: {json.dumps(evidence_requirements)}"
+                "The Story Strategist requires verification of: "
+                f"{json.dumps(evidence_requirements)}"
             )
 
         if story_brief:

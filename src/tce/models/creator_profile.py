@@ -1,6 +1,5 @@
 """CreatorProfile model — source creators in the influence pool."""
 
-import uuid
 
 from sqlalchemy import Float, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB

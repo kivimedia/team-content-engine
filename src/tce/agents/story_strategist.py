@@ -14,7 +14,10 @@ DEFAULT_CADENCE = {
     1: {"angle": "tactical_workflow_guide", "label": "Tuesday: practical workflow/tool post"},
     2: {"angle": "contrarian_diagnosis", "label": "Wednesday: contrarian belief-shift post"},
     3: {"angle": "case_study_build_story", "label": "Thursday: case study/build-with-AI post"},
-    4: {"angle": "second_order_implication", "label": "Friday: strategic implication/future-of-work"},
+    4: {
+        "angle": "second_order_implication",
+        "label": "Friday: strategic implication/future-of-work",
+    },
 }
 
 SYSTEM_PROMPT = """\
@@ -68,7 +71,8 @@ class StoryStrategist(AgentBase):
 
         if trend_brief.get("trends"):
             prompt_parts.append(
-                f"TREND BRIEF (ranked candidates):\n{json.dumps(trend_brief['trends'][:10], indent=2)}"
+                "TREND BRIEF (ranked candidates):\n"
+                f"{json.dumps(trend_brief['trends'][:10], indent=2)}"
             )
 
         if templates:

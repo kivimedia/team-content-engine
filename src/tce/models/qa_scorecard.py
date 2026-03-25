@@ -1,7 +1,6 @@
 """QAScorecard model — 12-dimension quality scoring (PRD Section 45)."""
 
 import uuid
-from datetime import datetime
 
 from sqlalchemy import Float, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSONB
@@ -20,7 +19,8 @@ class QAScorecard(Base):
 
     # Composite
     composite_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    pass_status: Mapped[str] = mapped_column(String(20), default="pending")  # pass/conditional_pass/fail
+    # pass / conditional_pass / fail
+    pass_status: Mapped[str] = mapped_column(String(20), default="pending")
 
     # Justifications: dimension_name -> text
     model_justifications: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
