@@ -6,6 +6,7 @@ from tce.models.creator_profile import CreatorProfile
 from tce.models.founder_voice_profile import FounderVoiceProfile
 from tce.models.image_asset import ImageAsset
 from tce.models.learning_event import LearningEvent
+from tce.models.notification import Notification
 from tce.models.operator_feedback import OperatorFeedback
 from tce.models.pattern_template import PatternTemplate
 from tce.models.post_example import PostExample
@@ -25,6 +26,7 @@ __all__ = [
     "FounderVoiceProfile",
     "ImageAsset",
     "LearningEvent",
+    "Notification",
     "OperatorFeedback",
     "PatternTemplate",
     "PostExample",
