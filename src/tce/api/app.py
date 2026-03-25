@@ -13,6 +13,7 @@ from tce.api.routers import (
     content,
     costs,
     documents,
+    experiments,
     feedback,
     health,
     notifications,
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(scheduler_router.router, prefix=prefix)
     app.include_router(chat.router, prefix=prefix)
     app.include_router(notifications.router, prefix=prefix)
+    app.include_router(experiments.router, prefix=prefix)
 
     return app
 
