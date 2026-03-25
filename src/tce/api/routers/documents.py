@@ -1,5 +1,6 @@
 """Document and corpus management endpoints."""
 
+import asyncio
 import uuid
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 @router.post("/upload", response_model=SourceDocumentRead)
 async def upload_document(
     file: UploadFile,
+    auto_analyze: bool = False,
     db: AsyncSession = Depends(get_db),
 ) -> SourceDocument:
     """Upload a DOCX corpus file for parsing."""
@@ -50,6 +52,30 @@ async def upload_document(
     doc = await db.get(SourceDocument, uuid.UUID(result["document_id"]))
     if not doc:
         raise HTTPException(status_code=500, detail="Document creation failed")
+
+    # Optionally trigger corpus ingestion pipeline
+    if auto_analyze and result.get("document_text"):
+        from tce.orchestrator.engine import PipelineOrchestrator
+        from tce.orchestrator.workflows import WORKFLOWS
+        from tce.settings import settings
+
+        async def _run_analysis():
+            from tce.db.session import async_session
+
+            async with async_session() as analysis_db:
+                orchestrator = PipelineOrchestrator(
+                    steps=WORKFLOWS["corpus_ingestion"],
+                    db=analysis_db,
+                    settings=settings,
+                )
+                await orchestrator.run({
+                    "document_text": result["document_text"],
+                    "document_id": result["document_id"],
+                })
+                await analysis_db.commit()
+
+        asyncio.create_task(_run_analysis())
+
     return doc
 
 

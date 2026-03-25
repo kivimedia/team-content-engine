@@ -1,9 +1,12 @@
 """FastAPI application factory."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from tce.api.routers import (
+    admin,
     briefs,
     content,
     costs,
@@ -17,7 +20,21 @@ from tce.api.routers import (
     qa,
     trends,
 )
+from tce.db.session import async_session
+from tce.services.seed import seed_database
 from tce.utils.logging import setup_logging
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Seed database with defaults on startup."""
+    try:
+        async with async_session() as db:
+            await seed_database(db)
+            await db.commit()
+    except Exception:
+        pass  # DB may not be available yet (e.g., during tests)
+    yield
 
 
 def create_app() -> FastAPI:
@@ -26,9 +43,12 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="Team Content Engine",
-        description="Agentic content engine that learns from a swipe corpus "
-        "and produces daily social media packages",
+        description=(
+            "Agentic content engine that learns from a swipe corpus "
+            "and produces daily social media packages"
+        ),
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     # CORS
@@ -54,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(prompts.router, prefix=prefix)
     app.include_router(feedback.router, prefix=prefix)
     app.include_router(trends.router, prefix=prefix)
+    app.include_router(admin.router, prefix=prefix)
 
     return app
 

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from typing import Any
 
 from tce.agents.base import AgentBase
 from tce.agents.registry import register_agent
+from tce.utils.docx import create_guide_docx
 
 SYSTEM_PROMPT = """\
 You are the DOCX Guide Builder for Team Content Engine. You create one polished \
@@ -83,4 +85,19 @@ class DocxGuideBuilder(AgentBase):
                 "sections": [{"title": "Content", "content": text}],
             }
 
-        return {"guide_content": guide_content}
+        # Generate actual DOCX file
+        docx_path = None
+        sections = guide_content.get("sections", [])
+        title = guide_content.get("guide_title", "Weekly Guide")
+        if sections:
+            output_dir = tempfile.mkdtemp(prefix="tce_guide_")
+            docx_path = f"{output_dir}/{title}.docx"
+            try:
+                create_guide_docx(title, sections, docx_path)
+            except Exception:
+                docx_path = None  # DOCX generation failed; content still returned
+
+        return {
+            "guide_content": guide_content,
+            "_guide_docx_path": docx_path,
+        }

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce.agents.registry import get_agent_class
 from tce.orchestrator.step import PipelineStep
 from tce.services.cost_tracker import CostTracker
+from tce.services.pipeline_saver import PipelineResultSaver
 from tce.services.prompt_manager import PromptManager
 from tce.settings import Settings
 
@@ -48,6 +49,7 @@ class PipelineOrchestrator:
         self.step_errors: dict[str, str] = {}
         self._cost_tracker = CostTracker(db)
         self._prompt_manager = PromptManager(db)
+        self._saver = PipelineResultSaver(db, self.run_id)
 
     async def run(self, initial_context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Execute all pipeline steps respecting dependencies."""
@@ -107,6 +109,7 @@ class PipelineOrchestrator:
                 timeout=step.timeout_seconds,
             )
             self.context.update(result)
+            await self._persist_step_result(step_name)
             self.step_status[step_name] = StepStatus.COMPLETED
             logger.info("step.complete", step=step_name)
 
@@ -120,6 +123,71 @@ class PipelineOrchestrator:
                 self.step_status[step_name] = StepStatus.FAILED
                 # Mark downstream steps as skipped
                 self._skip_downstream(step_name)
+
+    async def _persist_step_result(self, step_name: str) -> None:
+        """Persist agent output to the database after a step completes."""
+        try:
+            if step_name == "corpus_analyst":
+                ids = await self._saver.save_post_examples(
+                    self.context
+                )
+                self.context["_post_example_ids"] = [
+                    str(i) for i in ids
+                ]
+            elif step_name == "engagement_scorer":
+                await self._saver.save_engagement_scores(
+                    self.context
+                )
+            elif step_name == "pattern_miner":
+                ids = await self._saver.save_templates(self.context)
+                self.context["_template_ids"] = [
+                    str(i) for i in ids
+                ]
+            elif step_name == "trend_scout":
+                tid = await self._saver.save_trend_brief(
+                    self.context
+                )
+                if tid:
+                    self.context["_trend_brief_id"] = tid
+            elif step_name == "story_strategist":
+                sid = await self._saver.save_story_brief(
+                    self.context
+                )
+                if sid:
+                    self.context["_story_brief_id"] = sid
+            elif step_name == "research_agent":
+                rid = await self._saver.save_research_brief(
+                    self.context
+                )
+                if rid:
+                    self.context["_research_brief_id"] = rid
+            elif step_name == "qa_agent":
+                qid = await self._saver.save_qa_scorecard(
+                    self.context
+                )
+                if qid:
+                    self.context["_qa_scorecard_id"] = qid
+            elif step_name == "creative_director":
+                # After creative_director, we have all pieces
+                # for the PostPackage — assemble and save
+                pid = await self._saver.save_post_package(
+                    self.context
+                )
+                if pid:
+                    self.context["_post_package_id"] = pid
+            elif step_name == "docx_guide_builder":
+                gid = await self._saver.save_weekly_guide(
+                    self.context
+                )
+                if gid:
+                    self.context["_weekly_guide_id"] = gid
+        except Exception:
+            logger.exception(
+                "saver.error",
+                step=step_name,
+                run_id=str(self.run_id),
+            )
+            # Persistence errors are logged but don't fail the step
 
     def _has_pending_steps(self) -> bool:
         return any(s == StepStatus.PENDING for s in self.step_status.values())
