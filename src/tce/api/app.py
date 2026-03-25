@@ -9,6 +9,7 @@ from tce.api.routers import (
     admin,
     briefs,
     calendar,
+    chat,
     content,
     costs,
     documents,
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(admin.router, prefix=prefix)
     app.include_router(calendar.router, prefix=prefix)
     app.include_router(scheduler_router.router, prefix=prefix)
+    app.include_router(chat.router, prefix=prefix)
 
     return app
 
