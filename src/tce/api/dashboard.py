@@ -13,7 +13,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <title>TCE - Operator Dashboard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e4e4e7;--dim:#71717a;--accent:#6366f1;--accent2:#818cf8;--green:#22c55e;--red:#ef4444;--yellow:#eab308;--blue:#3b82f6}
+:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e4e4e7;--dim:#9ca3af;--accent:#6366f1;--accent2:#818cf8;--green:#22c55e;--red:#ef4444;--yellow:#eab308;--blue:#3b82f6}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 .header{background:var(--card);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
 .header h1{font-size:20px;font-weight:600}
@@ -436,7 +436,7 @@ async function renderGenerate() {
               <option value="corpus_ingestion">Corpus Ingestion</option>
               <option value="weekly_learning">Weekly Learning</option>
             </select>
-            <div id="wf-desc" style="font-size:11px;color:var(--dim);margin-top:6px;max-width:400px;line-height:1.5"></div>
+            <div id="wf-desc" style="font-size:12px;color:var(--text);margin-top:8px;max-width:500px;line-height:1.6;opacity:0.85"></div>
           </div>
           <div>
             <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Day of Week</label>
@@ -719,10 +719,10 @@ async function renderPackages() {
       const fbWc = fbText ? fbText.trim().split(/\\s+/).length : 0;
       const liWc = liText ? liText.trim().split(/\\s+/).length : 0;
       html += '<div id="fb-' + pid + '"><div class="post-preview">' + esc(fbText || 'No Facebook post generated') + '</div>';
-      if (fbWc) html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">' + fbWc + ' words</div>';
+      if (fbWc) html += '<div style="font-size:13px;color:var(--accent2);margin-top:8px;font-weight:600">' + fbWc + ' words</div>';
       html += '</div>';
       html += '<div id="li-' + pid + '" style="display:none"><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div>';
-      if (liWc) html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">' + liWc + ' words</div>';
+      if (liWc) html += '<div style="font-size:13px;color:var(--accent2);margin-top:8px;font-weight:600">' + liWc + ' words</div>';
       html += '</div>';
       if (p.hook_variants?.length) {
         html += '<div id="hooks-' + pid + '" class="post-preview" style="display:none">';
@@ -843,9 +843,12 @@ async function exportPackage(id) {
 }
 
 function copyPost(pid, btn) {
-  const el = document.getElementById('fb-' + pid);
+  // pid may be 'fb-xxx' or 'li-xxx' or just 'xxx' (defaults to fb)
+  const el = document.getElementById(pid.startsWith('fb-') || pid.startsWith('li-') ? pid : 'fb-' + pid);
   if (el) {
-    navigator.clipboard.writeText(el.textContent);
+    // Get text only from the .post-preview child, not the word count
+    const preview = el.querySelector('.post-preview');
+    navigator.clipboard.writeText(preview ? preview.textContent : el.textContent);
     if (btn) {
       const orig = btn.textContent;
       btn.textContent = 'Copied!';
