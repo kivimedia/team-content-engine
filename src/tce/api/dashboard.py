@@ -90,7 +90,9 @@ select,input{padding:8px 12px;border:1px solid var(--border);background:var(--ca
 .day-card.today{border-color:var(--accent);box-shadow:0 0 12px rgba(99,102,241,.2)}
 .day-card .day-header{font-size:13px;color:var(--dim);margin-bottom:4px}
 .day-card .day-date{font-size:18px;font-weight:700;margin-bottom:8px}
-.day-card .day-angle{font-size:12px;color:var(--accent2);background:#1e1b4b;padding:3px 8px;border-radius:4px;display:inline-block;margin-bottom:8px}
+.day-card .day-angle{font-size:12px;color:var(--accent2);background:#1e1b4b;padding:3px 8px;border-radius:4px;display:inline-block;margin-bottom:8px;position:relative}
+.tip-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:var(--accent2);color:#1e1b4b;font-size:9px;font-weight:700;font-style:italic;margin-left:4px;cursor:help;vertical-align:middle}
+.tip-icon:hover::after{content:attr(data-tip);position:absolute;left:0;top:calc(100% + 6px);width:260px;padding:10px 12px;background:#1e1b4b;border:1px solid var(--accent);color:var(--text);font-size:12px;font-style:normal;font-weight:400;border-radius:8px;z-index:99;line-height:1.5;white-space:normal;box-shadow:0 4px 16px rgba(0,0,0,.5)}
 .day-card .day-topic{font-size:13px;color:var(--text);margin-bottom:8px;flex:1}
 .day-card .day-status{font-size:11px;font-weight:600;text-transform:uppercase;padding:2px 6px;border-radius:3px;display:inline-block}
 .day-status-planned{background:#1e3a5f;color:#93c5fd}
@@ -177,6 +179,23 @@ const ANGLE_LABELS = {
   contrarian_diagnosis: 'Contrarian Diagnosis',
   case_study_build_story: 'Case Study Build',
   second_order_implication: 'Second Order',
+  hidden_feature_shortcut: 'Hidden Feature',
+  teardown_myth_busting: 'Teardown / Myth Bust',
+  weekly_roundup: 'Weekly Roundup',
+  founder_reflection: 'Founder Reflection',
+  comment_keyword_cta_guide: 'CTA Guide',
+};
+const ANGLE_TIPS = {
+  big_shift_explainer: 'News hook with paradox or famous name. 2-4 proof blocks showing why a fast-moving AI development matters to the reader. Best for Mondays.',
+  tactical_workflow_guide: 'State the outcome first, then 3-5 numbered steps (what + why + mistake to avoid). Immediate utility the reader can use today. Best for Tuesdays.',
+  contrarian_diagnosis: 'Challenge a lazy assumption. State conventional wisdom, acknowledge why it feels right, then dismantle it with 2-3 evidence blocks. Best for Wednesdays.',
+  case_study_build_story: 'Lead with the result, then 3-4 build blocks showing the real workflow (tool + result). Proof through action, not theory. Best for Thursdays.',
+  second_order_implication: 'Start with widely-reported news, then reveal what nobody is talking about. 2-3 second-order analysis blocks. Best for Fridays.',
+  hidden_feature_shortcut: 'One specific AI tool trick, explored deep not broad. Vivid metaphor hook, bullet-based feature list. Tuesday alternative.',
+  teardown_myth_busting: 'Direct attack on conventional wisdom backed by personal failure as credibility. Problem, evidence, reframe, proof. Wednesday alternative.',
+  weekly_roundup: '3-5 curated AI stories with 1-2 sentence take on each. Strong guide CTA at the end. Friday alternative.',
+  founder_reflection: 'Personal moment leads to professional realization. Narrative arc: struggle, insight, lesson, actionable takeaway.',
+  comment_keyword_cta_guide: 'Optimized for comment-to-DM conversion. Tease value, build desire, then keyword CTA. Facebook-focused.',
 };
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
@@ -242,7 +261,10 @@ async function renderWeek() {
       html += '<div class="day-card' + (isToday ? ' today' : '') + '">';
       html += '<div class="day-header">' + DAY_NAMES[i] + (isToday ? ' (TODAY)' : '') + '</div>';
       html += '<div class="day-date">' + d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + '</div>';
-      html += '<div class="day-angle">' + (ANGLE_LABELS[angle] || angle.replace(/_/g,' ')) + '</div>';
+      const tip = ANGLE_TIPS[angle] || '';
+      html += '<div class="day-angle" style="position:relative;cursor:help">' + (ANGLE_LABELS[angle] || angle.replace(/_/g,' '));
+      if (tip) html += ' <span class="tip-icon" data-tip="' + esc(tip) + '">i</span>';
+      html += '</div>';
       if (entry?.topic) html += '<div class="day-topic">' + esc(entry.topic) + '</div>';
       else html += '<div class="day-topic" style="color:var(--dim);font-style:italic">No topic set</div>';
       if (entry?.operator_notes) html += '<div style="font-size:11px;color:var(--dim);margin-bottom:6px">' + esc(entry.operator_notes) + '</div>';

@@ -1,8 +1,10 @@
 """Content calendar endpoints (PRD Section 43.3)."""
 
+import json
 import uuid
 from datetime import date, timedelta
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +16,9 @@ from tce.schemas.content_calendar import (
     ContentCalendarUpdate,
     PlanWeekRequest,
 )
+from tce.settings import Settings
+
+logger = structlog.get_logger()
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
@@ -96,7 +101,76 @@ async def plan_week(
             )
         await db.flush()
 
+    # Generate topics for each day using a quick LLM call
+    if entries:
+        await _generate_topics(entries, request.weekly_theme)
+        await db.flush()
+
     return entries
+
+
+ANGLE_DESCRIPTIONS = {
+    "big_shift_explainer": "Make a fast-moving AI development legible and relevant",
+    "tactical_workflow_guide": "Deliver immediate utility with a repeatable process",
+    "contrarian_diagnosis": "Challenge a lazy or outdated assumption",
+    "case_study_build_story": "Show proof through a real workflow or teardown",
+    "second_order_implication": "Explain consequences others aren't discussing",
+}
+
+
+async def _generate_topics(
+    entries: list[ContentCalendarEntry], weekly_theme: str | None
+) -> None:
+    """Use a quick LLM call to generate one-line topics for each day."""
+    try:
+        import anthropic
+
+        settings = Settings()
+        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+        days_info = []
+        for entry in entries:
+            desc = ANGLE_DESCRIPTIONS.get(entry.angle_type, entry.angle_type)
+            days_info.append(
+                f"- {['Monday','Tuesday','Wednesday','Thursday','Friday'][entry.day_of_week]}: "
+                f"template={entry.angle_type} ({desc})"
+            )
+
+        theme_line = f"Weekly theme: {weekly_theme}" if weekly_theme else "No specific theme - pick trending AI/business topics"
+
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            temperature=0.7,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"{theme_line}\n\n"
+                    f"Generate a specific, compelling one-line topic for each day's post. "
+                    f"Each topic should be concrete (mention real companies, tools, or trends) "
+                    f"and match the template style.\n\n"
+                    f"Days:\n" + "\n".join(days_info) + "\n\n"
+                    f"Reply with ONLY a JSON object: {{\"0\": \"topic\", \"1\": \"topic\", ...}} "
+                    f"where keys are day indices (0=Mon, 4=Fri). No markdown."
+                ),
+            }],
+        )
+
+        text = response.content[0].text.strip()
+        # Strip markdown fences if present
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        topics = json.loads(text)
+
+        for entry in entries:
+            topic = topics.get(str(entry.day_of_week))
+            if topic:
+                entry.topic = topic
+
+        logger.info("calendar.topics_generated", count=len(entries))
+    except Exception:
+        logger.exception("calendar.topic_generation_failed")
+        # Non-fatal - entries still exist, just without topics
 
 
 @router.get("/buffers", response_model=list[ContentCalendarRead])
