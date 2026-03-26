@@ -36,7 +36,7 @@ DAILY_CONTENT_WORKFLOW = [
 
 # Corpus ingestion workflow (PRD Section 15.1)
 CORPUS_INGESTION_WORKFLOW = [
-    PipelineStep(agent_name="corpus_analyst", depends_on=[], timeout_seconds=900),
+    PipelineStep(agent_name="corpus_analyst", depends_on=[], timeout_seconds=1800),
     PipelineStep(agent_name="engagement_scorer", depends_on=["corpus_analyst"], timeout_seconds=60),
     PipelineStep(
         agent_name="pattern_miner", depends_on=["engagement_scorer"], timeout_seconds=180
@@ -65,7 +65,7 @@ WEEKLY_LEARNING_WORKFLOW = [
 
 # Analysis-only workflow (for corpus exploration)
 ANALYSIS_WORKFLOW = [
-    PipelineStep(agent_name="corpus_analyst", depends_on=[], timeout_seconds=900),
+    PipelineStep(agent_name="corpus_analyst", depends_on=[], timeout_seconds=1800),
     PipelineStep(
         agent_name="engagement_scorer",
         depends_on=["corpus_analyst"],
