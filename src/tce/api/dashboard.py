@@ -647,8 +647,16 @@ async function renderPackages() {
       if (p.dm_flow) html += '<button onclick="showPostTab(this,\\'dm-' + pid + '\\')">DM Flow</button>';
       if (p.image_prompts?.length) html += '<button onclick="showPostTab(this,\\'img-' + pid + '\\')">Images (' + p.image_prompts.length + ')</button>';
       html += '</div>';
-      html += '<div id="fb-' + pid + '" class="post-preview">' + esc(p.facebook_post || 'No Facebook post generated') + '</div>';
-      html += '<div id="li-' + pid + '" class="post-preview" style="display:none">' + esc(p.linkedin_post || 'No LinkedIn post generated') + '</div>';
+      const fbText = p.facebook_post || '';
+      const liText = p.linkedin_post || '';
+      const fbWc = fbText ? fbText.trim().split(/\\s+/).length : 0;
+      const liWc = liText ? liText.trim().split(/\\s+/).length : 0;
+      html += '<div id="fb-' + pid + '"><div class="post-preview">' + esc(fbText || 'No Facebook post generated') + '</div>';
+      if (fbWc) html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">' + fbWc + ' words</div>';
+      html += '</div>';
+      html += '<div id="li-' + pid + '" style="display:none"><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div>';
+      if (liWc) html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">' + liWc + ' words</div>';
+      html += '</div>';
       if (p.hook_variants?.length) {
         html += '<div id="hooks-' + pid + '" class="post-preview" style="display:none">';
         p.hook_variants.forEach((h, i) => html += (i + 1) + '. ' + esc(h) + '\\n\\n');
@@ -719,11 +727,10 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s || 
 
 function showPostTab(btn, id) {
   const card = btn.closest('.pkg-card');
-  card.querySelectorAll('.post-preview, .qa-grid').forEach(el => el.style.display = 'none');
-  // Also hide qa wrapper divs
-  card.querySelectorAll('[id^="qa-"]').forEach(el => el.style.display = 'none');
-  card.querySelectorAll('[id^="img-"]').forEach(el => el.style.display = 'none');
-  card.querySelectorAll('[id^="dm-"]').forEach(el => el.style.display = 'none');
+  // Hide all tab content (wrapper divs with IDs and direct post-previews)
+  card.querySelectorAll('[id^="fb-"],[id^="li-"],[id^="hooks-"],[id^="qa-"],[id^="img-"],[id^="dm-"]').forEach(el => {
+    if (el.closest('.pkg-card') === card) el.style.display = 'none';
+  });
   card.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   const target = document.getElementById(id);
