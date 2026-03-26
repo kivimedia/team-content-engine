@@ -18,16 +18,28 @@ logger = structlog.get_logger()
 
 # PRD Section 41.3: Default fal.ai model
 DEFAULT_FAL_MODEL = "fal-ai/flux-pro/v1.1"
-DEFAULT_RESOLUTION = "1024x1024"
+DEFAULT_IMAGE_SIZE = "landscape_16_9"
+
+# Map common aspect ratios to fal.ai image_size values
+ASPECT_RATIO_MAP = {
+    "16:9": "landscape_16_9",
+    "9:16": "portrait_16_9",
+    "4:3": "landscape_4_3",
+    "3:4": "portrait_4_3",
+    "1:1": "square_hd",
+    "4:5": "portrait_4_3",
+    "5:4": "landscape_4_3",
+    "square": "square_hd",
+}
 
 # PRD Section 41.5: Platform crop guidance
 PLATFORM_CROPS = {
-    "facebook_link": "1200x630",
-    "facebook_square": "1080x1080",
-    "facebook_portrait": "1080x1350",
-    "linkedin_link": "1200x627",
-    "linkedin_square": "1080x1080",
-    "linkedin_article": "1920x1080",
+    "facebook_link": "landscape_16_9",
+    "facebook_square": "square_hd",
+    "facebook_portrait": "portrait_4_3",
+    "linkedin_link": "landscape_16_9",
+    "linkedin_square": "square_hd",
+    "linkedin_article": "landscape_16_9",
 }
 
 
@@ -64,9 +76,17 @@ class ImageGenerationService:
 
         start = time.monotonic()
 
+        # Map aspect ratio to fal.ai image_size value
+        image_size = DEFAULT_IMAGE_SIZE
+        if aspect_ratio:
+            image_size = ASPECT_RATIO_MAP.get(
+                aspect_ratio,
+                ASPECT_RATIO_MAP.get(aspect_ratio.lower(), DEFAULT_IMAGE_SIZE),
+            )
+
         payload: dict[str, Any] = {
             "prompt": prompt_text,
-            "image_size": aspect_ratio or DEFAULT_RESOLUTION,
+            "image_size": image_size,
             "num_images": 1,
         }
         if negative_prompt:

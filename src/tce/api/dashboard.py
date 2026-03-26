@@ -1179,7 +1179,7 @@ async function generateImages(packageId, btn) {
   }
 
   try {
-    const resp = await fetch('/api/content/packages/' + packageId + '/generate-images', { method: 'POST' });
+    const resp = await fetch('/api/v1/content/packages/' + packageId + '/generate-images', { method: 'POST' });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       throw new Error(err.detail || 'Generation failed');
