@@ -361,27 +361,40 @@ async function runDayPipeline(dayOfWeek, entryId) {
 async function generateAllDays() {
   const btn = event.target;
   btn.disabled = true;
-  btn.textContent = 'Generating...';
-  let started = 0;
+  let completed = 0;
+  let failed = 0;
   for (let i = 0; i < 5; i++) {
+    btn.textContent = 'Running ' + DAY_NAMES[i] + '... (' + (i+1) + '/5)';
     try {
       const r = await api('/pipeline/run', {
         method: 'POST',
         body: JSON.stringify({ workflow: 'daily_content', context: { day_of_week: i } }),
       });
-      started++;
-      toast(DAY_NAMES[i] + ' pipeline started');
+      // Poll until this run finishes before starting next
+      let done = false;
+      while (!done) {
+        await new Promise(ok => setTimeout(ok, 4000));
+        try {
+          const status = await api('/pipeline/' + r.run_id + '/status');
+          const vals = Object.values(status.step_status || {});
+          done = !vals.some(s => s === 'pending' || s === 'running');
+          if (done) {
+            const hasFail = vals.some(s => s === 'failed');
+            if (hasFail) { failed++; toast(DAY_NAMES[i] + ' finished with errors', false); }
+            else { completed++; toast(DAY_NAMES[i] + ' done!'); }
+          }
+        } catch { done = true; failed++; }
+      }
     } catch (e) {
+      failed++;
       toast(DAY_NAMES[i] + ' failed: ' + e.message, false);
     }
   }
   btn.textContent = 'Generate All Days';
   btn.disabled = false;
-  toast(started + '/5 pipelines launched!');
-  // Switch to generate tab to monitor
-  currentTab = 'generate';
-  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'generate'));
-  render();
+  toast(completed + '/5 completed' + (failed ? ', ' + failed + ' failed' : '') + '!');
+  // Refresh week view to show updated statuses
+  renderWeek();
 }
 
 function viewPackage(pkgId) {
@@ -700,12 +713,18 @@ async function renderPackages() {
       html += '<div class="pkg-card" id="pkg-' + p.id + '">';
       html += '<div class="pkg-header"><span class="tag ' + statusTag + '">' + p.approval_status + '</span>';
       html += '<span style="font-size:12px;color:var(--dim)">' + new Date(p.created_at).toLocaleString() + '</span></div>';
+      const pid = p.id.replace(/-/g, '');
+      const fbText = p.facebook_post || '';
+      const liText = p.linkedin_post || '';
+      const fbWc = fbText ? fbText.trim().split(/\\s+/).length : 0;
+      const liWc = liText ? liText.trim().split(/\\s+/).length : 0;
       html += '<div class="pkg-meta">';
       if (p.cta_keyword) html += '<span>CTA: <strong>' + p.cta_keyword + '</strong></span>';
+      if (fbWc) html += '<span style="color:var(--accent2);font-weight:600">FB: ' + fbWc + ' words</span>';
+      if (liWc) html += '<span style="color:var(--accent2);font-weight:600">LI: ' + liWc + ' words</span>';
       if (p.pipeline_run_id) html += '<span>Run: ' + p.pipeline_run_id.substring(0, 8) + '</span>';
       html += '</div>';
       // Tabs
-      const pid = p.id.replace(/-/g, '');
       html += '<div class="tabs">';
       html += '<button class="active" onclick="showPostTab(this,\\'fb-' + pid + '\\')">Facebook</button>';
       html += '<button onclick="showPostTab(this,\\'li-' + pid + '\\')">LinkedIn</button>';
@@ -714,16 +733,8 @@ async function renderPackages() {
       if (p.dm_flow) html += '<button onclick="showPostTab(this,\\'dm-' + pid + '\\')">DM Flow</button>';
       if (p.image_prompts?.length) html += '<button onclick="showPostTab(this,\\'img-' + pid + '\\')">Images (' + p.image_prompts.length + ')</button>';
       html += '</div>';
-      const fbText = p.facebook_post || '';
-      const liText = p.linkedin_post || '';
-      const fbWc = fbText ? fbText.trim().split(/\\s+/).length : 0;
-      const liWc = liText ? liText.trim().split(/\\s+/).length : 0;
-      html += '<div id="fb-' + pid + '"><div class="post-preview">' + esc(fbText || 'No Facebook post generated') + '</div>';
-      if (fbWc) html += '<div style="font-size:13px;color:var(--accent2);margin-top:8px;font-weight:600">' + fbWc + ' words</div>';
-      html += '</div>';
-      html += '<div id="li-' + pid + '" style="display:none"><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div>';
-      if (liWc) html += '<div style="font-size:13px;color:var(--accent2);margin-top:8px;font-weight:600">' + liWc + ' words</div>';
-      html += '</div>';
+      html += '<div id="fb-' + pid + '"><div class="post-preview">' + esc(fbText || 'No Facebook post generated') + '</div></div>';
+      html += '<div id="li-' + pid + '" style="display:none"><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div></div>';
       if (p.hook_variants?.length) {
         html += '<div id="hooks-' + pid + '" class="post-preview" style="display:none">';
         p.hook_variants.forEach((h, i) => html += (i + 1) + '. ' + esc(h) + '\\n\\n');
@@ -739,7 +750,46 @@ async function renderPackages() {
         html += '</div></div>';
       }
       if (p.dm_flow) {
-        html += '<div id="dm-' + pid + '" class="post-preview" style="display:none">' + esc(JSON.stringify(p.dm_flow, null, 2)) + '</div>';
+        const dm = p.dm_flow;
+        html += '<div id="dm-' + pid + '" style="display:none">';
+        html += '<div style="display:flex;flex-direction:column;gap:12px">';
+        if (dm.trigger) {
+          html += '<div style="background:#1e1b4b;border:1px solid var(--accent);border-radius:8px;padding:14px">';
+          html += '<div style="font-size:11px;color:var(--accent2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Trigger Keyword</div>';
+          html += '<div style="font-size:20px;font-weight:700;color:var(--accent2)">' + esc(dm.trigger) + '</div>';
+          html += '</div>';
+        }
+        if (dm.ack_message) {
+          html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:14px">';
+          html += '<div style="font-size:11px;color:var(--green);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Instant Reply (when they comment)</div>';
+          html += '<div style="font-size:14px;line-height:1.6;white-space:pre-wrap">' + esc(dm.ack_message) + '</div>';
+          html += '</div>';
+        }
+        if (dm.delivery_message) {
+          html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:14px">';
+          html += '<div style="font-size:11px;color:var(--blue);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Delivery Message (with the guide)</div>';
+          html += '<div style="font-size:14px;line-height:1.6;white-space:pre-wrap">' + esc(dm.delivery_message) + '</div>';
+          html += '</div>';
+        }
+        if (dm.follow_up) {
+          html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:14px">';
+          html += '<div style="font-size:11px;color:var(--yellow);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Follow-up (24-48h later)</div>';
+          html += '<div style="font-size:14px;line-height:1.6;white-space:pre-wrap">' + esc(dm.follow_up) + '</div>';
+          html += '</div>';
+        }
+        // Show any other fields not already covered
+        const knownKeys = new Set(["trigger","ack_message","delivery_message","follow_up"]);
+        for (const [k,v] of Object.entries(dm)) {
+          if (!knownKeys.has(k) && v) {
+            html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:14px">';
+            html += '<div style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">' + esc(k.replace(/_/g, ' ')) + '</div>';
+            html += '<div style="font-size:14px;line-height:1.6;white-space:pre-wrap">' + esc(typeof v === 'string' ? v : JSON.stringify(v, null, 2)) + '</div>';
+            html += '</div>';
+          }
+        }
+        html += '</div>';
+        html += '<button class="btn btn-dim" style="margin-top:12px;font-size:12px" onclick="copyDmFlow(this, \\'' + pid + '\\')">Copy All DM Messages</button>';
+        html += '</div>';
       }
       if (p.image_prompts?.length) {
         html += '<div id="img-' + pid + '" style="display:none">';
@@ -763,7 +813,7 @@ async function renderPackages() {
           }
           if (ip.rationale) html += '<div style="font-size:11px;color:var(--dim);margin-top:8px;border-top:1px solid var(--border);padding-top:8px">Rationale: ' + esc(ip.rationale) + '</div>';
           if (ip.image_url) html += '<img src="' + esc(ip.image_url) + '" style="width:100%;border-radius:6px;margin-top:8px" loading="lazy">';
-          html += '<button class="btn btn-dim" style="margin-top:8px;font-size:11px" onclick="navigator.clipboard.writeText(\\'' + esc(promptText).replace(/'/g, "\\\\'").replace(/\\n/g, " ") + '\\');this.textContent=\\'Copied!\\';this.style.background=\\'var(--green)\\';this.style.color=\\'#000\\';const _b=this;setTimeout(()=>{_b.textContent=\\'Copy Prompt\\';_b.style.background=\\'\\';_b.style.color=\\'\\'},2000);toast(\\'Image prompt copied to clipboard\\')">Copy Prompt</button>';
+          html += '<button class="btn btn-dim" style="margin-top:8px;font-size:11px" onclick="copyImagePrompt(this)">Copy Prompt</button>';
           html += '</div>';
         }
         html += '</div></div>';
@@ -840,6 +890,40 @@ async function exportPackage(id) {
   const result = await api('/content/packages/' + id + '/export?platform=manual', { method: 'POST' });
   const w = window.open('', '_blank');
   w.document.write('<pre style="font-family:monospace;white-space:pre-wrap;padding:20px;max-width:800px;margin:auto">' + JSON.stringify(result, null, 2) + '</pre>');
+}
+
+function copyDmFlow(btn, pid) {
+  const container = document.getElementById('dm-' + pid);
+  if (!container) return;
+  // Collect all message texts
+  const parts = [];
+  container.querySelectorAll('div > div').forEach(card => {
+    const label = card.querySelector('div:first-child');
+    const text = card.querySelector('div:last-child');
+    if (label && text && label !== text) {
+      parts.push(label.textContent.trim() + ':\\n' + text.textContent.trim());
+    }
+  });
+  navigator.clipboard.writeText(parts.join('\\n\\n---\\n\\n'));
+  btn.textContent = 'Copied!';
+  btn.style.background = 'var(--green)';
+  btn.style.color = '#000';
+  setTimeout(() => { btn.textContent = 'Copy All DM Messages'; btn.style.background = ''; btn.style.color = ''; }, 2000);
+  toast('DM flow copied to clipboard');
+}
+
+function copyImagePrompt(btn) {
+  // Find the .post-preview sibling (the prompt text) in the same card
+  const card = btn.closest('div');
+  const preview = card.querySelector('.post-preview');
+  if (preview) {
+    navigator.clipboard.writeText(preview.textContent);
+    btn.textContent = 'Copied!';
+    btn.style.background = 'var(--green)';
+    btn.style.color = '#000';
+    setTimeout(() => { btn.textContent = 'Copy Prompt'; btn.style.background = ''; btn.style.color = ''; }, 2000);
+    toast('Image prompt copied to clipboard');
+  }
 }
 
 function copyPost(pid, btn, label) {
