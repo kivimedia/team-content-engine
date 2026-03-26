@@ -48,12 +48,23 @@ class ResearchAgent(AgentBase):
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Build a research brief for a given topic."""
-        topic = context.get("topic", "")
-        evidence_requirements = context.get("evidence_requirements", [])
         story_brief = context.get("story_brief", {})
+        topic = (
+            context.get("topic", "")
+            or story_brief.get("topic", "")
+        )
+        evidence_requirements = (
+            context.get("evidence_requirements", [])
+            or story_brief.get("evidence_requirements", [])
+        )
+        thesis = story_brief.get("thesis", "")
 
         self._report(f"Researching: {topic[:80] or 'general topic'}")
+        if thesis:
+            self._report(f"  Thesis to verify: {thesis[:100]}")
         prompt_parts = [f"Research this topic thoroughly: {topic}"]
+        if thesis:
+            prompt_parts.append(f"Core thesis to verify: {thesis}")
 
         if evidence_requirements:
             prompt_parts.append(

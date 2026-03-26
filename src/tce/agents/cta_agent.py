@@ -53,7 +53,10 @@ class CTAAgent(AgentBase):
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Generate CTA keyword and DM flow."""
         story_brief = context.get("story_brief", {})
-        weekly_theme = context.get("weekly_theme", "")
+        weekly_theme = (
+            context.get("weekly_theme", "")
+            or story_brief.get("topic", "")
+        )
         weekly_keyword = context.get("weekly_keyword")  # May be pre-set
         guide_title = context.get("guide_title", "")
 

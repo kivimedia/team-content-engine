@@ -424,6 +424,37 @@ async function runPipeline() {
   } catch (e) { toast('Failed: ' + e.message, false); }
 }
 
+// Track which agent sections are expanded (auto-expand running ones)
+let expandedSteps = {};
+let pipelineInitialized = false;
+let prevLogCounts = {};
+
+function formatLogLine(raw) {
+  // Parse "[HH:MM:SS] message" into pretty format
+  const m = raw.match(/^\\[(\\d{2}:\\d{2}:\\d{2})\\]\\s*(.*)$/);
+  if (!m) return '<div style="padding:4px 0 4px 8px;color:var(--text);font-size:13px;line-height:1.5">' + esc(raw) + '</div>';
+  const time = m[1];
+  let msg = m[2];
+  // Highlight key patterns
+  let color = 'var(--text)';
+  let icon = '';
+  if (msg.startsWith('Starting')) { icon = '▶ '; color = 'var(--blue)'; }
+  else if (msg.startsWith('Done') || msg.startsWith('Total')) { icon = '✓ '; color = 'var(--green)'; }
+  else if (msg.startsWith('Calling')) { icon = '⟳ '; color = 'var(--yellow)'; }
+  else if (msg.startsWith('LLM responded')) { icon = '◆ '; color = 'var(--accent2)'; }
+  else if (msg.match(/^\\d+\\./)) { icon = ''; color = '#e4e4e7'; }
+  else if (msg.startsWith('  ')) { color = 'var(--dim)'; }
+  return '<div style="display:flex;gap:8px;padding:3px 0 3px 8px;font-size:13px;line-height:1.6"><span style="color:var(--dim);font-size:11px;min-width:52px;font-family:monospace">' + time + '</span><span style="color:' + color + '">' + icon + esc(msg) + '</span></div>';
+}
+
+function toggleStep(step) {
+  expandedSteps[step] = !expandedSteps[step];
+  const el = document.getElementById('step-logs-' + step);
+  const arrow = document.getElementById('step-arrow-' + step);
+  if (el) el.style.display = expandedSteps[step] ? 'block' : 'none';
+  if (arrow) arrow.textContent = expandedSteps[step] ? '▾' : '▸';
+}
+
 async function pollPipeline() {
   if (!activePipelineRun) return;
   try {
@@ -433,48 +464,132 @@ async function pollPipeline() {
     const logs = r.step_logs || {};
     const allDone = !Object.values(statuses).some(s => s === 'pending' || s === 'running');
 
-    let html = '<div class="card"><h3>Pipeline: ' + activePipelineRun.substring(0, 8) + '...</h3>';
-    html += '<div class="pipeline-steps">';
-    for (const [step, status] of Object.entries(statuses)) {
-      const lastLog = (logs[step] || []).slice(-1)[0] || '';
-      const tooltip = lastLog ? ' title="' + esc(lastLog) + '"' : '';
-      html += '<div class="step-badge ' + status + '"' + tooltip + '>' + step.replace(/_/g, ' ') + '</div>';
-    }
-    html += '</div>';
+    const container = document.getElementById('pipeline-status');
+    if (!container) return;
 
-    // Verbose mode: show live agent logs
-    if (verboseMode) {
-      html += '<div class="log" style="max-height:400px;margin-top:12px">';
+    // First render: build the skeleton
+    if (!pipelineInitialized || !container.querySelector('.pipeline-card')) {
+      // Auto-expand running steps
       for (const [step, status] of Object.entries(statuses)) {
-        const stepLogs = logs[step] || [];
-        if (stepLogs.length === 0 && status === 'pending') continue;
-        const color = status === 'completed' ? 'var(--green)' : status === 'running' ? 'var(--blue)' : status === 'failed' ? 'var(--red)' : 'var(--dim)';
-        html += '<div style="color:' + color + ';font-weight:600;margin-top:8px">' + step.replace(/_/g, ' ') + ' [' + status + ']</div>';
-        for (const log of stepLogs) {
-          html += '<div style="padding-left:12px;color:var(--dim)">' + esc(log) + '</div>';
-        }
+        if (status === 'running') expandedSteps[step] = true;
+      }
+      let html = '<div class="card pipeline-card"><h3 style="margin-bottom:12px">Pipeline: ' + activePipelineRun.substring(0, 8) + '...</h3>';
+      // Step badges row
+      html += '<div class="pipeline-steps" id="pipeline-badges">';
+      for (const [step, status] of Object.entries(statuses)) {
+        html += '<div class="step-badge ' + status + '" id="badge-' + step + '" style="cursor:pointer" onclick="toggleStep(\\'' + step + '\\')">' + step.replace(/_/g, ' ') + '</div>';
       }
       html += '</div>';
+      // Agent detail sections
+      if (verboseMode) {
+        html += '<div id="agent-sections" style="margin-top:16px">';
+        for (const [step, status] of Object.entries(statuses)) {
+          const isExpanded = expandedSteps[step];
+          const statusColor = status === 'completed' ? 'var(--green)' : status === 'running' ? 'var(--blue)' : status === 'failed' ? 'var(--red)' : 'var(--dim)';
+          html += '<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden" id="step-section-' + step + '">';
+          html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;cursor:pointer;background:var(--card);user-select:none" onclick="toggleStep(\\'' + step + '\\')">';
+          html += '<div style="display:flex;align-items:center;gap:8px"><span id="step-arrow-' + step + '" style="color:var(--dim);font-size:12px">' + (isExpanded ? '▾' : '▸') + '</span>';
+          html += '<span style="font-weight:600;font-size:13px">' + step.replace(/_/g, ' ') + '</span>';
+          html += '<span style="font-size:11px;color:' + statusColor + ';font-weight:500" id="step-status-' + step + '">' + status + '</span></div>';
+          html += '<span style="font-size:11px;color:var(--dim)" id="step-summary-' + step + '"></span>';
+          html += '</div>';
+          html += '<div id="step-logs-' + step + '" style="display:' + (isExpanded ? 'block' : 'none') + ';max-height:350px;overflow-y:auto;padding:4px 6px;background:#0d0f14;border-top:1px solid var(--border)"></div>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+      html += '<div id="pipeline-errors"></div>';
+      html += '<div id="pipeline-footer"></div>';
+      html += '</div>';
+      container.innerHTML = html;
+      pipelineInitialized = true;
+      prevLogCounts = {};
     }
 
-    if (Object.keys(errors).length) {
-      html += '<div class="log" style="border-color:var(--red);margin-top:8px">';
-      for (const [step, err] of Object.entries(errors)) html += '<div style="color:var(--red)">' + step + ': ' + esc(err) + '</div>';
-      html += '</div>';
+    // Update badges in-place
+    for (const [step, status] of Object.entries(statuses)) {
+      const badge = document.getElementById('badge-' + step);
+      if (badge) { badge.className = 'step-badge ' + status; badge.style.cursor = 'pointer'; }
+      // Auto-expand when a step starts running
+      if (status === 'running' && !expandedSteps[step]) {
+        expandedSteps[step] = true;
+        const el = document.getElementById('step-logs-' + step);
+        const arrow = document.getElementById('step-arrow-' + step);
+        if (el) el.style.display = 'block';
+        if (arrow) arrow.textContent = '▾';
+      }
     }
-    if (allDone) {
-      html += '<div style="margin-top:12px;color:var(--green);font-weight:600">Pipeline complete</div>';
+
+    // Update agent sections in-place (append new logs only)
+    if (verboseMode) {
+      for (const [step, status] of Object.entries(statuses)) {
+        const stepLogs = logs[step] || [];
+        const statusEl = document.getElementById('step-status-' + step);
+        const summaryEl = document.getElementById('step-summary-' + step);
+        const logsEl = document.getElementById('step-logs-' + step);
+        const sectionEl = document.getElementById('step-section-' + step);
+
+        // Update status text and color
+        if (statusEl) {
+          const statusColor = status === 'completed' ? 'var(--green)' : status === 'running' ? 'var(--blue)' : status === 'failed' ? 'var(--red)' : 'var(--dim)';
+          statusEl.textContent = status;
+          statusEl.style.color = statusColor;
+        }
+
+        // Update section border for running step
+        if (sectionEl) {
+          sectionEl.style.borderColor = status === 'running' ? 'var(--blue)' : 'var(--border)';
+        }
+
+        // Show latest activity as summary
+        if (summaryEl && stepLogs.length) {
+          const last = stepLogs[stepLogs.length - 1].replace(/^\\[\\d{2}:\\d{2}:\\d{2}\\]\\s*/, '');
+          summaryEl.textContent = last.substring(0, 80) + (last.length > 80 ? '...' : '');
+        }
+
+        // Append only NEW log lines
+        if (logsEl) {
+          const prevCount = prevLogCounts[step] || 0;
+          if (stepLogs.length > prevCount) {
+            const newLogs = stepLogs.slice(prevCount);
+            let newHtml = '';
+            for (const log of newLogs) newHtml += formatLogLine(log);
+            logsEl.insertAdjacentHTML('beforeend', newHtml);
+            // Auto-scroll only if user hasn't scrolled up
+            const isNearBottom = logsEl.scrollHeight - logsEl.scrollTop - logsEl.clientHeight < 80;
+            if (isNearBottom) logsEl.scrollTop = logsEl.scrollHeight;
+          }
+          prevLogCounts[step] = stepLogs.length;
+        }
+      }
+    }
+
+    // Update errors in-place
+    const errEl = document.getElementById('pipeline-errors');
+    if (errEl) {
+      const errEntries = Object.entries(errors).filter(([k,v]) => v);
+      if (errEntries.length) {
+        let eh = '<div class="log" style="border-color:var(--red);margin-top:8px">';
+        for (const [step, err] of errEntries) eh += '<div style="color:var(--red);font-size:13px"><strong>' + step.replace(/_/g, ' ') + ':</strong> ' + esc(err).substring(0, 300) + '</div>';
+        eh += '</div>';
+        errEl.innerHTML = eh;
+      }
+    }
+
+    // Update footer
+    const footerEl = document.getElementById('pipeline-footer');
+    if (footerEl && allDone) {
+      let fh = '<div style="margin-top:12px;color:var(--green);font-weight:600">Pipeline complete</div>';
       if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
       localStorage.removeItem('tce_active_run');
       const hasCompleted = Object.values(statuses).some(s => s === 'completed');
-      if (hasCompleted) html += '<button class="btn btn-blue" style="margin-top:8px" onclick="currentTab=\\'packages\\';document.querySelectorAll(\\'.nav button\\').forEach(b=>b.classList.toggle(\\'active\\',b.dataset.tab===\\'packages\\'));render()">View Packages</button>';
+      if (hasCompleted) fh += '<button class="btn btn-blue" style="margin-top:8px" onclick="currentTab=\\'packages\\';document.querySelectorAll(\\'.nav button\\').forEach(b=>b.classList.toggle(\\'active\\',b.dataset.tab===\\'packages\\'));render()">View Packages</button>';
+      footerEl.innerHTML = fh;
     }
-    html += '</div>';
-    document.getElementById('pipeline-status').innerHTML = html;
+
     const btn = document.getElementById('run-btn');
     if (btn) { btn.disabled = !allDone; btn.textContent = allDone ? 'Run Pipeline' : 'Running...'; }
   } catch (e) {
-    // Run might have completed and been cleaned up - clear localStorage
     if (e.message?.includes('404') || e.message?.includes('not found')) {
       localStorage.removeItem('tce_active_run');
       activePipelineRun = null;

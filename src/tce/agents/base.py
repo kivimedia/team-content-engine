@@ -171,17 +171,42 @@ class AgentBase(ABC):
         return ""
 
     def _parse_json_response(self, text: str) -> dict[str, Any]:
-        """Extract JSON from a response that may contain markdown code fences."""
+        """Extract JSON from a response that may contain markdown code fences or surrounding text."""
         import json
+        import re
+
+        cleaned = text.strip()
+
+        # Try direct parse first
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
 
         # Strip markdown code fences if present
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            # Remove first and last lines (code fences)
-            lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            cleaned = "\n".join(lines)
+        if "```" in cleaned:
+            # Find content between code fences
+            match = re.search(r"```(?:json)?\s*\n?(.*?)```", cleaned, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1).strip())
+                except json.JSONDecodeError:
+                    pass
 
-        return json.loads(cleaned)
+        # Find the first { ... } block (outermost braces)
+        brace_start = cleaned.find("{")
+        if brace_start != -1:
+            depth = 0
+            for i in range(brace_start, len(cleaned)):
+                if cleaned[i] == "{":
+                    depth += 1
+                elif cleaned[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(cleaned[brace_start : i + 1])
+                        except json.JSONDecodeError:
+                            break
+
+        # Nothing worked
+        raise json.JSONDecodeError("No valid JSON found in response", text, 0)

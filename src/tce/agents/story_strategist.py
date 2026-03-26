@@ -102,11 +102,38 @@ class StoryStrategist(AgentBase):
         try:
             story_brief = self._parse_json_response(text)
         except json.JSONDecodeError:
-            story_brief = {
-                "topic": "Fallback: AI industry update",
-                "angle_type": cadence["angle"],
-                "thesis": "Unable to parse strategist output",
-            }
+            self._report("JSON parse failed, attempting LLM repair...")
+            try:
+                repair = await self._call_llm(
+                    messages=[
+                        {"role": "user", "content": "\n\n".join(prompt_parts)},
+                        {"role": "assistant", "content": text},
+                        {"role": "user", "content": (
+                            "Your previous response was not valid JSON. "
+                            "Please output ONLY a valid JSON object with the StoryBrief fields. "
+                            "No markdown, no commentary - just the JSON object."
+                        )},
+                    ],
+                    system=SYSTEM_PROMPT,
+                    max_tokens=4096,
+                    temperature=0.3,
+                )
+                story_brief = self._parse_json_response(self._extract_text(repair))
+                self._report("Repair succeeded")
+            except (json.JSONDecodeError, Exception):
+                # Use top trend as fallback instead of generic text
+                top_trend = {}
+                if trend_brief.get("trends"):
+                    top_trend = trend_brief["trends"][0]
+                story_brief = {
+                    "topic": top_trend.get("headline", "AI industry update"),
+                    "angle_type": cadence["angle"],
+                    "thesis": top_trend.get("angles", [""])[0] if top_trend.get("angles") else "Analyze the latest shift in AI and what it means for business",
+                    "audience": "Business leaders and AI-curious professionals",
+                    "evidence_requirements": [top_trend.get("headline", "")] if top_trend else [],
+                    "_parsing_failed": True,
+                }
+                self._report("Using top trend as fallback")
 
         self._report(f"Selected story:")
         self._report(f"  Topic: {story_brief.get('topic', 'N/A')}")
