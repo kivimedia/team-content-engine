@@ -1,4 +1,4 @@
-"""Content management endpoints — PostPackage, WeeklyGuide, ImageAsset."""
+"""Content management endpoints - PostPackage, WeeklyGuide, ImageAsset."""
 
 import uuid
 from pathlib import Path
@@ -185,6 +185,38 @@ async def generate_images(
     await db.refresh(pkg)
 
     return {"package_id": str(package_id), "results": generated}
+
+
+@router.post("/packages/cleanup-dashes")
+async def cleanup_dashes(db: AsyncSession = Depends(get_db)) -> dict:
+    """One-time cleanup: replace emdashes/en dashes in all existing packages."""
+    from tce.services.pipeline_saver import _clean_dict, _clean_list, _clean_text
+
+    result = await db.execute(select(PostPackage))
+    packages = list(result.scalars().all())
+    fixed = 0
+    for pkg in packages:
+        changed = False
+        if pkg.facebook_post and ("\u2014" in pkg.facebook_post or "\u2013" in pkg.facebook_post or "--" in pkg.facebook_post):
+            pkg.facebook_post = _clean_text(pkg.facebook_post)
+            changed = True
+        if pkg.linkedin_post and ("\u2014" in pkg.linkedin_post or "\u2013" in pkg.linkedin_post or "--" in pkg.linkedin_post):
+            pkg.linkedin_post = _clean_text(pkg.linkedin_post)
+            changed = True
+        if pkg.hook_variants:
+            cleaned = _clean_list(pkg.hook_variants)
+            if cleaned != pkg.hook_variants:
+                pkg.hook_variants = cleaned
+                changed = True
+        if pkg.dm_flow:
+            cleaned = _clean_dict(pkg.dm_flow)
+            if cleaned != pkg.dm_flow:
+                pkg.dm_flow = cleaned
+                changed = True
+        if changed:
+            fixed += 1
+    await db.flush()
+    return {"total": len(packages), "fixed": fixed}
 
 
 @router.post("/packages/{package_id}/export")

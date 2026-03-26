@@ -34,6 +34,37 @@ def _to_str(val: Any) -> str | None:
     return str(val)
 
 
+def _clean_text(text: str | None) -> str | None:
+    """Clean up LLM output - replace emdashes/en dashes with single hyphen."""
+    if not text:
+        return text
+    return text.replace("\u2014", " - ").replace("\u2013", " - ").replace("--", " - ")
+
+
+def _clean_list(items: list[str] | None) -> list[str] | None:
+    """Clean a list of strings."""
+    if not items:
+        return items
+    return [_clean_text(s) or s for s in items]
+
+
+def _clean_dict(d: dict | None) -> dict | None:
+    """Recursively clean string values in a dict."""
+    if not d:
+        return d
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, str):
+            out[k] = _clean_text(v) or v
+        elif isinstance(v, dict):
+            out[k] = _clean_dict(v)
+        elif isinstance(v, list):
+            out[k] = [_clean_text(i) if isinstance(i, str) else i for i in v]
+        else:
+            out[k] = v
+    return out
+
+
 class PipelineResultSaver:
     """Persists agent output dicts as ORM records."""
 
@@ -215,17 +246,17 @@ class PipelineResultSaver:
             return None
 
         record = StoryBrief(
-            topic=brief.get("topic", ""),
-            audience=brief.get("audience"),
+            topic=_clean_text(brief.get("topic", "")),
+            audience=_clean_text(brief.get("audience")),
             angle_type=brief.get("angle_type", "unknown"),
-            desired_belief_shift=brief.get("desired_belief_shift"),
+            desired_belief_shift=_clean_text(brief.get("desired_belief_shift")),
             house_voice_weights=brief.get("house_voice_weights"),
-            thesis=brief.get("thesis"),
+            thesis=_clean_text(brief.get("thesis")),
             evidence_requirements=brief.get(
                 "evidence_requirements"
             ),
-            cta_goal=brief.get("cta_goal"),
-            visual_job=brief.get("visual_job"),
+            cta_goal=_clean_text(brief.get("cta_goal")),
+            visual_job=_clean_text(brief.get("visual_job")),
             platform_notes=brief.get("platform_notes"),
         )
         self.db.add(record)
@@ -276,12 +307,12 @@ class PipelineResultSaver:
         record = PostPackage(
             brief_id=brief_id,
             weekly_guide_id=guide_id,
-            facebook_post=fb.get("facebook_post"),
-            linkedin_post=li.get("linkedin_post"),
-            hook_variants=hooks if hooks else None,
+            facebook_post=_clean_text(fb.get("facebook_post")),
+            linkedin_post=_clean_text(li.get("linkedin_post")),
+            hook_variants=_clean_list(hooks) if hooks else None,
             cta_keyword=cta.get("weekly_keyword"),
             secondary_cta_keyword=cta.get("secondary_keyword"),
-            dm_flow=cta.get("dm_flow"),
+            dm_flow=_clean_dict(cta.get("dm_flow")),
             image_prompts=image_prompts if image_prompts else None,
             approval_status="draft",
             pipeline_run_id=self.run_id,
