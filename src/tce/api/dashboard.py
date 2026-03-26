@@ -363,12 +363,13 @@ async function renderGenerate() {
         <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
           <div>
             <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Workflow</label>
-            <select id="wf-select">
+            <select id="wf-select" onchange="updateWfDesc()">
               <option value="daily_content">Daily Content (full pipeline)</option>
               <option value="weekly_planning">Weekly Planning</option>
               <option value="corpus_ingestion">Corpus Ingestion</option>
               <option value="weekly_learning">Weekly Learning</option>
             </select>
+            <div id="wf-desc" style="font-size:11px;color:var(--dim);margin-top:6px;max-width:400px;line-height:1.5"></div>
           </div>
           <div>
             <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Day of Week</label>
@@ -392,6 +393,19 @@ async function renderGenerate() {
       <div id="pipeline-status"></div>
     </div>`;
   if (activePipelineRun) { pollPipeline(); if(!pollInterval) pollInterval = setInterval(pollPipeline, 3000); }
+  updateWfDesc();
+}
+
+const WF_DESCRIPTIONS = {
+  daily_content: 'Generates one complete post package for today. Runs: TrendScout (finds trending stories) -> StoryStrategist (picks angle) -> ResearchAgent (verifies claims) -> FB + LI Writers (draft posts) -> CTA Agent (keyword + DM flow) -> Creative Director (image prompts) -> QA (quality check). Use this daily to produce content.',
+  weekly_planning: 'Plans the entire week ahead. Runs: TrendScout (landscape scan) -> StoryStrategist (5-day theme) -> ResearchAgent (evidence bank) -> CTA Agent (weekly keyword) -> Guide Builder (creates downloadable DOCX brief). Use this on Sunday/Monday to set up the week.',
+  corpus_ingestion: 'Processes uploaded DOCX files into structured post examples. Runs: CorpusAnalyst (parses posts from docs) -> EngagementScorer (rates each post) -> PatternMiner (extracts reusable templates). Use this after uploading new swipe files / FB profile exports.',
+  weekly_learning: 'Reviews the past week and improves the system. Runs: LearningLoop (analyzes what worked, updates templates and scoring). Use this at end of week to refine content quality over time.'
+};
+function updateWfDesc() {
+  const sel = document.getElementById('wf-select');
+  const desc = document.getElementById('wf-desc');
+  if (sel && desc) desc.textContent = WF_DESCRIPTIONS[sel.value] || '';
 }
 
 async function runPipeline() {
@@ -669,13 +683,59 @@ async function uploadFile(input) {
 async function viewExamples(docId, name) {
   try {
     const examples = await api('/documents/' + docId + '/examples');
+    // Also fetch creators for name lookup
+    let creatorMap = {};
+    try { const creators = await api('/profiles/creators'); for (const c of creators) creatorMap[c.id] = c.creator_name; } catch(e) {}
     const w = window.open('', '_blank');
-    let h = '<html><head><style>body{font-family:sans-serif;padding:20px;max-width:900px;margin:auto;background:#0f1117;color:#e4e4e7}pre{background:#1a1d27;padding:12px;border-radius:8px;white-space:pre-wrap;margin:8px 0}h1{font-size:18px}.ex{border:1px solid #2a2d3a;border-radius:8px;padding:16px;margin:12px 0}.score{font-size:20px;font-weight:700;color:#6366f1}</style></head><body>';
+    let h = '<html><head><style>body{font-family:-apple-system,sans-serif;padding:20px;max-width:1000px;margin:auto;background:#0f1117;color:#e4e4e7}h1{font-size:20px;margin-bottom:16px}.ex{border:1px solid #2a2d3a;border-radius:10px;padding:20px;margin:16px 0;background:#1a1d27}.meta{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;color:#71717a}.badge{background:#2a2d3a;padding:2px 8px;border-radius:4px;font-size:11px}.score-box{display:inline-block;background:#6366f1;color:#fff;padding:4px 10px;border-radius:6px;font-weight:700;font-size:14px;margin-right:8px}.post-text{background:#0f1117;border:1px solid #2a2d3a;border-radius:6px;padding:12px;margin:8px 0;white-space:pre-wrap;font-size:13px;line-height:1.6;direction:rtl;text-align:right;max-height:200px;overflow-y:auto}.section-label{font-size:11px;color:#6366f1;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;margin-bottom:4px}.tags{display:flex;gap:4px;flex-wrap:wrap;margin:4px 0}.tag{background:#1e3a5f;color:#60a5fa;padding:2px 6px;border-radius:3px;font-size:11px}.tag.topic{background:#1e3a2f;color:#4ade80}.engagement{display:flex;gap:16px;margin-top:8px;font-size:12px;color:#71717a}.expand-btn{background:none;border:1px solid #2a2d3a;color:#818cf8;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;margin-top:6px}</style></head><body>';
     h += '<h1>' + name + ' - ' + examples.length + ' examples</h1>';
-    for (const ex of examples) {
+    for (let i = 0; i < examples.length; i++) {
+      const ex = examples[i];
+      const creator = creatorMap[ex.creator_id] || 'Unknown';
       h += '<div class="ex">';
-      if (ex.hook_type) h += '<div style="color:#71717a;font-size:12px">Hook: ' + ex.hook_type + ' | Body: ' + (ex.body_structure || 'N/A') + '</div>';
-      if (ex.final_score != null) h += '<div class="score">' + ex.final_score.toFixed(2) + '</div>';
+      // Header row with score and classification
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+      h += '<div style="font-weight:600;font-size:14px">#' + (i+1) + ' - ' + creator + '</div>';
+      if (ex.final_score != null) h += '<div class="score-box">' + ex.final_score.toFixed(2) + '</div>';
+      else if (ex.raw_score != null) h += '<div class="score-box" style="background:#71717a">Raw: ' + ex.raw_score.toFixed(2) + '</div>';
+      h += '</div>';
+      // Classification badges
+      h += '<div class="meta">';
+      if (ex.hook_type) h += '<span class="badge">Hook: ' + ex.hook_type + '</span>';
+      if (ex.body_structure) h += '<span class="badge">Body: ' + ex.body_structure + '</span>';
+      if (ex.story_arc) h += '<span class="badge">Arc: ' + ex.story_arc + '</span>';
+      if (ex.tension_type) h += '<span class="badge">Tension: ' + ex.tension_type + '</span>';
+      if (ex.cta_type) h += '<span class="badge">CTA: ' + ex.cta_type + '</span>';
+      if (ex.visual_type) h += '<span class="badge">Visual: ' + ex.visual_type + '</span>';
+      h += '</div>';
+      // Hook text
+      if (ex.hook_text) {
+        h += '<div class="section-label">Hook</div>';
+        h += '<div style="font-size:13px;direction:rtl;text-align:right;padding:6px 0;border-bottom:1px solid #2a2d3a">' + ex.hook_text + '</div>';
+      }
+      // Full post text (collapsible)
+      if (ex.post_text_raw) {
+        h += '<div class="section-label">Full Post</div>';
+        h += '<div class="post-text">' + ex.post_text_raw + '</div>';
+      }
+      // CTA text
+      if (ex.cta_text) {
+        h += '<div class="section-label">CTA</div>';
+        h += '<div style="font-size:13px;direction:rtl;text-align:right;padding:6px 0;color:#eab308">' + ex.cta_text + '</div>';
+      }
+      // Tags
+      if (ex.tone_tags?.length || ex.topic_tags?.length) {
+        h += '<div style="margin-top:8px">';
+        if (ex.tone_tags?.length) { h += '<div class="tags">'; for (const t of ex.tone_tags) h += '<span class="tag">' + t + '</span>'; h += '</div>'; }
+        if (ex.topic_tags?.length) { h += '<div class="tags">'; for (const t of ex.topic_tags) h += '<span class="tag topic">' + t + '</span>'; h += '</div>'; }
+        h += '</div>';
+      }
+      // Engagement data
+      h += '<div class="engagement">';
+      h += '<span>Confidence: ' + (ex.engagement_confidence || '?') + '</span>';
+      if (ex.visible_comments != null) h += '<span>Comments: ' + ex.visible_comments + '</span>';
+      if (ex.visible_shares != null) h += '<span>Shares: ' + ex.visible_shares + '</span>';
+      h += '</div>';
       h += '</div>';
     }
     w.document.write(h + '</body></html>');

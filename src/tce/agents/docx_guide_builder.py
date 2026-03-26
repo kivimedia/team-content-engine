@@ -51,20 +51,49 @@ class DocxGuideBuilder(AgentBase):
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Generate the content for a weekly DOCX guide."""
-        weekly_theme = context.get("weekly_theme", "")
+        # Extract theme from story_brief or trend_brief
+        story_brief = context.get("story_brief", {})
+        trend_brief = context.get("trend_brief", {})
         research_brief = context.get("research_brief", {})
+        cta_package = context.get("cta_package", {})
+
+        weekly_theme = (
+            context.get("weekly_theme")
+            or story_brief.get("topic")
+            or trend_brief.get("summary", "")
+        )
+        weekly_keyword = (
+            context.get("weekly_keyword")
+            or cta_package.get("weekly_keyword", "guide")
+        )
+        # Build story briefs list from single brief if needed
         story_briefs = context.get("story_briefs", [])
-        weekly_keyword = context.get("weekly_keyword", "guide")
+        if not story_briefs and story_brief:
+            story_briefs = [story_brief]
+
+        self._report(f"Building guide for theme: {weekly_theme}")
+        self._report(f"CTA keyword: {weekly_keyword}")
+        self._report(f"Story briefs available: {len(story_briefs)}")
+        self._report(f"Research brief topics: {len(research_brief.get('verified_claims', []))} verified claims")
 
         prompt_parts = [
             f"Weekly theme: {weekly_theme}",
             f"Weekly CTA keyword: {weekly_keyword}",
-            f"Research evidence bank:\n{json.dumps(research_brief, indent=2)}",
         ]
+
+        # Add trend landscape
+        if trend_brief.get("trends"):
+            trends_summary = [
+                f"- {t.get('headline', t.get('topic', ''))}: {t.get('angle_suggestions', [''])[0] if t.get('angle_suggestions') else ''}"
+                for t in trend_brief["trends"][:6]
+            ]
+            prompt_parts.append(f"Current trend landscape:\n" + "\n".join(trends_summary))
+
+        prompt_parts.append(f"Research evidence bank:\n{json.dumps(research_brief, indent=2)}")
 
         if story_briefs:
             prompt_parts.append(
-                f"This week's 5 daily angles:\n{json.dumps(story_briefs, indent=2)}"
+                f"Story angles for the week:\n{json.dumps(story_briefs, indent=2)}"
             )
 
         prompt_parts.append("Create the complete weekly guide content.")
