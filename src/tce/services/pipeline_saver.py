@@ -358,12 +358,58 @@ class PipelineResultSaver:
         sections = guide.get("sections", [])
         markdown_parts = [f"# {guide.get('guide_title', 'Weekly Guide')}\n"]
         for s in sections:
+            sec_type = s.get("type", "narrative")
             title = s.get("title", "")
-            content = s.get("content", "")
-            if title:
-                markdown_parts.append(f"\n## {title}\n")
-            if content:
-                markdown_parts.append(content)
+
+            if sec_type == "comparison":
+                if title:
+                    markdown_parts.append(f"\n## {title}\n")
+                bad_label = s.get("bad_label", "Before")
+                good_label = s.get("good_label", "After")
+                markdown_parts.append(f"| {bad_label} | {good_label} |")
+                markdown_parts.append("|---|---|")
+                bad_items = s.get("bad_items", [])
+                good_items = s.get("good_items", [])
+                for i in range(max(len(bad_items), len(good_items))):
+                    b = bad_items[i] if i < len(bad_items) else ""
+                    g = good_items[i] if i < len(good_items) else ""
+                    markdown_parts.append(f"| {b} | {g} |")
+            elif sec_type == "framework":
+                if title:
+                    markdown_parts.append(f"\n## {title}\n")
+                intro = s.get("intro", "")
+                if intro:
+                    markdown_parts.append(intro)
+                for i, step in enumerate(s.get("steps", []), 1):
+                    markdown_parts.append(f"\n### {i}. {step.get('label', '')}\n")
+                    if step.get("explanation"):
+                        markdown_parts.append(step["explanation"])
+                    for bullet in step.get("bullets", []):
+                        markdown_parts.append(f"- {bullet}")
+                    if step.get("action"):
+                        markdown_parts.append(f"\n**ACTION:** {step['action']}")
+            elif sec_type == "scenarios":
+                if title:
+                    markdown_parts.append(f"\n## {title}\n")
+                for sc in s.get("scenarios", []):
+                    markdown_parts.append(f"**\"{sc.get('situation', '')}\"**")
+                    markdown_parts.append(f"{sc.get('response', '')}\n")
+            elif sec_type == "closing":
+                markdown_parts.append(f"\n---\n\n**{s.get('headline', '')}**\n")
+                for i, step in enumerate(s.get("recap_steps", []), 1):
+                    markdown_parts.append(f"{i}. {step}")
+                if s.get("cta"):
+                    markdown_parts.append(f"\n*{s['cta']}*")
+            elif sec_type == "callout":
+                label = s.get("label", "NOTE")
+                markdown_parts.append(f"\n> **{label}:** {s.get('content', '')}\n")
+            else:
+                # narrative or unknown
+                if title:
+                    markdown_parts.append(f"\n## {title}\n")
+                content = s.get("content", "")
+                if content:
+                    markdown_parts.append(content)
         markdown_content = "\n".join(markdown_parts) if sections else None
 
         record = WeeklyGuide(
