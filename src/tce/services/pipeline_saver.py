@@ -25,6 +25,15 @@ from tce.models.weekly_guide import WeeklyGuide
 logger = structlog.get_logger()
 
 
+def _to_str(val: Any) -> str | None:
+    """Convert a value to string - handles lists from LLM output."""
+    if val is None:
+        return None
+    if isinstance(val, list):
+        return "; ".join(str(v) for v in val)
+    return str(val)
+
+
 class PipelineResultSaver:
     """Persists agent output dicts as ORM records."""
 
@@ -155,16 +164,16 @@ class PipelineResultSaver:
                 template_family=tpl.get(
                     "template_family", "unknown"
                 ),
-                best_for=tpl.get("best_for"),
-                hook_formula=tpl.get("hook_formula"),
-                body_formula=tpl.get("body_formula"),
-                proof_requirements=tpl.get("proof_requirements"),
+                best_for=_to_str(tpl.get("best_for")),
+                hook_formula=_to_str(tpl.get("hook_formula")),
+                body_formula=_to_str(tpl.get("body_formula")),
+                proof_requirements=_to_str(tpl.get("proof_requirements")),
                 cta_compatibility=tpl.get("cta_compatibility"),
                 visual_compatibility=tpl.get("visual_compatibility"),
                 platform_fit=tpl.get("platform_fit"),
                 tone_profile=tpl.get("tone_profile"),
-                risk_notes=tpl.get("risk_notes"),
-                anti_patterns=tpl.get("anti_patterns"),
+                risk_notes=_to_str(tpl.get("risk_notes")),
+                anti_patterns=_to_str(tpl.get("anti_patterns")),
                 source_influence_weights=tpl.get(
                     "source_influence_weights"
                 ),

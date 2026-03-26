@@ -126,6 +126,10 @@ class PipelineOrchestrator:
             tb = traceback.format_exc()
             logger.exception("step.failed", step=step_name, error=err_msg, traceback=tb)
             self.step_errors[step_name] = err_msg
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
 
             if step.optional:
                 self.step_status[step_name] = StepStatus.SKIPPED
