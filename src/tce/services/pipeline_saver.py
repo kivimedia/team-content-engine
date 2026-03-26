@@ -345,6 +345,18 @@ class PipelineResultSaver:
 
         docx_path = context.get("_guide_docx_path")
 
+        # Build markdown from sections for inline viewing
+        sections = guide.get("sections", [])
+        markdown_parts = [f"# {guide.get('guide_title', 'Weekly Guide')}\n"]
+        for s in sections:
+            title = s.get("title", "")
+            content = s.get("content", "")
+            if title:
+                markdown_parts.append(f"\n## {title}\n")
+            if content:
+                markdown_parts.append(content)
+        markdown_content = "\n".join(markdown_parts) if sections else None
+
         record = WeeklyGuide(
             week_start_date=date.today(),
             weekly_theme=guide.get(
@@ -355,6 +367,7 @@ class PipelineResultSaver:
                 "guide_title", "Weekly Guide"
             ),
             docx_path=docx_path,
+            markdown_content=markdown_content,
             cta_keyword=guide.get(
                 "cta_keyword",
                 context.get("weekly_keyword"),

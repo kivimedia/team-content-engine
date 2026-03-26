@@ -22,6 +22,7 @@ class WeeklyGuideRead(BaseModel):
     guide_title: str
     docx_path: str | None
     pdf_path: str | None
+    markdown_content: str | None
     cta_keyword: str | None
     fulfillment_link: str | None
     downloads_count: int

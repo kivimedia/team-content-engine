@@ -279,11 +279,19 @@ async function renderWeek() {
         html += '<span>Theme: ' + esc(g.weekly_theme) + '</span>';
         if (g.cta_keyword) html += '<span>CTA: <strong>' + esc(g.cta_keyword) + '</strong></span>';
         html += '</div>';
+        html += '<div class="btn-group" style="margin:12px 0">';
+        if (g.docx_path) html += '<a class="btn btn-green" href="' + API + '/content/guides/' + g.id + '/download" target="_blank">Download DOCX</a>';
+        if (g.fulfillment_link) html += '<a class="btn btn-blue" href="' + esc(g.fulfillment_link) + '" target="_blank">Fulfillment Link</a>';
+        html += '</div>';
+        if (g.markdown_content) {
+          html += '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--accent2);font-size:13px">View Guide Content</summary>';
+          html += '<div class="post-preview" style="margin-top:8px;max-height:400px;overflow-y:auto;white-space:pre-wrap">' + esc(g.markdown_content) + '</div>';
+          html += '</details>';
+        }
         html += '<div class="guide-stats">';
         html += '<div class="guide-stat"><div class="val">' + (g.downloads_count || 0) + '</div><div class="lbl">Downloads</div></div>';
         html += '<div class="guide-stat"><div class="val">' + (g.conversion_rate != null ? (g.conversion_rate * 100).toFixed(1) + '%' : 'N/A') + '</div><div class="lbl">Conversion</div></div>';
         html += '</div>';
-        if (g.fulfillment_link) html += '<div style="font-size:12px;margin-top:4px"><span style="color:var(--dim)">Link:</span> <a href="' + esc(g.fulfillment_link) + '" target="_blank" style="color:var(--accent2)">' + esc(g.fulfillment_link) + '</a></div>';
         html += '<div style="font-size:11px;color:var(--dim);margin-top:8px">Created: ' + new Date(g.created_at).toLocaleString() + '</div>';
         html += '</div>';
       }
@@ -301,8 +309,12 @@ async function planWeek(mondayStr) {
       method: 'POST',
       body: JSON.stringify({ week_start: mondayStr, weekly_theme: theme || null }),
     });
-    toast('Week planned: ' + entries.length + ' days created');
-    renderWeek();
+    if (entries.length === 0) {
+      toast('Week already planned! All 5 days exist.');
+    } else {
+      toast('Week planned: ' + entries.length + ' days created');
+    }
+    await renderWeek();
   } catch (e) { toast('Error: ' + e.message, false); }
 }
 

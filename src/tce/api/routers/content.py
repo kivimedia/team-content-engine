@@ -1,8 +1,10 @@
 """Content management endpoints — PostPackage, WeeklyGuide, ImageAsset."""
 
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -133,3 +135,24 @@ async def get_guide(
     if not guide:
         raise HTTPException(status_code=404, detail="Guide not found")
     return guide
+
+
+@router.get("/guides/{guide_id}/download")
+async def download_guide(
+    guide_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Download the guide DOCX file."""
+    guide = await db.get(WeeklyGuide, guide_id)
+    if not guide:
+        raise HTTPException(status_code=404, detail="Guide not found")
+    if not guide.docx_path:
+        raise HTTPException(status_code=404, detail="No DOCX file generated for this guide")
+    docx_file = Path(guide.docx_path)
+    if not docx_file.exists():
+        raise HTTPException(status_code=404, detail="DOCX file not found on disk")
+    return FileResponse(
+        path=str(docx_file),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=f"{guide.guide_title}.docx",
+    )
