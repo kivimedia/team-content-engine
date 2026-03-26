@@ -163,6 +163,10 @@ function toast(msg, ok = true) {
 // API helpers
 async function api(path, opts = {}) {
   const r = await fetch(API + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  if (!r.ok) {
+    const err = await r.text();
+    throw new Error('API error ' + r.status + ': ' + err.slice(0, 200));
+  }
   return r.json();
 }
 
@@ -501,15 +505,27 @@ async function renderPackages() {
       }
       if (p.image_prompts?.length) {
         html += '<div id="img-' + pid + '" style="display:none">';
-        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px">';
         for (const ip of p.image_prompts) {
-          html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:12px">';
-          html += '<div style="font-weight:600;font-size:13px;color:var(--accent2);margin-bottom:6px">' + esc(ip.prompt_name || ip.visual_job || 'Image') + '</div>';
-          if (ip.visual_intent) html += '<div style="font-size:12px;color:var(--dim);margin-bottom:6px">' + esc(ip.visual_intent) + '</div>';
-          html += '<div class="post-preview" style="font-size:12px;max-height:120px;margin:0">' + esc(ip.prompt_text || ip.detailed_prompt || '') + '</div>';
-          if (ip.mood) html += '<div style="font-size:11px;margin-top:6px;color:var(--dim)">Mood: ' + esc(ip.mood) + '</div>';
-          if (ip.aspect_ratio) html += '<div style="font-size:11px;color:var(--dim)">Ratio: ' + esc(ip.aspect_ratio) + '</div>';
+          const promptText = ip.prompt_text || ip.detailed_prompt || '';
+          html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:16px">';
+          html += '<div style="font-weight:600;font-size:14px;color:var(--accent2);margin-bottom:8px">' + esc(ip.prompt_name || ip.visual_job || 'Image') + '</div>';
+          if (ip.visual_intent) html += '<div style="font-size:12px;color:var(--text);margin-bottom:8px;font-style:italic">' + esc(ip.visual_intent) + '</div>';
+          html += '<div style="font-size:12px;color:var(--dim);margin-bottom:8px;display:flex;gap:12px;flex-wrap:wrap">';
+          if (ip.mood) html += '<span>Mood: <strong>' + esc(ip.mood) + '</strong></span>';
+          if (ip.aspect_ratio) html += '<span>Ratio: <strong>' + esc(ip.aspect_ratio) + '</strong></span>';
+          if (ip.platform_fit) html += '<span>Platform: <strong>' + esc(ip.platform_fit) + '</strong></span>';
+          if (ip.color_logic) html += '<span>Colors: ' + esc(String(ip.color_logic).slice(0, 60)) + '</span>';
+          html += '</div>';
+          html += '<div style="font-size:12px;margin-bottom:8px"><strong style="color:var(--green)">Full Prompt:</strong></div>';
+          html += '<div class="post-preview" style="font-size:12px;margin:0;max-height:none;white-space:pre-wrap">' + esc(promptText) + '</div>';
+          if (ip.negative_prompt) {
+            html += '<div style="font-size:12px;margin-top:8px"><strong style="color:var(--red)">Negative:</strong></div>';
+            html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">' + esc(ip.negative_prompt) + '</div>';
+          }
+          if (ip.rationale) html += '<div style="font-size:11px;color:var(--dim);margin-top:8px;border-top:1px solid var(--border);padding-top:8px">Rationale: ' + esc(ip.rationale) + '</div>';
           if (ip.image_url) html += '<img src="' + esc(ip.image_url) + '" style="width:100%;border-radius:6px;margin-top:8px" loading="lazy">';
+          html += '<button class="btn btn-dim" style="margin-top:8px;font-size:11px" onclick="navigator.clipboard.writeText(\\'' + esc(promptText).replace(/'/g, "\\\\'").replace(/\\n/g, " ") + '\\');toast(\\'Prompt copied\\')">Copy Prompt</button>';
           html += '</div>';
         }
         html += '</div></div>';
@@ -519,9 +535,15 @@ async function renderPackages() {
       if (p.approval_status === 'draft') {
         html += '<button class="btn btn-green" onclick="approvePackage(\\'' + p.id + '\\')">Approve</button>';
         html += '<button class="btn btn-red" onclick="rejectPackage(\\'' + p.id + '\\')">Reject</button>';
+      } else if (p.approval_status === 'approved') {
+        html += '<span style="color:var(--green);font-weight:600;font-size:13px;padding:8px 0">Approved</span>';
+      } else if (p.approval_status === 'rejected') {
+        html += '<span style="color:var(--red);font-weight:600;font-size:13px;padding:8px 0">Rejected</span>';
+        html += '<button class="btn btn-dim" onclick="resetPackageStatus(\\'' + p.id + '\\')">Reset to Draft</button>';
       }
       html += '<button class="btn btn-blue" onclick="exportPackage(\\'' + p.id + '\\')">Export</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'' + pid + '\\')">Copy FB Post</button>';
+      html += '<button class="btn btn-dim" onclick="copyPost(\\'li-' + pid + '\\')">Copy LI Post</button>';
       html += '</div>';
       html += '</div>';
     }
@@ -546,15 +568,35 @@ function showPostTab(btn, id) {
 }
 
 async function approvePackage(id) {
-  await api('/content/packages/' + id + '/approve', { method: 'POST' });
-  toast('Package approved');
-  renderPackages();
+  try {
+    await api('/content/packages/' + id + '/approve', { method: 'POST' });
+    toast('Package approved!');
+    await renderPackages();
+  } catch (e) {
+    toast('Approve failed: ' + e.message, false);
+    console.error('Approve error:', e);
+  }
 }
 
 async function rejectPackage(id) {
-  await api('/content/packages/' + id + '/reject', { method: 'POST' });
-  toast('Package rejected', false);
-  renderPackages();
+  try {
+    await api('/content/packages/' + id + '/reject', { method: 'POST' });
+    toast('Package rejected', false);
+    await renderPackages();
+  } catch (e) {
+    toast('Reject failed: ' + e.message, false);
+    console.error('Reject error:', e);
+  }
+}
+
+async function resetPackageStatus(id) {
+  try {
+    await api('/content/packages/' + id, { method: 'PATCH', body: JSON.stringify({ approval_status: 'draft' }) });
+    toast('Package reset to draft');
+    await renderPackages();
+  } catch (e) {
+    toast('Reset failed: ' + e.message, false);
+  }
 }
 
 async function exportPackage(id) {
