@@ -53,6 +53,7 @@ async def update_package(
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(pkg, key, value)
     await db.flush()
+    await db.refresh(pkg)
     return pkg
 
 
@@ -66,6 +67,7 @@ async def approve_package(
         raise HTTPException(status_code=404, detail="Package not found")
     pkg.approval_status = "approved"
     await db.flush()
+    await db.refresh(pkg)
     return pkg
 
 
@@ -79,6 +81,7 @@ async def reject_package(
         raise HTTPException(status_code=404, detail="Package not found")
     pkg.approval_status = "rejected"
     await db.flush()
+    await db.refresh(pkg)
     return pkg
 
 

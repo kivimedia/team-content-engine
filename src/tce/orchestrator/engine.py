@@ -121,8 +121,11 @@ class PipelineOrchestrator:
             logger.info("step.complete", step=step_name)
 
         except Exception as e:
-            logger.exception("step.failed", step=step_name, error=str(e))
-            self.step_errors[step_name] = str(e)
+            import traceback
+            err_msg = str(e) or f"{type(e).__name__}: {repr(e)}"
+            tb = traceback.format_exc()
+            logger.exception("step.failed", step=step_name, error=err_msg, traceback=tb)
+            self.step_errors[step_name] = err_msg
 
             if step.optional:
                 self.step_status[step_name] = StepStatus.SKIPPED
