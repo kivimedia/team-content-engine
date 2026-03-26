@@ -101,6 +101,7 @@ select,input{padding:8px 12px;border:1px solid var(--border);background:var(--ca
 .day-status-approved{background:#052e16;color:#22c55e}
 .day-status-published{background:#1e1b4b;color:#c7d2fe}
 .day-status-skipped{background:#2d2000;color:#fbbf24}
+.day-status-failed{background:#7f1d1d;color:#fecaca}
 .guide-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;margin-top:16px}
 .guide-card h3{color:var(--accent2);font-size:16px;margin-bottom:8px}
 .guide-meta{display:flex;gap:16px;font-size:12px;color:var(--dim);margin:8px 0}
@@ -125,6 +126,7 @@ select,input{padding:8px 12px;border:1px solid var(--border);background:var(--ca
   <button data-tab="voice">Voice Profile</button>
   <button data-tab="creators">Creators</button>
   <button data-tab="agents">Agents</button>
+  <button data-tab="costs">Costs</button>
 </div>
 <div class="main" id="app"></div>
 <script>
@@ -235,10 +237,13 @@ async function renderWeek() {
     <div class="section">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px">
         <h2>Week of ${monday.toLocaleDateString('en-US',{month:'short',day:'numeric'})} - ${friday.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</h2>
-        <div class="btn-group">
-          <button class="btn btn-dim" onclick="weekOffset--;renderWeek()">Prev Week</button>
-          <button class="btn btn-dim" onclick="weekOffset=0;renderWeek()">This Week</button>
-          <button class="btn btn-dim" onclick="weekOffset++;renderWeek()">Next Week</button>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span id="week-cost" style="font-size:13px;color:var(--accent2);font-weight:600"></span>
+          <div class="btn-group">
+            <button class="btn btn-dim" onclick="weekOffset--;renderWeek()">Prev Week</button>
+            <button class="btn btn-dim" onclick="weekOffset=0;renderWeek()">This Week</button>
+            <button class="btn btn-dim" onclick="weekOffset++;renderWeek()">Next Week</button>
+          </div>
         </div>
       </div>
       <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:16px">
@@ -302,6 +307,13 @@ async function renderWeek() {
 
   // Render generate-all progress bar if active
   renderGenAllProgress();
+
+  // Load daily cost
+  try {
+    const dailyCost = await api('/costs/daily');
+    const costEl = document.getElementById('week-cost');
+    if (costEl && dailyCost.total_cost_usd > 0) costEl.textContent = 'Today: $' + dailyCost.total_cost_usd.toFixed(2);
+  } catch {}
 
   // Load weekly guides
   try {
@@ -452,11 +464,26 @@ function renderGenAllProgress() {
   if (!s.running) {
     const done = s.results.filter(r => r?.status === 'done').length;
     const fail = s.results.filter(r => r?.status === 'failed').length;
-    html += '<div style="margin-top:10px;display:flex;gap:8px;align-items:center">';
+    html += '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
     html += '<span style="font-size:13px;color:var(--green);font-weight:600">' + done + '/5 completed</span>';
     if (fail) html += '<span style="font-size:13px;color:var(--red)">' + fail + ' failed</span>';
+    if (s.totalCost) html += '<span style="font-size:13px;color:var(--accent2)">Total: $' + s.totalCost.toFixed(2) + '</span>';
+    // Show retry button for individual failed days
+    for (let fi = 0; fi < 5; fi++) {
+      if (s.results[fi]?.status === 'failed') {
+        html += '<button class="btn btn-red" style="font-size:11px;padding:4px 10px" onclick="retryOneDay(' + fi + ')">Retry ' + DAY_NAMES[fi] + '</button>';
+      }
+    }
     html += '<button class="btn btn-dim" style="margin-left:auto;font-size:12px" onclick="genAllState=null;saveGenAllState();renderGenAllProgress()">Dismiss</button>';
     html += '</div>';
+    // Show error details for failed days
+    for (let fi = 0; fi < 5; fi++) {
+      if (s.results[fi]?.status === 'failed' && s.results[fi]?.errorMsg) {
+        html += '<div style="margin-top:6px;padding:8px 12px;background:#2d0000;border:1px solid var(--red);border-radius:6px;font-size:12px">';
+        html += '<span style="color:var(--red);font-weight:600">' + DAY_NAMES[fi] + ':</span> <span style="color:#fecaca">' + esc(s.results[fi].errorMsg.substring(0, 200)) + '</span>';
+        html += '</div>';
+      }
+    }
   }
   html += '</div>';
   el.innerHTML = html;
@@ -545,26 +572,54 @@ async function runOneDay(i) {
         if (done) {
           const hasFail = vals.some(s => s === 'failed');
           genAllState.results[i].status = hasFail ? 'failed' : 'done';
+          if (hasFail && status.step_errors) {
+            const errParts = Object.entries(status.step_errors).map(([k,v]) => k.replace(/_/g,' ') + ': ' + v);
+            genAllState.results[i].errorMsg = errParts.join('; ');
+          }
           toast(DAY_NAMES[i] + (hasFail ? ' finished with errors' : ' done!'), !hasFail);
         }
-      } catch { done = true; genAllState.results[i].status = 'failed'; }
+      } catch (pollErr) { done = true; genAllState.results[i].status = 'failed'; genAllState.results[i].errorMsg = pollErr.message || 'Connection lost'; }
       saveGenAllState();
       renderGenAllProgress();
     }
   } catch (e) {
-    genAllState.results[i] = { day: DAY_NAMES[i], status: 'failed' };
+    genAllState.results[i] = { day: DAY_NAMES[i], status: 'failed', errorMsg: e.message || 'Pipeline start failed' };
     toast(DAY_NAMES[i] + ' failed: ' + e.message, false);
     saveGenAllState();
     renderGenAllProgress();
   }
 }
 async function generateAllDays() {
-  genAllState = { running: true, current: 0, total: 5, startTime: Date.now(), results: [] };
+  genAllState = { running: true, current: 0, total: 5, startTime: Date.now(), results: [], totalCost: 0 };
   saveGenAllState();
   renderGenAllProgress();
   for (let i = 0; i < 5; i++) {
     await runOneDay(i);
   }
+  genAllState.running = false;
+  // Fetch total cost for all runs
+  try {
+    let total = 0;
+    for (const r of genAllState.results) {
+      if (r?.runId) {
+        try { const c = await api('/costs/run/' + r.runId); total += c.total_cost || 0; } catch {}
+      }
+    }
+    genAllState.totalCost = total;
+  } catch {}
+  saveGenAllState();
+  renderGenAllProgress();
+  renderWeek();
+}
+
+async function retryOneDay(dayIndex) {
+  if (!genAllState) return;
+  genAllState.running = true;
+  genAllState.current = dayIndex;
+  genAllState.results[dayIndex] = { day: DAY_NAMES[dayIndex], status: 'running', stepStatus: {}, startTime: Date.now() };
+  saveGenAllState();
+  renderGenAllProgress();
+  await runOneDay(dayIndex);
   genAllState.running = false;
   saveGenAllState();
   renderGenAllProgress();
@@ -837,7 +892,17 @@ async function pollPipeline() {
       localStorage.removeItem('tce_active_run');
       const hasCompleted = Object.values(statuses).some(s => s === 'completed');
       const hasFailed = Object.values(statuses).some(s => s === 'failed');
-      let fh = '<div style="margin-top:12px;color:' + (hasFailed ? 'var(--yellow)' : 'var(--green)') + ';font-weight:600">' + (hasFailed ? 'Pipeline finished with errors' : 'Pipeline complete') + '</div>';
+      let fh = '<div style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">';
+      fh += '<span style="color:' + (hasFailed ? 'var(--yellow)' : 'var(--green)') + ';font-weight:600">' + (hasFailed ? 'Pipeline finished with errors' : 'Pipeline complete') + '</span>';
+      fh += '<span id="run-cost-badge" style="font-size:13px;color:var(--accent2)"></span>';
+      fh += '</div>';
+      // Fetch run cost
+      if (activePipelineRun) {
+        api('/costs/run/' + activePipelineRun).then(c => {
+          const badge = document.getElementById('run-cost-badge');
+          if (badge && c.total_cost) badge.textContent = 'Cost: $' + c.total_cost.toFixed(2);
+        }).catch(() => {});
+      }
       fh += '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">';
       // Check if a guide was produced (docx_guide_builder completed)
       if (statuses.docx_guide_builder === 'completed') {
@@ -916,11 +981,29 @@ async function renderPackages() {
         html += '</div>';
       }
       if (p.quality_scores) {
-        html += '<div id="qa-' + pid + '" style="display:none"><div class="qa-grid">';
+        html += '<div id="qa-' + pid + '" style="display:none">';
+        // Composite score badge
+        const composite = p.quality_scores.composite_score || p.quality_scores.overall;
+        if (composite != null) {
+          const compVal = typeof composite === 'number' ? composite : (composite?.score || 0);
+          const compColor = compVal >= 7 ? 'var(--green)' : compVal >= 5 ? 'var(--yellow)' : 'var(--red)';
+          const compLabel = compVal >= 7 ? 'PASS' : compVal >= 5 ? 'CONDITIONAL' : 'FAIL';
+          html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:12px;background:#111318;border-radius:8px">';
+          html += '<div style="font-size:32px;font-weight:800;color:' + compColor + '">' + (typeof compVal === 'number' ? compVal.toFixed(1) : compVal) + '</div>';
+          html += '<div><div style="font-size:14px;font-weight:700;color:' + compColor + '">' + compLabel + '</div><div style="font-size:12px;color:var(--dim)">Composite QA Score</div></div>';
+          html += '</div>';
+        }
+        html += '<div class="qa-grid">';
         for (const [k, v] of Object.entries(p.quality_scores)) {
+          if (k === 'composite_score' || k === 'overall') continue;
           const score = typeof v === 'number' ? v : (v?.score || v);
+          const justification = typeof v === 'object' ? v?.justification : null;
           const color = score >= 8 ? 'var(--green)' : score >= 6 ? 'var(--yellow)' : 'var(--red)';
-          html += '<div class="qa-item"><div class="label">' + k.replace(/_/g, ' ') + '</div><div class="score" style="color:' + color + '">' + (typeof score === 'number' ? score.toFixed(1) : score) + '</div></div>';
+          const icon = score >= 7 ? '\\u2713' : score >= 5 ? '\\u26A0' : '\\u2717';
+          html += '<div class="qa-item" ' + (justification ? 'title="' + esc(justification) + '" style="cursor:help"' : '') + '>';
+          html += '<div class="label">' + icon + ' ' + k.replace(/_/g, ' ') + '</div>';
+          html += '<div class="score" style="color:' + color + '">' + (typeof score === 'number' ? score.toFixed(1) : score) + '</div>';
+          html += '</div>';
         }
         html += '</div></div>';
       }
@@ -1025,6 +1108,7 @@ async function renderPackages() {
         html += '<button class="btn btn-dim" onclick="resetPackageStatus(\\'' + p.id + '\\')">Reset to Draft</button>';
       }
       html += '<button class="btn btn-blue" onclick="exportPackage(\\'' + p.id + '\\')">Export</button>';
+      html += '<button class="btn btn-dim" onclick="showFeedbackForm(\\'' + p.id + '\\', this)">Feedback</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'' + pid + '\\', this, \\'Facebook post\\')">Copy FB Post</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'li-' + pid + '\\', this, \\'LinkedIn post\\')">Copy LI Post</button>';
       if (p.is_archived) {
@@ -1213,7 +1297,7 @@ async function generateImages(packageId, btn) {
 
 function clipCopy(text) {
   if (navigator.clipboard && window.isSecureContext) {
-    clipCopy(text);
+    navigator.clipboard.writeText(text);
   } else {
     const ta = document.createElement('textarea');
     ta.value = text;
@@ -1493,9 +1577,170 @@ async function setAgentModel(agent, model) {
   } catch (e) { toast('Failed: ' + e.message, false); }
 }
 
+// COSTS TAB
+async function renderCosts() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="section"><h2>Cost Dashboard</h2><div id="costs-content"><div class="empty">Loading cost data...</div></div></div>';
+  try {
+    const [daily, monthly, byAgent, modelDist, perPost] = await Promise.all([
+      api('/costs/daily'),
+      api('/costs/monthly'),
+      api('/costs/by-agent'),
+      api('/costs/model-distribution'),
+      api('/costs/per-post'),
+    ]);
+    let html = '';
+    // Top cards row
+    html += '<div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:24px">';
+    // Today's spending
+    html += '<div class="card"><h3>Today</h3>';
+    html += '<div class="value" style="color:' + (daily.budget_pct_used > 80 ? 'var(--red)' : daily.budget_pct_used > 50 ? 'var(--yellow)' : 'var(--green)') + '">$' + daily.total_cost_usd.toFixed(2) + '</div>';
+    html += '<div class="sub">Budget: $' + daily.daily_budget_usd.toFixed(2) + ' (' + daily.budget_pct_used.toFixed(0) + '% used)</div>';
+    html += '<div style="height:6px;background:var(--border);border-radius:3px;margin-top:8px;overflow:hidden"><div style="height:100%;background:' + (daily.budget_pct_used > 80 ? 'var(--red)' : daily.budget_pct_used > 50 ? 'var(--yellow)' : 'var(--green)') + ';width:' + Math.min(daily.budget_pct_used, 100) + '%;border-radius:3px"></div></div>';
+    html += '</div>';
+    // This month
+    html += '<div class="card"><h3>This Month</h3>';
+    html += '<div class="value" style="color:' + (monthly.budget_pct_used > 80 ? 'var(--red)' : monthly.budget_pct_used > 50 ? 'var(--yellow)' : 'var(--green)') + '">$' + monthly.total_cost_usd.toFixed(2) + '</div>';
+    html += '<div class="sub">Budget: $' + monthly.monthly_budget_usd.toFixed(2) + ' (' + monthly.budget_pct_used.toFixed(0) + '% used)</div>';
+    html += '<div style="height:6px;background:var(--border);border-radius:3px;margin-top:8px;overflow:hidden"><div style="height:100%;background:' + (monthly.budget_pct_used > 80 ? 'var(--red)' : monthly.budget_pct_used > 50 ? 'var(--yellow)' : 'var(--green)') + ';width:' + Math.min(monthly.budget_pct_used, 100) + '%;border-radius:3px"></div></div>';
+    html += '</div>';
+    // Cost per post
+    html += '<div class="card"><h3>Avg Cost/Post</h3>';
+    html += '<div class="value">$' + perPost.avg_cost_per_run.toFixed(2) + '</div>';
+    html += '<div class="sub">' + perPost.total_runs + ' runs in ' + perPost.period_days + ' days</div>';
+    if (perPost.total_runs > 0) html += '<div class="sub">Range: $' + perPost.min_cost.toFixed(2) + ' - $' + perPost.max_cost.toFixed(2) + '</div>';
+    html += '</div>';
+    // Total spent
+    html += '<div class="card"><h3>Total Spent (30d)</h3>';
+    html += '<div class="value">$' + perPost.total_cost.toFixed(2) + '</div>';
+    html += '<div class="sub">' + perPost.total_runs + ' pipeline runs</div>';
+    html += '</div>';
+    html += '</div>';
+    // Agent breakdown table
+    html += '<div class="card" style="margin-bottom:16px"><h3>Agent Cost Breakdown (' + byAgent.date + ')</h3>';
+    if (byAgent.agents.length) {
+      html += '<table style="width:100%;border-collapse:collapse;margin-top:12px;font-size:13px">';
+      html += '<tr style="border-bottom:1px solid var(--border);color:var(--dim);font-size:12px"><th style="text-align:left;padding:8px 12px">Agent</th><th style="text-align:right;padding:8px 12px">Cost</th><th style="text-align:right;padding:8px 12px">Input Tokens</th><th style="text-align:right;padding:8px 12px">Output Tokens</th><th style="text-align:right;padding:8px 12px">Calls</th></tr>';
+      let totalCost = 0;
+      for (const a of byAgent.agents) {
+        totalCost += a.cost_usd;
+        html += '<tr style="border-bottom:1px solid var(--border)">';
+        html += '<td style="padding:8px 12px;font-weight:500">' + a.agent.replace(/_/g, ' ') + '</td>';
+        html += '<td style="text-align:right;padding:8px 12px;color:var(--accent2);font-weight:600">$' + a.cost_usd.toFixed(4) + '</td>';
+        html += '<td style="text-align:right;padding:8px 12px;color:var(--dim)">' + (a.input_tokens || 0).toLocaleString() + '</td>';
+        html += '<td style="text-align:right;padding:8px 12px;color:var(--dim)">' + (a.output_tokens || 0).toLocaleString() + '</td>';
+        html += '<td style="text-align:right;padding:8px 12px">' + a.call_count + '</td>';
+        html += '</tr>';
+      }
+      html += '<tr style="font-weight:700"><td style="padding:8px 12px">Total</td><td style="text-align:right;padding:8px 12px;color:var(--green)">$' + totalCost.toFixed(4) + '</td><td colspan="3"></td></tr>';
+      html += '</table>';
+    } else {
+      html += '<div class="empty" style="padding:16px">No cost data for today. Run a pipeline to see costs.</div>';
+    }
+    html += '</div>';
+    // Model distribution
+    html += '<div class="card"><h3>Model Distribution (Last ' + modelDist.period_days + ' Days)</h3>';
+    if (modelDist.models.length) {
+      const totalModelCost = modelDist.models.reduce((s, m) => s + m.cost_usd, 0);
+      html += '<div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">';
+      for (const m of modelDist.models) {
+        const pct = totalModelCost > 0 ? (m.cost_usd / totalModelCost * 100) : 0;
+        const color = MODEL_COLORS[m.model] || 'var(--accent)';
+        const label = MODEL_LABELS[m.model] || m.model;
+        html += '<div style="flex:1;min-width:200px;background:#111318;border:1px solid var(--border);border-radius:8px;padding:16px">';
+        html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="width:12px;height:12px;border-radius:50%;background:' + color + ';display:inline-block"></span><span style="font-weight:600">' + label + '</span></div>';
+        html += '<div style="font-size:22px;font-weight:700;color:' + color + '">$' + m.cost_usd.toFixed(2) + '</div>';
+        html += '<div style="font-size:12px;color:var(--dim);margin-top:4px">' + pct.toFixed(0) + '% of total - ' + m.call_count + ' calls</div>';
+        html += '<div style="font-size:12px;color:var(--dim)">' + (m.input_tokens || 0).toLocaleString() + ' in / ' + (m.output_tokens || 0).toLocaleString() + ' out</div>';
+        html += '</div>';
+      }
+      html += '</div>';
+    } else {
+      html += '<div class="empty" style="padding:16px">No model usage data yet.</div>';
+    }
+    html += '</div>';
+    // Recent pipeline runs (from pipeline/runs endpoint)
+    try {
+      const runs = await api('/pipeline/runs?limit=10');
+      if (runs.length) {
+        html += '<div class="card" style="margin-top:16px"><h3>Recent Pipeline Runs</h3>';
+        html += '<table style="width:100%;border-collapse:collapse;margin-top:12px;font-size:13px">';
+        html += '<tr style="border-bottom:1px solid var(--border);color:var(--dim);font-size:12px"><th style="text-align:left;padding:8px 12px">Run ID</th><th style="text-align:left;padding:8px 12px">Workflow</th><th style="text-align:left;padding:8px 12px">Status</th><th style="text-align:left;padding:8px 12px">Day</th><th style="text-align:left;padding:8px 12px">Started</th><th style="text-align:left;padding:8px 12px">Error</th></tr>';
+        for (const r of runs) {
+          const stColor = r.status === 'completed' ? 'var(--green)' : r.status === 'failed' ? 'var(--red)' : 'var(--blue)';
+          html += '<tr style="border-bottom:1px solid var(--border)">';
+          html += '<td style="padding:8px 12px;font-family:monospace;font-size:12px">' + r.run_id.substring(0, 8) + '</td>';
+          html += '<td style="padding:8px 12px">' + r.workflow + '</td>';
+          html += '<td style="padding:8px 12px;color:' + stColor + ';font-weight:600">' + r.status + '</td>';
+          html += '<td style="padding:8px 12px">' + (r.day_of_week != null ? DAY_NAMES[r.day_of_week] || r.day_of_week : '-') + '</td>';
+          html += '<td style="padding:8px 12px;color:var(--dim)">' + (r.started_at ? new Date(r.started_at).toLocaleString() : '-') + '</td>';
+          html += '<td style="padding:8px 12px;color:var(--red);font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(r.error_message || '') + '">' + esc((r.error_message || '').substring(0, 80)) + '</td>';
+          html += '</tr>';
+        }
+        html += '</table></div>';
+      }
+    } catch {}
+    document.getElementById('costs-content').innerHTML = html;
+  } catch (e) {
+    document.getElementById('costs-content').innerHTML = '<div class="empty">Error loading costs: ' + e.message + '</div>';
+  }
+}
+
+// FEEDBACK FORM for packages
+const FEEDBACK_TAGS = [
+  'hook_too_aggressive', 'hook_too_weak', 'thesis_unclear', 'thesis_off_brand',
+  'cta_unfulfillable', 'cta_too_pushy', 'tone_mismatch', 'too_long', 'too_short',
+  'factual_error', 'formatting_issue', 'image_mismatch', 'dm_flow_weak',
+  'great_hook', 'strong_thesis', 'perfect_tone', 'good_images'
+];
+
+function showFeedbackForm(packageId, btn) {
+  const existing = document.getElementById('feedback-form-' + packageId);
+  if (existing) { existing.remove(); return; }
+  let html = '<div id="feedback-form-' + packageId + '" style="background:#111318;border:1px solid var(--accent);border-radius:8px;padding:16px;margin-top:12px">';
+  html += '<div style="font-size:14px;font-weight:600;color:var(--accent2);margin-bottom:12px">Package Feedback</div>';
+  html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">';
+  for (const tag of FEEDBACK_TAGS) {
+    const isPositive = tag.startsWith('great_') || tag.startsWith('strong_') || tag.startsWith('perfect_') || tag.startsWith('good_');
+    html += '<label style="display:flex;align-items:center;gap:4px;padding:4px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;cursor:pointer;background:var(--card)">';
+    html += '<input type="checkbox" class="fb-tag" value="' + tag + '" style="accent-color:' + (isPositive ? 'var(--green)' : 'var(--yellow)') + '"> ';
+    html += '<span style="color:' + (isPositive ? 'var(--green)' : 'var(--text)') + '">' + tag.replace(/_/g, ' ') + '</span>';
+    html += '</label>';
+  }
+  html += '</div>';
+  html += '<textarea id="fb-notes-' + packageId + '" placeholder="Additional notes (optional)..." style="width:100%;height:60px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-size:13px;resize:vertical"></textarea>';
+  html += '<div style="display:flex;gap:8px;margin-top:8px">';
+  html += '<select id="fb-action-' + packageId + '" style="padding:6px 10px"><option value="approved">Approved</option><option value="revised">Revised</option><option value="rejected">Rejected</option></select>';
+  html += '<button class="btn btn-primary" onclick="submitFeedback(\\'' + packageId + '\\')">Submit Feedback</button>';
+  html += '<button class="btn btn-dim" onclick="document.getElementById(\\'feedback-form-' + packageId + '\\').remove()">Cancel</button>';
+  html += '</div></div>';
+  btn.closest('.pkg-card').insertAdjacentHTML('beforeend', html);
+}
+
+async function submitFeedback(packageId) {
+  const form = document.getElementById('feedback-form-' + packageId);
+  const tags = Array.from(form.querySelectorAll('.fb-tag:checked')).map(c => c.value);
+  const notes = document.getElementById('fb-notes-' + packageId).value;
+  const action = document.getElementById('fb-action-' + packageId).value;
+  try {
+    await api('/feedback/', {
+      method: 'POST',
+      body: JSON.stringify({
+        package_id: packageId,
+        feedback_tags: tags.length ? tags : null,
+        feedback_notes: notes || null,
+        action_taken: action,
+      }),
+    });
+    toast('Feedback submitted');
+    form.remove();
+    renderPackages();
+  } catch (e) { toast('Feedback failed: ' + e.message, false); }
+}
+
 // Router
 function render() {
-  const map = { week: renderWeek, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents };
+  const map = { week: renderWeek, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts };
   (map[currentTab] || renderGenerate)();
 }
 restoreGenAllState();

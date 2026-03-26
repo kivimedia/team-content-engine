@@ -93,50 +93,78 @@ class PipelineOrchestrator:
         }
 
     async def _run_step(self, step_name: str) -> None:
-        """Execute a single pipeline step."""
+        """Execute a single pipeline step with retry logic."""
         step = self.steps[step_name]
         self.step_status[step_name] = StepStatus.RUNNING
         logger.info("step.start", step=step_name, run_id=str(self.run_id))
 
-        try:
-            agent_cls = get_agent_class(step_name)
-            log_list = self.step_logs[step_name]
-            agent = agent_cls(
-                db=self.db,
-                settings=self.settings,
-                cost_tracker=self._cost_tracker,
-                prompt_manager=self._prompt_manager,
-                run_id=self.run_id,
-                progress_log=log_list,
-            )
-            result = await asyncio.wait_for(
-                agent.run(self.context),
-                timeout=step.timeout_seconds,
-            )
-            self.context.update(result)
-            await self._persist_step_result(step_name)
-            # Commit after each step so data survives process restarts
-            await self.db.commit()
-            self.step_status[step_name] = StepStatus.COMPLETED
-            logger.info("step.complete", step=step_name)
-
-        except Exception as e:
-            import traceback
-            err_msg = str(e) or f"{type(e).__name__}: {repr(e)}"
-            tb = traceback.format_exc()
-            logger.exception("step.failed", step=step_name, error=err_msg, traceback=tb)
-            self.step_errors[step_name] = err_msg
+        last_error = None
+        for attempt in range(1, step.max_retries + 1):
             try:
-                await self.db.rollback()
-            except Exception:
-                pass
+                agent_cls = get_agent_class(step_name)
+                log_list = self.step_logs[step_name]
+                if attempt > 1:
+                    import datetime
+                    ts = datetime.datetime.now().strftime("%H:%M:%S")
+                    log_list.append(f"[{ts}] Retry attempt {attempt}/{step.max_retries}...")
+                    logger.info("step.retry", step=step_name, attempt=attempt, max=step.max_retries)
 
-            if step.optional:
-                self.step_status[step_name] = StepStatus.SKIPPED
-            else:
-                self.step_status[step_name] = StepStatus.FAILED
-                # Mark downstream steps as skipped
-                self._skip_downstream(step_name)
+                agent = agent_cls(
+                    db=self.db,
+                    settings=self.settings,
+                    cost_tracker=self._cost_tracker,
+                    prompt_manager=self._prompt_manager,
+                    run_id=self.run_id,
+                    progress_log=log_list,
+                )
+                result = await asyncio.wait_for(
+                    agent.run(self.context),
+                    timeout=step.timeout_seconds,
+                )
+                self.context.update(result)
+                await self._persist_step_result(step_name)
+                # Commit after each step so data survives process restarts
+                await self.db.commit()
+                self.step_status[step_name] = StepStatus.COMPLETED
+                logger.info("step.complete", step=step_name, attempt=attempt)
+                return  # Success - exit retry loop
+
+            except Exception as e:
+                import traceback
+                err_msg = str(e) or f"{type(e).__name__}: {repr(e)}"
+                tb = traceback.format_exc()
+                last_error = err_msg
+                logger.warning(
+                    "step.attempt_failed",
+                    step=step_name,
+                    attempt=attempt,
+                    max_retries=step.max_retries,
+                    error=err_msg,
+                )
+                try:
+                    await self.db.rollback()
+                except Exception:
+                    pass
+
+                if attempt < step.max_retries:
+                    # Wait before retrying (5s, 10s exponential)
+                    wait_secs = 5 * attempt
+                    log_list = self.step_logs[step_name]
+                    import datetime
+                    ts = datetime.datetime.now().strftime("%H:%M:%S")
+                    log_list.append(f"[{ts}] Step failed: {err_msg[:120]}. Retrying in {wait_secs}s...")
+                    await asyncio.sleep(wait_secs)
+
+        # All retries exhausted
+        logger.exception("step.failed", step=step_name, error=last_error, attempts=step.max_retries)
+        self.step_errors[step_name] = last_error or "Unknown error"
+
+        if step.optional:
+            self.step_status[step_name] = StepStatus.SKIPPED
+        else:
+            self.step_status[step_name] = StepStatus.FAILED
+            # Mark downstream steps as skipped
+            self._skip_downstream(step_name)
 
     async def _persist_step_result(self, step_name: str) -> None:
         """Persist agent output to the database after a step completes."""
@@ -242,18 +270,18 @@ class PipelineOrchestrator:
                     ContentCalendarEntry.day_of_week == day_of_week,
                     ContentCalendarEntry.status.in_(["planned", "generating"]),
                 ).order_by(ContentCalendarEntry.date.desc()).limit(1)
-                result = await self._db.execute(stmt)
+                result = await self.db.execute(stmt)
                 entry = result.scalar_one_or_none()
             if not entry:
                 stmt2 = select(ContentCalendarEntry).where(
                     ContentCalendarEntry.date == today,
                 ).limit(1)
-                result2 = await self._db.execute(stmt2)
+                result2 = await self.db.execute(stmt2)
                 entry = result2.scalar_one_or_none()
             if entry:
                 entry.post_package_id = package_id
                 entry.status = "ready"
-                await self._db.flush()
+                await self.db.flush()
                 logger.info("calendar.linked", entry_id=str(entry.id), package_id=str(package_id))
         except Exception:
             logger.exception("calendar.link_failed", package_id=str(package_id))
