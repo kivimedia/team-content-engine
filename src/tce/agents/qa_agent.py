@@ -85,6 +85,31 @@ class QAAgent(AgentBase):
             scorecard = {"error": "Failed to parse QA output"}
             return {"qa_scorecard": scorecard}
 
+        # Run humanitarian gate as an independent check (PRD Section 51)
+        from tce.services.humanitarian_gate import HumanitarianGate
+
+        humanitarian_gate = HumanitarianGate(
+            sensitive_period=context.get("sensitive_period", False),
+            current_events_context=context.get(
+                "current_events_context"
+            ),
+        )
+        gate_result = humanitarian_gate.check(
+            facebook_post=facebook_post,
+            linkedin_post=linkedin_post,
+        )
+        scorecard["humanitarian_gate"] = gate_result
+
+        # Override LLM humanitarian score with gate score if lower
+        dim_scores = scorecard.get("dimension_scores", {})
+        gate_score = gate_result.get("score", 10)
+        llm_score = dim_scores.get("humanitarian_sensitivity", 10)
+        if isinstance(llm_score, dict):
+            llm_score = llm_score.get("score", 10)
+        if gate_score < llm_score:
+            dim_scores["humanitarian_sensitivity"] = gate_score
+            scorecard["dimension_scores"] = dim_scores
+
         # Compute composite score and pass status
         scorecard = self._compute_verdict(scorecard)
         return {"qa_scorecard": scorecard}

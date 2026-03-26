@@ -378,7 +378,28 @@ class ChatbotService:
     async def _handle_approve(
         self, message: str, context: dict
     ) -> dict[str, Any]:
-        """Approve the latest draft package."""
+        """Approve the latest draft package.
+
+        PRD Section 44.7: Must NOT publish without explicit
+        operator confirmation. Requires "confirm" in message
+        or a two-step flow.
+        """
+        # Guardrail: require explicit confirmation word
+        has_confirmation = any(
+            word in message.lower()
+            for word in ["confirm", "yes", "approve", "ship"]
+        )
+        if not has_confirmation:
+            return {
+                "response": (
+                    "To approve, say 'approve' or 'confirm'. "
+                    "I won't publish without explicit confirmation."
+                ),
+                "intent": "approve",
+                "requires_confirmation": True,
+                "success": False,
+            }
+
         result = await self.db.execute(
             select(PostPackage)
             .where(PostPackage.approval_status == "draft")
@@ -387,6 +408,27 @@ class ChatbotService:
         )
         pkg = result.scalar_one_or_none()
         if pkg:
+            # Check QA passed before allowing approval
+            from tce.models.qa_scorecard import QAScorecard
+
+            qa_result = await self.db.execute(
+                select(QAScorecard).where(
+                    QAScorecard.package_id == pkg.id
+                )
+            )
+            qa = qa_result.scalar_one_or_none()
+            if qa and qa.pass_status == "fail":
+                return {
+                    "response": (
+                        f"Package {str(pkg.id)[:8]}... failed QA. "
+                        "Cannot approve without reviewing QA issues. "
+                        "Use the review screen to override with reason."
+                    ),
+                    "intent": "approve",
+                    "qa_override_needed": True,
+                    "success": False,
+                }
+
             pkg.approval_status = "approved"
             await self.db.flush()
             return {
@@ -404,7 +446,22 @@ class ChatbotService:
     async def _handle_reject(
         self, message: str, context: dict
     ) -> dict[str, Any]:
-        """Reject the latest draft package."""
+        """Reject the latest draft package.
+
+        PRD Section 44.7: Override QA failures must log reason.
+        Rejections should capture a reason for the learning loop.
+        """
+        # Extract reason from message if provided
+        reason = None
+        for prefix in [
+            "reject because", "reject:", "reject -",
+            "not good because", "redo because",
+        ]:
+            if prefix in message.lower():
+                idx = message.lower().index(prefix) + len(prefix)
+                reason = message[idx:].strip()
+                break
+
         result = await self.db.execute(
             select(PostPackage)
             .where(PostPackage.approval_status == "draft")
@@ -415,13 +472,25 @@ class ChatbotService:
         if pkg:
             pkg.approval_status = "rejected"
             await self.db.flush()
+
+            response_msg = (
+                f"Package {str(pkg.id)[:8]}... rejected."
+            )
+            if reason:
+                response_msg += f" Reason: {reason}"
+            else:
+                response_msg += (
+                    " Tip: add a reason (e.g., 'reject because "
+                    "hook is too aggressive') to help the learning loop."
+                )
+
             return {
-                "response": (
-                    f"Package {str(pkg.id)[:8]}... rejected. "
-                    "Add feedback tags via the feedback endpoint."
-                ),
+                "response": response_msg,
                 "intent": "reject",
-                "data": {"package_id": str(pkg.id)},
+                "data": {
+                    "package_id": str(pkg.id),
+                    "reason": reason,
+                },
                 "success": True,
             }
         return {

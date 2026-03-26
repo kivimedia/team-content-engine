@@ -115,7 +115,17 @@ class AgentBase(ABC):
             "temperature": temperature,
         }
         if system:
-            kwargs["system"] = system
+            # PRD Section 36.8: Prompt caching implementation
+            # Place cache_control breakpoint at end of system prompt
+            # so the stable prefix (system prompt + voice config +
+            # template library) is cached across calls
+            kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
 
         response = await self._client.messages.create(**kwargs)
         elapsed = time.monotonic() - start

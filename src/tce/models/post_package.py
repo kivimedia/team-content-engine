@@ -37,6 +37,10 @@ class PostPackage(Base):
     # Pipeline metadata
     pipeline_run_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
 
+    # A/B testing (PRD Section 43.2)
+    experiment_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    variant: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
     # Relationships
     image_assets: Mapped[list["ImageAsset"]] = relationship(  # noqa: F821
         back_populates="post_package", cascade="all, delete-orphan"
