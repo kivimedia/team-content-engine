@@ -127,6 +127,7 @@ select,input{padding:8px 12px;border:1px solid var(--border);background:var(--ca
   <button data-tab="creators">Creators</button>
   <button data-tab="agents">Agents</button>
   <button data-tab="costs">Costs</button>
+  <button data-tab="analytics">Analytics</button>
 </div>
 <div class="main" id="app"></div>
 <script>
@@ -160,9 +161,20 @@ async function checkHealth() {
   try {
     const r = await fetch(API + '/health');
     const d = await r.json();
-    document.getElementById('health-dot').className = d.status === 'ok' ? 'dot' : 'dot off';
-    document.getElementById('health-text').textContent = d.status === 'ok' ? 'System healthy' : 'System error';
-  } catch { document.getElementById('health-dot').className = 'dot off'; document.getElementById('health-text').textContent = 'Offline'; }
+    const dot = document.getElementById('health-dot');
+    const text = document.getElementById('health-text');
+    if (d.status === 'ok') {
+      dot.className = 'dot';
+      text.textContent = 'System healthy';
+      text.title = 'DB: ' + (d.database || 'ok') + ', Version: ' + (d.version || '?');
+    } else {
+      dot.className = 'dot off';
+      text.textContent = 'System error';
+    }
+  } catch {
+    document.getElementById('health-dot').className = 'dot off';
+    document.getElementById('health-text').textContent = 'Offline - check VPS';
+  }
 }
 checkHealth(); setInterval(checkHealth, 30000);
 
@@ -1738,9 +1750,112 @@ async function submitFeedback(packageId) {
   } catch (e) { toast('Feedback failed: ' + e.message, false); }
 }
 
+// ANALYTICS TAB
+async function renderAnalytics() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="section"><h2>Analytics & Performance</h2><div id="analytics-content"><div class="empty">Loading analytics...</div></div></div>';
+  try {
+    const [pkgs, feedback, learning, runs] = await Promise.all([
+      api('/content/packages').catch(() => []),
+      api('/feedback/').catch(() => []),
+      api('/feedback/learning').catch(() => []),
+      api('/pipeline/runs?limit=20').catch(() => []),
+    ]);
+    let html = '';
+    // Summary cards
+    const approved = pkgs.filter(p => p.approval_status === 'approved').length;
+    const rejected = pkgs.filter(p => p.approval_status === 'rejected').length;
+    const draft = pkgs.filter(p => p.approval_status === 'draft').length;
+    const fbCount = feedback.length;
+    const successRuns = runs.filter(r => r.status === 'completed').length;
+    const failedRuns = runs.filter(r => r.status === 'failed').length;
+    html += '<div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:24px">';
+    html += '<div class="card"><h3>Packages</h3><div class="value">' + pkgs.length + '</div>';
+    html += '<div class="sub" style="color:var(--green)">' + approved + ' approved</div>';
+    html += '<div class="sub">' + draft + ' draft, ' + rejected + ' rejected</div></div>';
+    html += '<div class="card"><h3>Pipeline Runs</h3><div class="value">' + runs.length + '</div>';
+    html += '<div class="sub" style="color:var(--green)">' + successRuns + ' successful</div>';
+    if (failedRuns) html += '<div class="sub" style="color:var(--red)">' + failedRuns + ' failed</div>';
+    html += '</div>';
+    html += '<div class="card"><h3>Feedback Submitted</h3><div class="value">' + fbCount + '</div>';
+    html += '<div class="sub">Operator reviews</div></div>';
+    html += '<div class="card"><h3>Learning Events</h3><div class="value">' + learning.length + '</div>';
+    html += '<div class="sub">Performance data points</div></div>';
+    html += '</div>';
+    // Recent packages table
+    html += '<div class="card" style="margin-bottom:16px"><h3>Recent Packages</h3>';
+    if (pkgs.length) {
+      html += '<table style="width:100%;border-collapse:collapse;margin-top:12px;font-size:13px">';
+      html += '<tr style="border-bottom:1px solid var(--border);color:var(--dim);font-size:12px"><th style="text-align:left;padding:8px 12px">Date</th><th style="text-align:left;padding:8px 12px">Status</th><th style="text-align:left;padding:8px 12px">CTA</th><th style="text-align:left;padding:8px 12px">QA Score</th><th style="text-align:left;padding:8px 12px">Feedback</th></tr>';
+      for (const p of pkgs.slice(0, 15)) {
+        const stColor = p.approval_status === 'approved' ? 'var(--green)' : p.approval_status === 'rejected' ? 'var(--red)' : 'var(--yellow)';
+        const qa = p.quality_scores?.composite_score || p.quality_scores?.overall;
+        const qaVal = qa != null ? (typeof qa === 'number' ? qa.toFixed(1) : (qa?.score || '-')) : '-';
+        const fb = feedback.find(f => f.package_id === p.id);
+        html += '<tr style="border-bottom:1px solid var(--border)">';
+        html += '<td style="padding:8px 12px">' + new Date(p.created_at).toLocaleDateString() + '</td>';
+        html += '<td style="padding:8px 12px;color:' + stColor + ';font-weight:600">' + p.approval_status + '</td>';
+        html += '<td style="padding:8px 12px">' + esc(p.cta_keyword || '-') + '</td>';
+        html += '<td style="padding:8px 12px;font-weight:600">' + qaVal + '</td>';
+        html += '<td style="padding:8px 12px">' + (fb ? '<span style="color:var(--green)">Yes</span>' : '<span style="color:var(--dim)">-</span>') + '</td>';
+        html += '</tr>';
+      }
+      html += '</table>';
+    } else {
+      html += '<div class="empty" style="padding:16px">No packages yet.</div>';
+    }
+    html += '</div>';
+    // Feedback tags distribution
+    if (feedback.length) {
+      const tagCounts = {};
+      for (const fb of feedback) {
+        for (const tag of (fb.feedback_tags || [])) {
+          tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+        }
+      }
+      if (Object.keys(tagCounts).length) {
+        html += '<div class="card" style="margin-bottom:16px"><h3>Feedback Tag Distribution</h3>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">';
+        const sorted = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]);
+        for (const [tag, count] of sorted) {
+          const isPositive = tag.startsWith('great_') || tag.startsWith('strong_') || tag.startsWith('perfect_') || tag.startsWith('good_');
+          html += '<div style="padding:6px 12px;border-radius:6px;font-size:13px;background:' + (isPositive ? '#052e16' : '#2d2000') + ';color:' + (isPositive ? 'var(--green)' : 'var(--yellow)') + '">';
+          html += tag.replace(/_/g, ' ') + ' <strong>(' + count + ')</strong>';
+          html += '</div>';
+        }
+        html += '</div></div>';
+      }
+    }
+    // DM Fulfillment section
+    html += '<div class="card"><h3>DM Fulfillment Status</h3>';
+    html += '<div style="margin-top:12px">';
+    const pkgsWithDm = pkgs.filter(p => p.dm_flow);
+    if (pkgsWithDm.length) {
+      html += '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+      html += '<tr style="border-bottom:1px solid var(--border);color:var(--dim);font-size:12px"><th style="text-align:left;padding:8px 12px">Package Date</th><th style="text-align:left;padding:8px 12px">CTA Keyword</th><th style="text-align:left;padding:8px 12px">Trigger</th><th style="text-align:left;padding:8px 12px">Has DM Flow</th></tr>';
+      for (const p of pkgsWithDm.slice(0, 10)) {
+        const dm = p.dm_flow || {};
+        html += '<tr style="border-bottom:1px solid var(--border)">';
+        html += '<td style="padding:8px 12px">' + new Date(p.created_at).toLocaleDateString() + '</td>';
+        html += '<td style="padding:8px 12px;font-weight:600;color:var(--accent2)">' + esc(p.cta_keyword || '-') + '</td>';
+        html += '<td style="padding:8px 12px">' + esc(dm.trigger || '-') + '</td>';
+        html += '<td style="padding:8px 12px;color:var(--green)">Yes - ' + Object.keys(dm).length + ' steps</td>';
+        html += '</tr>';
+      }
+      html += '</table>';
+    } else {
+      html += '<div class="empty" style="padding:16px">No packages with DM flows yet. DM flows are generated by the CTA Agent during pipeline runs.</div>';
+    }
+    html += '</div></div>';
+    document.getElementById('analytics-content').innerHTML = html;
+  } catch (e) {
+    document.getElementById('analytics-content').innerHTML = '<div class="empty">Error loading analytics: ' + e.message + '</div>';
+  }
+}
+
 // Router
 function render() {
-  const map = { week: renderWeek, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts };
+  const map = { week: renderWeek, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics };
   (map[currentTab] || renderGenerate)();
 }
 restoreGenAllState();
