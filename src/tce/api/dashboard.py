@@ -579,11 +579,20 @@ async function pollPipeline() {
     // Update footer
     const footerEl = document.getElementById('pipeline-footer');
     if (footerEl && allDone) {
-      let fh = '<div style="margin-top:12px;color:var(--green);font-weight:600">Pipeline complete</div>';
       if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
       localStorage.removeItem('tce_active_run');
       const hasCompleted = Object.values(statuses).some(s => s === 'completed');
-      if (hasCompleted) fh += '<button class="btn btn-blue" style="margin-top:8px" onclick="currentTab=\\'packages\\';document.querySelectorAll(\\'.nav button\\').forEach(b=>b.classList.toggle(\\'active\\',b.dataset.tab===\\'packages\\'));render()">View Packages</button>';
+      const hasFailed = Object.values(statuses).some(s => s === 'failed');
+      let fh = '<div style="margin-top:12px;color:' + (hasFailed ? 'var(--yellow)' : 'var(--green)') + ';font-weight:600">' + (hasFailed ? 'Pipeline finished with errors' : 'Pipeline complete') + '</div>';
+      fh += '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">';
+      // Check if a guide was produced (docx_guide_builder completed)
+      if (statuses.docx_guide_builder === 'completed') {
+        fh += '<button class="btn btn-green" style="font-size:14px;padding:10px 20px" onclick="downloadLatestGuide()">Download Guide</button>';
+      }
+      if (hasCompleted) {
+        fh += '<button class="btn btn-dim" style="font-size:13px;padding:8px 16px" onclick="currentTab=\\'packages\\';document.querySelectorAll(\\'.nav button\\').forEach(b=>b.classList.toggle(\\'active\\',b.dataset.tab===\\'packages\\'));render()">View Packages</button>';
+      }
+      fh += '</div>';
       footerEl.innerHTML = fh;
     }
 
@@ -595,6 +604,19 @@ async function pollPipeline() {
       activePipelineRun = null;
       if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
     }
+  }
+}
+
+// Download the most recent guide DOCX
+async function downloadLatestGuide() {
+  try {
+    const guides = await api('/content/guides');
+    if (!guides.length) { alert('No guides found. The guide builder may not have saved to the database.'); return; }
+    const latest = guides[0];
+    if (!latest.docx_path) { alert('Guide was created but no DOCX file was generated.'); return; }
+    window.open(API + '/content/guides/' + latest.id + '/download', '_blank');
+  } catch (e) {
+    alert('Failed to fetch guide: ' + e.message);
   }
 }
 
