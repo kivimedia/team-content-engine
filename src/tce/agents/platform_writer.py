@@ -20,7 +20,9 @@ FACEBOOK-SPECIFIC RULES:
 - Build toward the CTA
 - No hashtags. No emoji unless the voice naturally uses them
 - No AI-slop preamble ("In today's fast-paced world...")
-- Length: 300-600 words. Longer is better. Develop ideas fully, use examples, tell micro-stories
+- Length: 600-1200 words. LONGER IS ALWAYS BETTER. Develop every idea fully with examples, \
+micro-stories, and specific details. A 400-word post is a skeleton - flesh it out. \
+Each proof block should be 2-3 paragraphs minimum, not a single sentence
 
 OUTPUT FORMAT (JSON):
 - facebook_post: the complete post text
@@ -40,7 +42,10 @@ LINKEDIN-SPECIFIC RULES:
 - Professional close with a takeaway, not a hard CTA
 - May include a soft CTA (follow for more, share if useful)
 - NEVER a "say XXX" comment-trigger
-- Length: 500-1200 words. Go deep. Develop frameworks, give numbered insights, tell full stories
+- Length: 800-2000 words. Go DEEP. Develop complete frameworks with full explanations, \
+give numbered insights with examples for each, tell full stories with specific details. \
+A 500-word LinkedIn post is a tweet thread - write a real article. \
+Each section/insight should be a full paragraph with evidence, not a bullet point
 - Executive, precise, deeper tone
 
 OUTPUT FORMAT (JSON):
@@ -94,7 +99,7 @@ class FacebookWriter(AgentBase):
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
             system=FB_SYSTEM_PROMPT + SHARED_PROMPT_SUFFIX,
-            max_tokens=4096,
+            max_tokens=6144,
             temperature=0.7,
         )
 
@@ -144,7 +149,7 @@ class LinkedInWriter(AgentBase):
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
             system=LI_SYSTEM_PROMPT + SHARED_PROMPT_SUFFIX,
-            max_tokens=4096,
+            max_tokens=8192,
             temperature=0.7,
         )
 

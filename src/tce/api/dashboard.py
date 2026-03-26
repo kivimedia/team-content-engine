@@ -688,7 +688,7 @@ async function renderPackages() {
           }
           if (ip.rationale) html += '<div style="font-size:11px;color:var(--dim);margin-top:8px;border-top:1px solid var(--border);padding-top:8px">Rationale: ' + esc(ip.rationale) + '</div>';
           if (ip.image_url) html += '<img src="' + esc(ip.image_url) + '" style="width:100%;border-radius:6px;margin-top:8px" loading="lazy">';
-          html += '<button class="btn btn-dim" style="margin-top:8px;font-size:11px" onclick="navigator.clipboard.writeText(\\'' + esc(promptText).replace(/'/g, "\\\\'").replace(/\\n/g, " ") + '\\');toast(\\'Prompt copied\\')">Copy Prompt</button>';
+          html += '<button class="btn btn-dim" style="margin-top:8px;font-size:11px" onclick="navigator.clipboard.writeText(\\'' + esc(promptText).replace(/'/g, "\\\\'").replace(/\\n/g, " ") + '\\');this.textContent=\\'Copied!\\';this.style.background=\\'var(--green)\\';this.style.color=\\'#000\\';const _b=this;setTimeout(()=>{_b.textContent=\\'Copy Prompt\\';_b.style.background=\\'\\';_b.style.color=\\'\\'},2000);toast(\\'Prompt copied\\')">Copy Prompt</button>';
           html += '</div>';
         }
         html += '</div></div>';
@@ -705,8 +705,8 @@ async function renderPackages() {
         html += '<button class="btn btn-dim" onclick="resetPackageStatus(\\'' + p.id + '\\')">Reset to Draft</button>';
       }
       html += '<button class="btn btn-blue" onclick="exportPackage(\\'' + p.id + '\\')">Export</button>';
-      html += '<button class="btn btn-dim" onclick="copyPost(\\'' + pid + '\\')">Copy FB Post</button>';
-      html += '<button class="btn btn-dim" onclick="copyPost(\\'li-' + pid + '\\')">Copy LI Post</button>';
+      html += '<button class="btn btn-dim" onclick="copyPost(\\'' + pid + '\\', this)">Copy FB Post</button>';
+      html += '<button class="btn btn-dim" onclick="copyPost(\\'li-' + pid + '\\', this)">Copy LI Post</button>';
       html += '</div>';
       html += '</div>';
     }
@@ -768,9 +768,19 @@ async function exportPackage(id) {
   w.document.write('<pre style="font-family:monospace;white-space:pre-wrap;padding:20px;max-width:800px;margin:auto">' + JSON.stringify(result, null, 2) + '</pre>');
 }
 
-function copyPost(pid) {
+function copyPost(pid, btn) {
   const el = document.getElementById('fb-' + pid);
-  if (el) { navigator.clipboard.writeText(el.textContent); toast('Copied to clipboard'); }
+  if (el) {
+    navigator.clipboard.writeText(el.textContent);
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      btn.style.background = 'var(--green)';
+      btn.style.color = '#000';
+      setTimeout(() => { btn.textContent = orig; btn.style.background = ''; btn.style.color = ''; }, 2000);
+    }
+    toast('Copied to clipboard');
+  }
 }
 
 // CORPUS TAB
