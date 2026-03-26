@@ -94,6 +94,21 @@ class Scheduler:
             run_time=time(17, 0),
             weekdays=[4],  # Friday
         )
+        # PRD Section 48.4: Quarterly corpus refresh nudge
+        # Runs on the 1st of every 3rd month (Jan, Apr, Jul, Oct)
+        self.jobs["quarterly_corpus_nudge"] = ScheduledJob(
+            name="quarterly_corpus_nudge",
+            workflow="notification_only",
+            run_time=time(10, 0),
+            weekdays=[0],  # Monday (closest to quarter start)
+            context={
+                "notification_type": "corpus_refresh_nudge",
+                "message": (
+                    "It's been 3 months since the last corpus addition. "
+                    "Consider adding fresh examples to keep templates current."
+                ),
+            },
+        )
 
     def start(self) -> None:
         """Start the scheduler background loop."""

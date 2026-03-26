@@ -87,7 +87,48 @@ async def plan_week(
         entries.append(entry)
 
     await db.flush()
+
+    # Store weekly_theme for pipeline context (PRD Section 15.2)
+    if request.weekly_theme and entries:
+        for entry in entries:
+            entry.operator_notes = (
+                f"Weekly theme: {request.weekly_theme}"
+            )
+        await db.flush()
+
     return entries
+
+
+@router.get("/buffers", response_model=list[ContentCalendarRead])
+async def list_buffers(
+    db: AsyncSession = Depends(get_db),
+) -> list[ContentCalendarEntry]:
+    """List available buffer/backup posts (PRD Section 43.3)."""
+    result = await db.execute(
+        select(ContentCalendarEntry)
+        .where(ContentCalendarEntry.is_buffer.is_(True))
+        .order_by(ContentCalendarEntry.buffer_priority.desc())
+    )
+    return list(result.scalars().all())
+
+
+@router.post(
+    "/{entry_id}/set-buffer",
+    response_model=ContentCalendarRead,
+)
+async def set_buffer(
+    entry_id: uuid.UUID,
+    priority: int = 1,
+    db: AsyncSession = Depends(get_db),
+) -> ContentCalendarEntry:
+    """Mark a calendar entry as a buffer post."""
+    entry = await db.get(ContentCalendarEntry, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    entry.is_buffer = True
+    entry.buffer_priority = priority
+    await db.flush()
+    return entry
 
 
 @router.patch("/{entry_id}", response_model=ContentCalendarRead)

@@ -12,6 +12,7 @@ from tce.api.routers import (
     chat,
     content,
     costs,
+    dm_fulfillment,
     documents,
     experiments,
     feedback,
@@ -91,6 +92,7 @@ def create_app() -> FastAPI:
     app.include_router(experiments.router, prefix=prefix)
     app.include_router(onboarding.router, prefix=prefix)
     app.include_router(operator_controls.router, prefix=prefix)
+    app.include_router(dm_fulfillment.router, prefix=prefix)
 
     return app
 

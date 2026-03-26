@@ -75,7 +75,7 @@ def test_scheduler_status():
     status = s.get_status()
     assert "running" in status
     assert "jobs" in status
-    assert len(status["jobs"]) == 3
+    assert len(status["jobs"]) == 4  # daily, weekly_planning, weekly_learning, quarterly_nudge
 
 
 def test_job_to_dict():

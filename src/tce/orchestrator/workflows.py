@@ -66,9 +66,24 @@ WEEKLY_LEARNING_WORKFLOW = [
 # Analysis-only workflow (for corpus exploration)
 ANALYSIS_WORKFLOW = [
     PipelineStep(agent_name="corpus_analyst", depends_on=[], timeout_seconds=300),
-    PipelineStep(agent_name="engagement_scorer", depends_on=["corpus_analyst"], timeout_seconds=60),
     PipelineStep(
-        agent_name="pattern_miner", depends_on=["engagement_scorer"], timeout_seconds=180
+        agent_name="engagement_scorer",
+        depends_on=["corpus_analyst"],
+        timeout_seconds=60,
+    ),
+    PipelineStep(
+        agent_name="pattern_miner",
+        depends_on=["engagement_scorer"],
+        timeout_seconds=180,
+    ),
+]
+
+# Founder voice extraction workflow (PRD Section 50.6)
+FOUNDER_VOICE_EXTRACTION_WORKFLOW = [
+    PipelineStep(
+        agent_name="founder_voice_extractor",
+        depends_on=[],
+        timeout_seconds=300,
     ),
 ]
 
@@ -79,4 +94,5 @@ WORKFLOWS: dict[str, list[PipelineStep]] = {
     "weekly_planning": WEEKLY_PLANNING_WORKFLOW,
     "weekly_learning": WEEKLY_LEARNING_WORKFLOW,
     "analysis": ANALYSIS_WORKFLOW,
+    "founder_voice_extraction": FOUNDER_VOICE_EXTRACTION_WORKFLOW,
 }

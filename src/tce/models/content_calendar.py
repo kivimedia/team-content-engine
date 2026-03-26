@@ -3,7 +3,7 @@
 import uuid
 from datetime import date
 
-from sqlalchemy import Date, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tce.db.base import Base
@@ -28,3 +28,7 @@ class ContentCalendarEntry(Base):
     # Status: planned / generating / ready / approved / published / skipped
     status: Mapped[str] = mapped_column(String(20), default="planned")
     operator_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Buffer posts (PRD Section 43.3): pre-approved backup posts
+    is_buffer: Mapped[bool] = mapped_column(Boolean, default=False)
+    buffer_priority: Mapped[int] = mapped_column(Integer, default=0)

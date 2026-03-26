@@ -26,6 +26,8 @@ class ContentCalendarRead(BaseModel):
     weekly_guide_id: uuid.UUID | None
     status: str
     operator_notes: str | None
+    is_buffer: bool
+    buffer_priority: int
     created_at: datetime
     updated_at: datetime
 
@@ -38,3 +40,4 @@ class ContentCalendarUpdate(BaseModel):
 
 class PlanWeekRequest(BaseModel):
     week_start: date
+    weekly_theme: str | None = None
