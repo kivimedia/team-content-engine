@@ -837,12 +837,32 @@ async function renderPackages() {
         html += '</div>';
       }
       if (p.image_prompts?.length) {
+        const hasAnyImages = p.image_prompts.some(ip => ip.image_url);
         html += '<div id="img-' + pid + '" style="display:none">';
+        // Generate Images button
+        html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">';
+        if (!hasAnyImages) {
+          html += '<button class="btn btn-blue" id="gen-img-btn-' + pid + '" onclick="generateImages(\\'' + p.id + '\\', this)">Generate Images with AI</button>';
+          html += '<span style="font-size:12px;color:var(--dim)">Uses fal.ai Flux Pro (~$0.03/image, ' + p.image_prompts.length + ' images)</span>';
+        } else {
+          html += '<button class="btn btn-dim" id="gen-img-btn-' + pid + '" onclick="generateImages(\\'' + p.id + '\\', this)">Regenerate Images</button>';
+          html += '<span style="font-size:12px;color:var(--green)">Images generated</span>';
+        }
+        html += '</div>';
+        // Progress bar placeholder
+        html += '<div id="gen-img-progress-' + pid + '"></div>';
+        // Image grid
         html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px">';
         for (const ip of p.image_prompts) {
           const promptText = ip.prompt_text || ip.detailed_prompt || '';
           html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:16px">';
           html += '<div style="font-weight:600;font-size:14px;color:var(--accent2);margin-bottom:8px">' + esc(ip.prompt_name || ip.visual_job || 'Image') + '</div>';
+          // Show image first if available
+          if (ip.image_url) {
+            html += '<div style="margin-bottom:12px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">';
+            html += '<img src="' + esc(ip.image_url) + '" style="width:100%;display:block" loading="lazy">';
+            html += '</div>';
+          }
           if (ip.visual_intent) html += '<div style="font-size:12px;color:var(--text);margin-bottom:8px;font-style:italic">' + esc(ip.visual_intent) + '</div>';
           html += '<div style="font-size:12px;color:var(--dim);margin-bottom:8px;display:flex;gap:12px;flex-wrap:wrap">';
           if (ip.mood) html += '<span>Mood: <strong>' + esc(ip.mood) + '</strong></span>';
@@ -850,14 +870,14 @@ async function renderPackages() {
           if (ip.platform_fit) html += '<span>Platform: <strong>' + esc(ip.platform_fit) + '</strong></span>';
           if (ip.color_logic) html += '<span>Colors: ' + esc(String(ip.color_logic).slice(0, 60)) + '</span>';
           html += '</div>';
-          html += '<div style="font-size:12px;margin-bottom:8px"><strong style="color:var(--green)">Full Prompt:</strong></div>';
-          html += '<div class="post-preview" style="font-size:12px;margin:0;max-height:none;white-space:pre-wrap">' + esc(promptText) + '</div>';
+          // Prompt text always visible
+          html += '<div style="font-size:12px;margin-top:8px"><strong style="color:var(--green)">Prompt:</strong></div>';
+          html += '<div class="post-preview" style="font-size:12px;margin:4px 0 0;max-height:200px;white-space:pre-wrap;overflow-y:auto">' + esc(promptText) + '</div>';
           if (ip.negative_prompt) {
             html += '<div style="font-size:12px;margin-top:8px"><strong style="color:var(--red)">Negative:</strong></div>';
             html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">' + esc(ip.negative_prompt) + '</div>';
           }
           if (ip.rationale) html += '<div style="font-size:11px;color:var(--dim);margin-top:8px;border-top:1px solid var(--border);padding-top:8px">Rationale: ' + esc(ip.rationale) + '</div>';
-          if (ip.image_url) html += '<img src="' + esc(ip.image_url) + '" style="width:100%;border-radius:6px;margin-top:8px" loading="lazy">';
           html += '<button class="btn btn-dim" style="margin-top:8px;font-size:11px" onclick="copyImagePrompt(this)">Copy Prompt</button>';
           html += '</div>';
         }
@@ -989,6 +1009,59 @@ function copyImagePrompt(btn) {
     btn.style.color = '#000';
     setTimeout(() => { btn.textContent = 'Copy Prompt'; btn.style.background = ''; btn.style.color = ''; }, 2000);
     toast('Image prompt copied to clipboard');
+  }
+}
+
+async function generateImages(packageId, btn) {
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Generating...';
+  btn.style.background = 'var(--yellow)';
+  btn.style.color = '#000';
+
+  // Show progress
+  const pid = packageId.substring(0, 8);
+  const progressEl = document.getElementById('gen-img-progress-' + pid) || btn.parentElement.nextElementSibling;
+  if (progressEl) {
+    progressEl.innerHTML = '<div style="background:#1e1b4b;border:1px solid var(--accent);border-radius:8px;padding:14px;margin-bottom:12px">' +
+      '<div style="font-size:12px;color:var(--accent2);margin-bottom:8px">Generating images with fal.ai Flux Pro...</div>' +
+      '<div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">' +
+      '<div style="height:100%;background:var(--accent2);width:30%;animation:pulse 1.5s ease-in-out infinite;border-radius:2px"></div>' +
+      '</div>' +
+      '<div style="font-size:11px;color:var(--dim);margin-top:6px">This may take 15-30 seconds per image...</div>' +
+      '</div>';
+  }
+
+  try {
+    const resp = await fetch('/api/content/packages/' + packageId + '/generate-images', { method: 'POST' });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || 'Generation failed');
+    }
+    const data = await resp.json();
+    const generated = data.results.filter(r => r.status === 'generated').length;
+    const failed = data.results.filter(r => r.status === 'failed').length;
+
+    btn.textContent = generated + ' images generated!';
+    btn.style.background = 'var(--green)';
+    btn.style.color = '#000';
+    if (progressEl) progressEl.innerHTML = '';
+    toast(generated + ' image(s) generated' + (failed ? ', ' + failed + ' failed' : ''));
+
+    // Refresh packages to show images
+    setTimeout(() => renderPackages(), 1500);
+  } catch (e) {
+    btn.textContent = 'Failed - try again';
+    btn.style.background = 'var(--red)';
+    btn.style.color = '#fff';
+    if (progressEl) progressEl.innerHTML = '';
+    toast('Image generation failed: ' + e.message);
+    setTimeout(() => {
+      btn.textContent = origText;
+      btn.style.background = '';
+      btn.style.color = '';
+      btn.disabled = false;
+    }, 3000);
   }
 }
 

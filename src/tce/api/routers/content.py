@@ -116,6 +116,77 @@ async def unarchive_package(
     return pkg
 
 
+@router.post("/packages/{package_id}/generate-images")
+async def generate_images(
+    package_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Generate images for a package's prompts using fal.ai."""
+    from tce.models.image_asset import ImageAsset
+    from tce.services.image_generation import ImageGenerationService
+
+    pkg = await db.get(PostPackage, package_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Package not found")
+    if not pkg.image_prompts:
+        raise HTTPException(status_code=400, detail="No image prompts in this package")
+
+    svc = ImageGenerationService()
+    results = await svc.generate_batch(pkg.image_prompts)
+
+    # Update existing ImageAsset rows or create new ones
+    existing = await db.execute(
+        select(ImageAsset).where(ImageAsset.package_id == package_id)
+    )
+    existing_assets = list(existing.scalars().all())
+
+    generated = []
+    for i, result in enumerate(results):
+        if result.get("status") == "skipped":
+            generated.append({"index": i, "status": "skipped", "reason": result.get("reason")})
+            continue
+        if result.get("status") == "failed":
+            generated.append({"index": i, "status": "failed", "error": result.get("error")})
+            continue
+
+        # Update existing asset or create new one
+        if i < len(existing_assets):
+            asset = existing_assets[i]
+        else:
+            asset = ImageAsset(
+                package_id=package_id,
+                prompt_text=result.get("prompt_text", ""),
+            )
+            db.add(asset)
+
+        asset.image_url = result.get("image_url")
+        asset.image_s3_path = result.get("image_s3_path")
+        asset.fal_model_used = result.get("fal_model_used")
+        asset.fal_request_id = result.get("fal_request_id")
+        asset.generation_time_seconds = result.get("generation_time_seconds")
+        asset.generation_cost_usd = result.get("generation_cost_usd")
+
+        generated.append({
+            "index": i,
+            "status": "generated",
+            "image_url": result.get("image_url"),
+            "time": result.get("generation_time_seconds"),
+        })
+
+    # Also update image_prompts JSONB with URLs for dashboard display
+    updated_prompts = list(pkg.image_prompts)
+    for g in generated:
+        idx = g["index"]
+        if g["status"] == "generated" and idx < len(updated_prompts):
+            updated_prompts[idx]["image_url"] = g["image_url"]
+    pkg.image_prompts = updated_prompts
+
+    await db.flush()
+    await db.refresh(pkg)
+
+    return {"package_id": str(package_id), "results": generated}
+
+
 @router.post("/packages/{package_id}/export")
 async def export_package(
     package_id: uuid.UUID,
