@@ -134,7 +134,16 @@ let activePipelineRun = localStorage.getItem('tce_active_run') || null;
 let pollInterval = null;
 let verboseMode = localStorage.getItem('tce_verbose') === 'true';
 let showArchived = false;
-let genAllState = null; // {running, current, total, results: [{day, status}]}
+let genAllState = null; // {running, current, total, startTime, results: [{day, status, stepStatus, startTime}]}
+const AGENT_LABELS = {
+  trend_scout: 'Scanning Trends', story_strategist: 'Building Story Brief',
+  research_agent: 'Verifying Research', facebook_writer: 'Writing Facebook Post',
+  linkedin_writer: 'Writing LinkedIn Post', cta_agent: 'Crafting CTA & DM Flow',
+  creative_director: 'Creating Image Prompts', qa_agent: 'Quality Check',
+  corpus_analyst: 'Analyzing Corpus', engagement_scorer: 'Scoring Engagement',
+  pattern_miner: 'Mining Patterns', docx_guide_builder: 'Building Guide',
+  weekly_planner: 'Planning Week', learning_agent: 'Learning from Feedback',
+};
 
 // Nav
 document.getElementById('nav').addEventListener('click', e => {
@@ -364,14 +373,25 @@ async function runDayPipeline(dayOfWeek, entryId) {
   } catch (e) { toast('Failed: ' + e.message, false); }
 }
 
+function formatElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+}
 function renderGenAllProgress() {
   const el = document.getElementById('gen-all-progress');
   if (!el) return;
   if (!genAllState) { el.innerHTML = ''; return; }
   const s = genAllState;
+  const elapsed = s.startTime ? formatElapsed(Date.now() - s.startTime) : '';
   let html = '<div class="card" style="margin-bottom:16px;padding:16px">';
-  html += '<div style="font-size:13px;font-weight:600;margin-bottom:10px">' + (s.running ? 'Generating content for all 5 days...' : 'Generation complete') + '</div>';
-  html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
+  // Header with elapsed time
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
+  html += '<div style="font-size:13px;font-weight:600">' + (s.running ? 'Generating content for all 5 days...' : 'Generation complete') + '</div>';
+  if (elapsed) html += '<div style="font-size:12px;color:var(--dim);font-family:monospace">' + elapsed + '</div>';
+  html += '</div>';
+  // Day badges
+  html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">';
   for (let i = 0; i < 5; i++) {
     const r = s.results[i];
     let bg, color, label;
@@ -384,13 +404,48 @@ function renderGenAllProgress() {
     html += '">' + label + '</div>';
   }
   html += '</div>';
+  // Current day agent-level detail
+  const cur = s.results[s.current];
+  if (s.running && cur?.stepStatus) {
+    const steps = cur.stepStatus;
+    const dayElapsed = cur.startTime ? formatElapsed(Date.now() - cur.startTime) : '';
+    html += '<div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">';
+    html += '<div style="display:flex;justify-content:space-between;margin-bottom:8px">';
+    html += '<div style="font-size:12px;font-weight:600;color:var(--accent2)">' + DAY_NAMES[s.current] + ' - Pipeline Steps</div>';
+    if (dayElapsed) html += '<div style="font-size:11px;color:var(--dim);font-family:monospace">' + dayElapsed + '</div>';
+    html += '</div>';
+    const entries = Object.entries(steps);
+    const total = entries.length;
+    const completed = entries.filter(([,v]) => v === 'completed' || v === 'skipped').length;
+    // Progress bar
+    html += '<div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:10px">';
+    html += '<div style="height:100%;background:var(--green);width:' + Math.round((completed/total)*100) + '%;transition:width 0.3s"></div>';
+    html += '</div>';
+    // Agent steps list
+    for (const [agent, st] of entries) {
+      const label = AGENT_LABELS[agent] || agent.replace(/_/g, ' ');
+      let icon, stColor;
+      if (st === 'completed') { icon = 'Done'; stColor = 'var(--green)'; }
+      else if (st === 'running') { icon = 'Running...'; stColor = 'var(--blue)'; }
+      else if (st === 'failed') { icon = 'Failed'; stColor = 'var(--red)'; }
+      else if (st === 'skipped') { icon = 'Skipped'; stColor = 'var(--yellow)'; }
+      else { icon = 'Waiting'; stColor = 'var(--dim)'; }
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:12px">';
+      html += '<span style="color:' + (st === 'running' ? 'var(--text)' : 'var(--dim)') + ';font-weight:' + (st === 'running' ? '600' : '400') + '">';
+      if (st === 'running') html += '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--blue);margin-right:6px;animation:pulse 1s infinite"></span>';
+      html += label + '</span>';
+      html += '<span style="color:' + stColor + ';font-weight:600;font-size:11px">' + icon + '</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
   if (!s.running) {
     const done = s.results.filter(r => r?.status === 'done').length;
     const fail = s.results.filter(r => r?.status === 'failed').length;
     html += '<div style="margin-top:10px;display:flex;gap:8px;align-items:center">';
     html += '<span style="font-size:13px;color:var(--green);font-weight:600">' + done + '/5 completed</span>';
     if (fail) html += '<span style="font-size:13px;color:var(--red)">' + fail + ' failed</span>';
-    html += '<button class="btn btn-dim" style="margin-left:auto;font-size:12px" onclick="genAllState=null;renderGenAllProgress()">Dismiss</button>';
+    html += '<button class="btn btn-dim" style="margin-left:auto;font-size:12px" onclick="genAllState=null;saveGenAllState();renderGenAllProgress()">Dismiss</button>';
     html += '</div>';
   }
   html += '</div>';
@@ -399,44 +454,103 @@ function renderGenAllProgress() {
   const btn = document.getElementById('gen-all-btn');
   if (btn) {
     btn.disabled = s.running;
-    btn.textContent = s.running ? 'Generating ' + DAY_NAMES[s.current] + '... (' + (s.current+1) + '/5)' : 'Generate All Days';
+    const curAgent = cur?.stepStatus ? Object.entries(cur.stepStatus).find(([,v]) => v === 'running') : null;
+    const agentLabel = curAgent ? (AGENT_LABELS[curAgent[0]] || curAgent[0]) : '';
+    btn.textContent = s.running ? (agentLabel ? agentLabel + '... (' + (s.current+1) + '/5)' : 'Generating ' + DAY_NAMES[s.current] + '... (' + (s.current+1) + '/5)') : 'Generate All Days';
   }
 }
 
-async function generateAllDays() {
-  genAllState = { running: true, current: 0, total: 5, results: [] };
-  renderGenAllProgress();
-  for (let i = 0; i < 5; i++) {
-    genAllState.current = i;
-    genAllState.results[i] = { day: DAY_NAMES[i], status: 'running' };
-    renderGenAllProgress();
-    try {
-      const r = await api('/pipeline/run', {
-        method: 'POST',
-        body: JSON.stringify({ workflow: 'daily_content', context: { day_of_week: i } }),
-      });
-      let done = false;
-      while (!done) {
-        await new Promise(ok => setTimeout(ok, 4000));
-        try {
-          const status = await api('/pipeline/' + r.run_id + '/status');
-          const vals = Object.values(status.step_status || {});
-          done = !vals.some(s => s === 'pending' || s === 'running');
-          if (done) {
-            const hasFail = vals.some(s => s === 'failed');
-            genAllState.results[i].status = hasFail ? 'failed' : 'done';
-            toast(DAY_NAMES[i] + (hasFail ? ' finished with errors' : ' done!'), !hasFail);
-          }
-        } catch { done = true; genAllState.results[i].status = 'failed'; }
-        renderGenAllProgress();
-      }
-    } catch (e) {
-      genAllState.results[i] = { day: DAY_NAMES[i], status: 'failed' };
-      toast(DAY_NAMES[i] + ' failed: ' + e.message, false);
+function saveGenAllState() {
+  if (genAllState) sessionStorage.setItem('genAllState', JSON.stringify(genAllState));
+  else sessionStorage.removeItem('genAllState');
+}
+function restoreGenAllState() {
+  try {
+    const saved = sessionStorage.getItem('genAllState');
+    if (saved) {
+      genAllState = JSON.parse(saved);
+      // If it was running, we lost the polling loop - resume it
+      if (genAllState.running) resumeGenAll();
       renderGenAllProgress();
     }
+  } catch { /* ignore */ }
+}
+async function resumeGenAll() {
+  // Resume polling for the current day's run_id
+  const cur = genAllState.results[genAllState.current];
+  if (!cur?.runId) { genAllState.running = false; saveGenAllState(); renderGenAllProgress(); return; }
+  // Poll current day to completion
+  let done = false;
+  while (!done) {
+    await new Promise(ok => setTimeout(ok, 2000));
+    try {
+      const status = await api('/pipeline/' + cur.runId + '/status');
+      cur.stepStatus = status.step_status || {};
+      const vals = Object.values(cur.stepStatus);
+      done = !vals.some(s => s === 'pending' || s === 'running');
+      if (done) {
+        const hasFail = vals.some(s => s === 'failed');
+        cur.status = hasFail ? 'failed' : 'done';
+        toast(DAY_NAMES[genAllState.current] + (hasFail ? ' finished with errors' : ' done!'), !hasFail);
+      }
+    } catch { done = true; cur.status = 'failed'; }
+    saveGenAllState();
+    renderGenAllProgress();
+  }
+  // Continue with remaining days
+  for (let i = genAllState.current + 1; i < 5; i++) {
+    await runOneDay(i);
   }
   genAllState.running = false;
+  saveGenAllState();
+  renderGenAllProgress();
+  renderWeek();
+}
+async function runOneDay(i) {
+  genAllState.current = i;
+  genAllState.results[i] = { day: DAY_NAMES[i], status: 'running', stepStatus: {}, startTime: Date.now() };
+  saveGenAllState();
+  renderGenAllProgress();
+  try {
+    const r = await api('/pipeline/run', {
+      method: 'POST',
+      body: JSON.stringify({ workflow: 'daily_content', context: { day_of_week: i } }),
+    });
+    genAllState.results[i].runId = r.run_id;
+    saveGenAllState();
+    let done = false;
+    while (!done) {
+      await new Promise(ok => setTimeout(ok, 2000));
+      try {
+        const status = await api('/pipeline/' + r.run_id + '/status');
+        genAllState.results[i].stepStatus = status.step_status || {};
+        const vals = Object.values(status.step_status || {});
+        done = !vals.some(s => s === 'pending' || s === 'running');
+        if (done) {
+          const hasFail = vals.some(s => s === 'failed');
+          genAllState.results[i].status = hasFail ? 'failed' : 'done';
+          toast(DAY_NAMES[i] + (hasFail ? ' finished with errors' : ' done!'), !hasFail);
+        }
+      } catch { done = true; genAllState.results[i].status = 'failed'; }
+      saveGenAllState();
+      renderGenAllProgress();
+    }
+  } catch (e) {
+    genAllState.results[i] = { day: DAY_NAMES[i], status: 'failed' };
+    toast(DAY_NAMES[i] + ' failed: ' + e.message, false);
+    saveGenAllState();
+    renderGenAllProgress();
+  }
+}
+async function generateAllDays() {
+  genAllState = { running: true, current: 0, total: 5, startTime: Date.now(), results: [] };
+  saveGenAllState();
+  renderGenAllProgress();
+  for (let i = 0; i < 5; i++) {
+    await runOneDay(i);
+  }
+  genAllState.running = false;
+  saveGenAllState();
   renderGenAllProgress();
   renderWeek();
 }
@@ -1340,6 +1454,9 @@ function render() {
   const map = { week: renderWeek, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents };
   (map[currentTab] || renderGenerate)();
 }
+restoreGenAllState();
+// Tick elapsed timer every second when generating
+setInterval(() => { if (genAllState?.running) renderGenAllProgress(); }, 1000);
 render();
 </script>
 </body>
