@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from sqlalchemy import Date, Float, Integer, String, Text
+from sqlalchemy import Boolean, Date, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,6 +29,9 @@ class WeeklyGuide(Base):
     # Metrics
     downloads_count: Mapped[int] = mapped_column(Integer, default=0)
     conversion_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Archive
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Operator
     operator_notes: Mapped[str | None] = mapped_column(Text, nullable=True)

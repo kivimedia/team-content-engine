@@ -27,5 +27,6 @@ class WeeklyGuideRead(BaseModel):
     fulfillment_link: str | None
     downloads_count: int
     conversion_rate: float | None
+    is_archived: bool = False
     created_at: datetime
     updated_at: datetime

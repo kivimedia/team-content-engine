@@ -224,10 +224,14 @@ async def create_guide(
 
 
 @router.get("/guides", response_model=list[WeeklyGuideRead])
-async def list_guides(db: AsyncSession = Depends(get_db)) -> list[WeeklyGuide]:
-    result = await db.execute(
-        select(WeeklyGuide).order_by(WeeklyGuide.week_start_date.desc())
-    )
+async def list_guides(
+    include_archived: bool = False,
+    db: AsyncSession = Depends(get_db),
+) -> list[WeeklyGuide]:
+    query = select(WeeklyGuide).order_by(WeeklyGuide.week_start_date.desc())
+    if not include_archived:
+        query = query.where(WeeklyGuide.is_archived.is_(False))
+    result = await db.execute(query)
     return list(result.scalars().all())
 
 
@@ -239,6 +243,34 @@ async def get_guide(
     guide = await db.get(WeeklyGuide, guide_id)
     if not guide:
         raise HTTPException(status_code=404, detail="Guide not found")
+    return guide
+
+
+@router.post("/guides/{guide_id}/archive", response_model=WeeklyGuideRead)
+async def archive_guide(
+    guide_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> WeeklyGuide:
+    guide = await db.get(WeeklyGuide, guide_id)
+    if not guide:
+        raise HTTPException(status_code=404, detail="Guide not found")
+    guide.is_archived = True
+    await db.flush()
+    await db.refresh(guide)
+    return guide
+
+
+@router.post("/guides/{guide_id}/unarchive", response_model=WeeklyGuideRead)
+async def unarchive_guide(
+    guide_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> WeeklyGuide:
+    guide = await db.get(WeeklyGuide, guide_id)
+    if not guide:
+        raise HTTPException(status_code=404, detail="Guide not found")
+    guide.is_archived = False
+    await db.flush()
+    await db.refresh(guide)
     return guide
 
 

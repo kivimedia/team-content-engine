@@ -305,11 +305,16 @@ async function renderWeek() {
 
   // Load weekly guides
   try {
-    const guides = await api('/content/guides');
+    const showArchivedGuides = document.getElementById('show-archived-guides')?.checked || false;
+    const guides = await api('/content/guides' + (showArchivedGuides ? '?include_archived=true' : ''));
     if (guides.length) {
-      let html = '<h2 style="margin-top:24px;margin-bottom:12px">Gift of the Week (Weekly Guides)</h2>';
-      for (const g of guides.slice(0, 4)) {
-        html += '<div class="guide-card">';
+      let html = '<h2 style="margin-top:24px;margin-bottom:12px;display:flex;align-items:center;gap:16px">Gift of the Week (Weekly Guides)';
+      html += '<label style="font-size:12px;font-weight:400;color:var(--dim);display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="show-archived-guides" onchange="renderWeek()" ' + (showArchivedGuides ? 'checked' : '') + '> Show Archived</label>';
+      html += '</h2>';
+      for (const g of guides) {
+        const archived = g.is_archived;
+        html += '<div class="guide-card" style="' + (archived ? 'opacity:0.5;border-color:var(--dim)' : '') + '">';
+        if (archived) html += '<div style="display:inline-block;background:var(--dim);color:#000;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;margin-bottom:8px">ARCHIVED</div>';
         html += '<h3>' + esc(g.guide_title) + '</h3>';
         html += '<div class="guide-meta">';
         html += '<span>Week of ' + g.week_start_date + '</span>';
@@ -319,6 +324,11 @@ async function renderWeek() {
         html += '<div class="btn-group" style="margin:12px 0">';
         if (g.docx_path) html += '<a class="btn btn-green" href="' + API + '/content/guides/' + g.id + '/download" target="_blank">Download DOCX</a>';
         if (g.fulfillment_link) html += '<a class="btn btn-blue" href="' + esc(g.fulfillment_link) + '" target="_blank">Fulfillment Link</a>';
+        if (archived) {
+          html += '<button class="btn btn-dim" onclick="unarchiveGuide(\\'' + g.id + '\\')">Unarchive</button>';
+        } else {
+          html += '<button class="btn btn-dim" onclick="archiveGuide(\\'' + g.id + '\\')">Archive</button>';
+        }
         html += '</div>';
         if (g.markdown_content) {
           html += '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--accent2);font-size:13px">View Guide Content</summary>';
@@ -1079,6 +1089,22 @@ async function unarchivePackage(id) {
     await api('/content/packages/' + id + '/unarchive', { method: 'POST' });
     toast('Package unarchived');
     await renderPackages();
+  } catch (e) { toast('Unarchive failed: ' + e.message, false); }
+}
+
+async function archiveGuide(id) {
+  try {
+    await api('/content/guides/' + id + '/archive', { method: 'POST' });
+    toast('Guide archived');
+    await renderWeek();
+  } catch (e) { toast('Archive failed: ' + e.message, false); }
+}
+
+async function unarchiveGuide(id) {
+  try {
+    await api('/content/guides/' + id + '/unarchive', { method: 'POST' });
+    toast('Guide unarchived');
+    await renderWeek();
   } catch (e) { toast('Unarchive failed: ' + e.message, false); }
 }
 
