@@ -468,10 +468,16 @@ function restoreGenAllState() {
   try {
     const saved = sessionStorage.getItem('genAllState');
     if (saved) {
-      genAllState = JSON.parse(saved);
-      // If it was running, we lost the polling loop - resume it
-      if (genAllState.running) resumeGenAll();
-      renderGenAllProgress();
+      const parsed = JSON.parse(saved);
+      if (parsed.running) {
+        // Only restore if it was actively running - resume polling
+        genAllState = parsed;
+        resumeGenAll();
+        renderGenAllProgress();
+      } else {
+        // Completed/failed state - don't show stale results on refresh
+        sessionStorage.removeItem('genAllState');
+      }
     }
   } catch { /* ignore */ }
 }
@@ -1104,7 +1110,7 @@ function copyDmFlow(btn, pid) {
       parts.push(label.textContent.trim() + ':\\n' + text.textContent.trim());
     }
   });
-  navigator.clipboard.writeText(parts.join('\\n\\n---\\n\\n'));
+  clipCopy(parts.join('\\n\\n---\\n\\n'));
   btn.textContent = 'Copied!';
   btn.style.background = 'var(--green)';
   btn.style.color = '#000';
@@ -1117,7 +1123,7 @@ function copyImagePrompt(btn) {
   const card = btn.closest('div');
   const preview = card.querySelector('.post-preview');
   if (preview) {
-    navigator.clipboard.writeText(preview.textContent);
+    clipCopy(preview.textContent);
     btn.textContent = 'Copied!';
     btn.style.background = 'var(--green)';
     btn.style.color = '#000';
@@ -1179,13 +1185,25 @@ async function generateImages(packageId, btn) {
   }
 }
 
+function clipCopy(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    clipCopy(text);
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+}
 function copyPost(pid, btn, label) {
   // pid may be 'fb-xxx' or 'li-xxx' or just 'xxx' (defaults to fb)
   const el = document.getElementById(pid.startsWith('fb-') || pid.startsWith('li-') ? pid : 'fb-' + pid);
   if (el) {
-    // Get text only from the .post-preview child, not the word count
     const preview = el.querySelector('.post-preview');
-    navigator.clipboard.writeText(preview ? preview.textContent : el.textContent);
+    clipCopy(preview ? preview.textContent : el.textContent);
     if (btn) {
       const orig = btn.textContent;
       btn.textContent = 'Copied!';
