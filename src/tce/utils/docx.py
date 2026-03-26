@@ -26,7 +26,7 @@ from docx.table import Table
 # Color palette (from playbook reference)
 # ---------------------------------------------------------------------------
 CLR_NEAR_BLACK = RGBColor(0x0F, 0x17, 0x2A)   # #0F172A - titles, headings
-CLR_BODY = RGBColor(0x33, 0x41, 0x55)          # #334155 - body text
+CLR_BODY = RGBColor(0x1E, 0x29, 0x3B)          # #1E293B - body text (slate-800)
 CLR_DIM = RGBColor(0x64, 0x74, 0x8B)           # #64748B - footer, captions
 CLR_BLUE = RGBColor(0x25, 0x63, 0xEB)          # #2563EB - H2, accents
 CLR_BLUE_DARK = RGBColor(0x1E, 0x3A, 0x8A)     # #1E3A8A - blue callout text
@@ -118,12 +118,17 @@ def _add_run(paragraph, text: str, *, bold=False, italic=False,
 def _add_styled_paragraph(doc, text: str, *, size=11, color=CLR_BODY,
                           bold=False, italic=False,
                           alignment=WD_ALIGN_PARAGRAPH.LEFT,
-                          space_before=0, space_after=120):
-    """Add a paragraph with consistent styling."""
+                          space_before=0, space_after=6):
+    """Add a paragraph with consistent styling.
+
+    Note: space_before/space_after are in POINTS (not DXA/twips).
+    Playbook spec: body text = 6pt after, H1 = 10pt after, H2 = 8pt after.
+    """
     p = doc.add_paragraph()
     p.alignment = alignment
     p.paragraph_format.space_before = Pt(space_before)
     p.paragraph_format.space_after = Pt(space_after)
+    p.paragraph_format.line_spacing = Pt(16)  # 16pt line height for 11pt text
     _add_run(p, text, bold=bold, italic=italic, size=size, color=color)
     return p
 
@@ -177,11 +182,9 @@ def _add_callout_box(doc, label: str, content: str, bg_hex: str, text_color: RGB
     cell.paragraphs[0].clear()
     p = cell.paragraphs[0]
     p.paragraph_format.space_after = Pt(0)
+    p.paragraph_format.space_before = Pt(0)
     _add_run(p, f"{label.upper()}:  ", bold=True, size=10, color=text_color)
     _add_run(p, content, size=10, color=text_color)
-
-    # Spacer after
-    _add_styled_paragraph(doc, "", space_before=0, space_after=8)
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +197,7 @@ def _render_cover(doc, guide_data: dict) -> None:
     _add_styled_paragraph(
         doc, "FREE GUIDE | 2026 EDITION",
         size=10, color=CLR_BLUE, bold=True,
-        space_before=60, space_after=8,
+        space_before=36, space_after=4,
     )
 
     # Blue divider
@@ -212,7 +215,7 @@ def _render_cover(doc, guide_data: dict) -> None:
     if subtitle:
         _add_styled_paragraph(
             doc, subtitle, size=13, color=CLR_DIM,
-            space_before=0, space_after=16,
+            space_before=0, space_after=10,
         )
 
     # Light divider
@@ -325,8 +328,6 @@ def _render_comparison(doc, section: dict) -> None:
             if row_idx < len(items):
                 _add_run(cell.paragraphs[0], f"{icons[col_idx]} {items[row_idx]}", size=10, color=colors[col_idx])
 
-    _add_styled_paragraph(doc, "", space_before=0, space_after=8)
-
 
 def _render_framework(doc, section: dict) -> None:
     """Render a framework section with numbered steps and ACTION callouts."""
@@ -405,8 +406,6 @@ def _render_scenarios(doc, section: dict) -> None:
         _set_cell_border(right, color="E2E8F0", sz=2)
         right.paragraphs[0].clear()
         _add_run(right.paragraphs[0], response, size=10, color=CLR_BODY)
-
-        _add_styled_paragraph(doc, "", space_before=0, space_after=4)
 
 
 def _render_closing(doc, section: dict, guide_data: dict) -> None:
