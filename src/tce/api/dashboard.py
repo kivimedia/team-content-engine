@@ -217,6 +217,7 @@ async function renderWeek() {
           <input id="week-theme" type="text" placeholder="Optional - e.g. Agency scaling without burnout" style="width:320px">
         </div>
         <button class="btn btn-primary" onclick="planWeek('${fmtDate(monday)}')">Plan This Week</button>
+        <button class="btn btn-green" onclick="generateAllDays()">Generate All Days</button>
         <button class="btn btn-blue" onclick="runWeeklyPlanning()">Generate Weekly Guide</button>
       </div>
       <div class="week-grid" id="week-grid"><div class="empty" style="grid-column:1/-1">Loading calendar...</div></div>
@@ -246,17 +247,16 @@ async function renderWeek() {
       else html += '<div class="day-topic" style="color:var(--dim);font-style:italic">No topic set</div>';
       if (entry?.operator_notes) html += '<div style="font-size:11px;color:var(--dim);margin-bottom:6px">' + esc(entry.operator_notes) + '</div>';
 
-      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto;gap:4px;flex-wrap:wrap">';
       if (entry) {
-        html += '<span class="day-status day-status-' + status + '">' + status + '</span>';
-        if (status === 'planned' || status === 'ready') {
+        html += '<span class="day-status day-status-' + status + '">' + status.toUpperCase() + '</span>';
+        if (status === 'planned') {
           html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="runDayPipeline(' + i + ',\\'' + (entry?.id || '') + '\\')">Generate</button>';
-        }
-        if (entry.post_package_id) {
-          html += '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="currentTab=\\'packages\\';document.querySelectorAll(\\'.nav button\\').forEach(b=>b.classList.toggle(\\'active\\',b.dataset.tab===\\'packages\\'));render()">View Post</button>';
+        } else if (entry.post_package_id) {
+          html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="viewPackage(\\'' + entry.post_package_id + '\\')">View Package</button>';
         }
       } else {
-        html += '<span class="day-status" style="background:var(--border);color:var(--dim)">unplanned</span>';
+        html += '<span class="day-status" style="background:var(--border);color:var(--dim)">UNPLANNED</span>';
       }
       html += '</div>';
       html += '</div>';
@@ -334,6 +334,51 @@ async function runDayPipeline(dayOfWeek, entryId) {
     if (pollInterval) clearInterval(pollInterval);
     pollInterval = setInterval(pollPipeline, 3000);
   } catch (e) { toast('Failed: ' + e.message, false); }
+}
+
+async function generateAllDays() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Generating...';
+  let started = 0;
+  for (let i = 0; i < 5; i++) {
+    try {
+      const r = await api('/pipeline/run', {
+        method: 'POST',
+        body: JSON.stringify({ workflow: 'daily_content', context: { day_of_week: i } }),
+      });
+      started++;
+      toast(DAY_NAMES[i] + ' pipeline started');
+    } catch (e) {
+      toast(DAY_NAMES[i] + ' failed: ' + e.message, false);
+    }
+  }
+  btn.textContent = 'Generate All Days';
+  btn.disabled = false;
+  toast(started + '/5 pipelines launched!');
+  // Switch to generate tab to monitor
+  currentTab = 'generate';
+  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'generate'));
+  render();
+}
+
+function viewPackage(pkgId) {
+  // Switch to packages tab and scroll to the specific package
+  currentTab = 'packages';
+  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'packages'));
+  render();
+  // After render, try to highlight the package
+  setTimeout(() => {
+    const cards = document.querySelectorAll('.pkg-card');
+    for (const card of cards) {
+      if (card.innerHTML.includes(pkgId.substring(0, 8))) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.style.outline = '2px solid var(--accent)';
+        setTimeout(() => card.style.outline = '', 3000);
+        break;
+      }
+    }
+  }, 500);
 }
 
 async function runWeeklyPlanning() {

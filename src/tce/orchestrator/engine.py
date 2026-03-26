@@ -189,6 +189,8 @@ class PipelineOrchestrator:
                 )
                 if pid:
                     self.context["_post_package_id"] = pid
+                    # Link package to calendar entry and update status
+                    await self._link_package_to_calendar(pid)
 
                 # Generate actual images from creative director prompts
                 image_prompts = self.context.get("image_prompts", [])
@@ -222,6 +224,39 @@ class PipelineOrchestrator:
                 run_id=str(self.run_id),
             )
             # Persistence errors are logged but don't fail the step
+
+    async def _link_package_to_calendar(self, package_id: uuid.UUID) -> None:
+        """Link a generated package to today's calendar entry and mark it ready."""
+        from datetime import date as date_type
+
+        from sqlalchemy import select
+
+        from tce.models.content_calendar import ContentCalendarEntry
+
+        day_of_week = self.context.get("day_of_week")
+        today = date_type.today()
+        try:
+            entry = None
+            if day_of_week is not None:
+                stmt = select(ContentCalendarEntry).where(
+                    ContentCalendarEntry.day_of_week == day_of_week,
+                    ContentCalendarEntry.status.in_(["planned", "generating"]),
+                ).order_by(ContentCalendarEntry.date.desc()).limit(1)
+                result = await self._db.execute(stmt)
+                entry = result.scalar_one_or_none()
+            if not entry:
+                stmt2 = select(ContentCalendarEntry).where(
+                    ContentCalendarEntry.date == today,
+                ).limit(1)
+                result2 = await self._db.execute(stmt2)
+                entry = result2.scalar_one_or_none()
+            if entry:
+                entry.post_package_id = package_id
+                entry.status = "ready"
+                await self._db.flush()
+                logger.info("calendar.linked", entry_id=str(entry.id), package_id=str(package_id))
+        except Exception:
+            logger.exception("calendar.link_failed", package_id=str(package_id))
 
     def _has_pending_steps(self) -> bool:
         return any(s == StepStatus.PENDING for s in self.step_status.values())
