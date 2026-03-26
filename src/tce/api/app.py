@@ -18,6 +18,7 @@ from tce.api.routers import (
     health,
     notifications,
     onboarding,
+    operator_controls,
     patterns,
     pipeline,
     profiles,
@@ -89,6 +90,7 @@ def create_app() -> FastAPI:
     app.include_router(notifications.router, prefix=prefix)
     app.include_router(experiments.router, prefix=prefix)
     app.include_router(onboarding.router, prefix=prefix)
+    app.include_router(operator_controls.router, prefix=prefix)
 
     return app
 
