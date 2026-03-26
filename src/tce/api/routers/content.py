@@ -21,11 +21,14 @@ router = APIRouter(prefix="/content", tags=["content"])
 @router.get("/packages", response_model=list[PostPackageRead])
 async def list_packages(
     status: str | None = None,
+    include_archived: bool = False,
     db: AsyncSession = Depends(get_db),
 ) -> list[PostPackage]:
     query = select(PostPackage).order_by(PostPackage.created_at.desc())
     if status:
         query = query.where(PostPackage.approval_status == status)
+    if not include_archived:
+        query = query.where(PostPackage.is_archived.is_(False))
     result = await db.execute(query)
     return list(result.scalars().all())
 
@@ -80,6 +83,34 @@ async def reject_package(
     if not pkg:
         raise HTTPException(status_code=404, detail="Package not found")
     pkg.approval_status = "rejected"
+    await db.flush()
+    await db.refresh(pkg)
+    return pkg
+
+
+@router.post("/packages/{package_id}/archive", response_model=PostPackageRead)
+async def archive_package(
+    package_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> PostPackage:
+    pkg = await db.get(PostPackage, package_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Package not found")
+    pkg.is_archived = True
+    await db.flush()
+    await db.refresh(pkg)
+    return pkg
+
+
+@router.post("/packages/{package_id}/unarchive", response_model=PostPackageRead)
+async def unarchive_package(
+    package_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> PostPackage:
+    pkg = await db.get(PostPackage, package_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Package not found")
+    pkg.is_archived = False
     await db.flush()
     await db.refresh(pkg)
     return pkg

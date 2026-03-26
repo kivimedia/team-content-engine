@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import Boolean, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +39,9 @@ class PostPackage(Base):
 
     # Pipeline metadata
     pipeline_run_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+
+    # Archive
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # A/B testing (PRD Section 43.2)
     experiment_id: Mapped[str | None] = mapped_column(String(100), nullable=True)

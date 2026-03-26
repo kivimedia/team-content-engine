@@ -26,6 +26,7 @@ class PostPackageRead(BaseModel):
     quality_scores: dict | None
     image_prompts: list[dict] | None
     approval_status: str
+    is_archived: bool = False
     pipeline_run_id: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
@@ -36,6 +37,7 @@ class PostPackageUpdate(BaseModel):
     linkedin_post: str | None = None
     approval_status: str | None = None
     cta_keyword: str | None = None
+    is_archived: bool | None = None
 
 
 class PostPackageFull(PostPackageRead):

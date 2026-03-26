@@ -133,6 +133,8 @@ let currentTab = 'week';
 let activePipelineRun = localStorage.getItem('tce_active_run') || null;
 let pollInterval = null;
 let verboseMode = localStorage.getItem('tce_verbose') === 'true';
+let showArchived = false;
+let genAllState = null; // {running, current, total, results: [{day, status}]}
 
 // Nav
 document.getElementById('nav').addEventListener('click', e => {
@@ -236,9 +238,10 @@ async function renderWeek() {
           <input id="week-theme" type="text" placeholder="Optional - e.g. Agency scaling without burnout" style="width:320px">
         </div>
         <button class="btn btn-primary" onclick="planWeek('${fmtDate(monday)}')">Plan This Week</button>
-        <button class="btn btn-green" onclick="generateAllDays()">Generate All Days</button>
+        <button class="btn btn-green" id="gen-all-btn" onclick="generateAllDays()" ${genAllState?.running ? 'disabled' : ''}>${genAllState?.running ? 'Generating ' + DAY_NAMES[genAllState.current] + '... (' + (genAllState.current+1) + '/5)' : 'Generate All Days'}</button>
         <button class="btn btn-blue" onclick="runWeeklyPlanning()">Generate Weekly Guide</button>
       </div>
+      <div id="gen-all-progress"></div>
       <div class="week-grid" id="week-grid"><div class="empty" style="grid-column:1/-1">Loading calendar...</div></div>
       <div id="guide-section"></div>
     </div>`;
@@ -287,6 +290,9 @@ async function renderWeek() {
   } catch (e) {
     document.getElementById('week-grid').innerHTML = '<div class="empty" style="grid-column:1/-1">Error loading calendar: ' + e.message + '</div>';
   }
+
+  // Render generate-all progress bar if active
+  renderGenAllProgress();
 
   // Load weekly guides
   try {
@@ -358,19 +364,57 @@ async function runDayPipeline(dayOfWeek, entryId) {
   } catch (e) { toast('Failed: ' + e.message, false); }
 }
 
-async function generateAllDays() {
-  const btn = event.target;
-  btn.disabled = true;
-  let completed = 0;
-  let failed = 0;
+function renderGenAllProgress() {
+  const el = document.getElementById('gen-all-progress');
+  if (!el) return;
+  if (!genAllState) { el.innerHTML = ''; return; }
+  const s = genAllState;
+  let html = '<div class="card" style="margin-bottom:16px;padding:16px">';
+  html += '<div style="font-size:13px;font-weight:600;margin-bottom:10px">' + (s.running ? 'Generating content for all 5 days...' : 'Generation complete') + '</div>';
+  html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
   for (let i = 0; i < 5; i++) {
-    btn.textContent = 'Running ' + DAY_NAMES[i] + '... (' + (i+1) + '/5)';
+    const r = s.results[i];
+    let bg, color, label;
+    if (r?.status === 'done') { bg = 'var(--green)'; color = '#000'; label = DAY_NAMES[i] + ' Done'; }
+    else if (r?.status === 'failed') { bg = 'var(--red)'; color = '#fff'; label = DAY_NAMES[i] + ' Failed'; }
+    else if (s.running && i === s.current) { bg = 'var(--blue)'; color = '#fff'; label = DAY_NAMES[i] + '...'; }
+    else { bg = 'var(--border)'; color = 'var(--dim)'; label = DAY_NAMES[i]; }
+    html += '<div style="padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;background:' + bg + ';color:' + color;
+    if (s.running && i === s.current) html += ';animation:pulse 1.5s infinite';
+    html += '">' + label + '</div>';
+  }
+  html += '</div>';
+  if (!s.running) {
+    const done = s.results.filter(r => r?.status === 'done').length;
+    const fail = s.results.filter(r => r?.status === 'failed').length;
+    html += '<div style="margin-top:10px;display:flex;gap:8px;align-items:center">';
+    html += '<span style="font-size:13px;color:var(--green);font-weight:600">' + done + '/5 completed</span>';
+    if (fail) html += '<span style="font-size:13px;color:var(--red)">' + fail + ' failed</span>';
+    html += '<button class="btn btn-dim" style="margin-left:auto;font-size:12px" onclick="genAllState=null;renderGenAllProgress()">Dismiss</button>';
+    html += '</div>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
+  // Update button state
+  const btn = document.getElementById('gen-all-btn');
+  if (btn) {
+    btn.disabled = s.running;
+    btn.textContent = s.running ? 'Generating ' + DAY_NAMES[s.current] + '... (' + (s.current+1) + '/5)' : 'Generate All Days';
+  }
+}
+
+async function generateAllDays() {
+  genAllState = { running: true, current: 0, total: 5, results: [] };
+  renderGenAllProgress();
+  for (let i = 0; i < 5; i++) {
+    genAllState.current = i;
+    genAllState.results[i] = { day: DAY_NAMES[i], status: 'running' };
+    renderGenAllProgress();
     try {
       const r = await api('/pipeline/run', {
         method: 'POST',
         body: JSON.stringify({ workflow: 'daily_content', context: { day_of_week: i } }),
       });
-      // Poll until this run finishes before starting next
       let done = false;
       while (!done) {
         await new Promise(ok => setTimeout(ok, 4000));
@@ -380,20 +424,20 @@ async function generateAllDays() {
           done = !vals.some(s => s === 'pending' || s === 'running');
           if (done) {
             const hasFail = vals.some(s => s === 'failed');
-            if (hasFail) { failed++; toast(DAY_NAMES[i] + ' finished with errors', false); }
-            else { completed++; toast(DAY_NAMES[i] + ' done!'); }
+            genAllState.results[i].status = hasFail ? 'failed' : 'done';
+            toast(DAY_NAMES[i] + (hasFail ? ' finished with errors' : ' done!'), !hasFail);
           }
-        } catch { done = true; failed++; }
+        } catch { done = true; genAllState.results[i].status = 'failed'; }
+        renderGenAllProgress();
       }
     } catch (e) {
-      failed++;
+      genAllState.results[i] = { day: DAY_NAMES[i], status: 'failed' };
       toast(DAY_NAMES[i] + ' failed: ' + e.message, false);
+      renderGenAllProgress();
     }
   }
-  btn.textContent = 'Generate All Days';
-  btn.disabled = false;
-  toast(completed + '/5 completed' + (failed ? ', ' + failed + ' failed' : '') + '!');
-  // Refresh week view to show updated statuses
+  genAllState.running = false;
+  renderGenAllProgress();
   renderWeek();
 }
 
@@ -703,15 +747,16 @@ async function downloadLatestGuide() {
 // PACKAGES TAB
 async function renderPackages() {
   const app = document.getElementById('app');
-  app.innerHTML = '<div class="section"><h2>Content Packages</h2><div id="pkg-list"><div class="empty">Loading...</div></div></div>';
+  app.innerHTML = '<div class="section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><h2>Content Packages</h2><label style="font-size:12px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:6px"><input type="checkbox" id="show-archived" ' + (showArchived ? 'checked' : '') + ' onchange="showArchived=this.checked;renderPackages()"> Show archived</label></div><div id="pkg-list"><div class="empty">Loading...</div></div></div>';
   try {
-    const pkgs = await api('/content/packages');
+    const pkgs = await api('/content/packages' + (showArchived ? '?include_archived=true' : ''));
     if (!pkgs.length) { document.getElementById('pkg-list').innerHTML = '<div class="empty">No packages yet. Run a pipeline first.</div>'; return; }
     let html = '<div class="packages-list">';
     for (const p of pkgs) {
       const statusTag = p.approval_status === 'approved' ? 'tag-approved' : p.approval_status === 'rejected' ? 'tag-rejected' : 'tag-draft';
-      html += '<div class="pkg-card" id="pkg-' + p.id + '">';
+      html += '<div class="pkg-card" id="pkg-' + p.id + '"' + (p.is_archived ? ' style="opacity:0.5"' : '') + '>';
       html += '<div class="pkg-header"><span class="tag ' + statusTag + '">' + p.approval_status + '</span>';
+      if (p.is_archived) html += '<span style="font-size:11px;color:var(--dim);background:var(--border);padding:2px 8px;border-radius:4px">ARCHIVED</span>';
       html += '<span style="font-size:12px;color:var(--dim)">' + new Date(p.created_at).toLocaleString() + '</span></div>';
       const pid = p.id.replace(/-/g, '');
       const fbText = p.facebook_post || '';
@@ -832,6 +877,11 @@ async function renderPackages() {
       html += '<button class="btn btn-blue" onclick="exportPackage(\\'' + p.id + '\\')">Export</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'' + pid + '\\', this, \\'Facebook post\\')">Copy FB Post</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'li-' + pid + '\\', this, \\'LinkedIn post\\')">Copy LI Post</button>';
+      if (p.is_archived) {
+        html += '<button class="btn btn-dim" onclick="unarchivePackage(\\'' + p.id + '\\')">Unarchive</button>';
+      } else {
+        html += '<button class="btn btn-dim" onclick="archivePackage(\\'' + p.id + '\\')">Archive</button>';
+      }
       html += '</div>';
       html += '</div>';
     }
@@ -874,6 +924,22 @@ async function rejectPackage(id) {
     toast('Reject failed: ' + e.message, false);
     console.error('Reject error:', e);
   }
+}
+
+async function archivePackage(id) {
+  try {
+    await api('/content/packages/' + id + '/archive', { method: 'POST' });
+    toast('Package archived');
+    await renderPackages();
+  } catch (e) { toast('Archive failed: ' + e.message, false); }
+}
+
+async function unarchivePackage(id) {
+  try {
+    await api('/content/packages/' + id + '/unarchive', { method: 'POST' });
+    toast('Package unarchived');
+    await renderPackages();
+  } catch (e) { toast('Unarchive failed: ' + e.message, false); }
 }
 
 async function resetPackageStatus(id) {
