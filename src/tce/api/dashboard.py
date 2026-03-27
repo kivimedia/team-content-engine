@@ -857,9 +857,9 @@ async function generateFromPlan() {
     const monday = getMondayOfWeek();
     const friday = new Date(monday); friday.setDate(friday.getDate() + 4);
     const entries = await api('/calendar/?start=' + fmtDate(monday) + '&end=' + fmtDate(friday));
-    const withPlan = entries.filter(e => e.plan_context && e.status === 'approved');
+    const withPlan = entries.filter(e => e.plan_context && ['approved', 'planned'].includes(e.status));
     if (withPlan.length === 0) {
-      toast('No approved plan found. Click "Plan This Week" first.', false);
+      toast('No plan found for this week. Click "Plan This Week" first.', false);
       return;
     }
     // Reconstruct approved plan from calendar entries
