@@ -1763,7 +1763,7 @@ async function inspireFromExample(idx) {
       if (ex.post_text_raw) {
         h += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2d3a">';
         h += '<button class="inspire-btn" id="inspire-btn-' + i + '" onclick="inspireFromExample(' + i + ')">Inspire Post</button>';
-        h += '<div class="inspire-status" id="inspire-status-' + i + '">Generate a new post inspired by this creator\'s style</div>';
+        h += '<div class="inspire-status" id="inspire-status-' + i + '">Generate a new post inspired by this creator\\\'s style</div>';
         h += '</div>';
       }
       h += '</div>';
