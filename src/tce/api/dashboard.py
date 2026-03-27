@@ -310,8 +310,12 @@ async function renderWeek() {
         summaryHtml += '<div style="font-size:20px;font-weight:800;color:var(--yellow)">' + escHtml(cta) + '</div>';
         summaryHtml += '</div>';
       }
+      summaryHtml += '<div style="flex:0 0 auto;display:flex;align-items:center"><button class="btn btn-dim" style="padding:8px 14px;font-size:12px;white-space:nowrap" onclick="editWeekPlan()">Edit Plan</button></div>';
       summaryHtml += '</div>';
       document.getElementById('week-grid').insertAdjacentHTML('beforebegin', summaryHtml);
+      // Store entries for edit
+      window._weekEntries = entries;
+      window._weekMondayStr = fmtDate(monday);
     }
 
     let html = '';
@@ -725,6 +729,21 @@ async function generateFromApprovedPlan(plan) {
 
 function escHtml(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function dismissPlanReview() { const p = document.getElementById('plan-review-panel'); if (p) p.innerHTML = ''; renderWeek(); }
+
+function editWeekPlan() {
+  const entries = window._weekEntries || [];
+  const mondayStr = window._weekMondayStr || '';
+  if (!entries.length) { toast('No plan data to edit', false); return; }
+  const meta = entries.find(e => e.plan_context?._weekly)?.plan_context?._weekly || {};
+  const days = entries.filter(e => e.plan_context).map(e => {
+    const pc = e.plan_context || {};
+    return { day_of_week: e.day_of_week, angle_type: e.angle_type, topic: e.topic || pc.topic || '', thesis: pc.thesis || '', audience: pc.audience || '', desired_belief_shift: pc.desired_belief_shift || '', connection_to_gift: pc.connection_to_gift || '', visual_job: pc.visual_job || 'cinematic_symbolic', evidence_requirements: pc.evidence_requirements || [], platform_notes: pc.platform_notes || '' };
+  });
+  const planData = { weekly_plan: { weekly_theme: meta.weekly_theme || '', gift_theme: meta.gift_theme || '', gift_sections: meta.gift_sections || [], cta_keyword: meta.cta_keyword || '', days: days }, trend_summary: [] };
+  deepPlanId = 'edit-' + Date.now();
+  approvedPlan = planData.weekly_plan;
+  showPlanReview(planData, mondayStr);
+}
 
 async function generateFromPlan() {
   // Check if there is an approved plan in calendar entries
@@ -2086,7 +2105,7 @@ async function inspireFromExample(idx) {
     status.style.color = '#ef4444';
   }
 }
-<\/script>`;
+<\\/script>`;
     h += '<h1>' + name + ' - ' + examples.length + ' examples</h1>';
     for (let i = 0; i < examples.length; i++) {
       const ex = examples[i];
@@ -2230,13 +2249,28 @@ async function renderCreators() {
         }
         html += '</div>';
       } else {
-        html += '<div style="margin-top:12px;padding:12px;border:1px dashed #2a2d3a;border-radius:6px;text-align:center;color:#71717a;font-size:12px">No voice axes data yet. Re-run corpus analysis to populate.</div>';
+        html += '<div style="margin-top:12px;padding:12px;border:1px dashed #2a2d3a;border-radius:6px;text-align:center;color:#71717a;font-size:12px">No voice axes data yet.<br><button class="btn btn-primary" style="margin-top:8px;padding:6px 14px;font-size:12px" onclick="analyzeVoice(\\'' + c.id + '\\')">Analyze Voice from Posts</button></div>';
       }
       html += '</div>';
     }
     html += '</div>';
     document.getElementById('creators-list').innerHTML = html;
   } catch (e) { document.getElementById('creators-list').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; }
+}
+
+async function analyzeVoice(creatorId) {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Analyzing...';
+  try {
+    await api('/profiles/creators/' + creatorId + '/analyze-voice', { method: 'POST' });
+    toast('Voice analysis complete!');
+    renderCreators();
+  } catch (e) {
+    toast('Analysis failed: ' + e.message, false);
+    btn.disabled = false;
+    btn.textContent = 'Analyze Voice from Posts';
+  }
 }
 
 // AGENTS TAB
@@ -2737,4 +2771,8 @@ render();
 async def dashboard():
     """Serve the operator dashboard."""
     from fastapi.responses import HTMLResponse as HR
-    return HR(content=DASHBOARD_HTML, headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
+
+    return HR(
+        content=DASHBOARD_HTML,
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
+    )

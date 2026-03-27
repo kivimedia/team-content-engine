@@ -1,7 +1,9 @@
 """Creator and founder voice profile endpoints."""
 
+import json
 import uuid
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,12 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce.db.session import get_db
 from tce.models.creator_profile import CreatorProfile
 from tce.models.founder_voice_profile import FounderVoiceProfile
+from tce.models.post_example import PostExample
 from tce.schemas.creator_profile import (
     CreatorProfileCreate,
     CreatorProfileRead,
     CreatorProfileUpdate,
 )
-from tce.schemas.founder_voice_profile import FounderVoiceProfileCreate, FounderVoiceProfileRead
+from tce.schemas.founder_voice_profile import (
+    FounderVoiceProfileCreate,
+    FounderVoiceProfileRead,
+)
+
+logger = structlog.get_logger()
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
 
@@ -63,6 +71,113 @@ async def update_creator(
     return profile
 
 
+@router.post(
+    "/creators/{creator_id}/analyze-voice",
+    response_model=CreatorProfileRead,
+)
+async def analyze_creator_voice(
+    creator_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> CreatorProfile:
+    """Analyze a creator's posts to generate voice_axes and top_patterns."""
+    profile = await db.get(CreatorProfile, creator_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Creator not found")
+
+    # Load their posts
+    result = await db.execute(
+        select(PostExample)
+        .where(PostExample.creator_id == creator_id)
+        .limit(40)
+    )
+    posts = list(result.scalars().all())
+    if not posts:
+        raise HTTPException(
+            status_code=400,
+            detail="No posts found for this creator",
+        )
+
+    # Build sample text from posts
+    samples = []
+    for p in posts[:30]:
+        text = p.hook_text or ""
+        if p.body_text:
+            text += "\n" + p.body_text[:300]
+        if text.strip():
+            samples.append(text.strip()[:500])
+
+    if not samples:
+        raise HTTPException(
+            status_code=400,
+            detail="Posts have no text content",
+        )
+
+    import anthropic
+
+    from tce.settings import Settings
+
+    s = Settings()
+    client = anthropic.AsyncAnthropic(api_key=s.anthropic_api_key)
+
+    resp = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1024,
+        temperature=0.3,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"Analyze these {len(samples)} post samples "
+                    f"from {profile.creator_name} and rate their "
+                    f"writing style on these axes (1-10 each):\n\n"
+                    f"urgency, curiosity, sharpness, friendliness, "
+                    f"practicality, sentence_punch, contrarian_heat, "
+                    f"strategic_depth, executive_clarity, "
+                    f"emotional_intensity\n\n"
+                    f"Also identify their top 2-3 template families "
+                    f"from: big_shift_explainer, contrarian_diagnosis, "
+                    f"tactical_workflow_guide, case_study_build_story, "
+                    f"second_order_implication, founder_reflection, "
+                    f"hidden_feature_shortcut, teardown_myth_busting, "
+                    f"comment_keyword_cta_guide, weekly_roundup\n\n"
+                    f"SAMPLES:\n"
+                    + "\n---\n".join(samples[:20])
+                    + "\n\nReply with ONLY JSON: "
+                    '{"voice_axes": {"urgency": N, ...}, '
+                    '"top_patterns": ["pattern1", ...], '
+                    '"style_notes": "one-line summary"}. '
+                    "No markdown."
+                ),
+            }
+        ],
+    )
+
+    text = resp.content[0].text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+    try:
+        analysis = json.loads(text)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to parse voice analysis",
+        )
+
+    profile.voice_axes = analysis.get("voice_axes")
+    profile.top_patterns = analysis.get("top_patterns")
+    if analysis.get("style_notes"):
+        profile.style_notes = analysis["style_notes"]
+    await db.flush()
+
+    logger.info(
+        "creator.voice_analyzed",
+        name=profile.creator_name,
+        axes=profile.voice_axes,
+    )
+    return profile
+
+
 # Founder voice profiles
 @router.post("/founder-voice", response_model=FounderVoiceProfileRead)
 async def create_founder_voice(
@@ -88,7 +203,6 @@ async def extract_founder_voice(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Trigger founder voice extraction from an uploaded document (PRD Section 50.6)."""
-    import asyncio
 
     from tce.models.source_document import SourceDocument
 
@@ -101,7 +215,11 @@ async def extract_founder_voice(
     if not founder_text:
         raise HTTPException(
             status_code=400,
-            detail="Document has no extracted text. Ingest the document first via /documents/upload.",
+            detail=(
+                "Document has no extracted text."
+                " Ingest the document first via"
+                " /documents/upload."
+            ),
         )
 
     # Trigger founder_voice_extraction workflow as background task
@@ -117,11 +235,13 @@ async def extract_founder_voice(
                 db=extraction_db,
                 settings=settings,
             )
-            result = await orchestrator.run({
-                "founder_text": founder_text,
-                "source_type": source_type,
-                "document_id": str(document_id),
-            })
+            result = await orchestrator.run(
+                {
+                    "founder_text": founder_text,
+                    "source_type": source_type,
+                    "document_id": str(document_id),
+                }
+            )
 
             # Save the extracted voice profile to DB
             # Orchestrator nests agent output inside result["context"]
