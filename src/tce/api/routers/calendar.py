@@ -317,9 +317,20 @@ async def plan_week_deep(
 
                     story_brief = day_plan.get("story_brief", day_plan)
 
+                    # Enrich plan_context with weekly-level metadata
+                    enriched_context = {
+                        **story_brief,
+                        "_weekly": {
+                            "weekly_theme": weekly_plan.get("weekly_theme", ""),
+                            "gift_theme": weekly_plan.get("gift_theme", ""),
+                            "gift_sections": weekly_plan.get("gift_sections", []),
+                            "cta_keyword": weekly_plan.get("cta_keyword", ""),
+                        },
+                    }
+
                     if entry:
                         entry.topic = story_brief.get("topic", entry.topic)
-                        entry.plan_context = story_brief
+                        entry.plan_context = enriched_context
                         entry.weekly_plan_id = week_plan_uuid
                         entry.status = "planned"
                     else:
@@ -330,7 +341,7 @@ async def plan_week_deep(
                             angle_type=story_brief.get("angle_type", angle),
                             topic=story_brief.get("topic"),
                             status="planned",
-                            plan_context=story_brief,
+                            plan_context=enriched_context,
                             weekly_plan_id=week_plan_uuid,
                         )
                         bg_db.add(entry)

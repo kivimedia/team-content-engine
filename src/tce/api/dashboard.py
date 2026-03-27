@@ -283,6 +283,37 @@ async function renderWeek() {
     const byDate = {};
     entries.forEach(e => byDate[e.date] = e);
 
+    // Show persistent weekly plan summary if any entry has _weekly metadata
+    const weeklyMeta = entries.find(e => e.plan_context?._weekly)?.plan_context?._weekly;
+    if (weeklyMeta && weeklyMeta.weekly_theme) {
+      const gift = weeklyMeta.gift_theme || {};
+      const giftTitle = typeof gift === 'string' ? gift : (gift.title || '');
+      const giftSubtitle = typeof gift === 'string' ? '' : (gift.subtitle || '');
+      const sections = weeklyMeta.gift_sections || [];
+      const cta = weeklyMeta.cta_keyword || '';
+      let summaryHtml = '<div style="background:linear-gradient(135deg,#1a1d27,#1e2235);border:1px solid var(--accent);border-radius:10px;padding:16px 20px;margin-bottom:16px;display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">';
+      summaryHtml += '<div style="flex:1;min-width:200px">';
+      summaryHtml += '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent2);margin-bottom:4px">Weekly Direction</div>';
+      summaryHtml += '<div style="font-size:15px;font-weight:600;line-height:1.4">' + escHtml(weeklyMeta.weekly_theme) + '</div>';
+      summaryHtml += '</div>';
+      if (giftTitle) {
+        summaryHtml += '<div style="flex:0 0 auto;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:10px 14px;min-width:180px">';
+        summaryHtml += '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--green);margin-bottom:4px">Gift of the Week</div>';
+        summaryHtml += '<div style="font-size:14px;font-weight:600">' + escHtml(giftTitle) + '</div>';
+        if (giftSubtitle) summaryHtml += '<div style="font-size:12px;color:var(--dim);margin-top:2px">' + escHtml(giftSubtitle) + '</div>';
+        if (sections.length) summaryHtml += '<div style="font-size:11px;color:var(--dim);margin-top:6px">' + sections.length + ' sections planned</div>';
+        summaryHtml += '</div>';
+      }
+      if (cta) {
+        summaryHtml += '<div style="flex:0 0 auto;text-align:center;padding:10px 14px">';
+        summaryHtml += '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--yellow);margin-bottom:4px">CTA Keyword</div>';
+        summaryHtml += '<div style="font-size:20px;font-weight:800;color:var(--yellow)">' + escHtml(cta) + '</div>';
+        summaryHtml += '</div>';
+      }
+      summaryHtml += '</div>';
+      document.getElementById('week-grid').insertAdjacentHTML('beforebegin', summaryHtml);
+    }
+
     let html = '';
     for (let i = 0; i < 5; i++) {
       const d = new Date(monday); d.setDate(d.getDate() + i);
