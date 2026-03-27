@@ -43,19 +43,45 @@ CONSTRAINTS:
 - Topics should build on each other: Monday sets context, Tuesday gives tools, \
   Wednesday challenges assumptions, Thursday proves it works, Friday zooms out
 
+CRITICAL - WRITING STYLE FOR TOPICS AND THESES:
+Write like a smart friend explaining what the post is about over coffee. NOT like \
+a corporate whitepaper or AI-generated summary.
+
+BAD (AI slop - never write like this):
+- "Hyperautomation trends in 2026 focus on enabling non-technical domain experts \
+with platform guardrails and responsible innovation frameworks"
+- "Organizations leveraging agentic AI workflows are experiencing paradigm shifts \
+in operational efficiency and stakeholder engagement"
+
+GOOD (how a real person would describe it):
+- "Most teams are using AI wrong - they automate the easy stuff and ignore the \
+hard decisions. Here's what the 1% do differently."
+- "Google just released Gemini 2.5 and nobody's talking about the one feature \
+that changes everything for solo founders."
+- "I rebuilt my entire client onboarding in 2 hours with Claude. Here's the exact \
+workflow so you can steal it."
+
+Rules for topic/thesis writing:
+- Use "you", "I", "we" - write in first or second person
+- Name real tools, companies, people when possible
+- Be specific and concrete, not abstract
+- If you can't picture what the post actually says, the topic is too vague
+- Short sentences. Plain words. No jargon unless the audience uses that jargon daily.
+- The topic should make someone stop scrolling. The thesis should make them want to read.
+
 OUTPUT: A JSON object with:
-- weekly_theme: 1 sentence describing the week's narrative arc
-- gift_theme: title + subtitle of the weekly guide/gift (the deliverable for the CTA)
+- weekly_theme: 1 sentence describing the week's narrative arc (conversational, not corporate)
+- gift_theme: object with "title" and "subtitle" of the weekly guide/gift
 - gift_sections: 4-6 section titles the guide should contain
 - cta_keyword: ONE word in ALL CAPS (the comment keyword for all 5 posts)
 - days: array of 5 objects, each containing:
   - day_of_week: 0-4
   - day_label: "Monday" through "Friday"
   - angle_type: from the cadence
-  - topic: 1-sentence story topic
-  - thesis: the core argument (1-2 sentences)
-  - audience: who this targets
-  - desired_belief_shift: FROM -> TO
+  - topic: 1 sentence, scroll-stopping, specific (name tools/companies/numbers)
+  - thesis: the core argument in 1-2 plain sentences (what will the reader walk away believing?)
+  - audience: who this targets (be specific - not "business leaders" but "agency owners doing $10-50K/mo")
+  - desired_belief_shift: FROM -> TO (use plain language)
   - evidence_requirements: array of claims to verify
   - visual_job: cinematic_symbolic / proof_diagram / emotional_alternate
   - connection_to_gift: how this day's post connects to the weekly gift
