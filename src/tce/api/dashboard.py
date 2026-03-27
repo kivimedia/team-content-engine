@@ -590,7 +590,12 @@ function restoreGenAllState() {
       if (parsed.running) {
         // Only restore if it was actively running - resume polling
         genAllState = parsed;
-        resumeGenAll();
+        if (parsed.unified && parsed.weekId) {
+          // Unified flow - resume week polling
+          resumeUnifiedGenAll();
+        } else {
+          resumeGenAll();
+        }
         renderGenAllProgress();
       } else {
         // Completed/failed state - don't show stale results on refresh
@@ -598,6 +603,45 @@ function restoreGenAllState() {
       }
     }
   } catch { /* ignore */ }
+}
+async function resumeUnifiedGenAll() {
+  if (!genAllState?.weekId) { genAllState.running = false; saveGenAllState(); renderGenAllProgress(); return; }
+  let done = false;
+  let failCount = 0;
+  while (!done) {
+    await new Promise(ok => setTimeout(ok, 2500));
+    try {
+      const st = await api('/pipeline/generate-week/' + genAllState.weekId + '/status');
+      failCount = 0;
+      genAllState.phase = st.phase || 'unknown';
+      genAllState.phaseDetail = st.phase_detail || '';
+      genAllState.current = st.current_day >= 0 ? st.current_day : genAllState.current;
+      if (st.weekly_theme) genAllState.weeklyTheme = st.weekly_theme;
+      if (st.gift_theme) genAllState.giftTheme = st.gift_theme;
+      if (st.weekly_keyword) genAllState.weeklyKeyword = st.weekly_keyword;
+      if (st.day_run_ids) {
+        for (let i = 0; i < st.day_run_ids.length; i++) {
+          if (!genAllState.results[i]) genAllState.results[i] = { day: DAY_NAMES[i], status: 'done', runId: st.day_run_ids[i] };
+        }
+      }
+      done = st.status === 'completed' || st.status === 'failed';
+      if (st.status === 'failed') genAllState.errorMsg = st.error || 'Unknown error';
+    } catch (e) {
+      failCount++;
+      if (failCount >= 3) {
+        // Server restarted or week ID is stale - stop polling
+        genAllState.phase = 'failed';
+        genAllState.phaseDetail = 'Lost connection to pipeline (server may have restarted)';
+        done = true;
+      }
+    }
+    saveGenAllState();
+    renderGenAllProgress();
+  }
+  genAllState.running = false;
+  saveGenAllState();
+  renderGenAllProgress();
+  renderWeek();
 }
 async function resumeGenAll() {
   // Resume polling for the current day's run_id
@@ -684,10 +728,12 @@ async function generateAllDays() {
     saveGenAllState();
     // Poll for status
     let done = false;
+    let pollFailCount = 0;
     while (!done) {
       await new Promise(ok => setTimeout(ok, 2500));
       try {
         const st = await api('/pipeline/generate-week/' + r.week_id + '/status');
+        pollFailCount = 0;
         genAllState.phase = st.phase || 'unknown';
         genAllState.phaseDetail = st.phase_detail || '';
         genAllState.current = st.current_day >= 0 ? st.current_day : genAllState.current;
@@ -726,7 +772,12 @@ async function generateAllDays() {
           genAllState.errorMsg = st.error || 'Unknown error';
         }
       } catch (pollErr) {
-        // Transient poll error, keep going
+        pollFailCount++;
+        if (pollFailCount >= 5) {
+          genAllState.phase = 'failed';
+          genAllState.phaseDetail = 'Lost connection to pipeline';
+          done = true;
+        }
       }
       saveGenAllState();
       renderGenAllProgress();
