@@ -18,6 +18,7 @@ from tce.agents import (  # noqa: F401
     research_agent,
     story_strategist,
     trend_scout,
+    weekly_planner,
 )
 
 __all__ = ["AgentBase", "agent_registry", "register_agent"]

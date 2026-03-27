@@ -263,8 +263,7 @@ async function renderWeek() {
           <input id="week-theme" type="text" placeholder="Optional - e.g. Agency scaling without burnout" style="width:320px">
         </div>
         <button class="btn btn-primary" onclick="planWeek('${fmtDate(monday)}')">Plan This Week</button>
-        <button class="btn btn-green" id="gen-all-btn" onclick="generateAllDays()" ${genAllState?.running ? 'disabled' : ''}>${genAllState?.running ? 'Generating ' + DAY_NAMES[genAllState.current] + '... (' + (genAllState.current+1) + '/5)' : 'Generate All Days'}</button>
-        <button class="btn btn-blue" onclick="runWeeklyPlanning()">Generate Weekly Guide</button>
+        <button class="btn btn-green" id="gen-all-btn" onclick="generateAllDays()" ${genAllState?.running ? 'disabled' : ''}>${genAllState?.running ? (genAllState.unified ? 'Running...' : 'Generating...') : 'Generate All Days'}</button>
       </div>
       <div id="gen-all-progress"></div>
       <div class="week-grid" id="week-grid"><div class="empty" style="grid-column:1/-1">Loading calendar...</div></div>
@@ -418,11 +417,74 @@ function renderGenAllProgress() {
   const s = genAllState;
   const elapsed = s.startTime ? formatElapsed(Date.now() - s.startTime) : '';
   let html = '<div class="card" style="margin-bottom:16px;padding:16px">';
-  // Header with elapsed time
+
+  // Phase-aware header
+  let headerText = 'Generation complete';
+  if (s.running) {
+    if (s.unified) {
+      if (s.phase === 'planning') headerText = 'Planning the week (trend scout + strategy)...';
+      else if (s.phase === 'generating_days') headerText = 'Generating day ' + ((s.current >= 0 ? s.current : 0) + 1) + '/5...';
+      else if (s.phase === 'building_guide') headerText = 'Building weekly guide...';
+      else headerText = s.phaseDetail || 'Starting unified weekly generation...';
+    } else {
+      headerText = 'Generating content for all 5 days...';
+    }
+  }
   html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
-  html += '<div style="font-size:13px;font-weight:600">' + (s.running ? 'Generating content for all 5 days...' : 'Generation complete') + '</div>';
+  html += '<div style="font-size:13px;font-weight:600">' + headerText + '</div>';
   if (elapsed) html += '<div style="font-size:12px;color:var(--dim);font-family:monospace">' + elapsed + '</div>';
   html += '</div>';
+
+  // Show weekly theme + gift theme once available (unified mode)
+  if (s.unified && s.weeklyTheme) {
+    html += '<div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:12px">';
+    html += '<div style="font-size:11px;color:var(--dim);margin-bottom:4px">WEEKLY THEME</div>';
+    html += '<div style="font-size:13px;font-weight:600;color:var(--accent2)">' + esc(s.weeklyTheme) + '</div>';
+    if (s.giftTheme) {
+      html += '<div style="font-size:11px;color:var(--dim);margin-top:6px">GIFT/GUIDE</div>';
+      html += '<div style="font-size:12px;color:var(--green)">' + esc(s.giftTheme) + '</div>';
+    }
+    if (s.weeklyKeyword) {
+      html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">CTA KEYWORD: <span style="color:var(--yellow);font-weight:600">' + esc(s.weeklyKeyword) + '</span></div>';
+    }
+    html += '</div>';
+  }
+
+  // Phase progress bar (unified mode)
+  if (s.unified && s.running) {
+    const phases = ['planning', 'generating_days', 'building_guide'];
+    const phaseLabels = ['Plan Week', 'Generate 5 Days', 'Build Guide'];
+    const curIdx = phases.indexOf(s.phase);
+    html += '<div style="display:flex;gap:4px;margin-bottom:12px">';
+    for (let pi = 0; pi < phases.length; pi++) {
+      const pct = pi < curIdx ? '100%' : (pi === curIdx ? (s.phase === 'generating_days' && s.current >= 0 ? Math.round(((s.current + 0.5) / 5) * 100) + '%' : '50%') : '0%');
+      const bg = pi < curIdx ? 'var(--green)' : (pi === curIdx ? 'var(--blue)' : 'var(--border)');
+      html += '<div style="flex:1;text-align:center">';
+      html += '<div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:4px"><div style="height:100%;background:' + bg + ';width:' + pct + ';transition:width 0.3s"></div></div>';
+      html += '<div style="font-size:10px;color:' + (pi === curIdx ? 'var(--text)' : 'var(--dim)') + ';font-weight:' + (pi === curIdx ? '600' : '400') + '">' + phaseLabels[pi] + '</div>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  // Planner agent detail (during planning phase)
+  if (s.unified && s.running && s.phase === 'planning' && s.plannerStepStatus) {
+    html += '<div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">';
+    html += '<div style="font-size:12px;font-weight:600;color:var(--accent2);margin-bottom:8px">Weekly Planner - Agent Steps</div>';
+    for (const [agent, st] of Object.entries(s.plannerStepStatus)) {
+      const label = AGENT_LABELS[agent] || agent.replace(/_/g, ' ');
+      let icon, stColor;
+      if (st === 'completed') { icon = 'Done'; stColor = 'var(--green)'; }
+      else if (st === 'running') { icon = 'Running...'; stColor = 'var(--blue)'; }
+      else { icon = 'Waiting'; stColor = 'var(--dim)'; }
+      html += '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px">';
+      html += '<span style="color:' + (st === 'running' ? 'var(--text)' : 'var(--dim)') + '">' + label + '</span>';
+      html += '<span style="color:' + stColor + ';font-weight:600;font-size:11px">' + icon + '</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
   // Day badges
   html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">';
   for (let i = 0; i < 5; i++) {
@@ -437,24 +499,19 @@ function renderGenAllProgress() {
     html += '">' + label + '</div>';
   }
   html += '</div>';
-  // Current day agent-level detail
-  const cur = s.results[s.current];
-  if (s.running && cur?.stepStatus) {
+
+  // Current day agent-level detail (during generating_days phase)
+  const cur = s.current >= 0 ? s.results[s.current] : null;
+  if (s.running && cur?.stepStatus && Object.keys(cur.stepStatus).length > 0) {
     const steps = cur.stepStatus;
-    const dayElapsed = cur.startTime ? formatElapsed(Date.now() - cur.startTime) : '';
     html += '<div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">';
-    html += '<div style="display:flex;justify-content:space-between;margin-bottom:8px">';
-    html += '<div style="font-size:12px;font-weight:600;color:var(--accent2)">' + DAY_NAMES[s.current] + ' - Pipeline Steps</div>';
-    if (dayElapsed) html += '<div style="font-size:11px;color:var(--dim);font-family:monospace">' + dayElapsed + '</div>';
-    html += '</div>';
+    html += '<div style="font-size:12px;font-weight:600;color:var(--accent2);margin-bottom:8px">' + DAY_NAMES[s.current] + ' - Pipeline Steps</div>';
     const entries = Object.entries(steps);
     const total = entries.length;
     const completed = entries.filter(([,v]) => v === 'completed' || v === 'skipped').length;
-    // Progress bar
     html += '<div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:10px">';
     html += '<div style="height:100%;background:var(--green);width:' + Math.round((completed/total)*100) + '%;transition:width 0.3s"></div>';
     html += '</div>';
-    // Agent steps list
     for (const [agent, st] of entries) {
       const label = AGENT_LABELS[agent] || agent.replace(/_/g, ' ');
       let icon, stColor;
@@ -472,14 +529,18 @@ function renderGenAllProgress() {
     }
     html += '</div>';
   }
+
   if (!s.running) {
     const done = s.results.filter(r => r?.status === 'done').length;
     const fail = s.results.filter(r => r?.status === 'failed').length;
     html += '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
-    html += '<span style="font-size:13px;color:var(--green);font-weight:600">' + done + '/5 completed</span>';
-    if (fail) html += '<span style="font-size:13px;color:var(--red)">' + fail + ' failed</span>';
+    if (s.phase === 'failed' || s.phase === 'completed') {
+      html += '<span style="font-size:13px;color:' + (s.phase === 'failed' ? 'var(--red)' : 'var(--green)') + ';font-weight:600">' + (s.phase === 'failed' ? 'Failed: ' + (s.errorMsg || s.phaseDetail || 'Unknown error') : done + '/5 completed + guide built') + '</span>';
+    } else {
+      html += '<span style="font-size:13px;color:var(--green);font-weight:600">' + done + '/5 completed</span>';
+      if (fail) html += '<span style="font-size:13px;color:var(--red)">' + fail + ' failed</span>';
+    }
     if (s.totalCost) html += '<span style="font-size:13px;color:var(--accent2)">Total: $' + s.totalCost.toFixed(2) + '</span>';
-    // Show retry button for individual failed days
     for (let fi = 0; fi < 5; fi++) {
       if (s.results[fi]?.status === 'failed') {
         html += '<button class="btn btn-red" style="font-size:11px;padding:4px 10px" onclick="retryOneDay(' + fi + ')">Retry ' + DAY_NAMES[fi] + '</button>';
@@ -502,9 +563,18 @@ function renderGenAllProgress() {
   const btn = document.getElementById('gen-all-btn');
   if (btn) {
     btn.disabled = s.running;
-    const curAgent = cur?.stepStatus ? Object.entries(cur.stepStatus).find(([,v]) => v === 'running') : null;
-    const agentLabel = curAgent ? (AGENT_LABELS[curAgent[0]] || curAgent[0]) : '';
-    btn.textContent = s.running ? (agentLabel ? agentLabel + '... (' + (s.current+1) + '/5)' : 'Generating ' + DAY_NAMES[s.current] + '... (' + (s.current+1) + '/5)') : 'Generate All Days';
+    if (s.unified && s.running) {
+      if (s.phase === 'planning') btn.textContent = 'Planning week...';
+      else if (s.phase === 'generating_days') btn.textContent = 'Day ' + ((s.current >= 0 ? s.current : 0) + 1) + '/5...';
+      else if (s.phase === 'building_guide') btn.textContent = 'Building guide...';
+      else btn.textContent = 'Starting...';
+    } else if (s.running) {
+      const curAgent = cur?.stepStatus ? Object.entries(cur.stepStatus).find(([,v]) => v === 'running') : null;
+      const agentLabel = curAgent ? (AGENT_LABELS[curAgent[0]] || curAgent[0]) : '';
+      btn.textContent = agentLabel ? agentLabel + '... (' + (s.current+1) + '/5)' : 'Generating ' + DAY_NAMES[s.current] + '... (' + (s.current+1) + '/5)';
+    } else {
+      btn.textContent = 'Generate All Days';
+    }
   }
 }
 
@@ -601,23 +671,72 @@ async function runOneDay(i) {
   }
 }
 async function generateAllDays() {
-  genAllState = { running: true, current: 0, total: 5, startTime: Date.now(), results: [], totalCost: 0 };
+  genAllState = { running: true, current: -1, total: 5, startTime: Date.now(), results: [], totalCost: 0, unified: true, weekId: null, phase: 'starting', phaseDetail: 'Initializing unified weekly generation...', weeklyTheme: null, giftTheme: null, weeklyKeyword: null };
   saveGenAllState();
   renderGenAllProgress();
-  for (let i = 0; i < 5; i++) {
-    await runOneDay(i);
+  try {
+    // Start unified weekly generation
+    const r = await api('/pipeline/generate-week', {
+      method: 'POST',
+      body: JSON.stringify({ context: {} }),
+    });
+    genAllState.weekId = r.week_id;
+    saveGenAllState();
+    // Poll for status
+    let done = false;
+    while (!done) {
+      await new Promise(ok => setTimeout(ok, 2500));
+      try {
+        const st = await api('/pipeline/generate-week/' + r.week_id + '/status');
+        genAllState.phase = st.phase || 'unknown';
+        genAllState.phaseDetail = st.phase_detail || '';
+        genAllState.current = st.current_day >= 0 ? st.current_day : genAllState.current;
+        if (st.weekly_theme) genAllState.weeklyTheme = st.weekly_theme;
+        if (st.gift_theme) genAllState.giftTheme = st.gift_theme;
+        if (st.weekly_keyword) genAllState.weeklyKeyword = st.weekly_keyword;
+        // Map day results from the backend run IDs
+        if (st.day_run_ids) {
+          for (let i = 0; i < st.day_run_ids.length; i++) {
+            if (!genAllState.results[i]) genAllState.results[i] = { day: DAY_NAMES[i], status: 'done', runId: st.day_run_ids[i] };
+          }
+        }
+        // Check active day - try to get agent-level detail
+        if (st.phase === 'generating_days' && st.current_day >= 0 && st.day_run_ids) {
+          const dayRunId = st.day_run_ids[st.current_day];
+          if (dayRunId) {
+            try {
+              const dayStatus = await api('/pipeline/' + dayRunId + '/status');
+              if (!genAllState.results[st.current_day]) genAllState.results[st.current_day] = { day: DAY_NAMES[st.current_day], status: 'running' };
+              genAllState.results[st.current_day].stepStatus = dayStatus.step_status || {};
+            } catch {}
+          }
+          // Mark current day as running
+          if (!genAllState.results[st.current_day]) genAllState.results[st.current_day] = { day: DAY_NAMES[st.current_day], status: 'running', stepStatus: {} };
+          else genAllState.results[st.current_day].status = 'running';
+        }
+        // Also poll planner run for agent detail during planning phase
+        if (st.phase === 'planning' && st.planner_run_id) {
+          try {
+            const plannerStatus = await api('/pipeline/' + st.planner_run_id + '/status');
+            genAllState.plannerStepStatus = plannerStatus.step_status || {};
+          } catch {}
+        }
+        done = st.status === 'completed' || st.status === 'failed';
+        if (st.status === 'failed') {
+          genAllState.errorMsg = st.error || 'Unknown error';
+        }
+      } catch (pollErr) {
+        // Transient poll error, keep going
+      }
+      saveGenAllState();
+      renderGenAllProgress();
+    }
+  } catch (e) {
+    genAllState.phase = 'failed';
+    genAllState.phaseDetail = 'Failed to start: ' + e.message;
+    toast('Weekly generation failed: ' + e.message, false);
   }
   genAllState.running = false;
-  // Fetch total cost for all runs
-  try {
-    let total = 0;
-    for (const r of genAllState.results) {
-      if (r?.runId) {
-        try { const c = await api('/costs/run/' + r.runId); total += c.total_cost || 0; } catch {}
-      }
-    }
-    genAllState.totalCost = total;
-  } catch {}
   saveGenAllState();
   renderGenAllProgress();
   renderWeek();
@@ -1426,10 +1545,18 @@ async function uploadFile(input) {
   document.getElementById('upload-zone').innerHTML = '<p>Uploading ' + file.name + '...</p>';
   try {
     const r = await fetch(API + '/documents/upload?auto_analyze=true', { method: 'POST', body: fd });
+    if (!r.ok) {
+      const err = await r.text();
+      throw new Error('Server error ' + r.status + ': ' + err.slice(0, 200));
+    }
     const d = await r.json();
-    toast('Uploaded: ' + d.file_name + ' (' + d.pages + ' pages)');
+    toast('Uploaded: ' + d.file_name + ' (' + d.pages + ' pages). Analysis running in background.');
     renderCorpus();
-  } catch (e) { toast('Upload failed: ' + e.message, false); renderCorpus(); }
+  } catch (e) {
+    toast('Upload failed: ' + e.message, false);
+    document.getElementById('upload-zone').innerHTML = '<input type="file" id="file-input" accept=".docx,.txt" style="display:none" onchange="uploadFile(this)"><div style="font-size:24px">+</div><p>Click to upload DOCX or TXT file</p><p style="font-size:11px;margin-top:4px">Auto-analyzes corpus</p>';
+    renderCorpus();
+  }
 }
 
 async function viewExamples(docId, name) {

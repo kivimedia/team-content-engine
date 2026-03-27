@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Any
 
@@ -92,47 +93,52 @@ class DocumentIngestService:
 
         image_texts = []
         try:
+            client = anthropic.AsyncAnthropic(
+                api_key=settings.anthropic_api_key.get_secret_value()
+            )
             for rel in doc.part.rels.values():
-                if "image" in rel.reltype:
-                    image_data = rel.target_part.blob
-                    content_type = rel.target_part.content_type or "image/png"
+                if "image" not in rel.reltype:
+                    continue
+                image_data = rel.target_part.blob
+                content_type = rel.target_part.content_type or "image/png"
 
-                    # Skip very small images (likely icons/bullets)
-                    if len(image_data) < 5000:
-                        continue
+                # Skip very small images (likely icons/bullets)
+                if len(image_data) < 5000:
+                    continue
 
+                # Per-image try/catch so one failure doesn't skip the rest
+                try:
                     b64 = base64.standard_b64encode(image_data).decode("utf-8")
-
-                    client = anthropic.AsyncAnthropic(
-                        api_key=settings.anthropic_api_key.get_secret_value()
-                    )
-                    response = await client.messages.create(
-                        model=settings.haiku_model,
-                        max_tokens=2000,
-                        messages=[{
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": content_type,
-                                        "data": b64,
+                    response = await asyncio.wait_for(
+                        client.messages.create(
+                            model=settings.haiku_model,
+                            max_tokens=2000,
+                            messages=[{
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": content_type,
+                                            "data": b64,
+                                        },
                                     },
-                                },
-                                {
-                                    "type": "text",
-                                    "text": (
-                                        "Extract ALL text from this image. "
-                                        "This may be a screenshot of a social media post. "
-                                        "Include: post text, comments count, shares count, "
-                                        "engagement metrics, author name. "
-                                        "If text is in Hebrew, transcribe it in Hebrew. "
-                                        "Return only the extracted text, no commentary."
-                                    ),
-                                },
-                            ],
-                        }],
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "Extract ALL text from this image. "
+                                            "This may be a screenshot of a social media post. "
+                                            "Include: post text, comments count, shares count, "
+                                            "engagement metrics, author name. "
+                                            "If text is in Hebrew, transcribe it in Hebrew. "
+                                            "Return only the extracted text, no commentary."
+                                        ),
+                                    },
+                                ],
+                            }],
+                        ),
+                        timeout=30,
                     )
 
                     for block in response.content:
@@ -140,6 +146,10 @@ class DocumentIngestService:
                             image_texts.append(block.text.strip())
 
                     logger.info("ocr.image_processed", size=len(image_data))
+                except asyncio.TimeoutError:
+                    logger.warning("ocr.image_timeout", size=len(image_data))
+                except Exception:
+                    logger.exception("ocr.single_image_failed", size=len(image_data))
 
         except Exception:
             logger.exception("ocr.extraction_failed")

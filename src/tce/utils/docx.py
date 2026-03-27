@@ -500,6 +500,35 @@ SECTION_RENDERERS = {
 
 
 # ---------------------------------------------------------------------------
+# Post-processing helpers
+# ---------------------------------------------------------------------------
+
+def _clamp_paragraph_spacing(doc) -> None:
+    """Cap all paragraph space_after to 24pt (480 twips) max.
+
+    python-docx can sometimes produce oversized spacing values due to
+    unit confusion or style inheritance.  This safety net ensures no
+    body paragraph ends up with e.g. 120pt of trailing whitespace.
+    """
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    max_twips = 480  # 24pt
+
+    for para in doc.element.body.iterchildren(qn("w:p")):
+        pPr = para.find(qn("w:pPr"))
+        if pPr is None:
+            continue
+        spacing = pPr.find(qn("w:spacing"))
+        if spacing is None:
+            continue
+        after_val = spacing.get(qn("w:after"))
+        if after_val and after_val.isdigit() and int(after_val) > max_twips:
+            spacing.set(qn("w:after"), str(max_twips))
+        before_val = spacing.get(qn("w:before"))
+        if before_val and before_val.isdigit() and int(before_val) > 960:  # 48pt max
+            spacing.set(qn("w:before"), "960")
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -570,6 +599,9 @@ def create_guide_docx(
             SECTION_RENDERERS[sec_type](doc, sec)
         else:
             _render_narrative(doc, sec)
+
+    # Clamp spacing - prevent runaway space_after values (>24pt = 480 twips)
+    _clamp_paragraph_spacing(doc)
 
     # Save
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)

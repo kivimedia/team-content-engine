@@ -49,6 +49,9 @@ async def upload_document(
     # Clean up temp file
     Path(tmp_path).unlink(missing_ok=True)
 
+    # Commit the document record now so it persists even if background analysis fails
+    await db.commit()
+
     doc = await db.get(SourceDocument, uuid.UUID(result["document_id"]))
     if not doc:
         raise HTTPException(status_code=500, detail="Document creation failed")
