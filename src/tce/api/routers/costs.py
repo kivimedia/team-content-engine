@@ -258,3 +258,108 @@ async def get_cost_per_post(
         "max_cost": round(max(costs), 4),
         "total_cost": round(sum(costs), 4),
     }
+
+
+@router.get("/optimization-recommendations")
+async def get_optimization_recommendations(
+    days: int = 7,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Generate cost optimization recommendations (PRD Section 36.6).
+
+    Analyzes recent spending patterns and suggests concrete savings.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import func, select
+
+    from tce.models.cost_event import CostEvent
+    from tce.services.cost_tracker import MODEL_PRICING
+
+    since = date.today() - timedelta(days=days)
+
+    # Get per-agent cost and model breakdown
+    result = await db.execute(
+        select(
+            CostEvent.agent_name,
+            CostEvent.model_used,
+            func.sum(CostEvent.computed_cost_usd).label("cost"),
+            func.sum(CostEvent.input_tokens).label("input_tok"),
+            func.sum(CostEvent.output_tokens).label("output_tok"),
+            func.avg(CostEvent.prompt_cache_hit_rate).label("avg_cache_rate"),
+            func.count().label("calls"),
+        )
+        .where(CostEvent.date >= since)
+        .group_by(CostEvent.agent_name, CostEvent.model_used)
+        .order_by(func.sum(CostEvent.computed_cost_usd).desc())
+    )
+    rows = result.all()
+
+    recommendations = []
+    total_potential_savings = 0.0
+
+    for row in rows:
+        agent, model, cost, input_tok, output_tok, avg_cache, calls = row
+        cost = float(cost)
+
+        # Recommendation 1: Downgrade to cheaper model where possible
+        if "opus" in model and agent not in ("story_strategist", "weekly_planner"):
+            sonnet_pricing = MODEL_PRICING.get("claude-sonnet-4-20250514", {})
+            opus_pricing = MODEL_PRICING.get(model, {})
+            if opus_pricing and sonnet_pricing:
+                current_cost = (
+                    (input_tok / 1_000_000) * opus_pricing["input"]
+                    + (output_tok / 1_000_000) * opus_pricing["output"]
+                )
+                cheaper_cost = (
+                    (input_tok / 1_000_000) * sonnet_pricing["input"]
+                    + (output_tok / 1_000_000) * sonnet_pricing["output"]
+                )
+                savings = current_cost - cheaper_cost
+                if savings > 0.01:
+                    total_potential_savings += savings
+                    recommendations.append({
+                        "type": "model_downgrade",
+                        "agent": agent,
+                        "current_model": model,
+                        "suggested_model": "claude-sonnet-4-20250514",
+                        "savings_usd": round(savings, 4),
+                        "message": f"Switching {agent} from Opus to Sonnet saves ~${savings:.2f}/{days}d",
+                    })
+
+        # Recommendation 2: Low cache hit rate
+        if avg_cache is not None and float(avg_cache) < 0.3 and cost > 0.10:
+            est_savings = cost * 0.3  # ~30% savings from better caching
+            total_potential_savings += est_savings
+            recommendations.append({
+                "type": "improve_caching",
+                "agent": agent,
+                "current_cache_rate": round(float(avg_cache), 4),
+                "savings_usd": round(est_savings, 4),
+                "message": (
+                    f"{agent} has {float(avg_cache)*100:.0f}% cache hit rate. "
+                    f"Improving to 60%+ could save ~${est_savings:.2f}/{days}d"
+                ),
+            })
+
+        # Recommendation 3: Batch API for research_agent
+        if agent == "research_agent" and calls >= 3:
+            batch_savings = cost * 0.5  # 50% batch discount
+            total_potential_savings += batch_savings
+            recommendations.append({
+                "type": "batch_api",
+                "agent": agent,
+                "calls": calls,
+                "savings_usd": round(batch_savings, 4),
+                "message": (
+                    f"Research agent made {calls} calls. Using Batch API "
+                    f"saves ~50% = ${batch_savings:.2f}/{days}d"
+                ),
+            })
+
+    return {
+        "period_days": days,
+        "recommendations": recommendations,
+        "total_potential_savings_usd": round(total_potential_savings, 4),
+        "recommendation_count": len(recommendations),
+    }

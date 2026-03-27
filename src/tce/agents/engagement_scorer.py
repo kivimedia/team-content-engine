@@ -18,6 +18,10 @@ CONFIDENCE_MULTIPLIERS = {
 DEFAULT_SHARES_WEIGHT = 3.0
 DEFAULT_COMMENTS_WEIGHT = 1.0
 
+# PRD Section 12.6: Safeguards
+OUTLIER_THRESHOLD_MULTIPLIER = 5.0  # Posts scoring >5x median are capped
+MIN_SAMPLE_SIZE = 3  # Templates with <3 examples get a penalty
+
 
 @register_agent
 class EngagementScorer(AgentBase):
@@ -47,6 +51,18 @@ class EngagementScorer(AgentBase):
             post["confidence_multiplier"] = multiplier
             scored.append(post)
 
+        # PRD Section 12.6: Outlier isolation - cap scores at 5x median
+        raw_scores = [p["final_score"] for p in scored if p["final_score"] > 0]
+        if len(raw_scores) >= 3:
+            raw_scores_sorted = sorted(raw_scores)
+            median_score = raw_scores_sorted[len(raw_scores_sorted) // 2]
+            outlier_cap = median_score * OUTLIER_THRESHOLD_MULTIPLIER
+            for post in scored:
+                if post["final_score"] > outlier_cap:
+                    post["original_score"] = post["final_score"]
+                    post["final_score"] = outlier_cap
+                    post["outlier_capped"] = True
+
         # Sort by final score descending
         scored.sort(key=lambda p: p.get("final_score", 0), reverse=True)
 
@@ -56,15 +72,18 @@ class EngagementScorer(AgentBase):
             creator = post.get("creator_name", "unknown")
             creator_rankings.setdefault(creator, []).append(post)
 
-        # Compute per-creator stats
+        # Compute per-creator stats with minimum sample size enforcement
         creator_stats: dict[str, dict[str, Any]] = {}
         for creator, posts in creator_rankings.items():
             scores = [p["final_score"] for p in posts]
+            below_min_sample = len(posts) < MIN_SAMPLE_SIZE
             creator_stats[creator] = {
                 "count": len(posts),
                 "avg_score": sum(scores) / len(scores) if scores else 0,
                 "max_score": max(scores) if scores else 0,
                 "min_score": min(scores) if scores else 0,
+                "below_min_sample": below_min_sample,
+                "reliability": "low" if below_min_sample else "normal",
             }
 
         self._report(f"Scored {len(scored)} posts:")

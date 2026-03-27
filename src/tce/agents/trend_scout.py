@@ -45,13 +45,26 @@ class TrendScout(AgentBase):
         operator_topics = context.get("operator_topics", [])
         focus_areas = context.get("focus_areas", ["AI", "technology", "business automation"])
 
-        # GAP-01: Use web search for real trending stories
+        # PRD Section 49.4: Multi-source web search for real trending stories
         from tce.services.web_search import WebSearchService
 
         search = WebSearchService()
         search_results = []
         if search.api_key:
-            self._report(f"Searching web for trends in: {', '.join(focus_areas[:3])}")
+            # Source diversity: query specific high-signal sources (PRD Section 49.4)
+            source_queries = [
+                "site:techcrunch.com AI",
+                "site:theverge.com AI technology",
+                "site:reddit.com/r/artificial AI news",
+                "site:news.ycombinator.com AI",
+                "site:venturebeat.com AI business",
+                "site:arxiv.org AI machine learning",
+            ]
+            self._report(f"Searching {len(source_queries)} curated sources + {len(focus_areas)} focus areas")
+            for sq in source_queries:
+                results = await search.search_news(sq, count=3)
+                search_results.extend(results)
+            # General focus area searches
             for area in focus_areas[:3]:
                 results = await search.search_news(f"latest {area} news trends 2026", count=5)
                 search_results.extend(results)
@@ -60,7 +73,7 @@ class TrendScout(AgentBase):
                 for topic in operator_topics[:2]:
                     results = await search.search_fresh(topic, count=5)
                     search_results.extend(results)
-            self._report(f"Found {len(search_results)} search results")
+            self._report(f"Found {len(search_results)} search results from diverse sources")
 
         prompt_parts = [
             f"Produce a {scan_type} Trend Brief for today.",
@@ -121,9 +134,22 @@ class TrendScout(AgentBase):
         if brief.get("summary"):
             self._report(f"Landscape: {brief['summary']}")
 
+        # PRD Section 51.3: Build current_events_context for downstream QA humanitarian gate
+        current_events_headlines = [
+            t.get("headline", t.get("topic", ""))
+            for t in trends[:10]
+            if t.get("headline") or t.get("topic")
+        ]
+        current_events_context = (
+            "Current events this week: " + "; ".join(current_events_headlines)
+            if current_events_headlines
+            else None
+        )
+
         return {
             "trend_brief": brief,
             "scan_type": scan_type,
             "trend_count": len(trends),
             "web_search_used": bool(search_results),
+            "current_events_context": current_events_context,
         }

@@ -28,6 +28,15 @@ APPROVED CTA FAMILIES:
 - follow for series continuation
 - share/comment prompt for discussion
 
+NO-ASSET PLAYBOOK (PRD Section 18.3):
+If the weekly guide is NOT ready yet, use one of these fallback CTAs:
+1. WhatsApp group invite: "Comment 'join' to get added to our private AI group"
+2. "I'm building this" teaser: "Comment 'beta' to get early access when it drops"
+3. Waitlist: "Comment 'waitlist' for the full breakdown I'm writing this week"
+4. Manual conversation: "DM me 'question' and I'll send a voice note"
+5. Post-specific reply: "Comment your biggest challenge with [topic] and I'll reply"
+Only fall back to these if guide_title is empty or guide is explicitly not ready.
+
 UNAPPROVED PATTERNS (never generate these):
 - fake free guide that doesn't exist
 - false scarcity
@@ -58,6 +67,14 @@ class CTAAgent(AgentBase):
         guide_title = context.get("guide_title", "")
 
         prompt_parts = []
+
+        # PRD Section 18.3: Detect no-asset situation
+        guide_ready = bool(guide_title and guide_title.strip())
+        if not guide_ready:
+            prompt_parts.append(
+                "IMPORTANT: The weekly guide is NOT ready yet. "
+                "Use the NO-ASSET PLAYBOOK - pick one of the 5 fallback CTA types."
+            )
 
         if weekly_keyword:
             prompt_parts.append(

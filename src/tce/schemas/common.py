@@ -105,6 +105,15 @@ QA_THRESHOLDS: dict[str, int] = {
     "founder_voice_alignment": 7,
 }
 
+# Validate weights sum to 1.0 (PRD Section 45.2)
+_weight_sum = round(sum(QA_WEIGHTS.values()), 4)
+assert _weight_sum == 1.0, f"QA_WEIGHTS must sum to 1.0, got {_weight_sum}"
+assert set(QA_WEIGHTS.keys()) == set(QA_DIMENSIONS), "QA_WEIGHTS keys must match QA_DIMENSIONS"
+assert set(QA_THRESHOLDS.keys()) == set(QA_DIMENSIONS), "QA_THRESHOLDS keys must match QA_DIMENSIONS"
+# Enforce non-negotiable minimums (PRD Section 51)
+assert QA_WEIGHTS["humanitarian_sensitivity"] >= 0.08, "Humanitarian weight cannot be <8%"
+assert QA_THRESHOLDS["humanitarian_sensitivity"] >= 7, "Humanitarian threshold cannot be <7"
+
 # Feedback taxonomy tags (PRD Section 46.2)
 FEEDBACK_TAGS = [
     # Hook issues
