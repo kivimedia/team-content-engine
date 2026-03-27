@@ -54,8 +54,8 @@ select,input{padding:8px 12px;border:1px solid var(--border);background:var(--ca
 .plan-step.active{border-color:var(--accent);color:var(--accent);background:rgba(99,102,241,0.1)}
 .plan-step.done{border-color:var(--green);color:var(--green);background:rgba(34,197,94,0.1)}
 .post-preview{background:#111318;border:1px solid var(--border);border-radius:8px;padding:16px;margin:8px 0;white-space:pre-wrap;font-size:14px;line-height:1.6;max-height:300px;overflow-y:auto}
-.fb-btn{display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border:1px solid transparent;background:transparent;color:var(--dim);cursor:pointer;border-radius:4px;font-size:11px;vertical-align:middle;margin-left:4px;transition:all .15s}
-.fb-btn:hover{border-color:var(--accent);color:var(--accent);background:rgba(99,102,241,0.08)}
+.fb-btn{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border:1px solid var(--border);background:rgba(99,102,241,0.06);color:var(--accent2);cursor:pointer;border-radius:5px;font-size:11px;font-weight:500;vertical-align:middle;margin-left:6px;transition:all .15s}
+.fb-btn:hover{border-color:var(--accent);color:#fff;background:var(--accent)}
 .fb-popover{position:absolute;z-index:100;background:var(--card);border:1px solid var(--accent);border-radius:8px;padding:12px;width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
 .fb-popover textarea{width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;resize:vertical;min-height:60px}
 .fb-actions{display:flex;gap:6px;margin-top:8px;justify-content:flex-end}
@@ -522,7 +522,7 @@ async function planWeekDeep(mondayStr) {
 
 // === AI FEEDBACK BUTTONS ===
 function makeFbBtn(fieldId, label) {
-  return ' <button class="fb-btn" onclick="openFeedbackPopover(this,\\'' + fieldId + '\\',\\'' + label + '\\')" title="AI feedback on this field">&#9998;</button>';
+  return ' <button class="fb-btn" onclick="openFeedbackPopover(this,\\'' + fieldId + '\\',\\'' + label + '\\')" title="AI feedback on this field">Feedback</button>';
 }
 function openFeedbackPopover(btn, fieldId, label) {
   // Close any existing popover

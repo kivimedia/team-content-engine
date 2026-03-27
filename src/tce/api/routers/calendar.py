@@ -11,8 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tce.db.session import get_db
+from tce.db.session import async_session, get_db
 from tce.models.content_calendar import ContentCalendarEntry
+from tce.models.weekly_plan import WeeklyPlan
 from tce.schemas.content_calendar import (
     ContentCalendarRead,
     ContentCalendarUpdate,
@@ -225,7 +226,38 @@ async def update_entry(
 # Deep Planning (human-in-the-loop weekly planning)
 # ---------------------------------------------------------------------------
 
-_deep_plans: dict[str, dict[str, Any]] = {}
+# In-memory cache for active plans (backed by DB for persistence)
+_deep_plans_cache: dict[str, dict[str, Any]] = {}
+
+
+async def _save_plan_to_db(plan_id: str, data: dict[str, Any]) -> None:
+    """Persist plan state to DB (fire and forget from background task)."""
+    async with async_session() as db:
+        plan = await db.get(WeeklyPlan, uuid.UUID(plan_id))
+        if plan:
+            plan.status = data.get("status", "running")
+            plan.plan_data = data
+            plan.progress_log = data.get("phase_detail", "")
+        await db.commit()
+
+
+async def _load_plan_from_db(plan_id: str) -> dict[str, Any] | None:
+    """Load plan from DB if not in cache."""
+    async with async_session() as db:
+        plan = await db.get(WeeklyPlan, uuid.UUID(plan_id))
+        if plan and plan.plan_data:
+            return plan.plan_data
+    return None
+
+
+async def _get_plan(plan_id: str) -> dict[str, Any] | None:
+    """Get plan from cache, falling back to DB."""
+    if plan_id in _deep_plans_cache:
+        return _deep_plans_cache[plan_id]
+    data = await _load_plan_from_db(plan_id)
+    if data:
+        _deep_plans_cache[plan_id] = data
+    return data
 
 
 @router.post("/plan-week-deep")
@@ -236,7 +268,7 @@ async def plan_week_deep(
     """Run the weekly_planner (trend scout + strategy) and return a plan for review."""
     plan_id = str(uuid.uuid4())
 
-    _deep_plans[plan_id] = {
+    initial_data = {
         "plan_id": plan_id,
         "status": "running",
         "phase": "starting",
@@ -247,13 +279,24 @@ async def plan_week_deep(
         "error": None,
         "started_at": datetime.utcnow().isoformat(),
     }
+    _deep_plans_cache[plan_id] = initial_data
+
+    # Persist to DB immediately
+    plan_row = WeeklyPlan(
+        id=uuid.UUID(plan_id),
+        status="running",
+        plan_data=initial_data,
+        week_start=request.week_start,
+        run_id=uuid.uuid4(),
+    )
+    db.add(plan_row)
+    await db.flush()
 
     async def _run_deep_plan() -> None:
-        from tce.db.session import async_session
         from tce.orchestrator.engine import PipelineOrchestrator
         from tce.orchestrator.workflows import WORKFLOWS
 
-        status = _deep_plans[plan_id]
+        status = _deep_plans_cache[plan_id]
 
         async with async_session() as bg_db:
             try:
@@ -263,11 +306,50 @@ async def plan_week_deep(
                 planner_steps = WORKFLOWS["weekly_planner"]
                 run_id = uuid.uuid4()
 
+                # === Load voice context for the planner ===
+                from tce.models.creator_profile import CreatorProfile
+                from tce.models.founder_voice_profile import FounderVoiceProfile
+
                 context: dict[str, Any] = {}
                 if request.weekly_theme:
                     context["weekly_theme"] = request.weekly_theme
                 if request.focus_areas:
                     context["focus_areas"] = request.focus_areas
+
+                # Load founder voice
+                fv_result = await bg_db.execute(
+                    select(FounderVoiceProfile).order_by(
+                        FounderVoiceProfile.created_at.desc()
+                    ).limit(1)
+                )
+                founder_voice = fv_result.scalar_one_or_none()
+                if founder_voice:
+                    context["founder_voice"] = {
+                        "recurring_themes": founder_voice.recurring_themes or [],
+                        "values_and_beliefs": founder_voice.values_and_beliefs or [],
+                        "taboos": founder_voice.taboos or [],
+                        "tone_range": founder_voice.tone_range or {},
+                        "humor_type": founder_voice.humor_type,
+                        "metaphor_families": founder_voice.metaphor_families or [],
+                    }
+
+                # Load creator profiles
+                cr_result = await bg_db.execute(
+                    select(CreatorProfile).order_by(CreatorProfile.creator_name)
+                )
+                creators = cr_result.scalars().all()
+                if creators:
+                    context["creator_profiles"] = [
+                        {
+                            "name": c.creator_name,
+                            "style": c.style_notes,
+                            "voice_axes": c.voice_axes,
+                            "top_patterns": c.top_patterns,
+                            "weight": c.allowed_influence_weight,
+                        }
+                        for c in creators
+                        if c.voice_axes
+                    ]
 
                 orch = PipelineOrchestrator(
                     steps=planner_steps,
@@ -275,10 +357,6 @@ async def plan_week_deep(
                     settings=settings,
                     run_id=run_id,
                 )
-
-                # Hook into progress to update status
-                if hasattr(orch, "_progress_log"):
-                    pass  # Will check progress via result
 
                 status["phase"] = "strategist"
                 status["phase_detail"] = (
@@ -296,6 +374,7 @@ async def plan_week_deep(
                     status["status"] = "failed"
                     status["phase"] = "failed"
                     status["error"] = "Weekly planner did not produce a valid plan"
+                    await _save_plan_to_db(plan_id, status)
                     return
 
                 # Create/update calendar entries
@@ -304,15 +383,14 @@ async def plan_week_deep(
                     day_num = day_plan.get("day_of_week", 0)
                     entry_date = request.week_start + timedelta(days=day_num)
 
-                    # Check for existing entry
                     existing = await bg_db.execute(
-                        select(ContentCalendarEntry).where(ContentCalendarEntry.date == entry_date)
+                        select(ContentCalendarEntry).where(
+                            ContentCalendarEntry.date == entry_date
+                        )
                     )
                     entry = existing.scalar_one_or_none()
 
                     story_brief = day_plan.get("story_brief", day_plan)
-
-                    # Enrich plan_context with weekly-level metadata
                     enriched_context = {
                         **story_brief,
                         "_weekly": {
@@ -343,7 +421,7 @@ async def plan_week_deep(
 
                 await bg_db.commit()
 
-                # Trim trend_brief for response (keep just headlines + scores)
+                # Trim trend_brief for response
                 trend_summary = []
                 for t in trend_brief.get("trends", [])[:10]:
                     trend_summary.append(
@@ -351,7 +429,9 @@ async def plan_week_deep(
                             "headline": t.get("headline", ""),
                             "relevance_score": t.get("relevance_score", 0),
                             "source_url": t.get("source_url", ""),
-                            "angle_suggestions": t.get("angle_suggestions", t.get("angles", [])),
+                            "angle_suggestions": t.get(
+                                "angle_suggestions", t.get("angles", [])
+                            ),
                         }
                     )
 
@@ -363,11 +443,15 @@ async def plan_week_deep(
                 status["trend_summary"] = trend_summary
                 status["completed_at"] = datetime.utcnow().isoformat()
 
+                # Persist completed plan to DB
+                await _save_plan_to_db(plan_id, status)
+
             except Exception as e:
                 logger.exception("plan_week_deep.error", plan_id=plan_id)
                 status["status"] = "failed"
                 status["phase"] = "failed"
                 status["error"] = str(e)
+                await _save_plan_to_db(plan_id, status)
 
     asyncio.create_task(_run_deep_plan())
 
@@ -381,9 +465,10 @@ async def plan_week_deep(
 @router.get("/plan-week-deep/{plan_id}/status")
 async def get_deep_plan_status(plan_id: str) -> dict[str, Any]:
     """Get the status of a deep planning run."""
-    if plan_id not in _deep_plans:
+    plan = await _get_plan(plan_id)
+    if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
-    return _deep_plans[plan_id]
+    return plan
 
 
 @router.post("/plan-week-deep/{plan_id}/approve")
@@ -393,10 +478,10 @@ async def approve_deep_plan(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Approve (and optionally edit) the deep plan. Updates calendar entries."""
-    if plan_id not in _deep_plans:
+    plan_status = await _get_plan(plan_id)
+    if not plan_status:
         raise HTTPException(status_code=404, detail="Plan not found")
 
-    plan_status = _deep_plans[plan_id]
     if plan_status["status"] != "completed":
         raise HTTPException(status_code=400, detail="Plan is not ready for approval")
 
@@ -405,7 +490,6 @@ async def approve_deep_plan(
         raise HTTPException(status_code=400, detail="Plan missing week_start")
 
     week_start = date.fromisoformat(week_start_str)
-    # Update calendar entries with the (possibly edited) plan
     for day_plan in request.days:
         day_num = day_plan.get("day_of_week", 0)
         entry_date = week_start + timedelta(days=day_num)
@@ -429,14 +513,17 @@ async def approve_deep_plan(
 
     await db.flush()
 
-    # Update the in-memory plan with approved edits
+    # Update plan status
     plan_status["approved"] = True
+    plan_status["status"] = "approved"
     plan_status["approved_plan"] = {
         "weekly_theme": request.weekly_theme,
         "gift_theme": request.gift_theme,
         "cta_keyword": request.cta_keyword,
         "days": request.days,
     }
+    _deep_plans_cache[plan_id] = plan_status
+    await _save_plan_to_db(plan_id, plan_status)
 
     return {
         "plan_id": plan_id,

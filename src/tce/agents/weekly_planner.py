@@ -147,6 +147,47 @@ class WeeklyPlanner(AgentBase):
         if operator_overrides:
             prompt_parts.append(f"\nOPERATOR OVERRIDES:\n{json.dumps(operator_overrides)}")
 
+        # === Inject voice context so planner considers the team's identity ===
+        founder_voice = context.get("founder_voice")
+        if founder_voice:
+            fv_parts = []
+            if founder_voice.get("recurring_themes"):
+                fv_parts.append(
+                    "Recurring themes: " + ", ".join(founder_voice["recurring_themes"])
+                )
+            if founder_voice.get("values_and_beliefs"):
+                fv_parts.append(
+                    "Core values: " + ", ".join(founder_voice["values_and_beliefs"])
+                )
+            if founder_voice.get("taboos"):
+                fv_parts.append(
+                    "NEVER write about: " + ", ".join(founder_voice["taboos"])
+                )
+            if founder_voice.get("tone_range"):
+                fv_parts.append(f"Tone range: {json.dumps(founder_voice['tone_range'])}")
+            if fv_parts:
+                prompt_parts.append("\nFOUNDER VOICE (the human behind the brand):\n" + "\n".join(fv_parts))
+
+        creator_profiles = context.get("creator_profiles")
+        if creator_profiles:
+            creator_lines = []
+            for cp in creator_profiles:
+                axes = cp.get("voice_axes", {})
+                strengths = [k for k, v in axes.items() if v and v >= 8]
+                line = f"- {cp['name']} ({cp.get('style', 'N/A')})"
+                if strengths:
+                    line += f" | strengths: {', '.join(strengths)}"
+                if cp.get("top_patterns"):
+                    line += f" | best at: {', '.join(cp['top_patterns'][:2])}"
+                creator_lines.append(line)
+            prompt_parts.append(
+                "\nCREATOR TEAM (the humans whose style you're channeling):\n"
+                + "\n".join(creator_lines)
+                + "\n\nConsider which creators are strongest at which angles when assigning topics. "
+                "Pick topics that resonate with the founder's recurring themes and values. "
+                "The weekly theme should sound like something the founder would actually say."
+            )
+
         prompt_parts.append(
             "\nPlan the entire week. Select 5 topics that build a coherent narrative, "
             "design the weekly gift, and choose the CTA keyword."
