@@ -1843,12 +1843,14 @@ async function renderCreators() {
         c.top_patterns.forEach(p => html += '<span class="voice-tag">' + p + '</span>');
         html += '</div></div>';
       }
-      if (c.voice_axes) {
+      if (c.voice_axes && Object.keys(c.voice_axes).length) {
         html += '<div style="margin-top:8px">';
         for (const [k, v] of Object.entries(c.voice_axes)) {
           html += '<div class="tone-bar"><span class="name">' + k + '</span><div class="bar" style="width:' + (v * 10) + '%;background:var(--blue)"></div><span>' + v + '</span></div>';
         }
         html += '</div>';
+      } else {
+        html += '<div style="margin-top:12px;padding:12px;border:1px dashed #2a2d3a;border-radius:6px;text-align:center;color:#71717a;font-size:12px">No voice axes data yet. Re-run corpus analysis to populate.</div>';
       }
       html += '</div>';
     }
