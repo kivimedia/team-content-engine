@@ -88,6 +88,18 @@ class StoryStrategist(AgentBase):
         if operator_overrides:
             prompt_parts.append(f"Operator overrides: {json.dumps(operator_overrides)}")
 
+        # Creator inspiration context
+        creator_insp = context.get("creator_inspiration")
+        if creator_insp:
+            prompt_parts.append(
+                f"CREATOR INSPIRATION: The operator wants this post INSPIRED by {creator_insp.get('creator_name', 'a creator')}'s style. "
+                f"Pick a topic that would work well with their style patterns: "
+                f"hook_type={creator_insp.get('hook_type', '?')}, "
+                f"body_structure={creator_insp.get('body_structure', '?')}, "
+                f"story_arc={creator_insp.get('story_arc', '?')}. "
+                f"The post topic should be fresh but the structural approach should align with the creator's strengths."
+            )
+
         prompt_parts.append("Select the best story and produce a StoryBrief as JSON.")
 
         response = await self._call_llm(

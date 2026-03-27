@@ -74,6 +74,57 @@ ANTI-CLONE CHECK:
 - Do not follow the template so rigidly it reads like fill-in-the-blank
 """
 
+CREATOR_INSPIRATION_PROMPT = """\
+
+CREATOR INSPIRATION REFERENCE:
+You are writing a post INSPIRED by the style of {creator_name}. \
+Study the reference post below and absorb its structural patterns, \
+tone, pacing, and engagement techniques. Then write an ORIGINAL post \
+on today's topic using those techniques. Do NOT copy the content - \
+borrow the craft.
+
+Reference post ({word_count} words):
+---
+{post_text}
+---
+
+Style notes to emulate:
+- Hook type: {hook_type}
+- Body structure: {body_structure}
+- Story arc: {story_arc}
+- CTA approach: {cta_type}
+{extra_notes}
+
+IMPORTANT: The output must be ORIGINAL content on today's story brief topic. \
+Only the STYLE and STRUCTURE should be inspired by the reference. \
+Maximum allowed influence: {influence_weight}% - the rest must be your own voice.
+"""
+
+
+def _build_inspiration_block(context: dict) -> str:
+    """Build the creator inspiration prompt section if creator_inspiration is in context."""
+    insp = context.get("creator_inspiration")
+    if not insp:
+        return ""
+    extra = ""
+    if insp.get("tone_tags"):
+        extra += f"- Tone: {', '.join(insp['tone_tags'])}\n"
+    if insp.get("topic_tags"):
+        extra += f"- Topics: {', '.join(insp['topic_tags'])}\n"
+    if insp.get("style_notes"):
+        extra += f"- Creator style: {insp['style_notes']}\n"
+    return CREATOR_INSPIRATION_PROMPT.format(
+        creator_name=insp.get("creator_name", "Unknown"),
+        word_count=insp.get("word_count", "?"),
+        post_text=insp.get("post_text", ""),
+        hook_type=insp.get("hook_type", "unknown"),
+        body_structure=insp.get("body_structure", "unknown"),
+        story_arc=insp.get("story_arc", "unknown"),
+        cta_type=insp.get("cta_type", "unknown"),
+        extra_notes=extra,
+        influence_weight=insp.get("influence_weight", 20),
+    )
+
 
 @register_agent
 class FacebookWriter(AgentBase):
@@ -97,6 +148,10 @@ class FacebookWriter(AgentBase):
 
         if founder_voice:
             prompt_parts.insert(0, f"FOUNDER VOICE LAYER:\n{json.dumps(founder_voice, indent=2)}")
+
+        inspiration_block = _build_inspiration_block(context)
+        if inspiration_block:
+            prompt_parts.append(inspiration_block)
 
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
@@ -147,6 +202,10 @@ class LinkedInWriter(AgentBase):
 
         if founder_voice:
             prompt_parts.insert(0, f"FOUNDER VOICE LAYER:\n{json.dumps(founder_voice, indent=2)}")
+
+        inspiration_block = _build_inspiration_block(context)
+        if inspiration_block:
+            prompt_parts.append(inspiration_block)
 
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],

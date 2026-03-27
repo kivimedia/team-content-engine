@@ -1562,15 +1562,105 @@ async function uploadFile(input) {
 async function viewExamples(docId, name) {
   try {
     const examples = await api('/documents/' + docId + '/examples');
-    // Also fetch creators for name lookup
+    // Fetch full creator profiles for name + style data
     let creatorMap = {};
-    try { const creators = await api('/profiles/creators'); for (const c of creators) creatorMap[c.id] = c.creator_name; } catch(e) {}
+    try { const creators = await api('/profiles/creators'); for (const c of creators) creatorMap[c.id] = c; } catch(e) {}
     const w = window.open('', '_blank');
-    let h = '<html><head><style>body{font-family:-apple-system,sans-serif;padding:20px;max-width:1000px;margin:auto;background:#0f1117;color:#e4e4e7}h1{font-size:20px;margin-bottom:16px}.ex{border:1px solid #2a2d3a;border-radius:10px;padding:20px;margin:16px 0;background:#1a1d27}.meta{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;color:#71717a}.badge{background:#2a2d3a;padding:2px 8px;border-radius:4px;font-size:11px}.score-box{display:inline-block;background:#6366f1;color:#fff;padding:4px 10px;border-radius:6px;font-weight:700;font-size:14px;margin-right:8px}.post-text{background:#0f1117;border:1px solid #2a2d3a;border-radius:6px;padding:12px;margin:8px 0;white-space:pre-wrap;font-size:13px;line-height:1.6;direction:rtl;text-align:right;max-height:200px;overflow-y:auto}.section-label{font-size:11px;color:#6366f1;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;margin-bottom:4px}.tags{display:flex;gap:4px;flex-wrap:wrap;margin:4px 0}.tag{background:#1e3a5f;color:#60a5fa;padding:2px 6px;border-radius:3px;font-size:11px}.tag.topic{background:#1e3a2f;color:#4ade80}.engagement{display:flex;gap:16px;margin-top:8px;font-size:12px;color:#71717a}.expand-btn{background:none;border:1px solid #2a2d3a;color:#818cf8;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;margin-top:6px}</style></head><body>';
+    let h = '<html><head><style>body{font-family:-apple-system,sans-serif;padding:20px;max-width:1000px;margin:auto;background:#0f1117;color:#e4e4e7}h1{font-size:20px;margin-bottom:16px}.ex{border:1px solid #2a2d3a;border-radius:10px;padding:20px;margin:16px 0;background:#1a1d27}.meta{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;color:#71717a}.badge{background:#2a2d3a;padding:2px 8px;border-radius:4px;font-size:11px}.score-box{display:inline-block;background:#6366f1;color:#fff;padding:4px 10px;border-radius:6px;font-weight:700;font-size:14px;margin-right:8px}.post-text{background:#0f1117;border:1px solid #2a2d3a;border-radius:6px;padding:12px;margin:8px 0;white-space:pre-wrap;font-size:13px;line-height:1.6;direction:rtl;text-align:right;max-height:200px;overflow-y:auto}.section-label{font-size:11px;color:#6366f1;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;margin-bottom:4px}.tags{display:flex;gap:4px;flex-wrap:wrap;margin:4px 0}.tag{background:#1e3a5f;color:#60a5fa;padding:2px 6px;border-radius:3px;font-size:11px}.tag.topic{background:#1e3a2f;color:#4ade80}.engagement{display:flex;gap:16px;margin-top:8px;font-size:12px;color:#71717a}.expand-btn{background:none;border:1px solid #2a2d3a;color:#818cf8;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;margin-top:6px}.inspire-btn{background:linear-gradient(135deg,#6366f1,#a855f7);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;margin-top:10px;transition:opacity .2s}.inspire-btn:hover{opacity:.85}.inspire-btn:disabled{opacity:.5;cursor:not-allowed}.inspire-status{font-size:11px;color:#a78bfa;margin-top:6px;min-height:16px}</style></head><body>';
+    // Embed examples data for the inspire function
+    h += '<script>const EXAMPLES_DATA = ' + JSON.stringify(examples.map(ex => ({
+      id: ex.id, creator_id: ex.creator_id, post_text_raw: ex.post_text_raw,
+      hook_type: ex.hook_type, body_structure: ex.body_structure, story_arc: ex.story_arc,
+      cta_type: ex.cta_type, tone_tags: ex.tone_tags, topic_tags: ex.topic_tags,
+      hook_text: ex.hook_text, cta_text: ex.cta_text
+    }))) + ';\n';
+    h += 'const CREATOR_MAP = ' + JSON.stringify(Object.fromEntries(
+      Object.entries(creatorMap).map(([id, c]) => [id, {
+        creator_name: c.creator_name, style_notes: c.style_notes,
+        allowed_influence_weight: c.allowed_influence_weight, top_patterns: c.top_patterns
+      }])
+    )) + ';\n';
+    h += `
+async function inspireFromExample(idx) {
+  const ex = EXAMPLES_DATA[idx];
+  if (!ex || !ex.post_text_raw) { alert('No post text available'); return; }
+  const btn = document.getElementById('inspire-btn-' + idx);
+  const status = document.getElementById('inspire-status-' + idx);
+  btn.disabled = true;
+  btn.textContent = 'Starting pipeline...';
+  status.textContent = 'Launching daily_content pipeline with creator inspiration...';
+  const creator = CREATOR_MAP[ex.creator_id] || {};
+  const wordCount = ex.post_text_raw.trim().split(/\\s+/).length;
+  const body = {
+    workflow: 'daily_content',
+    context: {
+      day_of_week: new Date().getDay() === 0 ? 4 : Math.min(new Date().getDay() - 1, 4),
+      creator_inspiration: {
+        creator_name: creator.creator_name || 'Unknown',
+        post_text: ex.post_text_raw,
+        hook_text: ex.hook_text || '',
+        hook_type: ex.hook_type || '',
+        body_structure: ex.body_structure || '',
+        story_arc: ex.story_arc || '',
+        cta_type: ex.cta_type || '',
+        tone_tags: ex.tone_tags || [],
+        topic_tags: ex.topic_tags || [],
+        style_notes: creator.style_notes || '',
+        influence_weight: Math.round((creator.allowed_influence_weight || 0.2) * 100),
+        word_count: wordCount
+      }
+    }
+  };
+  try {
+    const r = await fetch('/api/v1/pipeline/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) { const err = await r.text(); throw new Error(err.slice(0, 200)); }
+    const data = await r.json();
+    const runId = data.run_id;
+    btn.textContent = 'Pipeline running...';
+    status.textContent = 'Run ID: ' + runId.substring(0, 8) + ' - polling status...';
+    // Poll status
+    const poll = setInterval(async () => {
+      try {
+        const sr = await fetch('/api/v1/pipeline/' + runId + '/status');
+        const st = await sr.json();
+        const steps = st.step_status || {};
+        const running = Object.entries(steps).filter(([,v]) => v === 'running').map(([k]) => k);
+        const done = Object.entries(steps).filter(([,v]) => v === 'completed').length;
+        const total = Object.keys(steps).length;
+        if (running.length) status.textContent = 'Running: ' + running.join(', ') + ' (' + done + '/' + total + ' done)';
+        if (st.status === 'completed') {
+          clearInterval(poll);
+          btn.textContent = 'Done! View in dashboard';
+          btn.disabled = false;
+          btn.onclick = () => { window.opener?.location.reload(); };
+          status.textContent = 'Pipeline completed. All agents finished. Click button to refresh dashboard.';
+          status.style.color = '#4ade80';
+        } else if (st.status === 'failed') {
+          clearInterval(poll);
+          btn.textContent = 'Failed';
+          btn.disabled = false;
+          status.textContent = 'Error: ' + (st.error_message || 'Unknown error');
+          status.style.color = '#ef4444';
+        }
+      } catch(e) { status.textContent = 'Polling error: ' + e.message; }
+    }, 3000);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Inspire Post';
+    status.textContent = 'Error: ' + e.message;
+    status.style.color = '#ef4444';
+  }
+}
+<\/script>`;
     h += '<h1>' + name + ' - ' + examples.length + ' examples</h1>';
     for (let i = 0; i < examples.length; i++) {
       const ex = examples[i];
-      const creator = creatorMap[ex.creator_id] || 'Unknown';
+      const creatorObj = creatorMap[ex.creator_id];
+      const creator = creatorObj ? creatorObj.creator_name : 'Unknown';
       h += '<div class="ex">';
       // Header row with score and classification
       h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
@@ -1578,6 +1668,9 @@ async function viewExamples(docId, name) {
       if (ex.final_score != null) h += '<div class="score-box">' + ex.final_score.toFixed(2) + '</div>';
       else if (ex.raw_score != null) h += '<div class="score-box" style="background:#71717a">Raw: ' + ex.raw_score.toFixed(2) + '</div>';
       h += '</div>';
+      // Word count
+      const wordCount = ex.post_text_raw ? ex.post_text_raw.trim().split(/\\s+/).length : 0;
+      if (wordCount > 0) h += '<div style="font-size:11px;color:#71717a;margin-bottom:8px">' + wordCount + ' words</div>';
       // Classification badges
       h += '<div class="meta">';
       if (ex.hook_type) h += '<span class="badge">Hook: ' + ex.hook_type + '</span>';
@@ -1615,6 +1708,13 @@ async function viewExamples(docId, name) {
       if (ex.visible_comments != null) h += '<span>Comments: ' + ex.visible_comments + '</span>';
       if (ex.visible_shares != null) h += '<span>Shares: ' + ex.visible_shares + '</span>';
       h += '</div>';
+      // Inspire Post button
+      if (ex.post_text_raw) {
+        h += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2d3a">';
+        h += '<button class="inspire-btn" id="inspire-btn-' + i + '" onclick="inspireFromExample(' + i + ')">Inspire Post</button>';
+        h += '<div class="inspire-status" id="inspire-status-' + i + '">Generate a new post inspired by this creator\'s style</div>';
+        h += '</div>';
+      }
       h += '</div>';
     }
     w.document.write(h + '</body></html>');
