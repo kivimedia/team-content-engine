@@ -324,7 +324,7 @@ async function renderWeek() {
         ')">Plan This Week</button>
         <span id="plan-cost-hint" style="font-size:11px;color:var(--dim);margin-left:6px"
         title="Trend scout (Sonnet) + Weekly planner (Opus)">
-        ~$0.25 per plan</span>
+        ~&#36;0.25 per plan</span>
         <button class="btn btn-green" id="gen-all-btn" onclick="generateFromPlan()
         " ${genAllState?.running ? 'disabled' : ''}
         >${genAllState?.running ? (genAllState.unified ? 'Running...' : 'Generating...')
