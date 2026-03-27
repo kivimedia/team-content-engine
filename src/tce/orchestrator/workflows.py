@@ -6,9 +6,7 @@ from tce.orchestrator.step import PipelineStep
 DAILY_CONTENT_WORKFLOW = [
     PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=60),
     PipelineStep(agent_name="story_strategist", depends_on=["trend_scout"], timeout_seconds=120),
-    PipelineStep(
-        agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=120
-    ),
+    PipelineStep(agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=120),
     PipelineStep(
         agent_name="facebook_writer",
         depends_on=["story_strategist", "research_agent"],
@@ -19,9 +17,7 @@ DAILY_CONTENT_WORKFLOW = [
         depends_on=["story_strategist", "research_agent"],
         timeout_seconds=120,
     ),
-    PipelineStep(
-        agent_name="cta_agent", depends_on=["story_strategist"], timeout_seconds=60
-    ),
+    PipelineStep(agent_name="cta_agent", depends_on=["story_strategist"], timeout_seconds=60),
     PipelineStep(
         agent_name="creative_director",
         depends_on=["facebook_writer", "linkedin_writer"],
@@ -38,18 +34,14 @@ DAILY_CONTENT_WORKFLOW = [
 CORPUS_INGESTION_WORKFLOW = [
     PipelineStep(agent_name="corpus_analyst", depends_on=[], timeout_seconds=1800),
     PipelineStep(agent_name="engagement_scorer", depends_on=["corpus_analyst"], timeout_seconds=60),
-    PipelineStep(
-        agent_name="pattern_miner", depends_on=["engagement_scorer"], timeout_seconds=180
-    ),
+    PipelineStep(agent_name="pattern_miner", depends_on=["engagement_scorer"], timeout_seconds=180),
 ]
 
 # Weekly planning workflow (PRD Section 15.2)
 WEEKLY_PLANNING_WORKFLOW = [
     PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=120),
     PipelineStep(agent_name="story_strategist", depends_on=["trend_scout"], timeout_seconds=180),
-    PipelineStep(
-        agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=180
-    ),
+    PipelineStep(agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=180),
     PipelineStep(agent_name="cta_agent", depends_on=["story_strategist"], timeout_seconds=60),
     PipelineStep(
         agent_name="docx_guide_builder",

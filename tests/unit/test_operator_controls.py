@@ -12,24 +12,18 @@ def test_service_exists():
 def test_template_control_methods():
     for method in ["lock_template", "unlock_template", "ban_template"]:
         assert hasattr(OperatorControlService, method)
-        assert asyncio.iscoroutinefunction(
-            getattr(OperatorControlService, method)
-        )
+        assert asyncio.iscoroutinefunction(getattr(OperatorControlService, method))
 
 
 def test_source_control_methods():
     for method in ["approve_source", "reject_source"]:
         assert hasattr(OperatorControlService, method)
-        assert asyncio.iscoroutinefunction(
-            getattr(OperatorControlService, method)
-        )
+        assert asyncio.iscoroutinefunction(getattr(OperatorControlService, method))
 
 
 def test_weight_control_method():
     assert hasattr(OperatorControlService, "set_influence_weight")
-    assert asyncio.iscoroutinefunction(
-        OperatorControlService.set_influence_weight
-    )
+    assert asyncio.iscoroutinefunction(OperatorControlService.set_influence_weight)
 
 
 def test_platform_flags_default():

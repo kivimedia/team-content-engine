@@ -18,15 +18,11 @@ def test_clean_content_passes():
 
 
 def test_blacklisted_phrase_detected():
-    profiles = [
-        {"disallowed_clone_markers": ["magic formula", "secret trick"]}
-    ]
+    profiles = [{"disallowed_clone_markers": ["magic formula", "secret trick"]}]
     checker = AntiCloneChecker(creator_profiles=profiles)
     result = checker.check("Here is the magic formula for success.")
     assert not result["passes"]
-    assert any(
-        i["type"] == "blacklisted_phrase" for i in result["issues"]
-    )
+    assert any(i["type"] == "blacklisted_phrase" for i in result["issues"])
 
 
 def test_high_similarity_detected():
@@ -41,9 +37,7 @@ def test_high_similarity_detected():
     # Almost identical text
     result = checker.check("the big shift in AI is happening now today")
     # High similarity should be flagged
-    high_sim = [
-        i for i in result["issues"] if i["type"] == "high_similarity"
-    ]
+    high_sim = [i for i in result["issues"] if i["type"] == "high_similarity"]
     assert len(high_sim) > 0
 
 
@@ -54,15 +48,18 @@ def test_word_overlap_similarity():
     )
     assert sim == 1.0
 
-    sim = AntiCloneChecker._word_overlap_similarity(
-        "hello world", "goodbye universe"
-    )
+    sim = AntiCloneChecker._word_overlap_similarity("hello world", "goodbye universe")
     assert sim == 0.0
 
 
 def test_rhythm_match_identical():
-    sentences_a = ["Short.", "Also short.", "A bit longer sentence.",
-                   "Medium length one here.", "Final one."]
+    sentences_a = [
+        "Short.",
+        "Also short.",
+        "A bit longer sentence.",
+        "Medium length one here.",
+        "Final one.",
+    ]
     assert AntiCloneChecker._rhythm_match(sentences_a, sentences_a)
 
 

@@ -38,9 +38,7 @@ async def lock_template(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     service = OperatorControlService(db)
-    result = await service.lock_template(
-        request.template_name, request.reason
-    )
+    result = await service.lock_template(request.template_name, request.reason)
     if not result:
         raise HTTPException(404, "Template not found")
     return result
@@ -64,9 +62,7 @@ async def ban_template(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     service = OperatorControlService(db)
-    result = await service.ban_template(
-        request.template_name, request.reason
-    )
+    result = await service.ban_template(request.template_name, request.reason)
     if not result:
         raise HTTPException(404, "Template not found")
     return result
@@ -90,9 +86,7 @@ async def reject_source(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     service = OperatorControlService(db)
-    result = await service.reject_source(
-        request.document_id, request.reason
-    )
+    result = await service.reject_source(request.document_id, request.reason)
     if not result:
         raise HTTPException(404, "Document not found")
     return result
@@ -104,9 +98,7 @@ async def set_weight(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     service = OperatorControlService(db)
-    result = await service.set_influence_weight(
-        request.creator_name, request.weight
-    )
+    result = await service.set_influence_weight(request.creator_name, request.weight)
     if not result:
         raise HTTPException(404, "Creator not found")
     return result
@@ -121,6 +113,4 @@ async def get_platform_flags() -> dict[str, bool]:
 async def set_platform_flag(
     request: PlatformFlagRequest,
 ) -> dict[str, Any]:
-    return OperatorControlService.set_platform_flag(
-        request.platform, request.enabled
-    )
+    return OperatorControlService.set_platform_flag(request.platform, request.enabled)

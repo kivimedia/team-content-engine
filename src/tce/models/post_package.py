@@ -13,9 +13,7 @@ class PostPackage(Base):
     __tablename__ = "post_packages"
 
     # References
-    brief_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("story_briefs.id"), nullable=True
-    )
+    brief_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("story_briefs.id"), nullable=True)
     weekly_guide_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("weekly_guides.id"), nullable=True
     )

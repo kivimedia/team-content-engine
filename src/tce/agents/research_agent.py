@@ -49,13 +49,9 @@ class ResearchAgent(AgentBase):
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Build a research brief for a given topic."""
         story_brief = context.get("story_brief", {})
-        topic = (
-            context.get("topic", "")
-            or story_brief.get("topic", "")
-        )
-        evidence_requirements = (
-            context.get("evidence_requirements", [])
-            or story_brief.get("evidence_requirements", [])
+        topic = context.get("topic", "") or story_brief.get("topic", "")
+        evidence_requirements = context.get("evidence_requirements", []) or story_brief.get(
+            "evidence_requirements", []
         )
         thesis = story_brief.get("thesis", "")
 
@@ -80,6 +76,7 @@ class ResearchAgent(AgentBase):
 
         # GAP-01: Use web search to verify claims from primary sources
         from tce.services.web_search import WebSearchService
+
         search = WebSearchService()
         search_context = []
         if search.api_key and topic:
@@ -96,9 +93,7 @@ class ResearchAgent(AgentBase):
             self._report(f"Verifying claims against {len(search_context)} web sources")
             prompt_parts.append("\n## Web Search Results for Verification\n")
             for i, r in enumerate(search_context[:15], 1):
-                prompt_parts.append(
-                    f"{i}. **{r['title']}** ({r['url']})\n   {r['description']}"
-                )
+                prompt_parts.append(f"{i}. **{r['title']}** ({r['url']})\n   {r['description']}")
             prompt_parts.append(
                 "\nUse these sources to verify claims. Cite URLs when available. "
                 "Flag anything not supported by these results as uncertain."
@@ -132,13 +127,16 @@ class ResearchAgent(AgentBase):
                     messages=[
                         {"role": "user", "content": "\n\n".join(prompt_parts)},
                         {"role": "assistant", "content": text},
-                        {"role": "user", "content": (
-                            "Your previous response was not valid JSON. "
-                            "Please output ONLY a valid JSON object with keys: "
-                            "topic, verified_claims, uncertain_claims, rejected_claims, "
-                            "source_refs, thesis_candidates, risk_flags, safe_to_publish. "
-                            "No markdown, no commentary."
-                        )},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous response was not valid JSON. "
+                                "Please output ONLY a valid JSON object with keys: "
+                                "topic, verified_claims, uncertain_claims, rejected_claims, "
+                                "source_refs, thesis_candidates, risk_flags, safe_to_publish. "
+                                "No markdown, no commentary."
+                            ),
+                        },
                     ],
                     system=SYSTEM_PROMPT,
                     max_tokens=6144,
@@ -161,7 +159,11 @@ class ResearchAgent(AgentBase):
         verified = brief.get("verified_claims", [])
         uncertain = brief.get("uncertain_claims", [])
         rejected = brief.get("rejected_claims", [])
-        self._report(f"Research complete: {len(verified)} verified, {len(uncertain)} uncertain, {len(rejected)} rejected claims")
+        self._report(
+            f"Research complete: {len(verified)} verified,"
+            f" {len(uncertain)} uncertain,"
+            f" {len(rejected)} rejected claims"
+        )
         for i, c in enumerate(verified[:5], 1):
             claim_text = c.get("claim", c) if isinstance(c, dict) else str(c)
             source = c.get("source", "N/A") if isinstance(c, dict) else "N/A"

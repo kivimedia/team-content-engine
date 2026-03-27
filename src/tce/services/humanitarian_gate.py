@@ -94,35 +94,41 @@ class HumanitarianGate:
         ]
         for phrase in fear_phrases:
             if phrase in combined_text:
-                flags.append({
-                    "pattern": "fear_exploitation",
-                    "phrase": phrase,
-                    "severity": "high",
-                    "suggestion": (
-                        "Reframe to empower rather than threaten. "
-                        "Show what's possible, not what's feared."
-                    ),
-                })
+                flags.append(
+                    {
+                        "pattern": "fear_exploitation",
+                        "phrase": phrase,
+                        "severity": "high",
+                        "suggestion": (
+                            "Reframe to empower rather than threaten. "
+                            "Show what's possible, not what's feared."
+                        ),
+                    }
+                )
 
         # Check for casual war/violence metaphors
         war_phrases = [
-            "weapon", "destroy the competition",
-            "kill it", "battle", "warfare",
-            "ammunition", "target your enemy",
+            "weapon",
+            "destroy the competition",
+            "kill it",
+            "battle",
+            "warfare",
+            "ammunition",
+            "target your enemy",
         ]
         for phrase in war_phrases:
             if phrase in combined_text:
-                flags.append({
-                    "pattern": "war_metaphors",
-                    "phrase": phrase,
-                    "severity": (
-                        "high" if self.sensitive_period else "medium"
-                    ),
-                    "suggestion": (
-                        "Replace military metaphors with constructive ones. "
-                        "Use 'build', 'create', 'improve' instead."
-                    ),
-                })
+                flags.append(
+                    {
+                        "pattern": "war_metaphors",
+                        "phrase": phrase,
+                        "severity": ("high" if self.sensitive_period else "medium"),
+                        "suggestion": (
+                            "Replace military metaphors with constructive ones. "
+                            "Use 'build', 'create', 'improve' instead."
+                        ),
+                    }
+                )
 
         # Check for punishment framing
         punishment_phrases = [
@@ -134,15 +140,17 @@ class HumanitarianGate:
         ]
         for phrase in punishment_phrases:
             if phrase in combined_text:
-                flags.append({
-                    "pattern": "punishment_framing",
-                    "phrase": phrase,
-                    "severity": "medium",
-                    "suggestion": (
-                        "Shift from criticism to guidance. "
-                        "Help the reader improve, don't punish them."
-                    ),
-                })
+                flags.append(
+                    {
+                        "pattern": "punishment_framing",
+                        "phrase": phrase,
+                        "severity": "medium",
+                        "suggestion": (
+                            "Shift from criticism to guidance. "
+                            "Help the reader improve, don't punish them."
+                        ),
+                    }
+                )
 
         # Compute score
         if not flags:
@@ -176,22 +184,16 @@ class HumanitarianGate:
         return FLAG_PATTERNS.copy()
 
     @staticmethod
-    def validate_config(
-        weight: float, threshold: int
-    ) -> dict[str, Any]:
+    def validate_config(weight: float, threshold: int) -> dict[str, Any]:
         """Validate that config doesn't violate non-negotiable constraints.
 
         PRD Section 51.6: Cannot be disabled or set below minimums.
         """
         issues = []
         if weight < MIN_WEIGHT:
-            issues.append(
-                f"Weight {weight} below minimum {MIN_WEIGHT}"
-            )
+            issues.append(f"Weight {weight} below minimum {MIN_WEIGHT}")
         if threshold < MIN_THRESHOLD:
-            issues.append(
-                f"Threshold {threshold} below minimum {MIN_THRESHOLD}"
-            )
+            issues.append(f"Threshold {threshold} below minimum {MIN_THRESHOLD}")
         return {
             "valid": len(issues) == 0,
             "issues": issues,

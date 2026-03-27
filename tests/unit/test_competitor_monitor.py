@@ -52,9 +52,7 @@ def test_trend_convergence():
     convergences = service.detect_trend_convergence(posts)
     assert len(convergences) > 0
     # "agents" should appear from both Omri and Alex
-    agent_conv = [
-        c for c in convergences if c["keyword"] == "agents"
-    ]
+    agent_conv = [c for c in convergences if c["keyword"] == "agents"]
     assert len(agent_conv) > 0
 
 

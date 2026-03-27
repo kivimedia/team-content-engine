@@ -76,8 +76,9 @@ class StoryStrategist(AgentBase):
             )
 
         if templates:
-            template_names = [t.get("template_name", t.get("template_family", "unknown"))
-                            for t in templates[:10]]
+            template_names = [
+                t.get("template_name", t.get("template_family", "unknown")) for t in templates[:10]
+            ]
             prompt_parts.append(f"Available templates: {', '.join(template_names)}")
 
         if recent_posts:
@@ -91,13 +92,21 @@ class StoryStrategist(AgentBase):
         # Creator inspiration context
         creator_insp = context.get("creator_inspiration")
         if creator_insp:
+            cname = creator_insp.get("creator_name", "a creator")
+            hook = creator_insp.get("hook_type", "?")
+            body = creator_insp.get("body_structure", "?")
+            arc = creator_insp.get("story_arc", "?")
             prompt_parts.append(
-                f"CREATOR INSPIRATION: The operator wants this post INSPIRED by {creator_insp.get('creator_name', 'a creator')}'s style. "
-                f"Pick a topic that would work well with their style patterns: "
-                f"hook_type={creator_insp.get('hook_type', '?')}, "
-                f"body_structure={creator_insp.get('body_structure', '?')}, "
-                f"story_arc={creator_insp.get('story_arc', '?')}. "
-                f"The post topic should be fresh but the structural approach should align with the creator's strengths."
+                f"CREATOR INSPIRATION: The operator wants this"
+                f" post INSPIRED by {cname}'s style. "
+                f"Pick a topic that would work well with their"
+                f" style patterns: "
+                f"hook_type={hook}, "
+                f"body_structure={body}, "
+                f"story_arc={arc}. "
+                f"The post topic should be fresh but the"
+                f" structural approach should align with"
+                f" the creator's strengths."
             )
 
         prompt_parts.append("Select the best story and produce a StoryBrief as JSON.")
@@ -120,11 +129,15 @@ class StoryStrategist(AgentBase):
                     messages=[
                         {"role": "user", "content": "\n\n".join(prompt_parts)},
                         {"role": "assistant", "content": text},
-                        {"role": "user", "content": (
-                            "Your previous response was not valid JSON. "
-                            "Please output ONLY a valid JSON object with the StoryBrief fields. "
-                            "No markdown, no commentary - just the JSON object."
-                        )},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous response was not valid JSON. "
+                                "Please output ONLY a valid JSON object "
+                                "with the StoryBrief fields. "
+                                "No markdown, no commentary - just the JSON object."
+                            ),
+                        },
                     ],
                     system=SYSTEM_PROMPT,
                     max_tokens=4096,
@@ -140,14 +153,16 @@ class StoryStrategist(AgentBase):
                 story_brief = {
                     "topic": top_trend.get("headline", "AI industry update"),
                     "angle_type": cadence["angle"],
-                    "thesis": top_trend.get("angles", [""])[0] if top_trend.get("angles") else "Analyze the latest shift in AI and what it means for business",
+                    "thesis": top_trend.get("angles", [""])[0]
+                    if top_trend.get("angles")
+                    else "Analyze the latest shift in AI and what it means for business",
                     "audience": "Business leaders and AI-curious professionals",
                     "evidence_requirements": [top_trend.get("headline", "")] if top_trend else [],
                     "_parsing_failed": True,
                 }
                 self._report("Using top trend as fallback")
 
-        self._report(f"Selected story:")
+        self._report("Selected story:")
         self._report(f"  Topic: {story_brief.get('topic', 'N/A')}")
         self._report(f"  Angle: {story_brief.get('angle_type', 'N/A')}")
         self._report(f"  Thesis: {story_brief.get('thesis', 'N/A')}")

@@ -8,7 +8,7 @@ Both create DMFulfillmentLog records for tracking.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -42,9 +42,7 @@ class CTAFulfillmentService:
         )
         rows = result.all()
         return [
-            {"package_id": str(r[0]), "keyword": r[1], "dm_flow": r[2] or {}}
-            for r in rows
-            if r[1]
+            {"package_id": str(r[0]), "keyword": r[1], "dm_flow": r[2] or {}} for r in rows if r[1]
         ]
 
     def match_keyword(
@@ -82,7 +80,7 @@ class CTAFulfillmentService:
             platform="facebook",
             commenter_id=commenter_id,
             comment_text=comment_text,
-            comment_timestamp=datetime.now(timezone.utc),
+            comment_timestamp=datetime.now(UTC),
             delivery_method="automated",
             status="pending",
         )
@@ -96,7 +94,7 @@ class CTAFulfillmentService:
             )
             if sent:
                 log.dm_sent = True
-                log.dm_sent_at = datetime.now(timezone.utc)
+                log.dm_sent_at = datetime.now(UTC)
                 log.status = "sent"
             else:
                 log.status = "pending"
@@ -112,9 +110,7 @@ class CTAFulfillmentService:
             "dm_sent": log.dm_sent or False,
         }
 
-    async def _send_facebook_dm(
-        self, recipient_id: str, dm_flow: dict, keyword: str
-    ) -> bool:
+    async def _send_facebook_dm(self, recipient_id: str, dm_flow: dict, keyword: str) -> bool:
         """Send a DM via Facebook Messenger Send API."""
         message_text = dm_flow.get(
             "delivery_message",
@@ -161,7 +157,7 @@ class CTAFulfillmentService:
             platform="linkedin",
             commenter_id=commenter_urn,
             comment_text=comment_text,
-            comment_timestamp=datetime.now(timezone.utc),
+            comment_timestamp=datetime.now(UTC),
             delivery_method="manual",  # LI messaging API is restricted
             status="pending",
         )
@@ -182,9 +178,7 @@ class CTAFulfillmentService:
             "note": "LinkedIn DM requires manual send or Messaging API access",
         }
 
-    async def verify_facebook_webhook(
-        self, mode: str, token: str, challenge: str
-    ) -> str | None:
+    async def verify_facebook_webhook(self, mode: str, token: str, challenge: str) -> str | None:
         """Verify Facebook webhook subscription."""
         if mode == "subscribe" and token == settings.facebook_verify_token:
             return challenge

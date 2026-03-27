@@ -1,8 +1,5 @@
 """Agent framework — all content engine agents."""
 
-from tce.agents.base import AgentBase
-from tce.agents.registry import agent_registry, register_agent
-
 # Import all concrete agents so @register_agent decorators fire
 from tce.agents import (  # noqa: F401
     corpus_analyst,
@@ -20,5 +17,7 @@ from tce.agents import (  # noqa: F401
     trend_scout,
     weekly_planner,
 )
+from tce.agents.base import AgentBase
+from tce.agents.registry import agent_registry, register_agent
 
 __all__ = ["AgentBase", "agent_registry", "register_agent"]

@@ -133,19 +133,13 @@ class HouseVoiceEngine:
         operator_overrides: dict[str, float] | None = None,
     ) -> str:
         """Build a voice instruction block for writer prompts."""
-        weights = self.get_weights_for_angle(
-            angle_type, operator_overrides
-        )
+        weights = self.get_weights_for_angle(angle_type, operator_overrides)
         blended_axes = self.blend_voice_axes(weights)
 
         lines = ["[HOUSE VOICE BLEND]"]
-        lines.append(
-            f"Angle: {angle_type}"
-        )
+        lines.append(f"Angle: {angle_type}")
         lines.append("Influence weights:")
-        for creator, weight in sorted(
-            weights.items(), key=lambda x: -x[1]
-        ):
+        for creator, weight in sorted(weights.items(), key=lambda x: -x[1]):
             lines.append(f"  {creator}: {weight:.2f}")
 
         lines.append("\nTarget voice axes (1-10):")
@@ -157,38 +151,22 @@ class HouseVoiceEngine:
             lines.append("\n[FOUNDER VOICE LAYER]")
             if self.founder_voice.get("values_and_beliefs"):
                 lines.append(
-                    f"Core values: "
-                    f"{', '.join(self.founder_voice['values_and_beliefs'][:5])}"
+                    f"Core values: {', '.join(self.founder_voice['values_and_beliefs'][:5])}"
                 )
             if self.founder_voice.get("taboos"):
-                lines.append(
-                    f"Never say: "
-                    f"{', '.join(self.founder_voice['taboos'][:5])}"
-                )
+                lines.append(f"Never say: {', '.join(self.founder_voice['taboos'][:5])}")
             if self.founder_voice.get("recurring_themes"):
                 lines.append(
-                    f"Recurring themes: "
-                    f"{', '.join(self.founder_voice['recurring_themes'][:5])}"
+                    f"Recurring themes: {', '.join(self.founder_voice['recurring_themes'][:5])}"
                 )
-            lines.append(
-                "The founder's voice takes priority over "
-                "all other style instructions."
-            )
+            lines.append("The founder's voice takes priority over all other style instructions.")
 
         # Anti-clone controls
         lines.append("\n[ANTI-CLONE CONTROLS]")
-        lines.append(
-            f"- Max similarity to source corpus: {SIMILARITY_THRESHOLD}"
-        )
-        lines.append(
-            "- Do not reproduce signature phrases from any creator"
-        )
-        lines.append(
-            "- Vary sentence rhythm — don't mirror any single source"
-        )
-        lines.append(
-            "- Every post must have topic-specific proof blocks"
-        )
+        lines.append(f"- Max similarity to source corpus: {SIMILARITY_THRESHOLD}")
+        lines.append("- Do not reproduce signature phrases from any creator")
+        lines.append("- Vary sentence rhythm — don't mirror any single source")
+        lines.append("- Every post must have topic-specific proof blocks")
 
         return "\n".join(lines)
 

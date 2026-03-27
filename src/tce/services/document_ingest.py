@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import UTC, datetime
 from typing import Any
-
-from datetime import datetime, timezone
 
 import anthropic
 import docx
 import structlog
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.models.source_document import SourceDocument
@@ -53,7 +51,11 @@ class DocumentIngestService:
 
                 key = f"corpus/{_uuid.uuid4().hex}/{file_name}"
                 with open(file_path, "rb") as f:
-                    s3_path = await storage.upload(f.read(), key, content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                    s3_path = await storage.upload(
+                        f.read(),
+                        key,
+                        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
                 logger.info("ingest.s3_uploaded", key=key)
         except Exception:
             logger.exception("ingest.s3_upload_failed")
@@ -65,7 +67,7 @@ class DocumentIngestService:
             language="he",  # Hebrew corpus default
             pages=approx_pages,
             extracted_text=full_text,
-            ingested_at=datetime.now(timezone.utc),
+            ingested_at=datetime.now(UTC),
             metadata_={
                 "paragraph_count": len(paragraphs),
                 "char_count": len(full_text),
@@ -93,9 +95,7 @@ class DocumentIngestService:
 
         image_texts = []
         try:
-            client = anthropic.AsyncAnthropic(
-                api_key=settings.anthropic_api_key.get_secret_value()
-            )
+            client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
             for rel in doc.part.rels.values():
                 if "image" not in rel.reltype:
                     continue
@@ -113,30 +113,32 @@ class DocumentIngestService:
                         client.messages.create(
                             model=settings.haiku_model,
                             max_tokens=2000,
-                            messages=[{
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "image",
-                                        "source": {
-                                            "type": "base64",
-                                            "media_type": content_type,
-                                            "data": b64,
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": content_type,
+                                                "data": b64,
+                                            },
                                         },
-                                    },
-                                    {
-                                        "type": "text",
-                                        "text": (
-                                            "Extract ALL text from this image. "
-                                            "This may be a screenshot of a social media post. "
-                                            "Include: post text, comments count, shares count, "
-                                            "engagement metrics, author name. "
-                                            "If text is in Hebrew, transcribe it in Hebrew. "
-                                            "Return only the extracted text, no commentary."
-                                        ),
-                                    },
-                                ],
-                            }],
+                                        {
+                                            "type": "text",
+                                            "text": (
+                                                "Extract ALL text from this image. "
+                                                "This may be a screenshot of a social media post. "
+                                                "Include: post text, comments count, shares count, "
+                                                "engagement metrics, author name. "
+                                                "If text is in Hebrew, transcribe it in Hebrew. "
+                                                "Return only the extracted text, no commentary."
+                                            ),
+                                        },
+                                    ],
+                                }
+                            ],
                         ),
                         timeout=30,
                     )
@@ -146,7 +148,7 @@ class DocumentIngestService:
                             image_texts.append(block.text.strip())
 
                     logger.info("ocr.image_processed", size=len(image_data))
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning("ocr.image_timeout", size=len(image_data))
                 except Exception:
                     logger.exception("ocr.single_image_failed", size=len(image_data))
@@ -163,7 +165,7 @@ class DocumentIngestService:
             file_type="text",
             language="en",
             extracted_text=text,
-            ingested_at=datetime.now(timezone.utc),
+            ingested_at=datetime.now(UTC),
             metadata_={
                 "char_count": len(text),
                 "word_count": len(text.split()),

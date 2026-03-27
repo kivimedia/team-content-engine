@@ -22,14 +22,8 @@ def test_retry_config():
 def test_fallback_chain():
     """PRD Section 42.3: Opus -> Sonnet -> Haiku."""
     assert "claude-opus-4-20250514" in FALLBACK_CHAIN
-    assert (
-        FALLBACK_CHAIN["claude-opus-4-20250514"]
-        == "claude-sonnet-4-20250514"
-    )
-    assert (
-        FALLBACK_CHAIN["claude-sonnet-4-20250514"]
-        == "claude-haiku-4-5-20251001"
-    )
+    assert FALLBACK_CHAIN["claude-opus-4-20250514"] == "claude-sonnet-4-20250514"
+    assert FALLBACK_CHAIN["claude-sonnet-4-20250514"] == "claude-haiku-4-5-20251001"
 
 
 def test_circuit_breaker_initial():
@@ -56,9 +50,7 @@ def test_circuit_breaker_success_resets():
 
 
 def test_rate_limit_tracking():
-    rl = RateLimitBudget(
-        service_name="test", tpm_limit=100, rpm_limit=10
-    )
+    rl = RateLimitBudget(service_name="test", tpm_limit=100, rpm_limit=10)
     assert not rl.should_delay()
     for _ in range(9):
         rl.record_usage(10)
@@ -66,9 +58,7 @@ def test_rate_limit_tracking():
 
 
 def test_rate_limit_usage_pct():
-    rl = RateLimitBudget(
-        service_name="test", tpm_limit=1000, rpm_limit=100
-    )
+    rl = RateLimitBudget(service_name="test", tpm_limit=1000, rpm_limit=100)
     rl.record_usage(500)
     pct = rl.get_usage_pct()
     assert pct["tpm_pct"] == 50.0
@@ -85,9 +75,7 @@ def test_resilience_manager():
 
 def test_resilience_manager_fallback():
     manager = ResilienceManager()
-    fallback = manager.get_fallback_model(
-        "claude-opus-4-20250514"
-    )
+    fallback = manager.get_fallback_model("claude-opus-4-20250514")
     assert fallback == "claude-sonnet-4-20250514"
     assert manager.get_fallback_model("unknown") is None
 

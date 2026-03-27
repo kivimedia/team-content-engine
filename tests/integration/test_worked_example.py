@@ -11,10 +11,7 @@ from tce.schemas.common import QA_DIMENSIONS, QA_THRESHOLDS, QA_WEIGHTS
 WORKED_EXAMPLE = {
     "story_brief": {
         "brief_id": "WK12-MON-001",
-        "topic": (
-            "Autonomous AI agent teams — Claude's new "
-            "multi-agent coordination"
-        ),
+        "topic": ("Autonomous AI agent teams — Claude's new multi-agent coordination"),
         "audience": (
             "Business professionals and founders who use AI tools "
             "daily but haven't grasped the agent paradigm shift"
@@ -69,9 +66,7 @@ WORKED_EXAMPLE = {
     },
     "cta_package": {
         "weekly_keyword": "agents",
-        "fb_cta_line": (
-            'Comment "agents" and I\'ll send it to you.'
-        ),
+        "fb_cta_line": ('Comment "agents" and I\'ll send it to you.'),
         "dm_flow": {
             "trigger": "agents",
             "ack_message": "Hey! Thanks for commenting.",
@@ -98,10 +93,17 @@ def test_worked_example_has_all_story_brief_fields():
     """Story brief must have all required fields."""
     brief = WORKED_EXAMPLE["story_brief"]
     required = [
-        "brief_id", "topic", "audience", "angle_type",
-        "desired_belief_shift", "template_id",
-        "house_voice_weights", "thesis",
-        "evidence_requirements", "cta_goal", "visual_job",
+        "brief_id",
+        "topic",
+        "audience",
+        "angle_type",
+        "desired_belief_shift",
+        "template_id",
+        "house_voice_weights",
+        "thesis",
+        "evidence_requirements",
+        "cta_goal",
+        "visual_job",
     ]
     for field in required:
         assert field in brief, f"Missing: {field}"
@@ -143,17 +145,13 @@ def test_worked_example_qa_all_pass():
     qa = WORKED_EXAMPLE["qa_scorecard"]
     for dim in QA_DIMENSIONS:
         threshold = QA_THRESHOLDS[dim]
-        assert qa[dim] >= threshold, (
-            f"{dim}: {qa[dim]} < threshold {threshold}"
-        )
+        assert qa[dim] >= threshold, f"{dim}: {qa[dim]} < threshold {threshold}"
 
 
 def test_worked_example_composite_score():
     """Composite score should be >= 7.0."""
     qa = WORKED_EXAMPLE["qa_scorecard"]
-    composite = sum(
-        qa[dim] * QA_WEIGHTS[dim] for dim in QA_DIMENSIONS
-    )
+    composite = sum(qa[dim] * QA_WEIGHTS[dim] for dim in QA_DIMENSIONS)
     assert composite >= 7.0, f"Composite {composite} < 7.0"
 
 

@@ -54,6 +54,7 @@ class AgentBase(ABC):
     def _report(self, message: str) -> None:
         """Report progress to the orchestrator's live log."""
         import datetime
+
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         entry = f"[{ts}] {message}"
         self._progress_log.append(entry)
@@ -101,9 +102,7 @@ class AgentBase(ABC):
         model = model or self.default_model
 
         # Check if we should use a fallback model (PRD Section 42.3)
-        use_fallback, fallback_model = (
-            resilience_manager.should_use_fallback(model)
-        )
+        use_fallback, fallback_model = resilience_manager.should_use_fallback(model)
         if use_fallback and fallback_model:
             logger.warning(
                 "agent.model_fallback",
@@ -132,6 +131,7 @@ class AgentBase(ABC):
             # Try to build full cached prefix with house voice, templates, etc.
             try:
                 from tce.services.cache_prefix import CachePrefixBuilder
+
                 builder = CachePrefixBuilder(self.db)
                 kwargs["system"] = await builder.build_system_message(system)
             except Exception:
@@ -147,7 +147,9 @@ class AgentBase(ABC):
         self._report(f"Calling {model}...")
         response = await self._client.messages.create(**kwargs)
         elapsed = time.monotonic() - start
-        self._report(f"LLM responded ({response.usage.input_tokens}in/{response.usage.output_tokens}out, {elapsed:.1f}s)")
+        in_tok = response.usage.input_tokens
+        out_tok = response.usage.output_tokens
+        self._report(f"LLM responded ({in_tok}in/{out_tok}out, {elapsed:.1f}s)")
 
         # Record cost
         await self.cost_tracker.record(
@@ -171,7 +173,8 @@ class AgentBase(ABC):
         return ""
 
     def _parse_json_response(self, text: str) -> dict[str, Any]:
-        """Extract JSON from a response that may contain markdown code fences or surrounding text."""
+        """Extract JSON from a response that may contain
+        markdown code fences or surrounding text."""
         import json
         import re
 

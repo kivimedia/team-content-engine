@@ -43,8 +43,16 @@ class BackupService:
         try:
             # Use docker exec to run pg_dump inside the tce-db container
             proc = await asyncio.create_subprocess_exec(
-                "docker", "exec", "tce-db",
-                "pg_dump", "-U", "tce", "-d", "tce", "--no-owner", "--no-acl",
+                "docker",
+                "exec",
+                "tce-db",
+                "pg_dump",
+                "-U",
+                "tce",
+                "-d",
+                "tce",
+                "--no-owner",
+                "--no-acl",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -53,8 +61,17 @@ class BackupService:
             if proc.returncode != 0:
                 # Fallback: try direct pg_dump if not using Docker
                 proc = await asyncio.create_subprocess_exec(
-                    "pg_dump", "-h", "localhost", "-p", "5433",
-                    "-U", "tce", "-d", "tce", "--no-owner", "--no-acl",
+                    "pg_dump",
+                    "-h",
+                    "localhost",
+                    "-p",
+                    "5433",
+                    "-U",
+                    "tce",
+                    "-d",
+                    "tce",
+                    "--no-owner",
+                    "--no-acl",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env={"PGPASSWORD": "tce"},
@@ -82,21 +99,19 @@ class BackupService:
         """List available backups."""
         backups = []
         for f in sorted(self.backup_dir.glob("tce_backup_*.sql"), reverse=True):
-            backups.append({
-                "file": f.name,
-                "path": str(f),
-                "size_bytes": f.stat().st_size,
-                "created": datetime.fromtimestamp(
-                    f.stat().st_mtime
-                ).isoformat(),
-            })
+            backups.append(
+                {
+                    "file": f.name,
+                    "path": str(f),
+                    "size_bytes": f.stat().st_size,
+                    "created": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+                }
+            )
         return backups
 
     def cleanup_old_backups(self) -> dict[str, Any]:
         """Remove backups older than retention period."""
-        cutoff = datetime.utcnow().timestamp() - (
-            RETENTION_DAYS * 86400
-        )
+        cutoff = datetime.utcnow().timestamp() - (RETENTION_DAYS * 86400)
         removed = []
         for f in self.backup_dir.glob("tce_backup_*.sql"):
             if f.stat().st_mtime < cutoff:
@@ -166,8 +181,7 @@ class BackupService:
                 },
             ],
             "s3_versioning": (
-                "Enable versioning on the S3 bucket for DOCX guides, "
-                "images, and source files."
+                "Enable versioning on the S3 bucket for DOCX guides, images, and source files."
             ),
             "prompt_backup": (
                 "Prompts are in the database (included in pg_dump). "

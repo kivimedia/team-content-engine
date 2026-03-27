@@ -40,9 +40,7 @@ def test_fear_exploitation_flagged():
     )
     assert not result["passes"]
     assert len(result["flags"]) > 0
-    assert any(
-        f["pattern"] == "fear_exploitation" for f in result["flags"]
-    )
+    assert any(f["pattern"] == "fear_exploitation" for f in result["flags"])
 
 
 def test_war_metaphors_flagged():
@@ -66,16 +64,12 @@ def test_sensitive_period_penalty():
 
 
 def test_validate_config_valid():
-    result = HumanitarianGate.validate_config(
-        weight=0.10, threshold=8
-    )
+    result = HumanitarianGate.validate_config(weight=0.10, threshold=8)
     assert result["valid"]
 
 
 def test_validate_config_below_minimum():
-    result = HumanitarianGate.validate_config(
-        weight=0.05, threshold=5
-    )
+    result = HumanitarianGate.validate_config(weight=0.05, threshold=5)
     assert not result["valid"]
     assert result["enforced_weight"] == MIN_WEIGHT
     assert result["enforced_threshold"] == MIN_THRESHOLD

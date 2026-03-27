@@ -43,13 +43,9 @@ class PipelineOrchestrator:
         self.settings = settings
         self.run_id = run_id or uuid.uuid4()
         self.context: dict[str, Any] = {}
-        self.step_status: dict[str, StepStatus] = {
-            s.agent_name: StepStatus.PENDING for s in steps
-        }
+        self.step_status: dict[str, StepStatus] = {s.agent_name: StepStatus.PENDING for s in steps}
         self.step_errors: dict[str, str] = {}
-        self.step_logs: dict[str, list[str]] = {
-            s.agent_name: [] for s in steps
-        }
+        self.step_logs: dict[str, list[str]] = {s.agent_name: [] for s in steps}
         self._cost_tracker = CostTracker(db)
         self._prompt_manager = PromptManager(db)
         self._saver = PipelineResultSaver(db, self.run_id)
@@ -67,7 +63,8 @@ class PipelineOrchestrator:
             if not ready:
                 # No steps ready but some pending — deadlock or all blocked
                 unfinished = [
-                    name for name, status in self.step_status.items()
+                    name
+                    for name, status in self.step_status.items()
                     if status == StepStatus.PENDING
                 ]
                 logger.error("pipeline.deadlock", unfinished=unfinished)
@@ -105,6 +102,7 @@ class PipelineOrchestrator:
                 log_list = self.step_logs[step_name]
                 if attempt > 1:
                     import datetime
+
                     ts = datetime.datetime.now().strftime("%H:%M:%S")
                     log_list.append(f"[{ts}] Retry attempt {attempt}/{step.max_retries}...")
                     logger.info("step.retry", step=step_name, attempt=attempt, max=step.max_retries)
@@ -130,9 +128,7 @@ class PipelineOrchestrator:
                 return  # Success - exit retry loop
 
             except Exception as e:
-                import traceback
                 err_msg = str(e) or f"{type(e).__name__}: {repr(e)}"
-                tb = traceback.format_exc()
                 last_error = err_msg
                 logger.warning(
                     "step.attempt_failed",
@@ -151,8 +147,11 @@ class PipelineOrchestrator:
                     wait_secs = 5 * attempt
                     log_list = self.step_logs[step_name]
                     import datetime
+
                     ts = datetime.datetime.now().strftime("%H:%M:%S")
-                    log_list.append(f"[{ts}] Step failed: {err_msg[:120]}. Retrying in {wait_secs}s...")
+                    log_list.append(
+                        f"[{ts}] Step failed: {err_msg[:120]}. Retrying in {wait_secs}s..."
+                    )
                     await asyncio.sleep(wait_secs)
 
         # All retries exhausted
@@ -170,51 +169,33 @@ class PipelineOrchestrator:
         """Persist agent output to the database after a step completes."""
         try:
             if step_name == "corpus_analyst":
-                ids = await self._saver.save_post_examples(
-                    self.context
-                )
-                self.context["_post_example_ids"] = [
-                    str(i) for i in ids
-                ]
+                ids = await self._saver.save_post_examples(self.context)
+                self.context["_post_example_ids"] = [str(i) for i in ids]
             elif step_name == "engagement_scorer":
-                await self._saver.save_engagement_scores(
-                    self.context
-                )
+                await self._saver.save_engagement_scores(self.context)
             elif step_name == "pattern_miner":
                 ids = await self._saver.save_templates(self.context)
-                self.context["_template_ids"] = [
-                    str(i) for i in ids
-                ]
+                self.context["_template_ids"] = [str(i) for i in ids]
             elif step_name == "trend_scout":
-                tid = await self._saver.save_trend_brief(
-                    self.context
-                )
+                tid = await self._saver.save_trend_brief(self.context)
                 if tid:
                     self.context["_trend_brief_id"] = tid
             elif step_name == "story_strategist":
-                sid = await self._saver.save_story_brief(
-                    self.context
-                )
+                sid = await self._saver.save_story_brief(self.context)
                 if sid:
                     self.context["_story_brief_id"] = sid
             elif step_name == "research_agent":
-                rid = await self._saver.save_research_brief(
-                    self.context
-                )
+                rid = await self._saver.save_research_brief(self.context)
                 if rid:
                     self.context["_research_brief_id"] = rid
             elif step_name == "qa_agent":
-                qid = await self._saver.save_qa_scorecard(
-                    self.context
-                )
+                qid = await self._saver.save_qa_scorecard(self.context)
                 if qid:
                     self.context["_qa_scorecard_id"] = qid
             elif step_name == "creative_director":
                 # After creative_director, we have all pieces
                 # for the PostPackage — assemble and save
-                pid = await self._saver.save_post_package(
-                    self.context
-                )
+                pid = await self._saver.save_post_package(self.context)
                 if pid:
                     self.context["_post_package_id"] = pid
                     # Link package to calendar entry and update status
@@ -225,10 +206,12 @@ class PipelineOrchestrator:
                 if image_prompts and self.settings.fal_api_key:
                     log_list = self.step_logs.get("creative_director", [])
                     import datetime
+
                     ts = datetime.datetime.now().strftime("%H:%M:%S")
                     log_list.append(f"[{ts}] Generating {len(image_prompts)} images via fal.ai...")
                     try:
                         from tce.services.image_generation import ImageGenerationService
+
                         img_svc = ImageGenerationService(self.settings.fal_api_key)
                         generated = await img_svc.generate_batch(image_prompts)
                         self.context["generated_images"] = generated
@@ -240,9 +223,7 @@ class PipelineOrchestrator:
                         log_list.append(f"[{ts2}] Image generation failed: {str(img_err)[:80]}")
                         logger.exception("image_gen.batch_failed")
             elif step_name == "docx_guide_builder":
-                gid = await self._saver.save_weekly_guide(
-                    self.context
-                )
+                gid = await self._saver.save_weekly_guide(self.context)
                 if gid:
                     self.context["_weekly_guide_id"] = gid
         except Exception:
@@ -266,16 +247,25 @@ class PipelineOrchestrator:
         try:
             entry = None
             if day_of_week is not None:
-                stmt = select(ContentCalendarEntry).where(
-                    ContentCalendarEntry.day_of_week == day_of_week,
-                    ContentCalendarEntry.status.in_(["planned", "generating"]),
-                ).order_by(ContentCalendarEntry.date.desc()).limit(1)
+                stmt = (
+                    select(ContentCalendarEntry)
+                    .where(
+                        ContentCalendarEntry.day_of_week == day_of_week,
+                        ContentCalendarEntry.status.in_(["planned", "generating"]),
+                    )
+                    .order_by(ContentCalendarEntry.date.desc())
+                    .limit(1)
+                )
                 result = await self.db.execute(stmt)
                 entry = result.scalar_one_or_none()
             if not entry:
-                stmt2 = select(ContentCalendarEntry).where(
-                    ContentCalendarEntry.date == today,
-                ).limit(1)
+                stmt2 = (
+                    select(ContentCalendarEntry)
+                    .where(
+                        ContentCalendarEntry.date == today,
+                    )
+                    .limit(1)
+                )
                 result2 = await self.db.execute(stmt2)
                 entry = result2.scalar_one_or_none()
             if entry:
@@ -301,8 +291,7 @@ class PipelineOrchestrator:
             )
             # If any non-optional dep failed, skip this step
             any_dep_failed = any(
-                self.step_status.get(dep) == StepStatus.FAILED
-                for dep in step.depends_on
+                self.step_status.get(dep) == StepStatus.FAILED for dep in step.depends_on
             )
             if any_dep_failed:
                 self.step_status[name] = StepStatus.SKIPPED

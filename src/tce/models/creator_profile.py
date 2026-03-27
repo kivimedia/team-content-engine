@@ -1,6 +1,5 @@
 """CreatorProfile model — source creators in the influence pool."""
 
-
 from sqlalchemy import Float, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -15,9 +14,7 @@ class CreatorProfile(Base):
     source_urls: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     style_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     allowed_influence_weight: Mapped[float] = mapped_column(Float, default=0.20)
-    disallowed_clone_markers: Mapped[list[str] | None] = mapped_column(
-        ARRAY(String), nullable=True
-    )
+    disallowed_clone_markers: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     top_patterns: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     voice_axes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 

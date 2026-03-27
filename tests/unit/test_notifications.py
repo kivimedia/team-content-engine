@@ -23,9 +23,7 @@ def test_service_has_notify_methods():
         "mark_all_read",
     ]
     for method in methods:
-        assert hasattr(NotificationService, method), (
-            f"Missing method: {method}"
-        )
+        assert hasattr(NotificationService, method), f"Missing method: {method}"
 
 
 def test_notify_methods_are_async():
@@ -42,6 +40,4 @@ def test_notify_methods_are_async():
         "mark_all_read",
     ]:
         fn = getattr(NotificationService, method)
-        assert asyncio.iscoroutinefunction(fn), (
-            f"{method} should be async"
-        )
+        assert asyncio.iscoroutinefunction(fn), f"{method} should be async"

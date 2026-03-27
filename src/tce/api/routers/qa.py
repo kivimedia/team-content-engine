@@ -15,9 +15,7 @@ router = APIRouter(prefix="/qa", tags=["qa"])
 
 @router.get("/scorecards", response_model=list[QAScorecardRead])
 async def list_scorecards(db: AsyncSession = Depends(get_db)) -> list[QAScorecard]:
-    result = await db.execute(
-        select(QAScorecard).order_by(QAScorecard.created_at.desc())
-    )
+    result = await db.execute(select(QAScorecard).order_by(QAScorecard.created_at.desc()))
     return list(result.scalars().all())
 
 
@@ -37,9 +35,7 @@ async def get_scorecard_by_package(
     package_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> QAScorecard:
-    result = await db.execute(
-        select(QAScorecard).where(QAScorecard.package_id == package_id)
-    )
+    result = await db.execute(select(QAScorecard).where(QAScorecard.package_id == package_id))
     sc = result.scalar_one_or_none()
     if not sc:
         raise HTTPException(status_code=404, detail="Scorecard not found for this package")

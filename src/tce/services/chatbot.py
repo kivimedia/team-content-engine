@@ -27,19 +27,38 @@ logger = structlog.get_logger()
 # Ordered by priority — more specific intents checked first
 INTENT_PATTERNS: list[tuple[str, list[str]]] = [
     ("skip_day", ["skip today", "skip", "cancel today", "don't post"]),
-    ("override_topic", [
-        "write about", "change topic", "switch to",
-        "instead write", "cover this",
-    ]),
-    ("trigger_pipeline", [
-        "run pipeline", "run the", "generate", "create post",
-        "start daily", "run daily",
-    ]),
+    (
+        "override_topic",
+        [
+            "write about",
+            "change topic",
+            "switch to",
+            "instead write",
+            "cover this",
+        ],
+    ),
+    (
+        "trigger_pipeline",
+        [
+            "run pipeline",
+            "run the",
+            "generate",
+            "create post",
+            "start daily",
+            "run daily",
+        ],
+    ),
     ("query_costs", ["cost", "spend", "budget", "how much"]),
-    ("query_performance", [
-        "best performing", "top cta", "engagement",
-        "which template", "what worked",
-    ]),
+    (
+        "query_performance",
+        [
+            "best performing",
+            "top cta",
+            "engagement",
+            "which template",
+            "what worked",
+        ],
+    ),
     ("query_package", ["show me", "latest draft", "last post", "today's package"]),
     ("query_week", ["this week", "week's plan", "weekly", "what's queued"]),
     ("query_today", ["today", "what's today", "today's post", "what's scheduled"]),
@@ -84,14 +103,10 @@ class ChatbotService:
                 "success": False,
             }
 
-    async def _handle_query_today(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_query_today(self, message: str, context: dict) -> dict[str, Any]:
         """What's scheduled for today?"""
         result = await self.db.execute(
-            select(ContentCalendarEntry).where(
-                ContentCalendarEntry.date == date.today()
-            )
+            select(ContentCalendarEntry).where(ContentCalendarEntry.date == date.today())
         )
         entry = result.scalar_one_or_none()
         if entry:
@@ -116,9 +131,7 @@ class ChatbotService:
             "success": True,
         }
 
-    async def _handle_query_week(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_query_week(self, message: str, context: dict) -> dict[str, Any]:
         """What's the plan for this week?"""
         today = date.today()
         monday = today - timedelta(days=today.weekday())
@@ -137,8 +150,7 @@ class ChatbotService:
         if not entries:
             return {
                 "response": (
-                    "No entries for this week yet. "
-                    "Use `POST /calendar/plan-week` to generate them."
+                    "No entries for this week yet. Use `POST /calendar/plan-week` to generate them."
                 ),
                 "intent": "query_week",
                 "success": True,
@@ -150,8 +162,7 @@ class ChatbotService:
             day_name = days[entry.day_of_week] if entry.day_of_week < 5 else "?"
             topic = entry.topic or "TBD"
             lines.append(
-                f"- **{day_name}** ({entry.date}): "
-                f"{entry.angle_type} — {topic} [{entry.status}]"
+                f"- **{day_name}** ({entry.date}): {entry.angle_type} — {topic} [{entry.status}]"
             )
 
         return {
@@ -169,24 +180,24 @@ class ChatbotService:
             "success": True,
         }
 
-    async def _handle_query_costs(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_query_costs(self, message: str, context: dict) -> dict[str, Any]:
         """How much have we spent?"""
         today = date.today()
 
         # Daily total
         daily_result = await self.db.execute(
-            select(func.coalesce(func.sum(CostEvent.computed_cost_usd), 0.0))
-            .where(CostEvent.date == today)
+            select(func.coalesce(func.sum(CostEvent.computed_cost_usd), 0.0)).where(
+                CostEvent.date == today
+            )
         )
         daily_total = float(daily_result.scalar_one())
 
         # Monthly total
         month_start = today.replace(day=1)
         monthly_result = await self.db.execute(
-            select(func.coalesce(func.sum(CostEvent.computed_cost_usd), 0.0))
-            .where(CostEvent.date >= month_start)
+            select(func.coalesce(func.sum(CostEvent.computed_cost_usd), 0.0)).where(
+                CostEvent.date >= month_start
+            )
         )
         monthly_total = float(monthly_result.scalar_one())
 
@@ -210,17 +221,13 @@ class ChatbotService:
             "success": True,
         }
 
-    async def _handle_query_performance(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_query_performance(self, message: str, context: dict) -> dict[str, Any]:
         """What's performing well?"""
         # Get recent learning events with actual metrics
         result = await self.db.execute(
             select(LearningEvent)
             .where(LearningEvent.actual_comments.is_not(None))
-            .order_by(
-                (LearningEvent.actual_shares * 3 + LearningEvent.actual_comments).desc()
-            )
+            .order_by((LearningEvent.actual_shares * 3 + LearningEvent.actual_comments).desc())
             .limit(5)
         )
         events = result.scalars().all()
@@ -228,8 +235,7 @@ class ChatbotService:
         if not events:
             return {
                 "response": (
-                    "No performance data yet. "
-                    "Enter post metrics via the feedback endpoints."
+                    "No performance data yet. Enter post metrics via the feedback endpoints."
                 ),
                 "intent": "query_performance",
                 "success": True,
@@ -259,14 +265,10 @@ class ChatbotService:
             "success": True,
         }
 
-    async def _handle_query_package(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_query_package(self, message: str, context: dict) -> dict[str, Any]:
         """Show the latest package."""
         result = await self.db.execute(
-            select(PostPackage)
-            .order_by(PostPackage.created_at.desc())
-            .limit(1)
+            select(PostPackage).order_by(PostPackage.created_at.desc()).limit(1)
         )
         pkg = result.scalar_one_or_none()
 
@@ -296,9 +298,7 @@ class ChatbotService:
             "success": True,
         }
 
-    async def _handle_trigger_pipeline(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_trigger_pipeline(self, message: str, context: dict) -> dict[str, Any]:
         """Trigger the daily content pipeline."""
         return {
             "response": (
@@ -313,14 +313,10 @@ class ChatbotService:
             "success": True,
         }
 
-    async def _handle_skip_day(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_skip_day(self, message: str, context: dict) -> dict[str, Any]:
         """Skip today's content."""
         result = await self.db.execute(
-            select(ContentCalendarEntry).where(
-                ContentCalendarEntry.date == date.today()
-            )
+            select(ContentCalendarEntry).where(ContentCalendarEntry.date == date.today())
         )
         entry = result.scalar_one_or_none()
         if entry:
@@ -337,15 +333,16 @@ class ChatbotService:
             "success": True,
         }
 
-    async def _handle_override_topic(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_override_topic(self, message: str, context: dict) -> dict[str, Any]:
         """Override today's topic."""
         # Extract topic from message (simple: everything after trigger phrase)
         topic = message
         for phrase in [
-            "write about", "change topic to", "switch to",
-            "instead write about", "cover",
+            "write about",
+            "change topic to",
+            "switch to",
+            "instead write about",
+            "cover",
         ]:
             if phrase in message.lower():
                 idx = message.lower().index(phrase) + len(phrase)
@@ -353,9 +350,7 @@ class ChatbotService:
                 break
 
         result = await self.db.execute(
-            select(ContentCalendarEntry).where(
-                ContentCalendarEntry.date == date.today()
-            )
+            select(ContentCalendarEntry).where(ContentCalendarEntry.date == date.today())
         )
         entry = result.scalar_one_or_none()
         if entry:
@@ -367,17 +362,12 @@ class ChatbotService:
                 "success": True,
             }
         return {
-            "response": (
-                f"No calendar entry for today. "
-                f"Noted topic preference: {topic}"
-            ),
+            "response": (f"No calendar entry for today. Noted topic preference: {topic}"),
             "intent": "override_topic",
             "success": True,
         }
 
-    async def _handle_approve(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_approve(self, message: str, context: dict) -> dict[str, Any]:
         """Approve the latest draft package.
 
         PRD Section 44.7: Must NOT publish without explicit
@@ -386,8 +376,7 @@ class ChatbotService:
         """
         # Guardrail: require explicit confirmation word
         has_confirmation = any(
-            word in message.lower()
-            for word in ["confirm", "yes", "approve", "ship"]
+            word in message.lower() for word in ["confirm", "yes", "approve", "ship"]
         )
         if not has_confirmation:
             return {
@@ -412,9 +401,7 @@ class ChatbotService:
             from tce.models.qa_scorecard import QAScorecard
 
             qa_result = await self.db.execute(
-                select(QAScorecard).where(
-                    QAScorecard.package_id == pkg.id
-                )
+                select(QAScorecard).where(QAScorecard.package_id == pkg.id)
             )
             qa = qa_result.scalar_one_or_none()
             if qa and qa.pass_status == "fail":
@@ -443,9 +430,7 @@ class ChatbotService:
             "success": True,
         }
 
-    async def _handle_reject(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_reject(self, message: str, context: dict) -> dict[str, Any]:
         """Reject the latest draft package.
 
         PRD Section 44.7: Override QA failures must log reason.
@@ -454,8 +439,11 @@ class ChatbotService:
         # Extract reason from message if provided
         reason = None
         for prefix in [
-            "reject because", "reject:", "reject -",
-            "not good because", "redo because",
+            "reject because",
+            "reject:",
+            "reject -",
+            "not good because",
+            "redo because",
         ]:
             if prefix in message.lower():
                 idx = message.lower().index(prefix) + len(prefix)
@@ -473,9 +461,7 @@ class ChatbotService:
             pkg.approval_status = "rejected"
             await self.db.flush()
 
-            response_msg = (
-                f"Package {str(pkg.id)[:8]}... rejected."
-            )
+            response_msg = f"Package {str(pkg.id)[:8]}... rejected."
             if reason:
                 response_msg += f" Reason: {reason}"
             else:
@@ -499,9 +485,7 @@ class ChatbotService:
             "success": True,
         }
 
-    async def _handle_status(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_status(self, message: str, context: dict) -> dict[str, Any]:
         """Pipeline and system status."""
         # Count packages by status
         draft_count = await self._count_packages("draft")
@@ -519,9 +503,7 @@ class ChatbotService:
             "success": True,
         }
 
-    async def _handle_help(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_help(self, message: str, context: dict) -> dict[str, Any]:
         """Show available commands."""
         return {
             "response": (
@@ -542,9 +524,7 @@ class ChatbotService:
             "success": True,
         }
 
-    async def _handle_unknown(
-        self, message: str, context: dict
-    ) -> dict[str, Any]:
+    async def _handle_unknown(self, message: str, context: dict) -> dict[str, Any]:
         """Fallback for unrecognized messages."""
         return {
             "response": (

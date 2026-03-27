@@ -18,7 +18,10 @@ CADENCE = {
     1: {"angle": "tactical_workflow_guide", "label": "Tuesday: practical workflow/tool post"},
     2: {"angle": "contrarian_diagnosis", "label": "Wednesday: contrarian belief-shift post"},
     3: {"angle": "case_study_build_story", "label": "Thursday: case study/build-with-AI post"},
-    4: {"angle": "second_order_implication", "label": "Friday: strategic implication/future-of-work"},
+    4: {
+        "angle": "second_order_implication",
+        "label": "Friday: strategic implication/future-of-work",
+    },
 }
 
 SYSTEM_PROMPT = """\
@@ -80,7 +83,7 @@ OUTPUT: A JSON object with:
   - angle_type: from the cadence
   - topic: 1 sentence, scroll-stopping, specific (name tools/companies/numbers)
   - thesis: the core argument in 1-2 plain sentences (what will the reader walk away believing?)
-  - audience: who this targets (be specific - not "business leaders" but "agency owners doing $10-50K/mo")
+  - audience: who this targets (be specific, e.g. "agency owners doing $10-50K/mo")
   - desired_belief_shift: FROM -> TO (use plain language)
   - evidence_requirements: array of claims to verify
   - visual_job: cinematic_symbolic / proof_diagram / emotional_alternate
@@ -126,8 +129,7 @@ class WeeklyPlanner(AgentBase):
         operator_overrides = context.get("operator_overrides", {})
 
         cadence_desc = "\n".join(
-            f"  Day {i} ({c['label']}): angle = {c['angle']}"
-            for i, c in CADENCE.items()
+            f"  Day {i} ({c['label']}): angle = {c['angle']}" for i, c in CADENCE.items()
         )
 
         prompt_parts = [
@@ -167,11 +169,14 @@ class WeeklyPlanner(AgentBase):
                     messages=[
                         {"role": "user", "content": "\n\n".join(prompt_parts)},
                         {"role": "assistant", "content": text},
-                        {"role": "user", "content": (
-                            "Your response was not valid JSON. Output ONLY the JSON object "
-                            "with weekly_theme, gift_theme, cta_keyword, and days array. "
-                            "No markdown, no commentary."
-                        )},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your response was not valid JSON. Output ONLY the JSON object "
+                                "with weekly_theme, gift_theme, cta_keyword, and days array. "
+                                "No markdown, no commentary."
+                            ),
+                        },
                     ],
                     system=SYSTEM_PROMPT,
                     max_tokens=8192,
@@ -195,7 +200,7 @@ class WeeklyPlanner(AgentBase):
         keyword = weekly_plan.get("cta_keyword", "N/A")
         days = weekly_plan.get("days", [])
 
-        self._report(f"\nWeekly Plan:")
+        self._report("\nWeekly Plan:")
         self._report(f"  Theme: {theme}")
         self._report(f"  Gift: {gift}")
         self._report(f"  CTA Keyword: {keyword}")

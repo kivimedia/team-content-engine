@@ -71,15 +71,16 @@ class CompetitorMonitorService:
             common = topic_words & post_words
 
             if len(common) >= 2:
-                overlaps.append({
-                    "creator": creator,
-                    "post_topic": post.get("topic"),
-                    "overlap_words": list(common),
-                    "recommendation": (
-                        "Consider a distinctly different angle "
-                        "or defer this topic."
-                    ),
-                })
+                overlaps.append(
+                    {
+                        "creator": creator,
+                        "post_topic": post.get("topic"),
+                        "overlap_words": list(common),
+                        "recommendation": (
+                            "Consider a distinctly different angle or defer this topic."
+                        ),
+                    }
+                )
 
         return {
             "planned_topic": planned_topic,
@@ -88,9 +89,7 @@ class CompetitorMonitorService:
             "should_review": len(overlaps) > 0,
         }
 
-    def detect_trend_convergence(
-        self, creator_posts: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def detect_trend_convergence(self, creator_posts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Detect when multiple creators cover the same topic.
 
         PRD Section 43.4: If multiple source creators cover the same
@@ -103,23 +102,23 @@ class CompetitorMonitorService:
             creator = post.get("creator_name", "")
             for word in topic.split():
                 if len(word) > 3:  # Skip short words
-                    topic_creators.setdefault(word, []).append(
-                        creator
-                    )
+                    topic_creators.setdefault(word, []).append(creator)
 
         convergences = []
         for keyword, creators in topic_creators.items():
             unique_creators = set(creators)
             if len(unique_creators) >= 2:
-                convergences.append({
-                    "keyword": keyword,
-                    "creators": list(unique_creators),
-                    "signal_strength": len(unique_creators),
-                    "suggestion": (
-                        f"Multiple creators covering '{keyword}' "
-                        "— consider as a trending angle."
-                    ),
-                })
+                convergences.append(
+                    {
+                        "keyword": keyword,
+                        "creators": list(unique_creators),
+                        "signal_strength": len(unique_creators),
+                        "suggestion": (
+                            f"Multiple creators covering '{keyword}' "
+                            "— consider as a trending angle."
+                        ),
+                    }
+                )
 
         return sorted(
             convergences,

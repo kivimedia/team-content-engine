@@ -43,9 +43,7 @@ async def list_calendar(
     db: AsyncSession = Depends(get_db),
 ) -> list[ContentCalendarEntry]:
     """List calendar entries, optionally filtered by date range."""
-    query = select(ContentCalendarEntry).order_by(
-        ContentCalendarEntry.date
-    )
+    query = select(ContentCalendarEntry).order_by(ContentCalendarEntry.date)
     if start:
         query = query.where(ContentCalendarEntry.date >= start)
     if end:
@@ -60,9 +58,7 @@ async def get_today(
 ):
     """Get today's calendar entry."""
     result = await db.execute(
-        select(ContentCalendarEntry).where(
-            ContentCalendarEntry.date == date.today()
-        )
+        select(ContentCalendarEntry).where(ContentCalendarEntry.date == date.today())
     )
     return result.scalar_one_or_none()
 
@@ -78,9 +74,7 @@ async def plan_week(
         entry_date = request.week_start + timedelta(days=day_offset)
         # Check if entry already exists
         existing = await db.execute(
-            select(ContentCalendarEntry).where(
-                ContentCalendarEntry.date == entry_date
-            )
+            select(ContentCalendarEntry).where(ContentCalendarEntry.date == entry_date)
         )
         if existing.scalar_one_or_none():
             continue
@@ -100,9 +94,7 @@ async def plan_week(
     # Store weekly_theme for pipeline context (PRD Section 15.2)
     if request.weekly_theme and entries:
         for entry in entries:
-            entry.operator_notes = (
-                f"Weekly theme: {request.weekly_theme}"
-            )
+            entry.operator_notes = f"Weekly theme: {request.weekly_theme}"
         await db.flush()
 
     # Generate topics for each day using a quick LLM call
@@ -122,9 +114,7 @@ ANGLE_DESCRIPTIONS = {
 }
 
 
-async def _generate_topics(
-    entries: list[ContentCalendarEntry], weekly_theme: str | None
-) -> None:
+async def _generate_topics(entries: list[ContentCalendarEntry], weekly_theme: str | None) -> None:
     """Use a quick LLM call to generate one-line topics for each day."""
     try:
         import anthropic
@@ -136,28 +126,34 @@ async def _generate_topics(
         for entry in entries:
             desc = ANGLE_DESCRIPTIONS.get(entry.angle_type, entry.angle_type)
             days_info.append(
-                f"- {['Monday','Tuesday','Wednesday','Thursday','Friday'][entry.day_of_week]}: "
+                f"- {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'][entry.day_of_week]}: "
                 f"template={entry.angle_type} ({desc})"
             )
 
-        theme_line = f"Weekly theme: {weekly_theme}" if weekly_theme else "No specific theme - pick trending AI/business topics"
+        theme_line = (
+            f"Weekly theme: {weekly_theme}"
+            if weekly_theme
+            else "No specific theme - pick trending AI/business topics"
+        )
 
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=512,
             temperature=0.7,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"{theme_line}\n\n"
-                    f"Generate a specific, compelling one-line topic for each day's post. "
-                    f"Each topic should be concrete (mention real companies, tools, or trends) "
-                    f"and match the template style.\n\n"
-                    f"Days:\n" + "\n".join(days_info) + "\n\n"
-                    f"Reply with ONLY a JSON object: {{\"0\": \"topic\", \"1\": \"topic\", ...}} "
-                    f"where keys are day indices (0=Mon, 4=Fri). No markdown."
-                ),
-            }],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"{theme_line}\n\n"
+                        f"Generate a specific, compelling one-line topic for each day's post. "
+                        f"Each topic should be concrete (mention real companies, tools, or trends) "
+                        f"and match the template style.\n\n"
+                        f"Days:\n" + "\n".join(days_info) + "\n\n"
+                        'Reply with ONLY a JSON object: {"0": "topic", "1": "topic", ...} '
+                        "where keys are day indices (0=Mon, 4=Fri). No markdown."
+                    ),
+                }
+            ],
         )
 
         text = response.content[0].text.strip()
@@ -281,12 +277,13 @@ async def plan_week_deep(
                 )
 
                 # Hook into progress to update status
-                original_report = None
-                if hasattr(orch, '_progress_log'):
+                if hasattr(orch, "_progress_log"):
                     pass  # Will check progress via result
 
                 status["phase"] = "strategist"
-                status["phase_detail"] = "Strategist choosing 5 topics, gift theme, and CTA keyword..."
+                status["phase_detail"] = (
+                    "Strategist choosing 5 topics, gift theme, and CTA keyword..."
+                )
 
                 result = await orch.run(context)
                 await bg_db.commit()
@@ -309,9 +306,7 @@ async def plan_week_deep(
 
                     # Check for existing entry
                     existing = await bg_db.execute(
-                        select(ContentCalendarEntry).where(
-                            ContentCalendarEntry.date == entry_date
-                        )
+                        select(ContentCalendarEntry).where(ContentCalendarEntry.date == entry_date)
                     )
                     entry = existing.scalar_one_or_none()
 
@@ -351,12 +346,14 @@ async def plan_week_deep(
                 # Trim trend_brief for response (keep just headlines + scores)
                 trend_summary = []
                 for t in trend_brief.get("trends", [])[:10]:
-                    trend_summary.append({
-                        "headline": t.get("headline", ""),
-                        "relevance_score": t.get("relevance_score", 0),
-                        "source_url": t.get("source_url", ""),
-                        "angle_suggestions": t.get("angle_suggestions", t.get("angles", [])),
-                    })
+                    trend_summary.append(
+                        {
+                            "headline": t.get("headline", ""),
+                            "relevance_score": t.get("relevance_score", 0),
+                            "source_url": t.get("source_url", ""),
+                            "angle_suggestions": t.get("angle_suggestions", t.get("angles", [])),
+                        }
+                    )
 
                 status["status"] = "completed"
                 status["phase"] = "completed"
@@ -408,27 +405,26 @@ async def approve_deep_plan(
         raise HTTPException(status_code=400, detail="Plan missing week_start")
 
     week_start = date.fromisoformat(week_start_str)
-    weekly_plan_id_str = plan_status.get("weekly_plan_id")
-
     # Update calendar entries with the (possibly edited) plan
     for day_plan in request.days:
         day_num = day_plan.get("day_of_week", 0)
         entry_date = week_start + timedelta(days=day_num)
 
         result = await db.execute(
-            select(ContentCalendarEntry).where(
-                ContentCalendarEntry.date == entry_date
-            )
+            select(ContentCalendarEntry).where(ContentCalendarEntry.date == entry_date)
         )
         entry = result.scalar_one_or_none()
         if entry:
             entry.topic = day_plan.get("topic", entry.topic)
             entry.plan_context = day_plan
             entry.status = "approved"
+            gift = (
+                request.gift_theme
+                if isinstance(request.gift_theme, str)
+                else request.gift_theme.get("title", "")
+            )
             entry.operator_notes = (
-                f"Weekly theme: {request.weekly_theme} | "
-                f"CTA: {request.cta_keyword} | "
-                f"Gift: {request.gift_theme if isinstance(request.gift_theme, str) else request.gift_theme.get('title', '')}"
+                f"Weekly theme: {request.weekly_theme} | CTA: {request.cta_keyword} | Gift: {gift}"
             )
 
     await db.flush()

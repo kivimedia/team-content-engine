@@ -42,7 +42,7 @@ class LearningService:
         # Aggregate feedback tags
         tag_counts: dict[str, int] = {}
         for fb in feedback:
-            for tag in (fb.feedback_tags or []):
+            for tag in fb.feedback_tags or []:
                 tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
         return {

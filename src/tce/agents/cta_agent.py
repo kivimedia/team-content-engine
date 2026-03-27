@@ -53,10 +53,7 @@ class CTAAgent(AgentBase):
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Generate CTA keyword and DM flow."""
         story_brief = context.get("story_brief", {})
-        weekly_theme = (
-            context.get("weekly_theme", "")
-            or story_brief.get("topic", "")
-        )
+        weekly_theme = context.get("weekly_theme", "") or story_brief.get("topic", "")
         weekly_keyword = context.get("weekly_keyword")  # May be pre-set
         guide_title = context.get("guide_title", "")
 
@@ -64,20 +61,20 @@ class CTAAgent(AgentBase):
 
         if weekly_keyword:
             prompt_parts.append(
-                f"The weekly primary keyword is already set: \"{weekly_keyword}\"\n"
+                f'The weekly primary keyword is already set: "{weekly_keyword}"\n'
                 f"Generate the DM flow and CTA lines for today's post."
             )
         else:
-            prompt_parts.append(
-                "Choose a weekly primary keyword based on the theme and guide."
-            )
+            prompt_parts.append("Choose a weekly primary keyword based on the theme and guide.")
 
-        prompt_parts.extend([
-            f"Weekly theme: {weekly_theme}",
-            f"Guide title: {guide_title}",
-            f"Story brief: {json.dumps(story_brief, indent=2)}",
-            "Generate the CTA package.",
-        ])
+        prompt_parts.extend(
+            [
+                f"Weekly theme: {weekly_theme}",
+                f"Guide title: {guide_title}",
+                f"Story brief: {json.dumps(story_brief, indent=2)}",
+                "Generate the CTA package.",
+            ]
+        )
 
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
@@ -95,11 +92,11 @@ class CTAAgent(AgentBase):
                 "dm_flow": {"trigger": weekly_keyword or "guide"},
             }
 
-        self._report(f"CTA package ready:")
-        self._report(f"  Weekly keyword: \"{cta_package.get('weekly_keyword', 'N/A')}\"")
+        self._report("CTA package ready:")
+        self._report(f'  Weekly keyword: "{cta_package.get("weekly_keyword", "N/A")}"')
         secondary = cta_package.get("secondary_keyword")
         if secondary:
-            self._report(f"  Secondary keyword: \"{secondary}\"")
+            self._report(f'  Secondary keyword: "{secondary}"')
         fb_cta = cta_package.get("fb_cta_line", "")
         if fb_cta:
             self._report(f"  FB CTA: {fb_cta[:120]}")
@@ -108,7 +105,7 @@ class CTAAgent(AgentBase):
             self._report(f"  LI CTA: {li_cta[:120]}")
         dm_flow = cta_package.get("dm_flow", {})
         if dm_flow:
-            self._report(f"  DM trigger: \"{dm_flow.get('trigger', 'N/A')}\"")
+            self._report(f'  DM trigger: "{dm_flow.get("trigger", "N/A")}"')
             self._report(f"  DM ack: {str(dm_flow.get('ack_message', 'N/A'))[:100]}")
         checklist = cta_package.get("fulfillment_checklist", [])
         if checklist:

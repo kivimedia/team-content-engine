@@ -13,10 +13,16 @@ def test_ten_voice_axes():
     """PRD Section 14.1: 10 voice axes."""
     assert len(VOICE_AXES) == 10
     expected = {
-        "curiosity", "sharpness", "practicality",
-        "strategic_depth", "emotional_intensity",
-        "sentence_punch", "executive_clarity",
-        "contrarian_heat", "friendliness", "urgency",
+        "curiosity",
+        "sharpness",
+        "practicality",
+        "strategic_depth",
+        "emotional_intensity",
+        "sentence_punch",
+        "executive_clarity",
+        "contrarian_heat",
+        "friendliness",
+        "urgency",
     }
     assert set(VOICE_AXES) == expected
 
@@ -44,9 +50,7 @@ def test_angle_override_weights_sum():
     """Each angle override should sum to ~1.0."""
     for angle, weights in ANGLE_WEIGHT_OVERRIDES.items():
         total = sum(weights.values())
-        assert abs(total - 1.0) < 0.01, (
-            f"{angle} weights sum to {total}"
-        )
+        assert abs(total - 1.0) < 0.01, f"{angle} weights sum to {total}"
 
 
 def test_similarity_threshold():
@@ -69,9 +73,7 @@ def test_get_weights_angle_override():
 def test_get_weights_operator_override():
     engine = HouseVoiceEngine()
     overrides = {"Omri Barak": 0.5, "Alex Kap": 0.5}
-    weights = engine.get_weights_for_angle(
-        "big_shift_explainer", overrides
-    )
+    weights = engine.get_weights_for_angle("big_shift_explainer", overrides)
     assert weights["Omri Barak"] == 0.5
     assert weights["Alex Kap"] == 0.5
 
@@ -113,8 +115,6 @@ def test_build_voice_prompt_with_founder():
 
 
 def test_normalize_weights():
-    result = HouseVoiceEngine._normalize_weights(
-        {"A": 2.0, "B": 3.0}
-    )
+    result = HouseVoiceEngine._normalize_weights({"A": 2.0, "B": 3.0})
     assert abs(result["A"] - 0.4) < 0.001
     assert abs(result["B"] - 0.6) < 0.001

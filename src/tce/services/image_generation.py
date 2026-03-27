@@ -140,9 +140,7 @@ class ImageGenerationService:
             "negative_prompt": negative_prompt,
         }
 
-    async def generate_batch(
-        self, prompts: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    async def generate_batch(self, prompts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Generate images for a batch of prompts (typically 3 per post)."""
         results = []
         for prompt in prompts:
@@ -161,11 +159,13 @@ class ImageGenerationService:
                     "image_gen.failed",
                     prompt=prompt.get("prompt_name"),
                 )
-                results.append({
-                    "status": "failed",
-                    "error": str(e),
-                    "prompt_text": prompt.get("prompt_text", ""),
-                })
+                results.append(
+                    {
+                        "status": "failed",
+                        "error": str(e),
+                        "prompt_text": prompt.get("prompt_text", ""),
+                    }
+                )
         return results
 
     @staticmethod

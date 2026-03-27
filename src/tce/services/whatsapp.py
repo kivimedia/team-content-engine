@@ -66,17 +66,12 @@ class WhatsAppService:
         """Generate a DM flow for a CTA keyword."""
         return WhatsAppFlow(
             keyword=keyword,
-            ack_message=(
-                f"Hey! Thanks for commenting '{keyword}'. "
-                f"Here's what you requested."
-            ),
+            ack_message=(f"Hey! Thanks for commenting '{keyword}'. Here's what you requested."),
             delivery_message=(
-                f"Here's the guide: {guide_title}\n"
-                "[Link will be inserted by operator]"
+                f"Here's the guide: {guide_title}\n[Link will be inserted by operator]"
             ),
             follow_up=(
-                "Let me know what you found most useful. "
-                "I go deeper on this topic this week."
+                "Let me know what you found most useful. I go deeper on this topic this week."
             ),
             group_link=group_link,
         )
@@ -93,9 +88,7 @@ class WhatsAppService:
         """PRD Section 40.4: Opt-out in every message."""
         return "Reply STOP to unsubscribe from future messages."
 
-    def get_operator_checklist(
-        self, keyword: str
-    ) -> list[str]:
+    def get_operator_checklist(self, keyword: str) -> list[str]:
         """Checklist for the operator to set up fulfillment."""
         return [
             f"Keyword '{keyword}' is set in the CTA",
@@ -117,7 +110,5 @@ class WhatsAppService:
         if not flow.delivery_message:
             issues.append("Delivery message is required")
         if not flow.consent_required:
-            issues.append(
-                "Consent must be required per WhatsApp Business Policy"
-            )
+            issues.append("Consent must be required per WhatsApp Business Policy")
         return issues

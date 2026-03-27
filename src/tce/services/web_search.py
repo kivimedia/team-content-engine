@@ -58,13 +58,15 @@ class WebSearchService:
 
             results = []
             for item in data.get("web", {}).get("results", []):
-                results.append({
-                    "title": item.get("title", ""),
-                    "url": item.get("url", ""),
-                    "description": item.get("description", ""),
-                    "age": item.get("age", ""),
-                    "extra_snippets": item.get("extra_snippets", []),
-                })
+                results.append(
+                    {
+                        "title": item.get("title", ""),
+                        "url": item.get("url", ""),
+                        "description": item.get("description", ""),
+                        "age": item.get("age", ""),
+                        "extra_snippets": item.get("extra_snippets", []),
+                    }
+                )
             logger.info("web_search.ok", query=query, result_count=len(results))
             return results
 

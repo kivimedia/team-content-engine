@@ -90,9 +90,7 @@ class QAAgent(AgentBase):
 
         humanitarian_gate = HumanitarianGate(
             sensitive_period=context.get("sensitive_period", False),
-            current_events_context=context.get(
-                "current_events_context"
-            ),
+            current_events_context=context.get("current_events_context"),
         )
         gate_result = humanitarian_gate.check(
             facebook_post=facebook_post,
@@ -130,7 +128,7 @@ class QAAgent(AgentBase):
                 self._report(f"  - {issue}")
         revisions = scorecard.get("revision_suggestions", [])
         if revisions:
-            self._report(f"Revision suggestions:")
+            self._report("Revision suggestions:")
             for r in revisions[:5]:
                 self._report(f"  - {str(r)[:120]}")
 

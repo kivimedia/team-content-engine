@@ -40,20 +40,20 @@ class LearningUpdater:
                 continue
 
             result = await self.db.execute(
-                select(PatternTemplate).where(
-                    PatternTemplate.template_name == name
-                )
+                select(PatternTemplate).where(PatternTemplate.template_name == name)
             )
             template = result.scalar_one_or_none()
             if template:
                 old_score = template.median_score
                 template.median_score = new_score
                 template.sample_size = (template.sample_size or 0) + 1
-                applied.append({
-                    "template_name": name,
-                    "old_score": old_score,
-                    "new_score": new_score,
-                })
+                applied.append(
+                    {
+                        "template_name": name,
+                        "old_score": old_score,
+                        "new_score": new_score,
+                    }
+                )
 
         if applied:
             await self.db.flush()
@@ -72,9 +72,7 @@ class LearningUpdater:
     ) -> dict[str, Any] | None:
         """Promote or demote a template (provisional -> recommended, or downgrade)."""
         result = await self.db.execute(
-            select(PatternTemplate).where(
-                PatternTemplate.template_name == template_name
-            )
+            select(PatternTemplate).where(PatternTemplate.template_name == template_name)
         )
         template = result.scalar_one_or_none()
         if not template:
@@ -109,9 +107,7 @@ class LearningUpdater:
         applied = {}
         for name, delta in adjustments.items():
             result = await self.db.execute(
-                select(CreatorProfile).where(
-                    CreatorProfile.creator_name == name
-                )
+                select(CreatorProfile).where(CreatorProfile.creator_name == name)
             )
             profile = result.scalar_one_or_none()
             if profile:
@@ -141,9 +137,7 @@ class LearningUpdater:
         """Record a version change in the system_versions table."""
         # Get current max versions
         result = await self.db.execute(
-            select(SystemVersion)
-            .order_by(SystemVersion.created_at.desc())
-            .limit(1)
+            select(SystemVersion).order_by(SystemVersion.created_at.desc()).limit(1)
         )
         latest = result.scalar_one_or_none()
 
@@ -153,15 +147,11 @@ class LearningUpdater:
         current_scoring = latest.scoring_config_version if latest else 1
 
         new_version = SystemVersion(
-            corpus_version=(
-                current_corpus + 1 if change_type == "corpus" else current_corpus
-            ),
+            corpus_version=(current_corpus + 1 if change_type == "corpus" else current_corpus),
             template_library_version=(
                 current_template + 1 if change_type == "template" else current_template
             ),
-            house_voice_version=(
-                current_voice + 1 if change_type == "voice" else current_voice
-            ),
+            house_voice_version=(current_voice + 1 if change_type == "voice" else current_voice),
             scoring_config_version=(
                 current_scoring + 1 if change_type == "scoring" else current_scoring
             ),

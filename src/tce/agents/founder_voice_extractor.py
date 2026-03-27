@@ -111,9 +111,7 @@ class FounderVoiceExtractor(AgentBase):
             self._report(f"  Taboos: {', '.join(str(t) for t in taboos[:5])}")
         return {"founder_voice": merged}
 
-    def _chunk_text(
-        self, text: str, max_chars: int = 60000
-    ) -> list[str]:
+    def _chunk_text(self, text: str, max_chars: int = 60000) -> list[str]:
         if len(text) <= max_chars:
             return [text]
         chunks = []
@@ -128,9 +126,7 @@ class FounderVoiceExtractor(AgentBase):
             text = text[split_at:].lstrip()
         return chunks
 
-    def _merge_profiles(
-        self, profiles: list[dict]
-    ) -> dict[str, Any]:
+    def _merge_profiles(self, profiles: list[dict]) -> dict[str, Any]:
         """Merge voice profiles extracted from multiple chunks."""
         if not profiles:
             return {}
@@ -163,9 +159,7 @@ class FounderVoiceExtractor(AgentBase):
                     base_list = base_vocab.get(sub_key, [])
                     new_list = new_vocab.get(sub_key, [])
                     if isinstance(base_list, list):
-                        base_vocab[sub_key] = list(
-                            set(base_list + new_list)
-                        )
+                        base_vocab[sub_key] = list(set(base_list + new_list))
                 merged["vocabulary_signature"] = base_vocab
 
         return merged

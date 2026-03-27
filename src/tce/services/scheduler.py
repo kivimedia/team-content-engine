@@ -45,9 +45,7 @@ class ScheduledJob:
         for days_ahead in range(1, 8):
             candidate = now + timedelta(days=days_ahead)
             if candidate.weekday() in self.weekdays:
-                self.next_run = datetime.combine(
-                    candidate.date(), self.run_time
-                )
+                self.next_run = datetime.combine(candidate.date(), self.run_time)
                 return
 
     def to_dict(self) -> dict[str, Any]:
@@ -56,12 +54,8 @@ class ScheduledJob:
             "workflow": self.workflow,
             "run_time": self.run_time.isoformat(),
             "weekdays": self.weekdays,
-            "last_run": (
-                self.last_run.isoformat() if self.last_run else None
-            ),
-            "next_run": (
-                self.next_run.isoformat() if self.next_run else None
-            ),
+            "last_run": (self.last_run.isoformat() if self.last_run else None),
+            "next_run": (self.next_run.isoformat() if self.next_run else None),
         }
 
 
@@ -166,6 +160,7 @@ class Scheduler:
         if job.workflow == "backup":
             # Run backup
             from tce.services.backup import BackupService
+
             backup = BackupService(backup_dir="./backups")
             result = await backup.create_backup()
             logger.info("scheduler.backup_complete", result=result.get("status"))
@@ -175,8 +170,8 @@ class Scheduler:
         # GAP-03: LinkedIn comment polling for CTA keyword matching
         if job.workflow == "linkedin_poll":
             try:
-                from tce.services.cta_fulfillment import CTAFulfillmentService
                 from tce.db.session import async_session
+                from tce.services.cta_fulfillment import CTAFulfillmentService
 
                 async with async_session() as db:
                     service = CTAFulfillmentService(db)
@@ -195,9 +190,9 @@ class Scheduler:
         # GAP-12: For weekly learning, gather cost data first
         if job.workflow == "weekly_learning":
             try:
-                from tce.services.cost_tracker import CostTracker
-                from tce.services.cost_optimization import CostOptimizationService
                 from tce.db.session import async_session
+                from tce.services.cost_optimization import CostOptimizationService
+                from tce.services.cost_tracker import CostTracker
 
                 async with async_session() as db:
                     tracker = CostTracker(db)
@@ -224,9 +219,7 @@ class Scheduler:
                 return
 
             async with async_session() as db:
-                orchestrator = PipelineOrchestrator(
-                    steps=steps, db=db, settings=app_settings
-                )
+                orchestrator = PipelineOrchestrator(steps=steps, db=db, settings=app_settings)
                 result = await orchestrator.run(job.context)
                 await db.commit()
                 logger.info(
@@ -250,10 +243,7 @@ class Scheduler:
         """Get scheduler status and all job info."""
         return {
             "running": self._running,
-            "jobs": {
-                name: job.to_dict()
-                for name, job in self.jobs.items()
-            },
+            "jobs": {name: job.to_dict() for name, job in self.jobs.items()},
         }
 
 

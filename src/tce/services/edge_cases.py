@@ -68,8 +68,7 @@ class EdgeCaseHandler:
         """
         cutoff = datetime.utcnow() - timedelta(hours=APPROVAL_TIMEOUT_HOURS)
         result = await self.db.execute(
-            select(PostPackage)
-            .where(
+            select(PostPackage).where(
                 PostPackage.approval_status == "draft",
                 PostPackage.created_at < cutoff,
             )
@@ -79,13 +78,13 @@ class EdgeCaseHandler:
         archived = []
         for pkg in stale_packages:
             pkg.approval_status = "archived"
-            archived.append({
-                "package_id": str(pkg.id),
-                "created_at": str(pkg.created_at),
-                "hours_pending": (
-                    (datetime.utcnow() - pkg.created_at).total_seconds() / 3600
-                ),
-            })
+            archived.append(
+                {
+                    "package_id": str(pkg.id),
+                    "created_at": str(pkg.created_at),
+                    "hours_pending": ((datetime.utcnow() - pkg.created_at).total_seconds() / 3600),
+                }
+            )
 
         if archived:
             await self.db.flush()
@@ -96,9 +95,7 @@ class EdgeCaseHandler:
 
         return archived
 
-    async def check_budget_spike(
-        self, daily_total: float, daily_budget: float
-    ) -> dict[str, Any]:
+    async def check_budget_spike(self, daily_total: float, daily_budget: float) -> dict[str, Any]:
         """H.9: Cost spike exceeds daily budget.
 
         The run completes (no mid-run abort) but operator is alerted.
@@ -107,14 +104,10 @@ class EdgeCaseHandler:
             return {
                 "triggered": True,
                 "action": "alert_operator",
-                "message": (
-                    f"Daily spend ${daily_total:.2f} exceeds "
-                    f"budget ${daily_budget:.2f}."
-                ),
+                "message": (f"Daily spend ${daily_total:.2f} exceeds budget ${daily_budget:.2f}."),
                 "overage": daily_total - daily_budget,
                 "recommendation": (
-                    "Check which agent caused the overage. "
-                    "Consider model downgrade for next run."
+                    "Check which agent caused the overage. Consider model downgrade for next run."
                 ),
             }
         return {"triggered": False}
@@ -141,8 +134,7 @@ class EdgeCaseHandler:
             "dm_flow": {
                 "trigger": keyword,
                 "ack_message": (
-                    "Thanks! The guide is being finalized. "
-                    "I'll send it as soon as it's ready."
+                    "Thanks! The guide is being finalized. I'll send it as soon as it's ready."
                 ),
             },
         }
@@ -169,8 +161,7 @@ class EdgeCaseHandler:
             "source": "evergreen_library",
             "topics": evergreen_topics,
             "message": (
-                "No strong trending stories found. "
-                "Using evergreen topic from the library."
+                "No strong trending stories found. Using evergreen topic from the library."
             ),
         }
 
@@ -193,9 +184,7 @@ class EdgeCaseHandler:
         }
 
     @staticmethod
-    def handle_source_creator_overlap(
-        creator_name: str, topic: str
-    ) -> dict[str, Any]:
+    def handle_source_creator_overlap(creator_name: str, topic: str) -> dict[str, Any]:
         """H.7: A source creator publishes the same story first."""
         return {
             "action": "flag_for_review",

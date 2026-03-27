@@ -50,84 +50,66 @@ class AntiCloneChecker:
         # 1. Phrase blacklist check
         for phrase in self._blacklisted_phrases:
             if phrase in post_lower:
-                issues.append({
-                    "type": "blacklisted_phrase",
-                    "phrase": phrase,
-                    "severity": "high",
-                    "action": "Must rewrite to avoid this phrase",
-                })
+                issues.append(
+                    {
+                        "type": "blacklisted_phrase",
+                        "phrase": phrase,
+                        "severity": "high",
+                        "action": "Must rewrite to avoid this phrase",
+                    }
+                )
 
         # 2. Corpus similarity check (simple word overlap)
         for example in self.corpus_examples[:50]:
             corpus_text = (
-                example.get("hook_text", "")
-                or example.get("post_text_raw", "")
-                or ""
+                example.get("hook_text", "") or example.get("post_text_raw", "") or ""
             ).lower()
             if not corpus_text:
                 continue
 
-            similarity = self._word_overlap_similarity(
-                post_lower, corpus_text
-            )
+            similarity = self._word_overlap_similarity(post_lower, corpus_text)
             if similarity > SIMILARITY_THRESHOLD:
-                issues.append({
-                    "type": "high_similarity",
-                    "creator": example.get("creator_name", "unknown"),
-                    "similarity": round(similarity, 3),
-                    "severity": "high",
-                    "action": (
-                        "Post too similar to corpus example. "
-                        "Rewrite with different vocabulary."
-                    ),
-                })
+                issues.append(
+                    {
+                        "type": "high_similarity",
+                        "creator": example.get("creator_name", "unknown"),
+                        "similarity": round(similarity, 3),
+                        "severity": "high",
+                        "action": (
+                            "Post too similar to corpus example. Rewrite with different vocabulary."
+                        ),
+                    }
+                )
 
         # 3. Consecutive rhythm check (same sentence length pattern)
-        post_sentences = [
-            s.strip()
-            for s in post_text.replace("\n", " ").split(".")
-            if s.strip()
-        ]
+        post_sentences = [s.strip() for s in post_text.replace("\n", " ").split(".") if s.strip()]
         for example in self.corpus_examples[:20]:
             corpus_text = example.get("post_text_raw", "") or ""
             corpus_sentences = [
-                s.strip()
-                for s in corpus_text.replace("\n", " ").split(".")
-                if s.strip()
+                s.strip() for s in corpus_text.replace("\n", " ").split(".") if s.strip()
             ]
-            if self._rhythm_match(
-                post_sentences, corpus_sentences
-            ):
-                issues.append({
-                    "type": "rhythm_clone",
-                    "creator": example.get(
-                        "creator_name", "unknown"
-                    ),
-                    "severity": "medium",
-                    "action": (
-                        "Sentence rhythm too close to source. "
-                        "Vary paragraph lengths."
-                    ),
-                })
+            if self._rhythm_match(post_sentences, corpus_sentences):
+                issues.append(
+                    {
+                        "type": "rhythm_clone",
+                        "creator": example.get("creator_name", "unknown"),
+                        "severity": "medium",
+                        "action": ("Sentence rhythm too close to source. Vary paragraph lengths."),
+                    }
+                )
 
-        passes = not any(
-            i["severity"] == "high" for i in issues
-        )
+        passes = not any(i["severity"] == "high" for i in issues)
 
         return {
             "passes": passes,
             "issues": issues,
             "issue_count": len(issues),
             "blacklist_size": len(self._blacklisted_phrases),
-            "corpus_examples_checked": min(
-                50, len(self.corpus_examples)
-            ),
+            "corpus_examples_checked": min(50, len(self.corpus_examples)),
         }
 
     @staticmethod
-    def _word_overlap_similarity(
-        text_a: str, text_b: str
-    ) -> float:
+    def _word_overlap_similarity(text_a: str, text_b: str) -> float:
         """Simple word overlap Jaccard similarity."""
         words_a = set(text_a.split())
         words_b = set(text_b.split())
@@ -151,16 +133,8 @@ class AntiCloneChecker:
         lengths_b = [len(s.split()) for s in sentences_b[:window]]
 
         # Check if relative pattern matches (short/medium/long)
-        pattern_a = [
-            "S" if n < 8 else "M" if n < 20 else "L"
-            for n in lengths_a
-        ]
-        pattern_b = [
-            "S" if n < 8 else "M" if n < 20 else "L"
-            for n in lengths_b
-        ]
+        pattern_a = ["S" if n < 8 else "M" if n < 20 else "L" for n in lengths_a]
+        pattern_b = ["S" if n < 8 else "M" if n < 20 else "L" for n in lengths_b]
 
-        matches = sum(
-            1 for a, b in zip(pattern_a, pattern_b) if a == b
-        )
+        matches = sum(1 for a, b in zip(pattern_a, pattern_b) if a == b)
         return matches >= window - 1  # 4 out of 5 match

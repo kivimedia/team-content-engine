@@ -25,9 +25,14 @@ def test_quickstart_has_endpoints():
 def test_glossary_key_terms():
     """PRD Section 43.6: concept glossary."""
     expected_terms = [
-        "house_voice", "founder_voice", "influence_weights",
-        "template_families", "confidence_tags", "qa_scorecard",
-        "cta_keyword", "weekly_guide",
+        "house_voice",
+        "founder_voice",
+        "influence_weights",
+        "template_families",
+        "confidence_tags",
+        "qa_scorecard",
+        "cta_keyword",
+        "weekly_guide",
     ]
     for term in expected_terms:
         assert term in GLOSSARY, f"Missing glossary term: {term}"

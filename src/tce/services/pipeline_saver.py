@@ -7,9 +7,8 @@ from datetime import date
 from typing import Any
 
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.models.creator_profile import CreatorProfile
 from tce.models.image_asset import ImageAsset
@@ -92,9 +91,7 @@ class PipelineResultSaver:
         logger.info("saver.creator_created", name=creator_name, id=str(creator.id))
         return creator.id
 
-    async def save_post_examples(
-        self, context: dict[str, Any]
-    ) -> list[uuid.UUID]:
+    async def save_post_examples(self, context: dict[str, Any]) -> list[uuid.UUID]:
         """Save CorpusAnalyst output as PostExample records."""
         examples = context.get("post_examples", [])
         created_ids: list[uuid.UUID] = []
@@ -112,9 +109,7 @@ class PipelineResultSaver:
             doc_id = ex.get("document_id")
 
             record = PostExample(
-                document_id=uuid.UUID(str(doc_id))
-                if doc_id
-                else None,
+                document_id=uuid.UUID(str(doc_id)) if doc_id else None,
                 creator_id=uuid.UUID(str(creator_id)),
                 page_number=ex.get("page_number"),
                 post_text_raw=ex.get("post_text_raw"),
@@ -134,14 +129,10 @@ class PipelineResultSaver:
                 audience_guess=ex.get("audience_guess"),
                 paragraph_count=ex.get("paragraph_count"),
                 uses_bullets=ex.get("uses_bullets"),
-                has_explicit_keyword_cta=ex.get(
-                    "has_explicit_keyword_cta"
-                ),
+                has_explicit_keyword_cta=ex.get("has_explicit_keyword_cta"),
                 visible_comments=ex.get("visible_comments"),
                 visible_shares=ex.get("visible_shares"),
-                engagement_confidence=ex.get(
-                    "engagement_confidence", "C"
-                ),
+                engagement_confidence=ex.get("engagement_confidence", "C"),
                 ocr_confidence=ex.get("ocr_confidence"),
                 evidence_image_ref=ex.get("evidence_image_ref"),
                 parser_notes=ex.get("parser_notes"),
@@ -157,9 +148,7 @@ class PipelineResultSaver:
         )
         return created_ids
 
-    async def save_engagement_scores(
-        self, context: dict[str, Any]
-    ) -> int:
+    async def save_engagement_scores(self, context: dict[str, Any]) -> int:
         """Update PostExample records with scores from EngagementScorer."""
         scored = context.get("scored_examples", [])
         updated = 0
@@ -168,9 +157,7 @@ class PipelineResultSaver:
             example_id = ex.get("example_id")
             if not example_id:
                 continue
-            record = await self.db.get(
-                PostExample, uuid.UUID(str(example_id))
-            )
+            record = await self.db.get(PostExample, uuid.UUID(str(example_id)))
             if record:
                 record.raw_score = ex.get("raw_score")
                 record.final_score = ex.get("final_score")
@@ -180,21 +167,15 @@ class PipelineResultSaver:
         logger.info("saver.engagement_scores", updated=updated)
         return updated
 
-    async def save_templates(
-        self, context: dict[str, Any]
-    ) -> list[uuid.UUID]:
+    async def save_templates(self, context: dict[str, Any]) -> list[uuid.UUID]:
         """Save PatternMiner output as PatternTemplate records."""
         templates = context.get("templates", [])
         created_ids: list[uuid.UUID] = []
 
         for tpl in templates:
             record = PatternTemplate(
-                template_name=tpl.get(
-                    "template_name", "Unnamed Template"
-                ),
-                template_family=tpl.get(
-                    "template_family", "unknown"
-                ),
+                template_name=tpl.get("template_name", "Unnamed Template"),
+                template_family=tpl.get("template_family", "unknown"),
                 best_for=_to_str(tpl.get("best_for")),
                 hook_formula=_to_str(tpl.get("hook_formula")),
                 body_formula=_to_str(tpl.get("body_formula")),
@@ -205,9 +186,7 @@ class PipelineResultSaver:
                 tone_profile=tpl.get("tone_profile"),
                 risk_notes=_to_str(tpl.get("risk_notes")),
                 anti_patterns=_to_str(tpl.get("anti_patterns")),
-                source_influence_weights=tpl.get(
-                    "source_influence_weights"
-                ),
+                source_influence_weights=tpl.get("source_influence_weights"),
                 status="provisional",
             )
             self.db.add(record)
@@ -219,9 +198,7 @@ class PipelineResultSaver:
 
     # --- Daily content pipeline ---
 
-    async def save_trend_brief(
-        self, context: dict[str, Any]
-    ) -> uuid.UUID | None:
+    async def save_trend_brief(self, context: dict[str, Any]) -> uuid.UUID | None:
         """Save TrendScout output as a TrendBrief record."""
         brief = context.get("trend_brief", {})
         if not brief:
@@ -237,9 +214,7 @@ class PipelineResultSaver:
         logger.info("saver.trend_brief", id=str(record.id))
         return record.id
 
-    async def save_story_brief(
-        self, context: dict[str, Any]
-    ) -> uuid.UUID | None:
+    async def save_story_brief(self, context: dict[str, Any]) -> uuid.UUID | None:
         """Save StoryStrategist output as a StoryBrief record."""
         brief = context.get("story_brief", {})
         if not brief:
@@ -252,9 +227,7 @@ class PipelineResultSaver:
             desired_belief_shift=_clean_text(brief.get("desired_belief_shift")),
             house_voice_weights=brief.get("house_voice_weights"),
             thesis=_clean_text(brief.get("thesis")),
-            evidence_requirements=brief.get(
-                "evidence_requirements"
-            ),
+            evidence_requirements=brief.get("evidence_requirements"),
             cta_goal=_clean_text(brief.get("cta_goal")),
             visual_job=_clean_text(brief.get("visual_job")),
             platform_notes=brief.get("platform_notes"),
@@ -264,9 +237,7 @@ class PipelineResultSaver:
         logger.info("saver.story_brief", id=str(record.id))
         return record.id
 
-    async def save_research_brief(
-        self, context: dict[str, Any]
-    ) -> uuid.UUID | None:
+    async def save_research_brief(self, context: dict[str, Any]) -> uuid.UUID | None:
         """Save ResearchAgent output as a ResearchBrief record."""
         brief = context.get("research_brief", {})
         if not brief:
@@ -288,9 +259,7 @@ class PipelineResultSaver:
         logger.info("saver.research_brief", id=str(record.id))
         return record.id
 
-    async def save_post_package(
-        self, context: dict[str, Any]
-    ) -> uuid.UUID | None:
+    async def save_post_package(self, context: dict[str, Any]) -> uuid.UUID | None:
         """Assemble FB/LI drafts, CTA, and image prompts into a PostPackage."""
         fb = context.get("facebook_draft", {})
         li = context.get("linkedin_draft", {})
@@ -300,9 +269,7 @@ class PipelineResultSaver:
         guide_id = context.get("_weekly_guide_id")
 
         # Merge hook variants from both platforms
-        hooks = fb.get("hook_variants", []) + li.get(
-            "hook_variants", []
-        )
+        hooks = fb.get("hook_variants", []) + li.get("hook_variants", [])
 
         record = PostPackage(
             brief_id=brief_id,
@@ -324,9 +291,7 @@ class PipelineResultSaver:
         for prompt in image_prompts:
             asset = ImageAsset(
                 package_id=record.id,
-                prompt_text=prompt.get(
-                    "prompt_text", prompt.get("detailed_prompt", "")
-                ),
+                prompt_text=prompt.get("prompt_text", prompt.get("detailed_prompt", "")),
                 negative_prompt=prompt.get("negative_prompt"),
                 aspect_ratio=prompt.get("aspect_ratio"),
             )
@@ -340,9 +305,7 @@ class PipelineResultSaver:
         )
         return record.id
 
-    async def save_qa_scorecard(
-        self, context: dict[str, Any]
-    ) -> uuid.UUID | None:
+    async def save_qa_scorecard(self, context: dict[str, Any]) -> uuid.UUID | None:
         """Save QAAgent output as a QAScorecard record."""
         scorecard = context.get("qa_scorecard", {})
         package_id = context.get("_post_package_id")
@@ -351,17 +314,11 @@ class PipelineResultSaver:
 
         record = QAScorecard(
             package_id=package_id,
-            dimension_scores=scorecard.get(
-                "dimension_scores", {}
-            ),
+            dimension_scores=scorecard.get("dimension_scores", {}),
             composite_score=scorecard.get("composite_score"),
             pass_status=scorecard.get("pass_status", "pending"),
-            model_justifications=scorecard.get(
-                "model_justifications"
-            ),
-            final_verdict=scorecard.get(
-                "pass_status", "pending"
-            ),
+            model_justifications=scorecard.get("model_justifications"),
+            final_verdict=scorecard.get("pass_status", "pending"),
             scored_by="model",
         )
         self.db.add(record)
@@ -375,9 +332,7 @@ class PipelineResultSaver:
 
     # --- Weekly planning pipeline ---
 
-    async def save_weekly_guide(
-        self, context: dict[str, Any]
-    ) -> uuid.UUID | None:
+    async def save_weekly_guide(self, context: dict[str, Any]) -> uuid.UUID | None:
         """Save DocxGuideBuilder output as WeeklyGuide + DOCX file."""
         guide = context.get("guide_content", {})
         if not guide:
@@ -423,7 +378,7 @@ class PipelineResultSaver:
                 if title:
                     markdown_parts.append(f"\n## {title}\n")
                 for sc in s.get("scenarios", []):
-                    markdown_parts.append(f"**\"{sc.get('situation', '')}\"**")
+                    markdown_parts.append(f'**"{sc.get("situation", "")}"**')
                     markdown_parts.append(f"{sc.get('response', '')}\n")
             elif sec_type == "closing":
                 markdown_parts.append(f"\n---\n\n**{s.get('headline', '')}**\n")
@@ -449,9 +404,7 @@ class PipelineResultSaver:
                 "weekly_theme",
                 context.get("weekly_theme", ""),
             ),
-            guide_title=guide.get(
-                "guide_title", "Weekly Guide"
-            ),
+            guide_title=guide.get("guide_title", "Weekly Guide"),
             docx_path=docx_path,
             markdown_content=markdown_content,
             cta_keyword=guide.get(

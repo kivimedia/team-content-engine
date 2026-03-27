@@ -44,20 +44,14 @@ class RelearningService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def detect_trigger(
-        self, post_examples: list[dict[str, Any]]
-    ) -> dict[str, Any]:
+    async def detect_trigger(self, post_examples: list[dict[str, Any]]) -> dict[str, Any]:
         """Analyze new examples to determine which trigger type applies."""
         if not post_examples:
             return {"trigger": None, "details": "No examples provided"}
 
         # Get existing creator names
-        result = await self.db.execute(
-            select(CreatorProfile.creator_name)
-        )
-        existing_creators = {
-            row.lower() for row in result.scalars().all()
-        }
+        result = await self.db.execute(select(CreatorProfile.creator_name))
+        existing_creators = {row.lower() for row in result.scalars().all()}
 
         new_creator_names: set[str] = set()
         existing_creator_counts: dict[str, int] = {}
@@ -65,9 +59,7 @@ class RelearningService:
         for ex in post_examples:
             name = ex.get("creator_name", "unknown")
             if name.lower() in existing_creators:
-                existing_creator_counts[name] = (
-                    existing_creator_counts.get(name, 0) + 1
-                )
+                existing_creator_counts[name] = existing_creator_counts.get(name, 0) + 1
             else:
                 new_creator_names.add(name)
 
@@ -97,10 +89,7 @@ class RelearningService:
         if len(examples) < MIN_EXAMPLES_FOR_ADMISSION:
             return {
                 "admitted": False,
-                "reason": (
-                    f"Only {len(examples)} examples; "
-                    f"need {MIN_EXAMPLES_FOR_ADMISSION}"
-                ),
+                "reason": (f"Only {len(examples)} examples; need {MIN_EXAMPLES_FOR_ADMISSION}"),
                 "creator_name": creator_name,
             }
 
@@ -108,9 +97,7 @@ class RelearningService:
         confidence_counts = {"A": 0, "B": 0, "C": 0}
         for ex in examples:
             conf = ex.get("engagement_confidence", "C")
-            confidence_counts[conf] = (
-                confidence_counts.get(conf, 0) + 1
-            )
+            confidence_counts[conf] = confidence_counts.get(conf, 0) + 1
 
         b_plus_count = confidence_counts["A"] + confidence_counts["B"]
         b_plus_ratio = b_plus_count / len(examples)
@@ -127,16 +114,8 @@ class RelearningService:
             }
 
         # Check for distinct patterns
-        hook_types = {
-            ex.get("hook_type")
-            for ex in examples
-            if ex.get("hook_type")
-        }
-        body_structures = {
-            ex.get("body_structure")
-            for ex in examples
-            if ex.get("body_structure")
-        }
+        hook_types = {ex.get("hook_type") for ex in examples if ex.get("hook_type")}
+        body_structures = {ex.get("body_structure") for ex in examples if ex.get("body_structure")}
 
         return {
             "admitted": True,
@@ -218,9 +197,7 @@ class RelearningService:
             "requires_review": len(flagged) > 0,
         }
 
-    async def get_relearning_summary(
-        self, document_id: uuid.UUID
-    ) -> dict[str, Any]:
+    async def get_relearning_summary(self, document_id: uuid.UUID) -> dict[str, Any]:
         """Get a summary of what changed after a relearning cycle."""
         # Count examples for this document
         result = await self.db.execute(
@@ -231,15 +208,11 @@ class RelearningService:
         example_count = result.scalar_one()
 
         # Count templates
-        result = await self.db.execute(
-            select(func.count()).select_from(PatternTemplate)
-        )
+        result = await self.db.execute(select(func.count()).select_from(PatternTemplate))
         template_count = result.scalar_one()
 
         # Count creators
-        result = await self.db.execute(
-            select(func.count()).select_from(CreatorProfile)
-        )
+        result = await self.db.execute(select(func.count()).select_from(CreatorProfile))
         creator_count = result.scalar_one()
 
         return {

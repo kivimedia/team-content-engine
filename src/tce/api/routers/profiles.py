@@ -1,5 +1,6 @@
 """Creator and founder voice profile endpoints."""
 
+import asyncio
 import json
 import uuid
 
@@ -86,9 +87,7 @@ async def analyze_creator_voice(
 
     # Load their posts
     result = await db.execute(
-        select(PostExample)
-        .where(PostExample.creator_id == creator_id)
-        .limit(40)
+        select(PostExample).where(PostExample.creator_id == creator_id).limit(40)
     )
     posts = list(result.scalars().all())
     if not posts:
@@ -117,7 +116,10 @@ async def analyze_creator_voice(
     from tce.settings import Settings
 
     s = Settings()
-    client = anthropic.AsyncAnthropic(api_key=s.anthropic_api_key)
+    api_key = s.anthropic_api_key
+    if hasattr(api_key, "get_secret_value"):
+        api_key = api_key.get_secret_value()
+    client = anthropic.AsyncAnthropic(api_key=api_key)
 
     resp = await client.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -140,9 +142,7 @@ async def analyze_creator_voice(
                     f"second_order_implication, founder_reflection, "
                     f"hidden_feature_shortcut, teardown_myth_busting, "
                     f"comment_keyword_cta_guide, weekly_roundup\n\n"
-                    f"SAMPLES:\n"
-                    + "\n---\n".join(samples[:20])
-                    + "\n\nReply with ONLY JSON: "
+                    f"SAMPLES:\n" + "\n---\n".join(samples[:20]) + "\n\nReply with ONLY JSON: "
                     '{"voice_axes": {"urgency": N, ...}, '
                     '"top_patterns": ["pattern1", ...], '
                     '"style_notes": "one-line summary"}. '
@@ -216,9 +216,7 @@ async def extract_founder_voice(
         raise HTTPException(
             status_code=400,
             detail=(
-                "Document has no extracted text."
-                " Ingest the document first via"
-                " /documents/upload."
+                "Document has no extracted text. Ingest the document first via /documents/upload."
             ),
         )
 

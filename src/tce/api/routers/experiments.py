@@ -37,10 +37,7 @@ async def create_experiment(
     if request.experiment_type not in EXPERIMENT_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Invalid type: {request.experiment_type}. "
-                f"Valid: {EXPERIMENT_TYPES}"
-            ),
+            detail=(f"Invalid type: {request.experiment_type}. Valid: {EXPERIMENT_TYPES}"),
         )
     exp = service.create_experiment(
         experiment_type=request.experiment_type,
@@ -64,9 +61,7 @@ async def get_experiment(
 ) -> dict[str, Any]:
     exp = service.get_experiment(experiment_id)
     if not exp:
-        raise HTTPException(
-            status_code=404, detail="Experiment not found"
-        )
+        raise HTTPException(status_code=404, detail="Experiment not found")
     return exp.to_dict()
 
 

@@ -18,6 +18,4 @@ def test_has_crud_methods():
     ]
     for method in methods:
         assert hasattr(PromptManager, method), f"Missing: {method}"
-        assert asyncio.iscoroutinefunction(
-            getattr(PromptManager, method)
-        ), f"{method} not async"
+        assert asyncio.iscoroutinefunction(getattr(PromptManager, method)), f"{method} not async"

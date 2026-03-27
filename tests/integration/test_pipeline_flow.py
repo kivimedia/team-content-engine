@@ -130,6 +130,5 @@ def test_all_workflows_have_valid_agents():
     for wf_name, steps in WORKFLOWS.items():
         for step in steps:
             assert step.agent_name in registry, (
-                f"Workflow '{wf_name}' references unregistered agent "
-                f"'{step.agent_name}'"
+                f"Workflow '{wf_name}' references unregistered agent '{step.agent_name}'"
             )

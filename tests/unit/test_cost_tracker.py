@@ -33,11 +33,7 @@ def test_compute_cost_with_cache():
         output_tokens=1000,
         cache_read_tokens=10000,
     )
-    expected = (
-        (5000 / 1_000_000) * 3.0
-        + (1000 / 1_000_000) * 15.0
-        + (10000 / 1_000_000) * 0.3
-    )
+    expected = (5000 / 1_000_000) * 3.0 + (1000 / 1_000_000) * 15.0 + (10000 / 1_000_000) * 0.3
     assert abs(cost - expected) < 0.0001
 
 

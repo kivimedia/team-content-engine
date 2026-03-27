@@ -140,10 +140,7 @@ class DocxGuideBuilder(AgentBase):
             or story_brief.get("topic")
             or trend_brief.get("summary", "")
         )
-        weekly_keyword = (
-            context.get("weekly_keyword")
-            or cta_package.get("weekly_keyword", "guide")
-        )
+        weekly_keyword = context.get("weekly_keyword") or cta_package.get("weekly_keyword", "guide")
         story_briefs = context.get("story_briefs", [])
         if not story_briefs and story_brief:
             story_briefs = [story_brief]
@@ -174,8 +171,7 @@ class DocxGuideBuilder(AgentBase):
         # Trend landscape
         if trend_brief.get("trends"):
             trends_summary = [
-                f"- {t.get('headline', t.get('topic', ''))}"
-                for t in trend_brief["trends"][:6]
+                f"- {t.get('headline', t.get('topic', ''))}" for t in trend_brief["trends"][:6]
             ]
             prompt_parts.append("Current trends:\n" + "\n".join(trends_summary))
 
@@ -220,10 +216,13 @@ class DocxGuideBuilder(AgentBase):
                     messages=[
                         {"role": "user", "content": "\n\n".join(prompt_parts)},
                         {"role": "assistant", "content": text},
-                        {"role": "user", "content": (
-                            "Your response was not valid JSON. Please output ONLY a valid "
-                            "JSON object matching the OUTPUT FORMAT spec. No markdown."
-                        )},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your response was not valid JSON. Please output ONLY a valid "
+                                "JSON object matching the OUTPUT FORMAT spec. No markdown."
+                            ),
+                        },
                     ],
                     system=SYSTEM_PROMPT,
                     max_tokens=8192,

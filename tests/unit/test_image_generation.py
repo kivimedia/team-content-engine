@@ -46,9 +46,5 @@ def test_get_platform_crops():
 def test_service_has_methods():
     import asyncio
 
-    assert asyncio.iscoroutinefunction(
-        ImageGenerationService.generate_image
-    )
-    assert asyncio.iscoroutinefunction(
-        ImageGenerationService.generate_batch
-    )
+    assert asyncio.iscoroutinefunction(ImageGenerationService.generate_image)
+    assert asyncio.iscoroutinefunction(ImageGenerationService.generate_batch)

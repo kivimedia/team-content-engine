@@ -16,7 +16,7 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "claude-opus-4-20250514": {
         "input": 15.0,
         "output": 75.0,
-        "cache_read": 1.5,    # 0.1x input
+        "cache_read": 1.5,  # 0.1x input
         "cache_write": 18.75,  # 1.25x input
     },
     "claude-sonnet-4-20250514": {
@@ -128,9 +128,7 @@ class CostTracker:
 
     async def get_run_summary(self, run_id: uuid.UUID) -> dict[str, Any]:
         """Get cost summary for a specific pipeline run."""
-        events = await self.db.execute(
-            select(CostEvent).where(CostEvent.run_id == run_id)
-        )
+        events = await self.db.execute(select(CostEvent).where(CostEvent.run_id == run_id))
         rows = events.scalars().all()
 
         by_agent: dict[str, float] = {}

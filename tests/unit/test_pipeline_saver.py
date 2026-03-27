@@ -22,9 +22,7 @@ def test_saver_has_all_save_methods():
         "save_weekly_guide",
     ]
     for method in methods:
-        assert hasattr(PipelineResultSaver, method), (
-            f"Missing method: {method}"
-        )
+        assert hasattr(PipelineResultSaver, method), f"Missing method: {method}"
 
 
 def test_saver_methods_are_async():
@@ -44,6 +42,4 @@ def test_saver_methods_are_async():
     ]
     for method in methods:
         fn = getattr(PipelineResultSaver, method)
-        assert asyncio.iscoroutinefunction(fn), (
-            f"{method} should be async"
-        )
+        assert asyncio.iscoroutinefunction(fn), f"{method} should be async"

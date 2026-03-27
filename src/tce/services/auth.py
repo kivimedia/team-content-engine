@@ -22,18 +22,38 @@ class Role(StrEnum):
 # Permission matrix: role -> allowed actions
 PERMISSIONS: dict[str, set[str]] = {
     Role.ADMIN: {
-        "read", "write", "delete", "approve", "reject", "publish",
-        "manage_prompts", "manage_templates", "manage_creators",
-        "manage_settings", "manage_users", "trigger_pipeline",
-        "view_costs", "manage_experiments", "seed_database",
+        "read",
+        "write",
+        "delete",
+        "approve",
+        "reject",
+        "publish",
+        "manage_prompts",
+        "manage_templates",
+        "manage_creators",
+        "manage_settings",
+        "manage_users",
+        "trigger_pipeline",
+        "view_costs",
+        "manage_experiments",
+        "seed_database",
     },
     Role.OPERATOR: {
-        "read", "write", "approve", "reject", "publish",
-        "manage_prompts", "manage_templates", "manage_creators",
-        "trigger_pipeline", "view_costs", "manage_experiments",
+        "read",
+        "write",
+        "approve",
+        "reject",
+        "publish",
+        "manage_prompts",
+        "manage_templates",
+        "manage_creators",
+        "trigger_pipeline",
+        "view_costs",
+        "manage_experiments",
     },
     Role.VIEWER: {
-        "read", "view_costs",
+        "read",
+        "view_costs",
     },
 }
 
@@ -65,8 +85,7 @@ class AuthService:
         """Raise if the current role lacks permission."""
         if not self.has_permission(action):
             raise PermissionError(
-                f"Role '{self.current_role}' lacks permission "
-                f"for action '{action}'"
+                f"Role '{self.current_role}' lacks permission for action '{action}'"
             )
 
     def get_allowed_actions(self) -> set[str]:

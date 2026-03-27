@@ -29,9 +29,7 @@ async def create_feedback(
 
 @router.get("/", response_model=list[OperatorFeedbackRead])
 async def list_feedback(db: AsyncSession = Depends(get_db)) -> list[OperatorFeedback]:
-    result = await db.execute(
-        select(OperatorFeedback).order_by(OperatorFeedback.created_at.desc())
-    )
+    result = await db.execute(select(OperatorFeedback).order_by(OperatorFeedback.created_at.desc()))
     return list(result.scalars().all())
 
 
@@ -63,7 +61,5 @@ async def create_learning_event(
 
 @router.get("/learning", response_model=list[LearningEventRead])
 async def list_learning_events(db: AsyncSession = Depends(get_db)) -> list[LearningEvent]:
-    result = await db.execute(
-        select(LearningEvent).order_by(LearningEvent.created_at.desc())
-    )
+    result = await db.execute(select(LearningEvent).order_by(LearningEvent.created_at.desc()))
     return list(result.scalars().all())

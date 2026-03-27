@@ -15,9 +15,7 @@ def test_manual_export_format():
         "cta_keyword": "agents",
         "dm_flow": {"trigger": "agents", "ack": "Thanks!"},
     }
-    result = asyncio.get_event_loop().run_until_complete(
-        adapter.publish(package)
-    )
+    result = asyncio.get_event_loop().run_until_complete(adapter.publish(package))
     assert result["adapter"] == "manual_export"
     assert result["status"] == "exported"
     assert "facebook" in result
@@ -30,8 +28,6 @@ def test_manual_export_format():
 def test_manual_export_empty_package():
     """Should handle empty package gracefully."""
     adapter = ManualExportAdapter()
-    result = asyncio.get_event_loop().run_until_complete(
-        adapter.publish({})
-    )
+    result = asyncio.get_event_loop().run_until_complete(adapter.publish({}))
     assert result["adapter"] == "manual_export"
     assert result["facebook"]["post"] == ""

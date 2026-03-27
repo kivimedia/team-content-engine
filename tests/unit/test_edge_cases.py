@@ -41,9 +41,7 @@ def test_research_failure():
 
 def test_source_creator_overlap():
     """H.7: Source creator publishes same topic."""
-    result = EdgeCaseHandler.handle_source_creator_overlap(
-        "Omri Barak", "AI agents"
-    )
+    result = EdgeCaseHandler.handle_source_creator_overlap("Omri Barak", "AI agents")
     assert result["action"] == "flag_for_review"
     assert "Omri Barak" in result["message"]
     assert len(result["options"]) >= 2

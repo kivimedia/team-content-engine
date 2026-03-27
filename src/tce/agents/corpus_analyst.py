@@ -156,9 +156,7 @@ class CorpusAnalyst(AgentBase):
     async def _load_corpus_docs(self) -> list[dict[str, Any]]:
         """Load post-corpus documents from DB (FB profiles, not books)."""
         result = await self.db.execute(
-            select(SourceDocument).where(
-                SourceDocument.extracted_text.isnot(None)
-            )
+            select(SourceDocument).where(SourceDocument.extracted_text.isnot(None))
         )
         all_docs = result.scalars().all()
 
@@ -169,12 +167,18 @@ class CorpusAnalyst(AgentBase):
             name_lower = doc.file_name.lower().replace(" ", "_")
             is_corpus = any(pat in name_lower for pat in POST_CORPUS_PATTERNS)
             if is_corpus:
-                corpus_docs.append({
-                    "id": str(doc.id),
-                    "text": doc.extracted_text,
-                    "name": doc.file_name,
-                })
-                logger.info("corpus_analyst.loaded_doc", name=doc.file_name, chars=len(doc.extracted_text or ""))
+                corpus_docs.append(
+                    {
+                        "id": str(doc.id),
+                        "text": doc.extracted_text,
+                        "name": doc.file_name,
+                    }
+                )
+                logger.info(
+                    "corpus_analyst.loaded_doc",
+                    name=doc.file_name,
+                    chars=len(doc.extracted_text or ""),
+                )
 
         return corpus_docs
 

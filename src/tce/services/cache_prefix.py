@@ -44,9 +44,7 @@ class CachePrefixBuilder:
         if self._profiles is not None:
             return
 
-        result = await self.db.execute(
-            select(CreatorProfile).order_by(CreatorProfile.creator_name)
-        )
+        result = await self.db.execute(select(CreatorProfile).order_by(CreatorProfile.creator_name))
         self._profiles = list(result.scalars().all())
 
         result = await self.db.execute(
@@ -57,15 +55,11 @@ class CachePrefixBuilder:
         self._templates = list(result.scalars().all())
 
         result = await self.db.execute(
-            select(FounderVoiceProfile)
-            .order_by(FounderVoiceProfile.created_at.desc())
-            .limit(1)
+            select(FounderVoiceProfile).order_by(FounderVoiceProfile.created_at.desc()).limit(1)
         )
         self._voice = result.scalars().first()
 
-    async def build_system_message(
-        self, agent_system_prompt: str
-    ) -> list[dict[str, Any]]:
+    async def build_system_message(self, agent_system_prompt: str) -> list[dict[str, Any]]:
         """Build the full system message with up to 4 cached segments.
 
         Anthropic API allows max 4 cache_control blocks. We use:

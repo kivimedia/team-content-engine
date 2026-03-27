@@ -42,9 +42,7 @@ class FeatureFlagService:
             return _cache
 
         try:
-            result = await self.db.execute(
-                text("SELECT key, enabled FROM feature_flags")
-            )
+            result = await self.db.execute(text("SELECT key, enabled FROM feature_flags"))
             rows = result.fetchall()
             flags = {row[0]: row[1] for row in rows}
 

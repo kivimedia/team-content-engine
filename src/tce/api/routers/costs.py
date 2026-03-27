@@ -109,6 +109,7 @@ async def get_model_distribution(
 ) -> dict:
     """Get token usage distribution by model tier."""
     from datetime import timedelta
+
     from sqlalchemy import func, select
 
     from tce.models.cost_event import CostEvent
@@ -148,6 +149,7 @@ async def get_cache_efficiency(
 ) -> dict:
     """Get prompt cache hit rate trend."""
     from datetime import timedelta
+
     from sqlalchemy import func, select
 
     from tce.models.cost_event import CostEvent
@@ -186,6 +188,7 @@ async def get_cost_per_post(
 ) -> dict:
     """Get average cost per pipeline run (post package)."""
     from datetime import timedelta
+
     from sqlalchemy import func, select
 
     from tce.models.cost_event import CostEvent

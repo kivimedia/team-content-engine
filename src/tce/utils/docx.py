@@ -19,20 +19,20 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Emu, Inches, Pt, RGBColor
+from docx.shared import Inches, Pt, RGBColor
 from docx.table import Table
 
 # ---------------------------------------------------------------------------
 # Color palette (from playbook reference)
 # ---------------------------------------------------------------------------
-CLR_NEAR_BLACK = RGBColor(0x0F, 0x17, 0x2A)   # #0F172A - titles, headings
-CLR_BODY = RGBColor(0x1E, 0x29, 0x3B)          # #1E293B - body text (slate-800)
-CLR_DIM = RGBColor(0x64, 0x74, 0x8B)           # #64748B - footer, captions
-CLR_BLUE = RGBColor(0x25, 0x63, 0xEB)          # #2563EB - H2, accents
-CLR_BLUE_DARK = RGBColor(0x1E, 0x3A, 0x8A)     # #1E3A8A - blue callout text
-CLR_AMBER_DARK = RGBColor(0x78, 0x35, 0x0F)    # #78350F - amber callout text
-CLR_RED_DARK = RGBColor(0x99, 0x1B, 0x1B)      # #991B1B - bad column text
-CLR_GREEN_DARK = RGBColor(0x16, 0x65, 0x34)    # #166534 - good column text
+CLR_NEAR_BLACK = RGBColor(0x0F, 0x17, 0x2A)  # #0F172A - titles, headings
+CLR_BODY = RGBColor(0x1E, 0x29, 0x3B)  # #1E293B - body text (slate-800)
+CLR_DIM = RGBColor(0x64, 0x74, 0x8B)  # #64748B - footer, captions
+CLR_BLUE = RGBColor(0x25, 0x63, 0xEB)  # #2563EB - H2, accents
+CLR_BLUE_DARK = RGBColor(0x1E, 0x3A, 0x8A)  # #1E3A8A - blue callout text
+CLR_AMBER_DARK = RGBColor(0x78, 0x35, 0x0F)  # #78350F - amber callout text
+CLR_RED_DARK = RGBColor(0x99, 0x1B, 0x1B)  # #991B1B - bad column text
+CLR_GREEN_DARK = RGBColor(0x16, 0x65, 0x34)  # #166534 - good column text
 
 # Background hex codes (for cell shading)
 BG_BLUE_CALLOUT = "EFF6FF"
@@ -48,6 +48,7 @@ FONT_NAME = "Calibri"
 # ---------------------------------------------------------------------------
 # Low-level helpers
 # ---------------------------------------------------------------------------
+
 
 def _set_cell_shading(cell, hex_color: str) -> None:
     """Set background color on a table cell."""
@@ -98,9 +99,16 @@ def _remove_table_borders(table: Table) -> None:
     tbl_pr.append(borders)
 
 
-def _add_run(paragraph, text: str, *, bold=False, italic=False,
-             size: int | None = None, color: RGBColor | None = None,
-             font_name: str = FONT_NAME):
+def _add_run(
+    paragraph,
+    text: str,
+    *,
+    bold=False,
+    italic=False,
+    size: int | None = None,
+    color: RGBColor | None = None,
+    font_name: str = FONT_NAME,
+):
     """Add a formatted run to a paragraph."""
     run = paragraph.add_run(text)
     run.font.name = font_name
@@ -115,10 +123,18 @@ def _add_run(paragraph, text: str, *, bold=False, italic=False,
     return run
 
 
-def _add_styled_paragraph(doc, text: str, *, size=11, color=CLR_BODY,
-                          bold=False, italic=False,
-                          alignment=WD_ALIGN_PARAGRAPH.LEFT,
-                          space_before=0, space_after=6):
+def _add_styled_paragraph(
+    doc,
+    text: str,
+    *,
+    size=11,
+    color=CLR_BODY,
+    bold=False,
+    italic=False,
+    alignment=WD_ALIGN_PARAGRAPH.LEFT,
+    space_before=0,
+    space_after=6,
+):
     """Add a paragraph with consistent styling.
 
     Note: space_before/space_after are in POINTS (not DXA/twips).
@@ -191,13 +207,18 @@ def _add_callout_box(doc, label: str, content: str, bg_hex: str, text_color: RGB
 # Section renderers
 # ---------------------------------------------------------------------------
 
+
 def _render_cover(doc, guide_data: dict) -> None:
     """Render the cover page."""
     # Label line
     _add_styled_paragraph(
-        doc, "FREE GUIDE | 2026 EDITION",
-        size=10, color=CLR_BLUE, bold=True,
-        space_before=36, space_after=4,
+        doc,
+        "FREE GUIDE | 2026 EDITION",
+        size=10,
+        color=CLR_BLUE,
+        bold=True,
+        space_before=36,
+        space_after=4,
     )
 
     # Blue divider
@@ -214,8 +235,12 @@ def _render_cover(doc, guide_data: dict) -> None:
     subtitle = guide_data.get("subtitle", "")
     if subtitle:
         _add_styled_paragraph(
-            doc, subtitle, size=13, color=CLR_DIM,
-            space_before=0, space_after=10,
+            doc,
+            subtitle,
+            size=13,
+            color=CLR_DIM,
+            space_before=0,
+            space_after=10,
         )
 
     # Light divider
@@ -300,10 +325,12 @@ def _render_comparison(doc, section: dict) -> None:
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
     # Header row
-    for i, (label, bg, text_color, icon) in enumerate([
-        (bad_label, BG_RED_LIGHT, CLR_RED_DARK, "\u2717"),
-        (good_label, BG_GREEN_LIGHT, CLR_GREEN_DARK, "\u2713"),
-    ]):
+    for i, (label, bg, text_color, icon) in enumerate(
+        [
+            (bad_label, BG_RED_LIGHT, CLR_RED_DARK, "\u2717"),
+            (good_label, BG_GREEN_LIGHT, CLR_GREEN_DARK, "\u2713"),
+        ]
+    ):
         cell = table.cell(0, i)
         _set_cell_shading(cell, bg)
         _set_cell_margins(cell, top=60, bottom=60, left=120, right=120)
@@ -326,7 +353,12 @@ def _render_comparison(doc, section: dict) -> None:
             cell.paragraphs[0].clear()
             items = items_lists[col_idx]
             if row_idx < len(items):
-                _add_run(cell.paragraphs[0], f"{icons[col_idx]} {items[row_idx]}", size=10, color=colors[col_idx])
+                _add_run(
+                    cell.paragraphs[0],
+                    f"{icons[col_idx]} {items[row_idx]}",
+                    size=10,
+                    color=colors[col_idx],
+                )
 
 
 def _render_framework(doc, section: dict) -> None:
@@ -397,7 +429,14 @@ def _render_scenarios(doc, section: dict) -> None:
         _set_cell_margins(left, top=80, bottom=80, left=120, right=120)
         _set_cell_border(left, color="E2E8F0", sz=2)
         left.paragraphs[0].clear()
-        _add_run(left.paragraphs[0], f"\"{situation}\"", bold=True, italic=True, size=10, color=accent_colors[bg_idx])
+        _add_run(
+            left.paragraphs[0],
+            f'"{situation}"',
+            bold=True,
+            italic=True,
+            size=10,
+            color=accent_colors[bg_idx],
+        )
 
         # Right - recommendation (white)
         right = table.cell(0, 1)
@@ -413,9 +452,13 @@ def _render_closing(doc, section: dict, guide_data: dict) -> None:
     doc.add_page_break()
 
     _add_styled_paragraph(
-        doc, "THE BOTTOM LINE",
-        size=10, color=CLR_BLUE, bold=True,
-        space_before=60, space_after=8,
+        doc,
+        "THE BOTTOM LINE",
+        size=10,
+        color=CLR_BLUE,
+        bold=True,
+        space_before=60,
+        space_after=8,
     )
     _add_horizontal_rule(doc)
 
@@ -503,6 +546,7 @@ SECTION_RENDERERS = {
 # Post-processing helpers
 # ---------------------------------------------------------------------------
 
+
 def _clamp_paragraph_spacing(doc) -> None:
     """Cap all paragraph space_after to 24pt (480 twips) max.
 
@@ -510,14 +554,13 @@ def _clamp_paragraph_spacing(doc) -> None:
     unit confusion or style inheritance.  This safety net ensures no
     body paragraph ends up with e.g. 120pt of trailing whitespace.
     """
-    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     max_twips = 480  # 24pt
 
     for para in doc.element.body.iterchildren(qn("w:p")):
-        pPr = para.find(qn("w:pPr"))
-        if pPr is None:
+        p_pr = para.find(qn("w:pPr"))
+        if p_pr is None:
             continue
-        spacing = pPr.find(qn("w:spacing"))
+        spacing = p_pr.find(qn("w:spacing"))
         if spacing is None:
             continue
         after_val = spacing.get(qn("w:after"))
@@ -531,6 +574,7 @@ def _clamp_paragraph_spacing(doc) -> None:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def create_guide_docx(
     guide_data: dict[str, Any] | str,
@@ -552,7 +596,11 @@ def create_guide_docx(
     if isinstance(guide_data, str):
         title = guide_data
         sections = sections_or_path if isinstance(sections_or_path, list) else []
-        out_path = output_path if output_path else (sections_or_path if isinstance(sections_or_path, str) else "")
+        out_path = (
+            output_path
+            if output_path
+            else (sections_or_path if isinstance(sections_or_path, str) else "")
+        )
         guide_data = {
             "guide_title": title,
             "subtitle": "",
@@ -585,7 +633,11 @@ def create_guide_docx(
     sec_fmt.right_margin = Inches(1)
 
     # Footer
-    _setup_footer(doc, guide_data.get("author_name", "Ziv Raviv"), guide_data.get("author_url", "zivraviv.com"))
+    _setup_footer(
+        doc,
+        guide_data.get("author_name", "Ziv Raviv"),
+        guide_data.get("author_url", "zivraviv.com"),
+    )
 
     # Cover page
     _render_cover(doc, guide_data)

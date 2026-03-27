@@ -5,8 +5,8 @@ from pathlib import Path
 
 from tce.utils.docx import create_guide_docx
 
-
 # --- Legacy API compatibility ---
+
 
 def test_legacy_api_still_works():
     """Legacy calling convention: create_guide_docx(title, sections, path)."""
@@ -33,6 +33,7 @@ def test_legacy_empty_sections():
 
 # --- New structured API ---
 
+
 def _make_full_guide() -> dict:
     """Build a realistic guide structure for testing."""
     return {
@@ -54,7 +55,9 @@ def _make_full_guide() -> dict:
             {
                 "type": "callout",
                 "label": "KEY INSIGHT",
-                "content": "AI companies now prioritize strategic control over partnership revenue.",
+                "content": (
+                    "AI companies now prioritize strategic control over partnership revenue."
+                ),
                 "callout_style": "amber",
             },
             {
@@ -76,25 +79,39 @@ def _make_full_guide() -> dict:
             {
                 "type": "framework",
                 "title": "The Platform Independence Framework",
-                "intro": "Four layers that protect your business from sudden AI partnership collapses.",
+                "intro": (
+                    "Four layers that protect your business from sudden AI partnership collapses."
+                ),
                 "steps": [
                     {
                         "label": "Diversification Strategy",
-                        "explanation": "Never build core business functions on a single AI platform.",
+                        "explanation": (
+                            "Never build core business functions on a single AI platform."
+                        ),
                         "bullets": [
                             "Maintain relationships with 3+ AI providers",
                             "Keep 30% of AI capabilities in-house",
                         ],
-                        "action": "List every AI tool your business uses. For each one, identify at least one alternative.",
+                        "action": (
+                            "List every AI tool your business uses."
+                            " For each one, identify at least"
+                            " one alternative."
+                        ),
                     },
                     {
                         "label": "The 30-Minute Rule",
-                        "explanation": "Every AI-dependent process must have a manual or alternative backup.",
+                        "explanation": (
+                            "Every AI-dependent process must have a manual or alternative backup."
+                        ),
                         "bullets": [
                             "Test backup systems monthly",
                             "Document exact steps to switch providers",
                         ],
-                        "action": "Pick your most critical AI-dependent process. Create a step-by-step backup plan this week.",
+                        "action": (
+                            "Pick your most critical AI-dependent"
+                            " process. Create a step-by-step"
+                            " backup plan this week."
+                        ),
                     },
                 ],
             },
@@ -105,15 +122,23 @@ def _make_full_guide() -> dict:
                 "scenarios": [
                     {
                         "situation": "Your AI vendor announces a strategic pivot",
-                        "response": "Immediately activate your diversification plan. Begin testing alternative providers.",
+                        "response": (
+                            "Immediately activate your"
+                            " diversification plan. Begin"
+                            " testing alternative providers."
+                        ),
                     },
                     {
                         "situation": "API pricing suddenly doubles",
-                        "response": "Switch non-critical workloads to alternatives within 48 hours.",
+                        "response": (
+                            "Switch non-critical workloads to alternatives within 48 hours."
+                        ),
                     },
                     {
                         "situation": "A competitor gets exclusive access to your AI provider",
-                        "response": "This is your signal to accelerate in-house capability building.",
+                        "response": (
+                            "This is your signal to accelerate in-house capability building."
+                        ),
                     },
                 ],
             },
@@ -125,7 +150,9 @@ def _make_full_guide() -> dict:
                     "Build the 30-minute switch capability",
                     "Watch for early warning signals",
                 ],
-                "cta": "Want to discuss your AI resilience strategy? Connect with me at zivraviv.com",
+                "cta": (
+                    "Want to discuss your AI resilience strategy? Connect with me at zivraviv.com"
+                ),
             },
         ],
         "cta_keyword": "CONTROL",
@@ -152,7 +179,11 @@ def test_narrative_only():
             "guide_title": "Simple Guide",
             "subtitle": "A test",
             "sections": [
-                {"type": "narrative", "title": "Introduction", "content": "Hello world.\n\nSecond paragraph."},
+                {
+                    "type": "narrative",
+                    "title": "Introduction",
+                    "content": "Hello world.\n\nSecond paragraph.",
+                },
                 {"type": "narrative", "title": "Conclusion", "content": "Goodbye."},
             ],
         }
@@ -250,7 +281,11 @@ def test_bullets_in_narrative():
                 {
                     "type": "narrative",
                     "title": "With Bullets",
-                    "content": "Some text.\n\n- First bullet\n- Second bullet\n- Third bullet\n\nMore text.",
+                    "content": (
+                        "Some text.\n\n- First bullet\n"
+                        "- Second bullet\n- Third bullet"
+                        "\n\nMore text."
+                    ),
                 },
             ],
         }

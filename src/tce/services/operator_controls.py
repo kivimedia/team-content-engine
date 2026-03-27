@@ -36,14 +36,10 @@ class OperatorControlService:
 
     # --- Template controls ---
 
-    async def lock_template(
-        self, template_name: str, reason: str = ""
-    ) -> dict[str, Any] | None:
+    async def lock_template(self, template_name: str, reason: str = "") -> dict[str, Any] | None:
         """Lock a template (prevent it from being used)."""
         result = await self.db.execute(
-            select(PatternTemplate).where(
-                PatternTemplate.template_name == template_name
-            )
+            select(PatternTemplate).where(PatternTemplate.template_name == template_name)
         )
         template = result.scalar_one_or_none()
         if not template:
@@ -64,14 +60,10 @@ class OperatorControlService:
             "reason": reason,
         }
 
-    async def unlock_template(
-        self, template_name: str
-    ) -> dict[str, Any] | None:
+    async def unlock_template(self, template_name: str) -> dict[str, Any] | None:
         """Unlock a previously locked template."""
         result = await self.db.execute(
-            select(PatternTemplate).where(
-                PatternTemplate.template_name == template_name
-            )
+            select(PatternTemplate).where(PatternTemplate.template_name == template_name)
         )
         template = result.scalar_one_or_none()
         if not template:
@@ -84,14 +76,10 @@ class OperatorControlService:
             "new_status": "active",
         }
 
-    async def ban_template(
-        self, template_name: str, reason: str = ""
-    ) -> dict[str, Any] | None:
+    async def ban_template(self, template_name: str, reason: str = "") -> dict[str, Any] | None:
         """Permanently ban a template."""
         result = await self.db.execute(
-            select(PatternTemplate).where(
-                PatternTemplate.template_name == template_name
-            )
+            select(PatternTemplate).where(PatternTemplate.template_name == template_name)
         )
         template = result.scalar_one_or_none()
         if not template:
@@ -112,9 +100,7 @@ class OperatorControlService:
 
     # --- Source controls ---
 
-    async def approve_source(
-        self, document_id: str
-    ) -> dict[str, Any] | None:
+    async def approve_source(self, document_id: str) -> dict[str, Any] | None:
         """Mark a source document as approved."""
         import uuid
 
@@ -126,9 +112,7 @@ class OperatorControlService:
         await self.db.flush()
         return {"document_id": document_id, "status": "approved"}
 
-    async def reject_source(
-        self, document_id: str, reason: str = ""
-    ) -> dict[str, Any] | None:
+    async def reject_source(self, document_id: str, reason: str = "") -> dict[str, Any] | None:
         """Mark a source document as rejected."""
         import uuid
 
@@ -136,10 +120,7 @@ class OperatorControlService:
         if not doc:
             return None
 
-        doc.notes = (
-            (doc.notes or "")
-            + f"\n[REJECTED by operator: {reason}]"
-        )
+        doc.notes = (doc.notes or "") + f"\n[REJECTED by operator: {reason}]"
         await self.db.flush()
         return {
             "document_id": document_id,
@@ -159,9 +140,7 @@ class OperatorControlService:
             return {"error": "Weight must be between 0.0 and 1.0"}
 
         result = await self.db.execute(
-            select(CreatorProfile).where(
-                CreatorProfile.creator_name == creator_name
-            )
+            select(CreatorProfile).where(CreatorProfile.creator_name == creator_name)
         )
         profile = result.scalar_one_or_none()
         if not profile:
@@ -185,9 +164,7 @@ class OperatorControlService:
         return _platform_flags.copy()
 
     @staticmethod
-    def set_platform_flag(
-        platform: str, enabled: bool
-    ) -> dict[str, Any]:
+    def set_platform_flag(platform: str, enabled: bool) -> dict[str, Any]:
         """Enable or disable automation for a platform."""
         if platform not in _platform_flags:
             return {"error": f"Unknown platform: {platform}"}

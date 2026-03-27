@@ -7,12 +7,11 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-import structlog
 
 from tce.db.session import get_db
 from tce.models.pipeline_run import PipelineRun
@@ -57,8 +56,7 @@ async def trigger_pipeline(
     if request.workflow not in WORKFLOWS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown workflow: {request.workflow}. "
-            f"Available: {list(WORKFLOWS.keys())}",
+            detail=f"Unknown workflow: {request.workflow}. Available: {list(WORKFLOWS.keys())}",
         )
 
     steps = WORKFLOWS[request.workflow]
@@ -103,9 +101,7 @@ async def trigger_pipeline(
                     run_record.step_errors = result.get("step_errors", {})
                     if has_failures:
                         errors = result.get("step_errors", {})
-                        run_record.error_message = "; ".join(
-                            f"{k}: {v}" for k, v in errors.items()
-                        )
+                        run_record.error_message = "; ".join(f"{k}: {v}" for k, v in errors.items())
                     await bg_db.commit()
 
             except Exception as e:
@@ -142,9 +138,7 @@ async def get_pipeline_status(
         return _active_runs[run_id].get_status()
 
     # Check database for completed/failed runs
-    result = await db.execute(
-        select(PipelineRun).where(PipelineRun.run_id == uuid.UUID(run_id))
-    )
+    result = await db.execute(select(PipelineRun).where(PipelineRun.run_id == uuid.UUID(run_id)))
     run_record = result.scalar_one_or_none()
     if run_record:
         return {
@@ -154,7 +148,9 @@ async def get_pipeline_status(
             "step_errors": run_record.step_errors or {},
             "error_message": run_record.error_message,
             "started_at": run_record.started_at.isoformat() if run_record.started_at else None,
-            "completed_at": run_record.completed_at.isoformat() if run_record.completed_at else None,
+            "completed_at": run_record.completed_at.isoformat()
+            if run_record.completed_at
+            else None,
         }
 
     raise HTTPException(status_code=404, detail="Pipeline run not found")
@@ -188,10 +184,7 @@ async def list_pipeline_runs(
 @router.get("/workflows")
 async def list_workflows() -> dict[str, list[str]]:
     """List available workflow definitions."""
-    return {
-        name: [step.agent_name for step in steps]
-        for name, steps in WORKFLOWS.items()
-    }
+    return {name: [step.agent_name for step in steps] for name, steps in WORKFLOWS.items()}
 
 
 @router.post("/generate-week")
@@ -234,7 +227,9 @@ async def generate_week(
 
                 else:
                     status["phase"] = "planning"
-                    status["phase_detail"] = "Running weekly planner (trend scout + strategic planning)..."
+                    status["phase_detail"] = (
+                        "Running weekly planner (trend scout + strategic planning)..."
+                    )
 
                     planner_steps = WORKFLOWS["weekly_planner"]
                     planner_run_id = uuid.uuid4()
@@ -263,8 +258,7 @@ async def generate_week(
                     planner_record = await bg_db.get(PipelineRun, planner_record.id)
                     if planner_record:
                         has_failures = any(
-                            v == "failed"
-                            for v in planner_result.get("step_status", {}).values()
+                            v == "failed" for v in planner_result.get("step_status", {}).values()
                         )
                         planner_record.status = "failed" if has_failures else "completed"
                         planner_record.completed_at = datetime.utcnow()
@@ -301,9 +295,7 @@ async def generate_week(
 
                 for i, day_plan in enumerate(days):
                     day_num = day_plan.get("day_of_week", i)
-                    status["phase_detail"] = (
-                        f"Generating day {i + 1}/5 (day_of_week={day_num})..."
-                    )
+                    status["phase_detail"] = f"Generating day {i + 1}/5 (day_of_week={day_num})..."
                     status["current_day"] = i
 
                     day_run_id = uuid.uuid4()
@@ -345,8 +337,7 @@ async def generate_week(
                     day_record = await bg_db.get(PipelineRun, day_record.id)
                     if day_record:
                         has_failures = any(
-                            v == "failed"
-                            for v in day_result.get("step_status", {}).values()
+                            v == "failed" for v in day_result.get("step_status", {}).values()
                         )
                         day_record.status = "failed" if has_failures else "completed"
                         day_record.completed_at = datetime.utcnow()
@@ -376,9 +367,7 @@ async def generate_week(
                 await bg_db.commit()
 
                 # Collect all story briefs for the guide
-                all_story_briefs = [
-                    d.get("story_brief", {}) for d in days
-                ]
+                all_story_briefs = [d.get("story_brief", {}) for d in days]
 
                 guide_context = {
                     **request.context,
@@ -403,8 +392,7 @@ async def generate_week(
                 guide_record = await bg_db.get(PipelineRun, guide_record.id)
                 if guide_record:
                     has_failures = any(
-                        v == "failed"
-                        for v in guide_result.get("step_status", {}).values()
+                        v == "failed" for v in guide_result.get("step_status", {}).values()
                     )
                     guide_record.status = "failed" if has_failures else "completed"
                     guide_record.completed_at = datetime.utcnow()

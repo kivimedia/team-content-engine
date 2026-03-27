@@ -135,9 +135,7 @@ async def generate_images(
     results = await svc.generate_batch(pkg.image_prompts)
 
     # Update existing ImageAsset rows or create new ones
-    existing = await db.execute(
-        select(ImageAsset).where(ImageAsset.package_id == package_id)
-    )
+    existing = await db.execute(select(ImageAsset).where(ImageAsset.package_id == package_id))
     existing_assets = list(existing.scalars().all())
 
     generated = []
@@ -166,12 +164,14 @@ async def generate_images(
         asset.generation_time_seconds = result.get("generation_time_seconds")
         asset.generation_cost_usd = result.get("generation_cost_usd")
 
-        generated.append({
-            "index": i,
-            "status": "generated",
-            "image_url": result.get("image_url"),
-            "time": result.get("generation_time_seconds"),
-        })
+        generated.append(
+            {
+                "index": i,
+                "status": "generated",
+                "image_url": result.get("image_url"),
+                "time": result.get("generation_time_seconds"),
+            }
+        )
 
     # Also update image_prompts JSONB with URLs for dashboard display
     updated_prompts = list(pkg.image_prompts)
@@ -197,10 +197,18 @@ async def cleanup_dashes(db: AsyncSession = Depends(get_db)) -> dict:
     fixed = 0
     for pkg in packages:
         changed = False
-        if pkg.facebook_post and ("\u2014" in pkg.facebook_post or "\u2013" in pkg.facebook_post or "--" in pkg.facebook_post):
+        if pkg.facebook_post and (
+            "\u2014" in pkg.facebook_post
+            or "\u2013" in pkg.facebook_post
+            or "--" in pkg.facebook_post
+        ):
             pkg.facebook_post = _clean_text(pkg.facebook_post)
             changed = True
-        if pkg.linkedin_post and ("\u2014" in pkg.linkedin_post or "\u2013" in pkg.linkedin_post or "--" in pkg.linkedin_post):
+        if pkg.linkedin_post and (
+            "\u2014" in pkg.linkedin_post
+            or "\u2013" in pkg.linkedin_post
+            or "--" in pkg.linkedin_post
+        ):
             pkg.linkedin_post = _clean_text(pkg.linkedin_post)
             changed = True
         if pkg.hook_variants:

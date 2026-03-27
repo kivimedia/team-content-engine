@@ -142,8 +142,8 @@ class FacebookWriter(AgentBase):
         prompt_parts = [
             f"STORY BRIEF:\n{json.dumps(story_brief, indent=2)}",
             f"RESEARCH BRIEF:\n{json.dumps(research_brief, indent=2)}",
-            f"Weekly CTA keyword: \"{weekly_keyword}\"",
-            f"CTA line must end with: Comment \"{weekly_keyword}\" and I'll send it to you.",
+            f'Weekly CTA keyword: "{weekly_keyword}"',
+            f'CTA line must end with: Comment "{weekly_keyword}" and I\'ll send it to you.',
         ]
 
         if founder_voice:

@@ -90,19 +90,13 @@ class ABTestingService:
         )
         return experiment
 
-    def get_experiment(
-        self, experiment_id: str
-    ) -> Experiment | None:
+    def get_experiment(self, experiment_id: str) -> Experiment | None:
         return self._experiments.get(experiment_id)
 
     def list_experiments(self) -> list[dict[str, Any]]:
-        return [
-            exp.to_dict() for exp in self._experiments.values()
-        ]
+        return [exp.to_dict() for exp in self._experiments.values()]
 
-    async def get_experiment_results(
-        self, experiment_id: str
-    ) -> dict[str, Any]:
+    async def get_experiment_results(self, experiment_id: str) -> dict[str, Any]:
         """Compare outcomes between variants of an experiment.
 
         Looks at PostPackages tagged with this experiment_id

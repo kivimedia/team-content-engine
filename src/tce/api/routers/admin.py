@@ -26,11 +26,13 @@ async def list_agents() -> list[dict[str, Any]]:
 
     agents = []
     for name, cls in sorted(_registry.items()):
-        agents.append({
-            "name": name,
-            "model": cls.default_model,
-            "class": cls.__name__,
-        })
+        agents.append(
+            {
+                "name": name,
+                "model": cls.default_model,
+                "class": cls.__name__,
+            }
+        )
     return agents
 
 
@@ -43,17 +45,19 @@ async def update_agent_model(agent_name: str, data: AgentModelUpdate) -> dict[st
     """Change the LLM model for an agent at runtime (no restart needed)."""
     from tce.agents.registry import _registry
 
-    ALLOWED_MODELS = {
+    allowed_models = {
         "claude-haiku-4-5-20251001",
         "claude-sonnet-4-20250514",
         "claude-opus-4-20250514",
     }
-    if data.model not in ALLOWED_MODELS:
+    if data.model not in allowed_models:
         from fastapi import HTTPException
-        raise HTTPException(400, f"Invalid model. Allowed: {sorted(ALLOWED_MODELS)}")
+
+        raise HTTPException(400, f"Invalid model. Allowed: {sorted(allowed_models)}")
 
     if agent_name not in _registry:
         from fastapi import HTTPException
+
         raise HTTPException(404, f"Agent '{agent_name}' not found")
 
     old_model = _registry[agent_name].default_model

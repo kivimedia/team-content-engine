@@ -27,9 +27,7 @@ def test_creator_names():
 
 def test_creator_weights_sum():
     """Influence weights should sum to ~1.0."""
-    total = sum(
-        c["allowed_influence_weight"] for c in DEFAULT_CREATORS
-    )
+    total = sum(c["allowed_influence_weight"] for c in DEFAULT_CREATORS)
     assert abs(total - 1.0) < 0.01
 
 
@@ -49,9 +47,7 @@ def test_creator_voice_axes():
     }
     for creator in DEFAULT_CREATORS:
         axes = creator.get("voice_axes", {})
-        assert set(axes.keys()) == expected_axes, (
-            f"{creator['creator_name']} missing axes"
-        )
+        assert set(axes.keys()) == expected_axes, f"{creator['creator_name']} missing axes"
 
 
 def test_ten_default_templates():
@@ -81,9 +77,7 @@ def test_templates_have_influence_weights():
     """Each template should have source influence weights."""
     for tpl in DEFAULT_TEMPLATES:
         weights = tpl.get("source_influence_weights", {})
-        assert len(weights) >= 2, (
-            f"{tpl['template_name']} needs influence weights"
-        )
+        assert len(weights) >= 2, f"{tpl['template_name']} needs influence weights"
 
 
 def test_three_default_prompts():

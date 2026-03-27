@@ -28,9 +28,7 @@ async def get_relearning_status(
 ) -> dict:
     """Get current relearning status - recent documents and their evaluation state."""
     result = await db.execute(
-        select(SourceDocument)
-        .order_by(SourceDocument.created_at.desc())
-        .limit(10)
+        select(SourceDocument).order_by(SourceDocument.created_at.desc()).limit(10)
     )
     docs = result.scalars().all()
 
@@ -38,12 +36,14 @@ async def get_relearning_status(
     statuses = []
     for doc in docs:
         summary = await service.get_relearning_summary(doc.id)
-        statuses.append({
-            "document_id": str(doc.id),
-            "file_name": doc.file_name,
-            "created_at": doc.created_at.isoformat() if doc.created_at else None,
-            "summary": summary,
-        })
+        statuses.append(
+            {
+                "document_id": str(doc.id),
+                "file_name": doc.file_name,
+                "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                "summary": summary,
+            }
+        )
 
     return {"recent_documents": statuses}
 
@@ -56,9 +56,7 @@ async def evaluate_document(
     """Trigger relearning evaluation on a document's post examples."""
     doc_id = uuid.UUID(request.document_id)
 
-    result = await db.execute(
-        select(PostExample).where(PostExample.document_id == doc_id)
-    )
+    result = await db.execute(select(PostExample).where(PostExample.document_id == doc_id))
     examples = list(result.scalars().all())
 
     if not examples:
@@ -92,23 +90,25 @@ async def evaluate_document(
     proposals = []
     for trigger in triggers:
         if trigger.get("type") == "new_creator":
-            eval_result = await service.evaluate_new_creator(
-                trigger["creator_name"], example_dicts
+            eval_result = await service.evaluate_new_creator(trigger["creator_name"], example_dicts)
+            proposals.append(
+                {
+                    "type": "new_creator_admission",
+                    "creator_name": trigger["creator_name"],
+                    **eval_result,
+                }
             )
-            proposals.append({
-                "type": "new_creator_admission",
-                "creator_name": trigger["creator_name"],
-                **eval_result,
-            })
         elif trigger.get("type") == "more_examples_existing_creator":
             additions = trigger_result.get("existing_creator_additions", {})
             for creator_name, count in additions.items():
-                proposals.append({
-                    "type": "existing_creator_update",
-                    "creator_name": creator_name,
-                    "new_example_count": count,
-                    "action": "re-score and re-mine templates",
-                })
+                proposals.append(
+                    {
+                        "type": "existing_creator_update",
+                        "creator_name": creator_name,
+                        "new_example_count": count,
+                        "action": "re-score and re-mine templates",
+                    }
+                )
 
     return {
         "document_id": request.document_id,
@@ -128,8 +128,7 @@ async def list_proposals(
             PostExample.creator_id,
             func.count().label("example_count"),
             func.avg(PostExample.final_score).label("avg_score"),
-        )
-        .group_by(PostExample.creator_id)
+        ).group_by(PostExample.creator_id)
     )
     rows = result.all()
 
@@ -168,9 +167,7 @@ async def approve_proposal(
 
     service = RelearningService(db)
     # Run re-evaluation on the creator's examples
-    examples_result = await db.execute(
-        select(PostExample).where(PostExample.creator_id == cid)
-    )
+    examples_result = await db.execute(select(PostExample).where(PostExample.creator_id == cid))
     examples = list(examples_result.scalars().all())
     example_dicts = [
         {

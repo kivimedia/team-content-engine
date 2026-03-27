@@ -25,9 +25,7 @@ async def list_story_briefs(db: AsyncSession = Depends(get_db)) -> list[StoryBri
 
 
 @router.get("/stories/{brief_id}", response_model=StoryBriefRead)
-async def get_story_brief(
-    brief_id: uuid.UUID, db: AsyncSession = Depends(get_db)
-) -> StoryBrief:
+async def get_story_brief(brief_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> StoryBrief:
     brief = await db.get(StoryBrief, brief_id)
     if not brief:
         raise HTTPException(status_code=404, detail="Story brief not found")
@@ -59,9 +57,7 @@ async def list_trend_briefs(db: AsyncSession = Depends(get_db)) -> list[TrendBri
 
 
 @router.get("/trends/{brief_id}", response_model=TrendBriefRead)
-async def get_trend_brief(
-    brief_id: uuid.UUID, db: AsyncSession = Depends(get_db)
-) -> TrendBrief:
+async def get_trend_brief(brief_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> TrendBrief:
     brief = await db.get(TrendBrief, brief_id)
     if not brief:
         raise HTTPException(status_code=404, detail="Trend brief not found")

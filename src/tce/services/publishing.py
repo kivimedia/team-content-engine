@@ -63,8 +63,8 @@ class FacebookAdapter(PublishingAdapter):
     async def publish(self, package: dict[str, Any]) -> dict[str, Any]:
         # GAP-08: Check feature flag before publishing
         try:
-            from tce.services.feature_flags import FeatureFlagService
             from tce.db.session import async_session
+            from tce.services.feature_flags import FeatureFlagService
 
             async with async_session() as db:
                 flags = FeatureFlagService(db)
@@ -77,7 +77,9 @@ class FacebookAdapter(PublishingAdapter):
             return {
                 "adapter": "facebook",
                 "status": "disabled",
-                "message": "Facebook publishing is disabled. Enable via feature flag 'publish_facebook'.",
+                "message": (
+                    "Facebook publishing is disabled. Enable via feature flag 'publish_facebook'."
+                ),
             }
 
         logger.info(
@@ -89,8 +91,7 @@ class FacebookAdapter(PublishingAdapter):
             "adapter": "facebook",
             "status": "not_implemented",
             "message": (
-                "Facebook API publishing enabled but not yet connected. "
-                "Use manual export for now."
+                "Facebook API publishing enabled but not yet connected. Use manual export for now."
             ),
         }
 
@@ -104,8 +105,8 @@ class LinkedInAdapter(PublishingAdapter):
     async def publish(self, package: dict[str, Any]) -> dict[str, Any]:
         # GAP-08: Check feature flag before publishing
         try:
-            from tce.services.feature_flags import FeatureFlagService
             from tce.db.session import async_session
+            from tce.services.feature_flags import FeatureFlagService
 
             async with async_session() as db:
                 flags = FeatureFlagService(db)
@@ -118,7 +119,9 @@ class LinkedInAdapter(PublishingAdapter):
             return {
                 "adapter": "linkedin",
                 "status": "disabled",
-                "message": "LinkedIn publishing is disabled. Enable via feature flag 'publish_linkedin'.",
+                "message": (
+                    "LinkedIn publishing is disabled. Enable via feature flag 'publish_linkedin'."
+                ),
             }
 
         logger.info(
@@ -130,8 +133,7 @@ class LinkedInAdapter(PublishingAdapter):
             "adapter": "linkedin",
             "status": "not_implemented",
             "message": (
-                "LinkedIn API publishing enabled but not yet connected. "
-                "Use manual export for now."
+                "LinkedIn API publishing enabled but not yet connected. Use manual export for now."
             ),
         }
 

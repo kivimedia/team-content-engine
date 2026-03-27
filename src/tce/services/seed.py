@@ -43,8 +43,7 @@ DEFAULT_CREATORS = [
         "creator_name": "Ben Z. Yabets",
         "allowed_influence_weight": 0.20,
         "style_notes": (
-            "Second-person diagnosis, 3-point frameworks, "
-            "strong positioning, clean keyword CTAs."
+            "Second-person diagnosis, 3-point frameworks, strong positioning, clean keyword CTAs."
         ),
         "voice_axes": {
             "curiosity": 6,
@@ -93,8 +92,7 @@ DEFAULT_CREATORS = [
         "creator_name": "Eden Bibas",
         "allowed_influence_weight": 0.18,
         "style_notes": (
-            "Practical AI utility posts, bullet-based clarity, "
-            "guide/WhatsApp conversion CTAs."
+            "Practical AI utility posts, bullet-based clarity, guide/WhatsApp conversion CTAs."
         ),
         "voice_axes": {
             "curiosity": 6,
@@ -118,8 +116,7 @@ DEFAULT_CREATORS = [
         "creator_name": "Alex Kap",
         "allowed_influence_weight": 0.18,
         "style_notes": (
-            "Strategic depth, second-order implications, "
-            "'what changed / what it means' analysis."
+            "Strategic depth, second-order implications, 'what changed / what it means' analysis."
         ),
         "voice_axes": {
             "curiosity": 7,
@@ -147,13 +144,8 @@ DEFAULT_TEMPLATES = [
         "template_name": "Big Shift Explainer",
         "template_family": "big_shift_explainer",
         "best_for": "Monday: Make a fast-moving AI development legible and relevant",
-        "hook_formula": (
-            "News hook with paradox/famous name -> Why it matters to YOU"
-        ),
-        "body_formula": (
-            "2-4 proof blocks -> Second-order implication turn -> "
-            "Weekly guide CTA"
-        ),
+        "hook_formula": ("News hook with paradox/famous name -> Why it matters to YOU"),
+        "body_formula": ("2-4 proof blocks -> Second-order implication turn -> Weekly guide CTA"),
         "platform_fit": "both",
         "source_influence_weights": {
             "Omri Barak": 0.35,
@@ -191,13 +183,8 @@ DEFAULT_TEMPLATES = [
         "template_name": "Contrarian Diagnosis",
         "template_family": "contrarian_diagnosis",
         "best_for": "Wednesday: Challenge a lazy or outdated assumption",
-        "hook_formula": (
-            "State conventional wisdom -> Acknowledge why it feels right"
-        ),
-        "body_formula": (
-            "2-3 dismantling blocks -> Better framing turn -> "
-            "Weekly guide CTA"
-        ),
+        "hook_formula": ("State conventional wisdom -> Acknowledge why it feels right"),
+        "body_formula": ("2-3 dismantling blocks -> Better framing turn -> Weekly guide CTA"),
         "platform_fit": "both",
         "source_influence_weights": {
             "Nathan Savis": 0.35,
@@ -227,8 +214,7 @@ DEFAULT_TEMPLATES = [
             "Ben Z. Yabets": 0.20,
         },
         "anti_patterns": (
-            "Don't present hypotheticals as real. Don't skip "
-            "the struggle. Don't hide the tools."
+            "Don't present hypotheticals as real. Don't skip the struggle. Don't hide the tools."
         ),
     },
     {
@@ -236,12 +222,10 @@ DEFAULT_TEMPLATES = [
         "template_family": "second_order_implication",
         "best_for": "Friday: Explain consequences others aren't discussing",
         "hook_formula": (
-            "Widely-reported first-order event -> "
-            "'But here's what nobody is talking about'"
+            "Widely-reported first-order event -> 'But here's what nobody is talking about'"
         ),
         "body_formula": (
-            "2-3 second-order analysis blocks -> "
-            "Strategic recommendation turn -> Weekly guide CTA"
+            "2-3 second-order analysis blocks -> Strategic recommendation turn -> Weekly guide CTA"
         ),
         "platform_fit": "both",
         "source_influence_weights": {
@@ -276,12 +260,8 @@ DEFAULT_TEMPLATES = [
         "template_name": "Teardown / Myth Busting",
         "template_family": "teardown_myth_busting",
         "best_for": "Wednesday alt: Dismantle a claim with receipts",
-        "hook_formula": (
-            "Direct attack on conventional wisdom + personal failure"
-        ),
-        "body_formula": (
-            "Problem -> evidence -> reframe -> proof of new approach"
-        ),
+        "hook_formula": ("Direct attack on conventional wisdom + personal failure"),
+        "body_formula": ("Problem -> evidence -> reframe -> proof of new approach"),
         "platform_fit": "both",
         "source_influence_weights": {
             "Nathan Savis": 0.40,
@@ -295,10 +275,7 @@ DEFAULT_TEMPLATES = [
         "template_family": "weekly_roundup",
         "best_for": "Friday alt: 3-5 curated items with takes + guide CTA",
         "hook_formula": "This week in AI: the stories that matter",
-        "body_formula": (
-            "3-5 curated items with 1-2 sentence take each -> "
-            "Strong guide CTA"
-        ),
+        "body_formula": ("3-5 curated items with 1-2 sentence take each -> Strong guide CTA"),
         "platform_fit": "both",
         "source_influence_weights": {
             "Omri Barak": 0.35,
@@ -312,10 +289,7 @@ DEFAULT_TEMPLATES = [
         "template_family": "founder_reflection",
         "best_for": "Personal insight tied to a professional lesson",
         "hook_formula": "Personal moment -> professional realization",
-        "body_formula": (
-            "Narrative arc (struggle -> insight -> lesson) -> "
-            "Actionable takeaway"
-        ),
+        "body_formula": ("Narrative arc (struggle -> insight -> lesson) -> Actionable takeaway"),
         "platform_fit": "both",
         "source_influence_weights": {
             "Nathan Savis": 0.30,
@@ -329,10 +303,7 @@ DEFAULT_TEMPLATES = [
         "template_family": "comment_keyword_cta_guide",
         "best_for": "Posts optimized for comment-to-DM conversion",
         "hook_formula": "Value tease -> build desire for deliverable",
-        "body_formula": (
-            "Demonstrate value -> reveal there's more -> "
-            "comment keyword CTA"
-        ),
+        "body_formula": ("Demonstrate value -> reveal there's more -> comment keyword CTA"),
         "platform_fit": "facebook",
         "source_influence_weights": {
             "Ben Z. Yabets": 0.35,

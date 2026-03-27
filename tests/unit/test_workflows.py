@@ -6,8 +6,11 @@ from tce.orchestrator.workflows import WORKFLOWS
 def test_all_workflows_exist():
     """All expected workflows should be defined."""
     expected = [
-        "daily_content", "corpus_ingestion", "weekly_planning",
-        "weekly_learning", "analysis",
+        "daily_content",
+        "corpus_ingestion",
+        "weekly_planning",
+        "weekly_learning",
+        "analysis",
     ]
     for name in expected:
         assert name in WORKFLOWS, f"Workflow '{name}' not defined"

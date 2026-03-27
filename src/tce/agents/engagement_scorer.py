@@ -76,18 +76,25 @@ class EngagementScorer(AgentBase):
             self._report(f"  {i}. [{score:.1f}pts, conf:{confidence}] {creator}: {hook}")
         if len(scored) > 5:
             self._report(f"  ... and {len(scored) - 5} more posts")
-        self._report(f"Creator stats:")
+        self._report("Creator stats:")
         for creator, stats in creator_stats.items():
-            self._report(f"  {creator}: {stats['count']} posts, avg {stats['avg_score']:.1f}, max {stats['max_score']:.1f}")
+            avg = stats["avg_score"]
+            mx = stats["max_score"]
+            self._report(f"  {creator}: {stats['count']} posts, avg {avg:.1f}, max {mx:.1f}")
 
         return {
             "scored_examples": scored,
-            "creator_rankings": {k: [p.get("post_text_raw", "")[:100] for p in v[:5]]
-                                 for k, v in creator_rankings.items()},
+            "creator_rankings": {
+                k: [p.get("post_text_raw", "")[:100] for p in v[:5]]
+                for k, v in creator_rankings.items()
+            },
             "creator_stats": creator_stats,
             "global_top_5": [
-                {"creator": p.get("creator_name"), "score": p["final_score"],
-                 "hook": p.get("hook_text", "")[:80]}
+                {
+                    "creator": p.get("creator_name"),
+                    "score": p["final_score"],
+                    "hook": p.get("hook_text", "")[:80],
+                }
                 for p in scored[:5]
             ],
         }

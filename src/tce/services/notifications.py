@@ -65,15 +65,13 @@ class NotificationService:
         """Send notification via email or webhook if configured."""
         # Email via Resend API
         if notification.channel == "email" or (
-            notification.severity in ("warning", "critical", "error")
-            and settings.resend_api_key
+            notification.severity in ("warning", "critical", "error") and settings.resend_api_key
         ):
             await self._send_email(notification)
 
         # Webhook (Slack)
         if notification.channel == "webhook" or (
-            notification.severity in ("critical", "error")
-            and settings.slack_webhook_url
+            notification.severity in ("critical", "error") and settings.slack_webhook_url
         ):
             await self._send_webhook(notification)
 
@@ -95,10 +93,7 @@ class NotificationService:
                     json={
                         "from": "TCE <notifications@updates.kivimedia.co>",
                         "to": [settings.notification_email],
-                        "subject": (
-                            f"[TCE {notification.severity.upper()}] "
-                            f"{notification.title}"
-                        ),
+                        "subject": (f"[TCE {notification.severity.upper()}] {notification.title}"),
                         "text": notification.message,
                     },
                 )
@@ -129,10 +124,7 @@ class NotificationService:
                 await client.post(
                     settings.slack_webhook_url,
                     json={
-                        "text": (
-                            f"{label} *{notification.title}*\n"
-                            f"{notification.message}"
-                        ),
+                        "text": (f"{label} *{notification.title}*\n{notification.message}"),
                     },
                 )
             logger.info(
@@ -144,30 +136,22 @@ class NotificationService:
 
     # --- Convenience methods for common notification types ---
 
-    async def package_ready(
-        self, package_id: str
-    ) -> Notification:
+    async def package_ready(self, package_id: str) -> Notification:
         return await self.notify(
             notification_type="package_ready",
             title="Daily package ready for review",
             message=(
-                f"Package {package_id[:8]}... is ready. "
-                "Review and approve in the draft queue."
+                f"Package {package_id[:8]}... is ready. Review and approve in the draft queue."
             ),
             severity="info",
             data={"package_id": package_id},
         )
 
-    async def qa_failure(
-        self, package_id: str, reasons: list[str]
-    ) -> Notification:
+    async def qa_failure(self, package_id: str, reasons: list[str]) -> Notification:
         return await self.notify(
             notification_type="qa_failure",
             title="QA failed on package",
-            message=(
-                f"Package {package_id[:8]}... failed QA: "
-                f"{', '.join(reasons)}"
-            ),
+            message=(f"Package {package_id[:8]}... failed QA: {', '.join(reasons)}"),
             severity="warning",
             data={
                 "package_id": package_id,
@@ -186,10 +170,7 @@ class NotificationService:
         return await self.notify(
             notification_type="budget_alert",
             title=f"{period.title()} budget at {pct:.0f}%",
-            message=(
-                f"${current:.2f} of ${budget:.2f} "
-                f"{period} budget used ({pct:.0f}%)."
-            ),
+            message=(f"${current:.2f} of ${budget:.2f} {period} budget used ({pct:.0f}%)."),
             severity=severity,
             data={
                 "period": period,
@@ -245,17 +226,14 @@ class NotificationService:
             notification_type="weekly_update",
             title="Weekly learning update ready",
             message=(
-                "The weekly analysis is complete. "
-                "Review recommendations in the learning dashboard."
+                "The weekly analysis is complete. Review recommendations in the learning dashboard."
             ),
             severity="info",
         )
 
     # --- Query methods ---
 
-    async def get_unread(
-        self, limit: int = 50
-    ) -> list[Notification]:
+    async def get_unread(self, limit: int = 50) -> list[Notification]:
         result = await self.db.execute(
             select(Notification)
             .where(
@@ -278,24 +256,16 @@ class NotificationService:
         )
         return result.scalar_one()
 
-    async def mark_read(
-        self, notification_id: str
-    ) -> None:
+    async def mark_read(self, notification_id: str) -> None:
         import uuid
 
-        notification = await self.db.get(
-            Notification, uuid.UUID(notification_id)
-        )
+        notification = await self.db.get(Notification, uuid.UUID(notification_id))
         if notification:
             notification.read = True
             await self.db.flush()
 
     async def mark_all_read(self) -> int:
-        result = await self.db.execute(
-            select(Notification).where(
-                Notification.read.is_(False)
-            )
-        )
+        result = await self.db.execute(select(Notification).where(Notification.read.is_(False)))
         count = 0
         for n in result.scalars().all():
             n.read = True

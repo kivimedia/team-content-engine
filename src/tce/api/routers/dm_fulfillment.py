@@ -25,9 +25,7 @@ async def list_logs(
     keyword: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> list[DMFulfillmentLog]:
-    query = select(DMFulfillmentLog).order_by(
-        DMFulfillmentLog.created_at.desc()
-    )
+    query = select(DMFulfillmentLog).order_by(DMFulfillmentLog.created_at.desc())
     if status:
         query = query.where(DMFulfillmentLog.status == status)
     if keyword:
@@ -88,6 +86,7 @@ async def pending_count(
 
 
 # --- GAP-03: Facebook Webhook for CTA comment detection ---
+
 
 @router.get("/webhook/facebook")
 async def verify_facebook_webhook(

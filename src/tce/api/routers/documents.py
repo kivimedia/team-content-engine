@@ -71,10 +71,12 @@ async def upload_document(
                     db=analysis_db,
                     settings=settings,
                 )
-                await orchestrator.run({
-                    "document_text": result["document_text"],
-                    "document_id": result["document_id"],
-                })
+                await orchestrator.run(
+                    {
+                        "document_text": result["document_text"],
+                        "document_id": result["document_id"],
+                    }
+                )
                 await analysis_db.commit()
 
         asyncio.create_task(_run_analysis())
@@ -84,9 +86,7 @@ async def upload_document(
 
 @router.get("/", response_model=list[SourceDocumentRead])
 async def list_documents(db: AsyncSession = Depends(get_db)) -> list[SourceDocument]:
-    result = await db.execute(
-        select(SourceDocument).order_by(SourceDocument.created_at.desc())
-    )
+    result = await db.execute(select(SourceDocument).order_by(SourceDocument.created_at.desc()))
     return list(result.scalars().all())
 
 

@@ -116,24 +116,13 @@ class RateLimitBudget:
 
     def should_delay(self) -> bool:
         self._maybe_reset_window()
-        return (
-            self.tpm_used >= self.tpm_limit * 0.9
-            or self.rpm_used >= self.rpm_limit * 0.9
-        )
+        return self.tpm_used >= self.tpm_limit * 0.9 or self.rpm_used >= self.rpm_limit * 0.9
 
     def get_usage_pct(self) -> dict[str, float]:
         self._maybe_reset_window()
         return {
-            "tpm_pct": (
-                self.tpm_used / self.tpm_limit * 100
-                if self.tpm_limit > 0
-                else 0
-            ),
-            "rpm_pct": (
-                self.rpm_used / self.rpm_limit * 100
-                if self.rpm_limit > 0
-                else 0
-            ),
+            "tpm_pct": (self.tpm_used / self.tpm_limit * 100 if self.tpm_limit > 0 else 0),
+            "rpm_pct": (self.rpm_used / self.rpm_limit * 100 if self.rpm_limit > 0 else 0),
         }
 
 
@@ -144,31 +133,21 @@ class ResilienceManager:
         self._circuit_breakers: dict[str, CircuitBreakerState] = {}
         self._rate_limits: dict[str, RateLimitBudget] = {}
 
-    def get_circuit_breaker(
-        self, service_name: str
-    ) -> CircuitBreakerState:
+    def get_circuit_breaker(self, service_name: str) -> CircuitBreakerState:
         if service_name not in self._circuit_breakers:
-            self._circuit_breakers[service_name] = (
-                CircuitBreakerState(service_name=service_name)
-            )
+            self._circuit_breakers[service_name] = CircuitBreakerState(service_name=service_name)
         return self._circuit_breakers[service_name]
 
-    def get_rate_limit(
-        self, service_name: str
-    ) -> RateLimitBudget:
+    def get_rate_limit(self, service_name: str) -> RateLimitBudget:
         if service_name not in self._rate_limits:
-            self._rate_limits[service_name] = RateLimitBudget(
-                service_name=service_name
-            )
+            self._rate_limits[service_name] = RateLimitBudget(service_name=service_name)
         return self._rate_limits[service_name]
 
     def get_fallback_model(self, model: str) -> str | None:
         """Get the fallback model for a given model (PRD Section 42.3)."""
         return FALLBACK_CHAIN.get(model)
 
-    def should_use_fallback(
-        self, model: str
-    ) -> tuple[bool, str | None]:
+    def should_use_fallback(self, model: str) -> tuple[bool, str | None]:
         """Check if we should fall back to a cheaper model."""
         cb = self.get_circuit_breaker(model)
         rl = self.get_rate_limit(model)
@@ -194,10 +173,7 @@ class ResilienceManager:
                 }
                 for name, cb in self._circuit_breakers.items()
             },
-            "rate_limits": {
-                name: rl.get_usage_pct()
-                for name, rl in self._rate_limits.items()
-            },
+            "rate_limits": {name: rl.get_usage_pct() for name, rl in self._rate_limits.items()},
         }
 
 

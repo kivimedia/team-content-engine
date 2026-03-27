@@ -46,9 +46,7 @@ def test_service_has_required_methods():
         "get_relearning_summary",
     ]
     for method in methods:
-        assert hasattr(RelearningService, method), (
-            f"Missing method: {method}"
-        )
+        assert hasattr(RelearningService, method), f"Missing method: {method}"
 
 
 def test_service_methods_are_async():
@@ -62,6 +60,4 @@ def test_service_methods_are_async():
         "get_relearning_summary",
     ]:
         fn = getattr(RelearningService, method)
-        assert asyncio.iscoroutinefunction(fn), (
-            f"{method} should be async"
-        )
+        assert asyncio.iscoroutinefunction(fn), f"{method} should be async"

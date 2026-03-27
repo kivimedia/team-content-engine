@@ -47,6 +47,7 @@ class TrendScout(AgentBase):
 
         # GAP-01: Use web search for real trending stories
         from tce.services.web_search import WebSearchService
+
         search = WebSearchService()
         search_results = []
         if search.api_key:

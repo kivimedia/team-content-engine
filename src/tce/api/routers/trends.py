@@ -24,9 +24,7 @@ class TrendScanRequest(BaseModel):
     operator_topics: list[str] = []
 
 
-async def _run_trend_scan(
-    scan_id: str, context: dict[str, Any], db: AsyncSession
-) -> None:
+async def _run_trend_scan(scan_id: str, context: dict[str, Any], db: AsyncSession) -> None:
     """Run TrendScout agent in the background."""
     from tce.agents.registry import get_agent_class
     from tce.services.cost_tracker import CostTracker
@@ -38,8 +36,11 @@ async def _run_trend_scan(
         prompt_manager = PromptManager(db)
         agent_cls = get_agent_class("trend_scout")
         agent = agent_cls(
-            db=db, settings=settings, cost_tracker=cost_tracker,
-            prompt_manager=prompt_manager, run_id=run_id,
+            db=db,
+            settings=settings,
+            cost_tracker=cost_tracker,
+            prompt_manager=prompt_manager,
+            run_id=run_id,
         )
         result = await agent.run(context)
         _scan_results[scan_id] = {

@@ -17,15 +17,11 @@ def test_cache_segments():
 def test_optimization_options():
     """PRD Section 36.9: optimization options defined."""
     assert len(OPTIMIZATION_OPTIONS) >= 3
-    assert any(
-        "Batch" in o["option"] for o in OPTIMIZATION_OPTIONS
-    )
+    assert any("Batch" in o["option"] for o in OPTIMIZATION_OPTIONS)
 
 
 def test_analyze_basic():
-    service = CostOptimizationService(
-        daily_spend=20, monthly_spend=400, cache_hit_rate=0.85
-    )
+    service = CostOptimizationService(daily_spend=20, monthly_spend=400, cache_hit_rate=0.85)
     result = service.analyze()
     assert "recommendations" in result
     assert "cache_segments" in result
@@ -34,9 +30,7 @@ def test_analyze_basic():
 
 def test_analyze_low_cache():
     """Low cache hit rate should trigger recommendation."""
-    service = CostOptimizationService(
-        daily_spend=20, monthly_spend=400, cache_hit_rate=0.50
-    )
+    service = CostOptimizationService(daily_spend=20, monthly_spend=400, cache_hit_rate=0.50)
     result = service.analyze()
     recs = result["recommendations"]
     assert any("cache" in r["recommendation"].lower() for r in recs)

@@ -1,6 +1,5 @@
 """SourceDocument model — uploaded corpus files (DOCX, PDF, text)."""
 
-
 from datetime import datetime
 
 from sqlalchemy import DateTime, Integer, String, Text
