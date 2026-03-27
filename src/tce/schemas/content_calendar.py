@@ -50,6 +50,8 @@ class PlanWeekDeepRequest(BaseModel):
     week_start: date
     weekly_theme: str | None = None
     focus_areas: list[str] | None = None
+    sensitive_period: bool = False
+    humanitarian_context: str | None = None
 
 
 class PlanApproveRequest(BaseModel):

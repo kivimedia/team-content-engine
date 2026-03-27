@@ -46,6 +46,20 @@ CONSTRAINTS:
 - Topics should build on each other: Monday sets context, Tuesday gives tools, \
   Wednesday challenges assumptions, Thursday proves it works, Friday zooms out
 
+HUMANITARIAN SENSITIVITY (non-negotiable):
+Before choosing any topic, consider:
+- Is there an active crisis, war, disaster, or mass layoffs this week? Avoid topics \
+that trivialize or exploit human suffering.
+- Never use fear as a hook ("AI is coming for your job and there's nothing you can do"). \
+Instead empower: show what's possible.
+- Never punish the audience ("if you're not using AI by now, you deserve to be left behind"). \
+Instead help them catch up.
+- Avoid casual war/military metaphors during sensitive periods.
+- Every topic must pass the dignity test: does it treat every person - including \
+competitors, beginners, and the "most people" you reference - with basic respect?
+- If a trend involves layoffs or job displacement, acknowledge the human cost before \
+offering the opportunity angle.
+
 CRITICAL - WRITING STYLE FOR TOPICS AND THESES:
 Write like a smart friend explaining what the post is about over coffee. NOT like \
 a corporate whitepaper or AI-generated summary.
@@ -188,9 +202,24 @@ class WeeklyPlanner(AgentBase):
                 "The weekly theme should sound like something the founder would actually say."
             )
 
+        # === Humanitarian sensitivity context ===
+        sensitive_period = context.get("sensitive_period", False)
+        humanitarian_context = context.get("humanitarian_context", "")
+        if sensitive_period or humanitarian_context:
+            hum_parts = ["\nHUMANITARIAN CONTEXT (read carefully before choosing topics):"]
+            if sensitive_period:
+                hum_parts.append(
+                    "** SENSITIVE PERIOD ACTIVE ** - Extra caution required. "
+                    "Avoid humor about serious topics, war metaphors, fear-based hooks."
+                )
+            if humanitarian_context:
+                hum_parts.append(humanitarian_context)
+            prompt_parts.append("\n".join(hum_parts))
+
         prompt_parts.append(
             "\nPlan the entire week. Select 5 topics that build a coherent narrative, "
-            "design the weekly gift, and choose the CTA keyword."
+            "design the weekly gift, and choose the CTA keyword. "
+            "Remember: every topic must pass the humanitarian dignity test."
         )
 
         response = await self._call_llm(

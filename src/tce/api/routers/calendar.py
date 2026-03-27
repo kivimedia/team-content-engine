@@ -315,6 +315,10 @@ async def plan_week_deep(
                     context["weekly_theme"] = request.weekly_theme
                 if request.focus_areas:
                     context["focus_areas"] = request.focus_areas
+                if request.sensitive_period:
+                    context["sensitive_period"] = True
+                if request.humanitarian_context:
+                    context["humanitarian_context"] = request.humanitarian_context
 
                 # Load founder voice
                 fv_result = await bg_db.execute(

@@ -273,7 +273,13 @@ async function renderWeek() {
           <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Weekly Theme (optional hint for the planner)</label>
           <input id="week-theme" type="text" placeholder="e.g. Agency scaling without burnout" style="width:320px">
         </div>
-        <button class="btn btn-primary" id="plan-week-btn" onclick="planWeekDeep('${fmtDate(monday)}')">Plan This Week</button>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <button class="btn btn-primary" id="plan-week-btn" onclick="planWeekDeep('${fmtDate(monday)}')">Plan This Week</button>
+          <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--dim);cursor:pointer" title="When active, the planner avoids topics that could trivialize human suffering, war metaphors, and fear-based hooks">
+            <input type="checkbox" id="sensitive-period-toggle" style="accent-color:var(--accent)">
+            Sensitive Period
+          </label>
+        </div>
         <span id="plan-cost-hint" style="font-size:11px;color:var(--dim);margin-left:6px" title="Trend scout (Sonnet) + Weekly planner (Opus)">~$0.25 per plan</span>
         <button class="btn btn-green" id="gen-all-btn" onclick="generateFromPlan()" ${genAllState?.running ? 'disabled' : ''}>${genAllState?.running ? (genAllState.unified ? 'Running...' : 'Generating...') : 'Generate from Plan'}</button>
       </div>
@@ -434,6 +440,7 @@ let planElapsedTimer = null;
 
 async function planWeekDeep(mondayStr) {
   const theme = document.getElementById('week-theme')?.value || null;
+  const sensitivePeriod = document.getElementById('sensitive-period-toggle')?.checked || false;
   const btn = document.getElementById('plan-week-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Planning...'; }
   const panel = document.getElementById('plan-review-panel');
@@ -466,7 +473,7 @@ async function planWeekDeep(mondayStr) {
   try {
     const r = await api('/calendar/plan-week-deep', {
       method: 'POST',
-      body: JSON.stringify({ week_start: mondayStr, weekly_theme: theme || null }),
+      body: JSON.stringify({ week_start: mondayStr, weekly_theme: theme || null, sensitive_period: sensitivePeriod }),
     });
     deepPlanId = r.plan_id;
 
