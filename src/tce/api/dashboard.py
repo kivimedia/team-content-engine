@@ -44,10 +44,9 @@ select,input{padding:8px 12px;border:1px solid var(--border);background:var(--ca
 .pipeline-steps{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
 .step-badge{padding:6px 12px;border-radius:16px;font-size:12px;font-weight:500;border:1px solid var(--border)}
 .step-badge.completed{background:#166534;border-color:#22c55e;color:#bbf7d0}
-.step-badge.running{background:#1e3a5f;border-color:#3b82f6;color:#93c5fd;animation:pulse 1.5s infinite}
+.step-badge.running{background:#1e3a5f;border-color:#3b82f6;color:#93c5fd}
 .step-badge.pending{background:var(--card);color:var(--dim)}
 .step-badge.failed{background:#7f1d1d;border-color:#ef4444;color:#fecaca}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
 .post-preview{background:#111318;border:1px solid var(--border);border-radius:8px;padding:16px;margin:8px 0;white-space:pre-wrap;font-size:14px;line-height:1.6;max-height:300px;overflow-y:auto}
 .tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}
 .tag-draft{background:#2d2000;color:var(--yellow)}
@@ -96,7 +95,7 @@ select,input{padding:8px 12px;border:1px solid var(--border);background:var(--ca
 .day-card .day-topic{font-size:13px;color:var(--text);margin-bottom:8px;flex:1}
 .day-card .day-status{font-size:11px;font-weight:600;text-transform:uppercase;padding:2px 6px;border-radius:3px;display:inline-block}
 .day-status-planned{background:#1e3a5f;color:#93c5fd}
-.day-status-generating{background:#1e3a5f;color:#93c5fd;animation:pulse 1.5s infinite}
+.day-status-generating{background:#1e3a5f;color:#93c5fd}
 .day-status-ready{background:#052e16;color:#bbf7d0}
 .day-status-approved{background:#052e16;color:#22c55e}
 .day-status-published{background:#1e1b4b;color:#c7d2fe}
@@ -434,7 +433,7 @@ function renderGenAllProgress() {
     else if (s.running && i === s.current) { bg = 'var(--blue)'; color = '#fff'; label = DAY_NAMES[i] + '...'; }
     else { bg = 'var(--border)'; color = 'var(--dim)'; label = DAY_NAMES[i]; }
     html += '<div style="padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;background:' + bg + ';color:' + color;
-    if (s.running && i === s.current) html += ';animation:pulse 1.5s infinite';
+    if (s.running && i === s.current) html += ';border-left:3px solid var(--blue)';
     html += '">' + label + '</div>';
   }
   html += '</div>';
@@ -466,7 +465,7 @@ function renderGenAllProgress() {
       else { icon = 'Waiting'; stColor = 'var(--dim)'; }
       html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:12px">';
       html += '<span style="color:' + (st === 'running' ? 'var(--text)' : 'var(--dim)') + ';font-weight:' + (st === 'running' ? '600' : '400') + '">';
-      if (st === 'running') html += '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--blue);margin-right:6px;animation:pulse 1s infinite"></span>';
+      if (st === 'running') html += '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--blue);margin-right:6px"></span>';
       html += label + '</span>';
       html += '<span style="color:' + stColor + ';font-weight:600;font-size:11px">' + icon + '</span>';
       html += '</div>';
@@ -1268,7 +1267,7 @@ async function generateImages(packageId, btn) {
     progressEl.innerHTML = '<div style="background:#1e1b4b;border:1px solid var(--accent);border-radius:8px;padding:14px;margin-bottom:12px">' +
       '<div style="font-size:12px;color:var(--accent2);margin-bottom:8px">Generating images with fal.ai Flux Pro...</div>' +
       '<div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">' +
-      '<div style="height:100%;background:var(--accent2);width:30%;animation:pulse 1.5s ease-in-out infinite;border-radius:2px"></div>' +
+      '<div style="height:100%;background:var(--accent2);width:30%;border-radius:2px"></div>' +
       '</div>' +
       '<div style="font-size:11px;color:var(--dim);margin-top:6px">This may take 15-30 seconds per image...</div>' +
       '</div>';
