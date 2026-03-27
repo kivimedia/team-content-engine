@@ -250,28 +250,26 @@ const ANGLE_LABELS = {
   comment_keyword_cta_guide: 'CTA Guide',
 };
 const ANGLE_TIPS = {
-  big_shift_explainer: 'News hook with paradox or famous name. 2-4 proof blocks showing why a
-  fast-moving AI development matters to the reader. Best for Mondays.',
-  tactical_workflow_guide: 'State the outcome first,
-  then 3-5 numbered steps (what + why + mistake to avoid)
-  . Immediate utility the reader can use today. Best for Tuesdays.',
-  contrarian_diagnosis: 'Challenge a lazy assumption. State conventional wisdom,
-  acknowledge why it feels right, then dismantle it with 2-3 evidence blocks. Best for Wednesdays.',
-  case_study_build_story: 'Lead with the result,
-  then 3-4 build blocks showing the real workflow (tool + result). Proof through action,
-  not theory. Best for Thursdays.',
-  second_order_implication: 'Start with widely-reported news,
-  then reveal what nobody is talking about. 2-3 second-order analysis blocks. Best for Fridays.',
-  hidden_feature_shortcut: 'One specific AI tool trick,
-  explored deep not broad. Vivid metaphor hook, bullet-based feature list. Tuesday alternative.',
-  teardown_myth_busting: 'Direct attack on conventional wisdom backed by personal failure as
-  credibility. Problem, evidence, reframe, proof. Wednesday alternative.',
-  weekly_roundup: '3-5 curated AI stories with 1-2 sentence take on each. Strong guide CTA at the
-  end. Friday alternative.',
-  founder_reflection: 'Personal moment leads to professional realization. Narrative arc: struggle,
-  insight, lesson, actionable takeaway.',
-  comment_keyword_cta_guide: 'Optimized for comment-to-DM conversion. Tease value, build desire,
-  then keyword CTA. Facebook-focused.',
+  big_shift_explainer: `News hook with paradox or famous name. 2-4 proof blocks
+showing why a fast-moving AI development matters. Best for Mondays.`,
+  tactical_workflow_guide: `State the outcome first, then 3-5 numbered steps
+(what + why + mistake to avoid). Immediate utility. Best for Tuesdays.`,
+  contrarian_diagnosis: `Challenge a lazy assumption. State conventional wisdom,
+acknowledge why it feels right, then dismantle with evidence. Wednesdays.`,
+  case_study_build_story: `Lead with the result, then 3-4 build blocks showing
+the real workflow (tool + result). Proof through action. Thursdays.`,
+  second_order_implication: `Start with widely-reported news, then reveal what
+nobody is talking about. 2-3 second-order analysis blocks. Fridays.`,
+  hidden_feature_shortcut: `One specific AI tool trick, explored deep not broad.
+Vivid metaphor hook, bullet-based feature list. Tuesday alternative.`,
+  teardown_myth_busting: `Direct attack on conventional wisdom backed by personal
+failure as credibility. Problem, evidence, reframe, proof. Wednesday alt.`,
+  weekly_roundup: `3-5 curated AI stories with 1-2 sentence take on each.
+Strong guide CTA at the end. Friday alternative.`,
+  founder_reflection: `Personal moment leads to professional realization.
+Narrative arc: struggle, insight, lesson, actionable takeaway.`,
+  comment_keyword_cta_guide: `Optimized for comment-to-DM conversion. Tease
+value, build desire, then keyword CTA. Facebook-focused.`,
 };
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
@@ -1573,21 +1571,18 @@ async function renderGenerate() {
 }
 
 const WF_DESCRIPTIONS = {
-  daily_content: 'Generates one complete post package for today. Runs: TrendScout (finds trending
-  stories) -> StoryStrategist (picks angle) -> ResearchAgent (verifies claims)
-  -> FB + LI Writers (draft posts) -> CTA Agent (keyword + DM flow)
-  -> Creative Director (image prompts) -> QA (quality check). Use this daily to produce content.',
-  weekly_planning: 'Plans the entire week ahead. Runs: TrendScout (landscape scan)
-  -> StoryStrategist (5-day theme) -> ResearchAgent (evidence bank) -> CTA Agent (weekly keyword)
-  -> Guide Builder (creates downloadable DOCX brief)
-  . Use this on Sunday/Monday to set up the week.',
-  corpus_ingestion: 'Processes uploaded DOCX files into structured post examples. Runs:
-  CorpusAnalyst (parses posts from docs) -> EngagementScorer (rates each post)
-  -> PatternMiner (extracts reusable templates)
-  . Use this after uploading new swipe files / FB profile exports.',
-  weekly_learning: 'Reviews the past week and improves the system. Runs: LearningLoop (analyzes
-  what worked,
-  updates templates and scoring). Use this at end of week to refine content quality over time.'
+  daily_content: `Generates one complete post package for today. Runs:
+TrendScout -> StoryStrategist -> ResearchAgent -> FB + LI Writers ->
+CTA Agent -> Creative Director -> QA. Use this daily.`,
+  weekly_planning: `Plans the entire week ahead. Runs: TrendScout ->
+StoryStrategist (5-day theme) -> ResearchAgent -> CTA Agent ->
+Guide Builder (DOCX brief). Use on Sunday/Monday.`,
+  corpus_ingestion: `Processes uploaded DOCX files into post examples.
+Runs: CorpusAnalyst -> EngagementScorer -> PatternMiner.
+Use after uploading new swipe files.`,
+  weekly_learning: `Reviews the past week and improves the system.
+Runs: LearningLoop (analyzes what worked, updates templates).
+Use at end of week to refine quality.`,
 };
 function updateWfDesc() {
   const sel = document.getElementById('wf-select');
