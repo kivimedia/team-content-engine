@@ -2524,6 +2524,34 @@ async function renderCosts() {
       html += '<div class="empty" style="padding:16px">No model usage data yet.</div>';
     }
     html += '</div>';
+    // Optimization Recommendations
+    try {
+      const optRecs = await api('/costs/optimization-recommendations?days=7');
+      html += '<div class="card" style="margin-top:16px"><h3 style="display:flex;align-items:center;justify-content:space-between">Optimization Recommendations (7d)<span style="font-size:13px;font-weight:600;color:var(--green)">Potential savings: $' + optRecs.total_potential_savings_usd.toFixed(2) + '</span></h3>';
+      if (optRecs.recommendations.length) {
+        const typeIcon = { model_downgrade: 'arrow-down', improve_caching: 'zap', batch_api: 'layers' };
+        const typeColor = { model_downgrade: 'var(--accent2)', improve_caching: 'var(--yellow)', batch_api: 'var(--blue)' };
+        const typeLabel = { model_downgrade: 'Model Downgrade', improve_caching: 'Cache Improvement', batch_api: 'Batch API' };
+        html += '<div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">';
+        for (const rec of optRecs.recommendations) {
+          const color = typeColor[rec.type] || 'var(--accent)';
+          const label = typeLabel[rec.type] || rec.type;
+          html += '<div style="display:flex;align-items:flex-start;gap:14px;background:#111318;border:1px solid var(--border);border-left:3px solid ' + color + ';border-radius:8px;padding:14px 16px">';
+          html += '<div style="min-width:fit-content"><span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;background:' + color + '22;color:' + color + ';white-space:nowrap">' + label + '</span></div>';
+          html += '<div style="flex:1"><div style="font-size:13px;color:var(--text);line-height:1.5">' + esc(rec.message) + '</div>';
+          html += '<div style="font-size:12px;color:var(--dim);margin-top:4px">Agent: <span style="color:var(--text);font-weight:500">' + (rec.agent || '').replace(/_/g, ' ') + '</span>';
+          if (rec.current_model) html += ' - Current: <span style="color:var(--dim)">' + (MODEL_LABELS[rec.current_model] || rec.current_model) + '</span>';
+          if (rec.current_cache_rate != null) html += ' - Cache rate: <span style="color:var(--yellow)">' + (rec.current_cache_rate * 100).toFixed(0) + '%</span>';
+          html += '</div></div>';
+          html += '<div style="text-align:right;min-width:70px"><div style="font-size:16px;font-weight:700;color:var(--green)">$' + rec.savings_usd.toFixed(2) + '</div><div style="font-size:11px;color:var(--dim)">savings</div></div>';
+          html += '</div>';
+        }
+        html += '</div>';
+      } else {
+        html += '<div style="padding:20px;text-align:center;color:var(--dim);font-size:14px">No optimization recommendations right now. Costs look efficient.</div>';
+      }
+      html += '</div>';
+    } catch {}
     // Recent pipeline runs (from pipeline/runs endpoint)
     try {
       const runs = await api('/pipeline/runs?limit=10');
