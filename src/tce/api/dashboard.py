@@ -259,12 +259,13 @@ async function renderWeek() {
       </div>
       <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:16px">
         <div>
-          <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Weekly Theme</label>
-          <input id="week-theme" type="text" placeholder="Optional - e.g. Agency scaling without burnout" style="width:320px">
+          <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Weekly Theme (optional hint for the planner)</label>
+          <input id="week-theme" type="text" placeholder="e.g. Agency scaling without burnout" style="width:320px">
         </div>
-        <button class="btn btn-primary" onclick="planWeek('${fmtDate(monday)}')">Plan This Week</button>
-        <button class="btn btn-green" id="gen-all-btn" onclick="generateAllDays()" ${genAllState?.running ? 'disabled' : ''}>${genAllState?.running ? (genAllState.unified ? 'Running...' : 'Generating...') : 'Generate All Days'}</button>
+        <button class="btn btn-primary" id="plan-week-btn" onclick="planWeekDeep('${fmtDate(monday)}')">Plan This Week</button>
+        <button class="btn btn-green" id="gen-all-btn" onclick="generateFromPlan()" ${genAllState?.running ? 'disabled' : ''}>${genAllState?.running ? (genAllState.unified ? 'Running...' : 'Generating...') : 'Generate from Plan'}</button>
       </div>
+      <div id="plan-review-panel"></div>
       <div id="gen-all-progress"></div>
       <div class="week-grid" id="week-grid"><div class="empty" style="grid-column:1/-1">Loading calendar...</div></div>
       <div id="guide-section"></div>
@@ -371,20 +372,298 @@ async function renderWeek() {
   } catch {}
 }
 
-async function planWeek(mondayStr) {
+let deepPlanId = null;
+let approvedPlan = null;
+
+async function planWeekDeep(mondayStr) {
   const theme = document.getElementById('week-theme')?.value || null;
+  const btn = document.getElementById('plan-week-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Planning...'; }
+  const panel = document.getElementById('plan-review-panel');
+  if (panel) panel.innerHTML = '<div class="card" style="padding:20px;margin-bottom:16px"><div style="display:flex;align-items:center;gap:12px"><div class="spinner"></div><div id="plan-progress-text">Starting weekly planning - trend research + strategy...</div></div></div>';
+
   try {
-    const entries = await api('/calendar/plan-week', {
+    const r = await api('/calendar/plan-week-deep', {
       method: 'POST',
       body: JSON.stringify({ week_start: mondayStr, weekly_theme: theme || null }),
     });
-    if (entries.length === 0) {
-      toast('Week already planned! All 5 days exist.');
-    } else {
-      toast('Week planned: ' + entries.length + ' days created');
+    deepPlanId = r.plan_id;
+
+    // Poll for completion
+    let done = false;
+    let failCount = 0;
+    while (!done) {
+      await new Promise(ok => setTimeout(ok, 3000));
+      try {
+        const st = await api('/calendar/plan-week-deep/' + deepPlanId + '/status');
+        failCount = 0;
+        const progEl = document.getElementById('plan-progress-text');
+        if (progEl) {
+          const phases = { starting: 'Starting...', trend_research: 'Researching current trends across AI, tech, and business...', strategist: 'Strategist choosing 5 topics, gift theme, and CTA keyword...', completed: 'Plan ready!', failed: 'Planning failed' };
+          progEl.textContent = phases[st.phase] || st.phase_detail || st.phase;
+        }
+        if (st.status === 'completed') {
+          done = true;
+          showPlanReview(st, mondayStr);
+        } else if (st.status === 'failed') {
+          done = true;
+          if (panel) panel.innerHTML = '<div class="card" style="padding:20px;margin-bottom:16px;border-left:4px solid var(--danger)"><b>Planning failed:</b> ' + (st.error || 'Unknown error') + '</div>';
+          toast('Planning failed: ' + (st.error || 'Unknown error'), false);
+        }
+      } catch (e) {
+        failCount++;
+        if (failCount >= 3) { done = true; if (panel) panel.innerHTML = ''; toast('Lost connection to planner', false); }
+      }
     }
+  } catch (e) {
+    toast('Failed to start planning: ' + e.message, false);
+    if (panel) panel.innerHTML = '';
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Plan This Week'; }
+  await renderWeek();
+}
+
+function showPlanReview(planData, mondayStr) {
+  const wp = planData.weekly_plan || {};
+  const days = wp.days || [];
+  const trends = planData.trend_summary || [];
+  const giftTheme = wp.gift_theme || {};
+  const giftTitle = typeof giftTheme === 'string' ? giftTheme : (giftTheme.title || '');
+  const giftSubtitle = typeof giftTheme === 'string' ? '' : (giftTheme.subtitle || '');
+  approvedPlan = { weekly_theme: wp.weekly_theme || '', gift_theme: giftTheme, cta_keyword: wp.cta_keyword || '', days: days };
+
+  let html = '<div class="card" style="padding:24px;margin-bottom:16px;border-left:4px solid var(--accent)">';
+  html += '<h3 style="margin:0 0 16px 0;color:var(--accent)">Weekly Plan Review</h3>';
+  html += '<p style="margin:0 0 16px 0;color:var(--dim)">Review the AI-generated plan below. Edit any field, then approve to start generation.</p>';
+
+  // Top-level fields
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">';
+  html += '<div><label style="font-size:11px;color:var(--dim);display:block;margin-bottom:4px">Weekly Theme</label>';
+  html += '<input id="pr-weekly-theme" type="text" value="' + escHtml(wp.weekly_theme || '') + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg)"></div>';
+  html += '<div><label style="font-size:11px;color:var(--dim);display:block;margin-bottom:4px">Gift Theme</label>';
+  html += '<input id="pr-gift-theme" type="text" value="' + escHtml(giftTitle) + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg)"></div>';
+  html += '<div><label style="font-size:11px;color:var(--dim);display:block;margin-bottom:4px">CTA Keyword</label>';
+  html += '<input id="pr-cta-keyword" type="text" value="' + escHtml(wp.cta_keyword || '') + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);text-transform:uppercase"></div>';
+  html += '</div>';
+
+  // Day cards
+  const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const angleLabels = { big_shift_explainer: 'Big Shift Explainer', tactical_workflow_guide: 'Tactical Workflow', contrarian_diagnosis: 'Contrarian Diagnosis', case_study_build_story: 'Case Study / Build', second_order_implication: 'Second-Order Implication' };
+
+  for (let i = 0; i < days.length; i++) {
+    const d = days[i].story_brief || days[i];
+    const dayNum = days[i].day_of_week !== undefined ? days[i].day_of_week : i;
+    const angle = d.angle_type || '';
+    const angleLabel = angleLabels[angle] || angle;
+    html += '<div style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+    html += '<h4 style="margin:0;color:var(--fg)">' + dayNames[dayNum] + '</h4>';
+    html += '<span style="font-size:11px;padding:3px 10px;border-radius:12px;background:var(--accent);color:white">' + escHtml(angleLabel) + '</span>';
+    html += '</div>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">';
+    html += '<div style="grid-column:1/-1"><label style="font-size:11px;color:var(--dim)">Topic</label>';
+    html += '<input id="pr-day-' + i + '-topic" type="text" value="' + escHtml(d.topic || '') + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)"></div>';
+    html += '<div style="grid-column:1/-1"><label style="font-size:11px;color:var(--dim)">Thesis</label>';
+    html += '<input id="pr-day-' + i + '-thesis" type="text" value="' + escHtml(d.thesis || '') + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)"></div>';
+    html += '<div><label style="font-size:11px;color:var(--dim)">Audience</label>';
+    html += '<input id="pr-day-' + i + '-audience" type="text" value="' + escHtml(d.audience || '') + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)"></div>';
+    html += '<div><label style="font-size:11px;color:var(--dim)">Belief Shift</label>';
+    html += '<input id="pr-day-' + i + '-belief" type="text" value="' + escHtml(d.desired_belief_shift || '') + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)"></div>';
+    html += '<div><label style="font-size:11px;color:var(--dim)">Visual Direction</label>';
+    html += '<select id="pr-day-' + i + '-visual" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)">';
+    ['cinematic_symbolic', 'proof_diagram', 'emotional_alternate'].forEach(v => {
+      html += '<option value="' + v + '"' + (d.visual_job === v ? ' selected' : '') + '>' + v.replace(/_/g, ' ') + '<\/option>';
+    });
+    html += '<\/select></div>';
+    html += '<div><label style="font-size:11px;color:var(--dim)">Gift Connection</label>';
+    html += '<input id="pr-day-' + i + '-gift" type="text" value="' + escHtml(days[i].connection_to_gift || d.connection_to_gift || '') + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)"></div>';
+    html += '</div></div>';
+  }
+
+  // Trend brief (read-only)
+  if (trends.length > 0) {
+    html += '<details style="margin-top:16px"><summary style="cursor:pointer;color:var(--dim);font-size:13px">Trend Brief (' + trends.length + ' trends found)</summary>';
+    html += '<div style="margin-top:8px;font-size:12px;color:var(--dim)">';
+    trends.forEach(t => {
+      html += '<div style="padding:4px 0;border-bottom:1px solid var(--border)">';
+      html += '<span style="color:var(--fg)">' + escHtml(t.headline) + '</span>';
+      html += ' <span style="opacity:0.6">(relevance: ' + t.relevance_score + '/10)</span>';
+      if (t.source_url) html += ' <a href="' + escHtml(t.source_url) + '" target="_blank" style="color:var(--accent);font-size:11px">source</a>';
+      html += '</div>';
+    });
+    html += '</div></details>';
+  }
+
+  // Action buttons
+  html += '<div style="display:flex;gap:12px;margin-top:20px">';
+  html += '<button class="btn btn-green" onclick="approveAndGenerate(\\'' + mondayStr + '\\')">Approve & Generate</button>';
+  html += '<button class="btn btn-primary" onclick="savePlanOnly(\\'' + mondayStr + '\\')">Save Plan Only</button>';
+  html += '<button class="btn btn-dim" onclick="dismissPlanReview()">Dismiss</button>';
+  html += '</div>';
+  html += '</div>';
+
+  const panel = document.getElementById('plan-review-panel');
+  if (panel) panel.innerHTML = html;
+}
+
+function collectEditedPlan() {
+  const days = approvedPlan?.days || [];
+  const edited = {
+    weekly_theme: document.getElementById('pr-weekly-theme')?.value || '',
+    gift_theme: document.getElementById('pr-gift-theme')?.value || '',
+    cta_keyword: document.getElementById('pr-cta-keyword')?.value || '',
+    days: [],
+  };
+  for (let i = 0; i < days.length; i++) {
+    const orig = days[i].story_brief || days[i];
+    edited.days.push({
+      day_of_week: days[i].day_of_week !== undefined ? days[i].day_of_week : i,
+      angle_type: orig.angle_type || '',
+      topic: document.getElementById('pr-day-' + i + '-topic')?.value || '',
+      thesis: document.getElementById('pr-day-' + i + '-thesis')?.value || '',
+      audience: document.getElementById('pr-day-' + i + '-audience')?.value || '',
+      desired_belief_shift: document.getElementById('pr-day-' + i + '-belief')?.value || '',
+      visual_job: document.getElementById('pr-day-' + i + '-visual')?.value || 'cinematic_symbolic',
+      connection_to_gift: document.getElementById('pr-day-' + i + '-gift')?.value || '',
+      evidence_requirements: orig.evidence_requirements || [],
+      template_id: orig.template_id || '',
+      platform_notes: orig.platform_notes || '',
+    });
+  }
+  return edited;
+}
+
+async function approveAndGenerate(mondayStr) {
+  if (!deepPlanId) { toast('No plan to approve', false); return; }
+  const edited = collectEditedPlan();
+  try {
+    // Approve the plan
+    await api('/calendar/plan-week-deep/' + deepPlanId + '/approve', {
+      method: 'POST',
+      body: JSON.stringify(edited),
+    });
+    toast('Plan approved! Starting generation...');
+    document.getElementById('plan-review-panel').innerHTML = '';
+    // Start generation with the approved plan (skip planning phase)
+    generateFromApprovedPlan(edited);
+  } catch (e) { toast('Approval failed: ' + e.message, false); }
+}
+
+async function savePlanOnly(mondayStr) {
+  if (!deepPlanId) { toast('No plan to save', false); return; }
+  const edited = collectEditedPlan();
+  try {
+    await api('/calendar/plan-week-deep/' + deepPlanId + '/approve', {
+      method: 'POST',
+      body: JSON.stringify(edited),
+    });
+    toast('Plan saved! You can generate later.');
+    document.getElementById('plan-review-panel').innerHTML = '';
     await renderWeek();
+  } catch (e) { toast('Save failed: ' + e.message, false); }
+}
+
+async function generateFromApprovedPlan(plan) {
+  genAllState = { running: true, current: -1, total: 5, startTime: Date.now(), results: [], totalCost: 0, unified: true, weekId: null, phase: 'starting', phaseDetail: 'Starting generation from approved plan...', weeklyTheme: plan.weekly_theme, giftTheme: plan.gift_theme, weeklyKeyword: plan.cta_keyword };
+  saveGenAllState();
+  renderGenAllProgress();
+  try {
+    const r = await api('/pipeline/generate-week', {
+      method: 'POST',
+      body: JSON.stringify({ context: {}, skip_planning: true, approved_plan: plan }),
+    });
+    genAllState.weekId = r.week_id;
+    saveGenAllState();
+    // Same polling loop as generateAllDays
+    let done = false;
+    let pollFailCount = 0;
+    while (!done) {
+      await new Promise(ok => setTimeout(ok, 2500));
+      try {
+        const st = await api('/pipeline/generate-week/' + r.week_id + '/status');
+        pollFailCount = 0;
+        genAllState.phase = st.phase || 'unknown';
+        genAllState.phaseDetail = st.phase_detail || '';
+        genAllState.current = st.current_day >= 0 ? st.current_day : genAllState.current;
+        if (st.day_run_ids) {
+          for (let idx = 0; idx < st.day_run_ids.length; idx++) {
+            if (!genAllState.results[idx]) genAllState.results[idx] = { day: DAY_NAMES[idx], status: 'done', runId: st.day_run_ids[idx] };
+          }
+        }
+        if (st.phase === 'generating_days' && st.current_day >= 0 && st.day_run_ids) {
+          const dayRunId = st.day_run_ids[st.current_day];
+          if (dayRunId) {
+            try {
+              const dayStatus = await api('/pipeline/' + dayRunId + '/status');
+              if (!genAllState.results[st.current_day]) genAllState.results[st.current_day] = { day: DAY_NAMES[st.current_day], status: 'running' };
+              genAllState.results[st.current_day].stepStatus = dayStatus.step_status || {};
+            } catch {}
+          }
+          if (!genAllState.results[st.current_day]) genAllState.results[st.current_day] = { day: DAY_NAMES[st.current_day], status: 'running', stepStatus: {} };
+          else genAllState.results[st.current_day].status = 'running';
+        }
+        done = st.status === 'completed' || st.status === 'failed';
+        if (st.status === 'failed') genAllState.errorMsg = st.error || 'Unknown error';
+      } catch (pollErr) {
+        pollFailCount++;
+        if (pollFailCount >= 5) { genAllState.phase = 'failed'; genAllState.phaseDetail = 'Lost connection'; done = true; }
+      }
+      saveGenAllState();
+      renderGenAllProgress();
+    }
+  } catch (e) {
+    genAllState.phase = 'failed';
+    genAllState.phaseDetail = 'Failed to start: ' + e.message;
+    toast('Generation failed: ' + e.message, false);
+  }
+  genAllState.running = false;
+  saveGenAllState();
+  renderGenAllProgress();
+  renderWeek();
+}
+
+function escHtml(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function dismissPlanReview() { const p = document.getElementById('plan-review-panel'); if (p) p.innerHTML = ''; }
+
+async function generateFromPlan() {
+  // Check if there is an approved plan in calendar entries
+  try {
+    const monday = getMondayOfWeek();
+    const friday = new Date(monday); friday.setDate(friday.getDate() + 4);
+    const entries = await api('/calendar/?start=' + fmtDate(monday) + '&end=' + fmtDate(friday));
+    const withPlan = entries.filter(e => e.plan_context && e.status === 'approved');
+    if (withPlan.length === 0) {
+      toast('No approved plan found. Click "Plan This Week" first.', false);
+      return;
+    }
+    // Reconstruct approved plan from calendar entries
+    const plan = {
+      weekly_theme: '',
+      gift_theme: '',
+      cta_keyword: '',
+      days: withPlan.map(e => ({
+        day_of_week: e.day_of_week,
+        ...e.plan_context,
+      })),
+    };
+    // Parse operator_notes for theme/cta
+    const notes = withPlan[0].operator_notes || '';
+    const themeMatch = notes.match(/Weekly theme: ([^|]+)/);
+    const ctaMatch = notes.match(/CTA: ([^|]+)/);
+    const giftMatch = notes.match(/Gift: (.+)$/);
+    if (themeMatch) plan.weekly_theme = themeMatch[1].trim();
+    if (ctaMatch) plan.cta_keyword = ctaMatch[1].trim();
+    if (giftMatch) plan.gift_theme = giftMatch[1].trim();
+    generateFromApprovedPlan(plan);
   } catch (e) { toast('Error: ' + e.message, false); }
+}
+
+function getMondayOfWeek() {
+  const now = new Date();
+  now.setDate(now.getDate() + (weekOffset || 0) * 7);
+  const day = now.getDay();
+  const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+  return new Date(now.setDate(diff));
 }
 
 async function runDayPipeline(dayOfWeek, entryId) {

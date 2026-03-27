@@ -12,11 +12,15 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import structlog
+
 from tce.db.session import get_db
 from tce.models.pipeline_run import PipelineRun
 from tce.orchestrator.engine import PipelineOrchestrator
 from tce.orchestrator.workflows import WORKFLOWS
 from tce.settings import settings
+
+logger = structlog.get_logger()
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
@@ -40,6 +44,8 @@ class PipelineRunResponse(BaseModel):
 
 class WeekGenerationRequest(BaseModel):
     context: dict[str, Any] = {}
+    skip_planning: bool = False
+    approved_plan: dict[str, Any] | None = None
 
 
 @router.post("/run", response_model=PipelineRunResponse)
@@ -208,62 +214,80 @@ async def generate_week(
 
         async with async_session() as bg_db:
             try:
-                # --- Phase 1: Weekly Planner ---
-                status["phase"] = "planning"
-                status["phase_detail"] = "Running weekly planner (trend scout + strategic planning)..."
+                # --- Phase 1: Weekly Planner (skipped if approved_plan provided) ---
+                if request.skip_planning and request.approved_plan:
+                    # Use the pre-approved plan directly
+                    status["phase"] = "planning"
+                    status["phase_detail"] = "Using approved plan (skipping planning phase)..."
+                    status["planner_run_id"] = None
 
-                planner_steps = WORKFLOWS["weekly_planner"]
-                planner_run_id = uuid.uuid4()
+                    weekly_plan = request.approved_plan
+                    trend_brief = {}
+                    weekly_theme = request.approved_plan.get("weekly_theme", "")
+                    gift_theme = request.approved_plan.get("gift_theme", "")
+                    weekly_keyword = request.approved_plan.get("cta_keyword", "")
 
-                planner_record = PipelineRun(
-                    run_id=planner_run_id,
-                    workflow="weekly_planner",
-                    status="running",
-                    started_at=datetime.utcnow(),
-                )
-                bg_db.add(planner_record)
-                await bg_db.commit()
+                    # Ensure days have story_brief structure
+                    for day in weekly_plan.get("days", []):
+                        if "story_brief" not in day:
+                            day["story_brief"] = day
 
-                planner_orch = PipelineOrchestrator(
-                    steps=planner_steps,
-                    db=bg_db,
-                    settings=settings,
-                    run_id=planner_run_id,
-                )
-                _active_runs[str(planner_run_id)] = planner_orch
+                else:
+                    status["phase"] = "planning"
+                    status["phase_detail"] = "Running weekly planner (trend scout + strategic planning)..."
 
-                planner_result = await planner_orch.run(request.context)
-                await bg_db.commit()
+                    planner_steps = WORKFLOWS["weekly_planner"]
+                    planner_run_id = uuid.uuid4()
 
-                # Update planner run record
-                planner_record = await bg_db.get(PipelineRun, planner_record.id)
-                if planner_record:
-                    has_failures = any(
-                        v == "failed"
-                        for v in planner_result.get("step_status", {}).values()
+                    planner_record = PipelineRun(
+                        run_id=planner_run_id,
+                        workflow="weekly_planner",
+                        status="running",
+                        started_at=datetime.utcnow(),
                     )
-                    planner_record.status = "failed" if has_failures else "completed"
-                    planner_record.completed_at = datetime.utcnow()
-                    planner_record.step_results = planner_result.get("step_status", {})
+                    bg_db.add(planner_record)
                     await bg_db.commit()
 
-                _active_runs.pop(str(planner_run_id), None)
+                    planner_orch = PipelineOrchestrator(
+                        steps=planner_steps,
+                        db=bg_db,
+                        settings=settings,
+                        run_id=planner_run_id,
+                    )
+                    _active_runs[str(planner_run_id)] = planner_orch
 
-                status["planner_run_id"] = str(planner_run_id)
+                    planner_result = await planner_orch.run(request.context)
+                    await bg_db.commit()
 
-                # Extract the weekly plan from the orchestrator context
-                ctx = planner_result.get("context", {})
-                weekly_plan = ctx.get("weekly_plan", {})
-                trend_brief = ctx.get("trend_brief", {})
-                weekly_theme = ctx.get("weekly_theme", "")
-                gift_theme = ctx.get("gift_theme", "")
-                weekly_keyword = ctx.get("weekly_keyword", "")
+                    # Update planner run record
+                    planner_record = await bg_db.get(PipelineRun, planner_record.id)
+                    if planner_record:
+                        has_failures = any(
+                            v == "failed"
+                            for v in planner_result.get("step_status", {}).values()
+                        )
+                        planner_record.status = "failed" if has_failures else "completed"
+                        planner_record.completed_at = datetime.utcnow()
+                        planner_record.step_results = planner_result.get("step_status", {})
+                        await bg_db.commit()
 
-                if not weekly_plan or not weekly_plan.get("days"):
-                    status["phase"] = "failed"
-                    status["error"] = "Weekly planner did not produce a valid plan"
-                    status["status"] = "failed"
-                    return
+                    _active_runs.pop(str(planner_run_id), None)
+
+                    status["planner_run_id"] = str(planner_run_id)
+
+                    # Extract the weekly plan from the orchestrator context
+                    ctx = planner_result.get("context", {})
+                    weekly_plan = ctx.get("weekly_plan", {})
+                    trend_brief = ctx.get("trend_brief", {})
+                    weekly_theme = ctx.get("weekly_theme", "")
+                    gift_theme = ctx.get("gift_theme", "")
+                    weekly_keyword = ctx.get("weekly_keyword", "")
+
+                    if not weekly_plan or not weekly_plan.get("days"):
+                        status["phase"] = "failed"
+                        status["error"] = "Weekly planner did not produce a valid plan"
+                        status["status"] = "failed"
+                        return
 
                 status["weekly_theme"] = weekly_theme
                 status["gift_theme"] = gift_theme

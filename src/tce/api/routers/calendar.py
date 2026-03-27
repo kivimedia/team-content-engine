@@ -1,8 +1,10 @@
 """Content calendar endpoints (PRD Section 43.3)."""
 
+import asyncio
 import json
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,9 +16,11 @@ from tce.models.content_calendar import ContentCalendarEntry
 from tce.schemas.content_calendar import (
     ContentCalendarRead,
     ContentCalendarUpdate,
+    PlanApproveRequest,
+    PlanWeekDeepRequest,
     PlanWeekRequest,
 )
-from tce.settings import Settings
+from tce.settings import Settings, settings
 
 logger = structlog.get_logger()
 
@@ -219,3 +223,216 @@ async def update_entry(
         setattr(entry, key, value)
     await db.flush()
     return entry
+
+
+# ---------------------------------------------------------------------------
+# Deep Planning (human-in-the-loop weekly planning)
+# ---------------------------------------------------------------------------
+
+_deep_plans: dict[str, dict[str, Any]] = {}
+
+
+@router.post("/plan-week-deep")
+async def plan_week_deep(
+    request: PlanWeekDeepRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Run the weekly_planner (trend scout + strategy) and return a plan for review."""
+    plan_id = str(uuid.uuid4())
+
+    _deep_plans[plan_id] = {
+        "plan_id": plan_id,
+        "status": "running",
+        "phase": "starting",
+        "phase_detail": "Initializing weekly planning...",
+        "week_start": request.week_start.isoformat(),
+        "weekly_plan": None,
+        "trend_brief": None,
+        "error": None,
+        "started_at": datetime.utcnow().isoformat(),
+    }
+
+    async def _run_deep_plan() -> None:
+        from tce.db.session import async_session
+        from tce.orchestrator.engine import PipelineOrchestrator
+        from tce.orchestrator.workflows import WORKFLOWS
+
+        status = _deep_plans[plan_id]
+
+        async with async_session() as bg_db:
+            try:
+                status["phase"] = "trend_research"
+                status["phase_detail"] = "Running trend research across AI, tech, and business..."
+
+                planner_steps = WORKFLOWS["weekly_planner"]
+                run_id = uuid.uuid4()
+
+                context: dict[str, Any] = {}
+                if request.weekly_theme:
+                    context["weekly_theme"] = request.weekly_theme
+                if request.focus_areas:
+                    context["focus_areas"] = request.focus_areas
+
+                orch = PipelineOrchestrator(
+                    steps=planner_steps,
+                    db=bg_db,
+                    settings=settings,
+                    run_id=run_id,
+                )
+
+                # Hook into progress to update status
+                original_report = None
+                if hasattr(orch, '_progress_log'):
+                    pass  # Will check progress via result
+
+                status["phase"] = "strategist"
+                status["phase_detail"] = "Strategist choosing 5 topics, gift theme, and CTA keyword..."
+
+                result = await orch.run(context)
+                await bg_db.commit()
+
+                ctx = result.get("context", {})
+                weekly_plan = ctx.get("weekly_plan", {})
+                trend_brief = ctx.get("trend_brief", {})
+
+                if not weekly_plan or not weekly_plan.get("days"):
+                    status["status"] = "failed"
+                    status["phase"] = "failed"
+                    status["error"] = "Weekly planner did not produce a valid plan"
+                    return
+
+                # Create/update calendar entries
+                week_plan_uuid = uuid.uuid4()
+                for day_plan in weekly_plan.get("days", []):
+                    day_num = day_plan.get("day_of_week", 0)
+                    entry_date = request.week_start + timedelta(days=day_num)
+
+                    # Check for existing entry
+                    existing = await bg_db.execute(
+                        select(ContentCalendarEntry).where(
+                            ContentCalendarEntry.date == entry_date
+                        )
+                    )
+                    entry = existing.scalar_one_or_none()
+
+                    story_brief = day_plan.get("story_brief", day_plan)
+
+                    if entry:
+                        entry.topic = story_brief.get("topic", entry.topic)
+                        entry.plan_context = story_brief
+                        entry.weekly_plan_id = week_plan_uuid
+                        entry.status = "planned"
+                    else:
+                        angle = DEFAULT_CADENCE.get(day_num, "big_shift_explainer")
+                        entry = ContentCalendarEntry(
+                            date=entry_date,
+                            day_of_week=day_num,
+                            angle_type=story_brief.get("angle_type", angle),
+                            topic=story_brief.get("topic"),
+                            status="planned",
+                            plan_context=story_brief,
+                            weekly_plan_id=week_plan_uuid,
+                        )
+                        bg_db.add(entry)
+
+                await bg_db.commit()
+
+                # Trim trend_brief for response (keep just headlines + scores)
+                trend_summary = []
+                for t in trend_brief.get("trends", [])[:10]:
+                    trend_summary.append({
+                        "headline": t.get("headline", ""),
+                        "relevance_score": t.get("relevance_score", 0),
+                        "source_url": t.get("source_url", ""),
+                        "angle_suggestions": t.get("angle_suggestions", t.get("angles", [])),
+                    })
+
+                status["status"] = "completed"
+                status["phase"] = "completed"
+                status["phase_detail"] = "Plan ready for review"
+                status["weekly_plan"] = weekly_plan
+                status["weekly_plan_id"] = str(week_plan_uuid)
+                status["trend_summary"] = trend_summary
+                status["completed_at"] = datetime.utcnow().isoformat()
+
+            except Exception as e:
+                logger.exception("plan_week_deep.error", plan_id=plan_id)
+                status["status"] = "failed"
+                status["phase"] = "failed"
+                status["error"] = str(e)
+
+    asyncio.create_task(_run_deep_plan())
+
+    return {
+        "plan_id": plan_id,
+        "status": "started",
+        "status_url": f"/api/v1/calendar/plan-week-deep/{plan_id}/status",
+    }
+
+
+@router.get("/plan-week-deep/{plan_id}/status")
+async def get_deep_plan_status(plan_id: str) -> dict[str, Any]:
+    """Get the status of a deep planning run."""
+    if plan_id not in _deep_plans:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return _deep_plans[plan_id]
+
+
+@router.post("/plan-week-deep/{plan_id}/approve")
+async def approve_deep_plan(
+    plan_id: str,
+    request: PlanApproveRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Approve (and optionally edit) the deep plan. Updates calendar entries."""
+    if plan_id not in _deep_plans:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    plan_status = _deep_plans[plan_id]
+    if plan_status["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Plan is not ready for approval")
+
+    week_start_str = plan_status.get("week_start")
+    if not week_start_str:
+        raise HTTPException(status_code=400, detail="Plan missing week_start")
+
+    week_start = date.fromisoformat(week_start_str)
+    weekly_plan_id_str = plan_status.get("weekly_plan_id")
+
+    # Update calendar entries with the (possibly edited) plan
+    for day_plan in request.days:
+        day_num = day_plan.get("day_of_week", 0)
+        entry_date = week_start + timedelta(days=day_num)
+
+        result = await db.execute(
+            select(ContentCalendarEntry).where(
+                ContentCalendarEntry.date == entry_date
+            )
+        )
+        entry = result.scalar_one_or_none()
+        if entry:
+            entry.topic = day_plan.get("topic", entry.topic)
+            entry.plan_context = day_plan
+            entry.status = "approved"
+            entry.operator_notes = (
+                f"Weekly theme: {request.weekly_theme} | "
+                f"CTA: {request.cta_keyword} | "
+                f"Gift: {request.gift_theme if isinstance(request.gift_theme, str) else request.gift_theme.get('title', '')}"
+            )
+
+    await db.flush()
+
+    # Update the in-memory plan with approved edits
+    plan_status["approved"] = True
+    plan_status["approved_plan"] = {
+        "weekly_theme": request.weekly_theme,
+        "gift_theme": request.gift_theme,
+        "cta_keyword": request.cta_keyword,
+        "days": request.days,
+    }
+
+    return {
+        "plan_id": plan_id,
+        "status": "approved",
+        "message": "Plan approved and calendar entries updated",
+    }

@@ -4,6 +4,7 @@ import uuid
 from datetime import date
 
 from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tce.db.base import Base
@@ -28,6 +29,10 @@ class ContentCalendarEntry(Base):
     # Status: planned / generating / ready / approved / published / skipped
     status: Mapped[str] = mapped_column(String(20), default="planned")
     operator_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Deep planning: full story_brief + weekly plan link
+    plan_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    weekly_plan_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
 
     # Buffer posts (PRD Section 43.3): pre-approved backup posts
     is_buffer: Mapped[bool] = mapped_column(Boolean, default=False)

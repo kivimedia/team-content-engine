@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import date, datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -26,6 +27,8 @@ class ContentCalendarRead(BaseModel):
     weekly_guide_id: uuid.UUID | None
     status: str
     operator_notes: str | None
+    plan_context: dict | None = None
+    weekly_plan_id: uuid.UUID | None = None
     is_buffer: bool
     buffer_priority: int
     created_at: datetime
@@ -41,3 +44,16 @@ class ContentCalendarUpdate(BaseModel):
 class PlanWeekRequest(BaseModel):
     week_start: date
     weekly_theme: str | None = None
+
+
+class PlanWeekDeepRequest(BaseModel):
+    week_start: date
+    weekly_theme: str | None = None
+    focus_areas: list[str] | None = None
+
+
+class PlanApproveRequest(BaseModel):
+    weekly_theme: str
+    gift_theme: Any  # str or dict
+    cta_keyword: str
+    days: list[dict[str, Any]]
