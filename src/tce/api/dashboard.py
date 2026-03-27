@@ -1079,8 +1079,21 @@ async function renderPackages() {
         html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px">';
         for (const ip of p.image_prompts) {
           const promptText = ip.prompt_text || ip.detailed_prompt || '';
+          const bestPlat = ip.best_platform || 'fal_ai';
+          const platColors = { fal_ai: '#16a34a', midjourney: '#a855f7', gemini: '#3b82f6', dall_e: '#f97316' };
+          const platLabels = { fal_ai: 'fal.ai', midjourney: 'Midjourney', gemini: 'Gemini', dall_e: 'DALL-E' };
+          const platColor = platColors[bestPlat] || '#888';
+          const platLabel = platLabels[bestPlat] || bestPlat;
           html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:16px">';
-          html += '<div style="font-weight:600;font-size:14px;color:var(--accent2);margin-bottom:8px">' + esc(ip.prompt_name || ip.visual_job || 'Image') + '</div>';
+          // Header with platform badge
+          html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+          html += '<div style="font-weight:600;font-size:14px;color:var(--accent2);flex:1">' + esc(ip.prompt_name || ip.visual_job || 'Image') + '</div>';
+          html += '<span style="padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;background:' + platColor + '22;color:' + platColor + ';border:1px solid ' + platColor + '44" title="' + esc(ip.best_platform_reason || '') + '">' + platLabel + '</span>';
+          html += '</div>';
+          // Platform hint message if not fal_ai
+          if (bestPlat !== 'fal_ai' && ip.best_platform_reason) {
+            html += '<div style="font-size:12px;color:' + platColor + ';margin-bottom:8px;padding:6px 10px;background:' + platColor + '11;border-radius:6px">Try on ' + platLabel + ' - ' + esc(ip.best_platform_reason) + '</div>';
+          }
           // Show image first if available
           if (ip.image_url) {
             html += '<div style="margin-bottom:12px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">';
@@ -1102,7 +1115,13 @@ async function renderPackages() {
             html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">' + esc(ip.negative_prompt) + '</div>';
           }
           if (ip.rationale) html += '<div style="font-size:11px;color:var(--dim);margin-top:8px;border-top:1px solid var(--border);padding-top:8px">Rationale: ' + esc(ip.rationale) + '</div>';
-          html += '<button class="btn btn-dim" style="margin-top:8px;font-size:11px" onclick="copyImagePrompt(this)">Copy Prompt</button>';
+          // Copy buttons
+          html += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">';
+          html += '<button class="btn btn-dim" style="font-size:11px" onclick="copyImagePrompt(this)">Copy Prompt</button>';
+          if (bestPlat !== 'fal_ai') {
+            html += '<button class="btn btn-dim" style="font-size:11px;border-color:' + platColor + '44;color:' + platColor + '" onclick="copyForPlatform(this, \\'' + platLabel + '\\')">Copy for ' + platLabel + '</button>';
+          }
+          html += '</div>';
           html += '</div>';
         }
         html += '</div></div>';
@@ -1120,6 +1139,7 @@ async function renderPackages() {
       }
       html += '<button class="btn btn-blue" onclick="exportPackage(\\'' + p.id + '\\')">Export</button>';
       html += '<button class="btn btn-dim" onclick="showFeedbackForm(\\'' + p.id + '\\', this)">Feedback</button>';
+      html += '<button class="btn btn-dim" style="border-color:var(--accent)" onclick="showRevisedCopyForm(\\'' + p.id + '\\', this)">Edit & Submit Copy</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'' + pid + '\\', this, \\'Facebook post\\')">Copy FB Post</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'li-' + pid + '\\', this, \\'LinkedIn post\\')">Copy LI Post</button>';
       if (p.is_archived) {
@@ -1240,8 +1260,7 @@ function copyDmFlow(btn, pid) {
 }
 
 function copyImagePrompt(btn) {
-  // Find the .post-preview sibling (the prompt text) in the same card
-  const card = btn.closest('div');
+  const card = btn.closest('div').closest('div[style*="background:#111318"]');
   const preview = card.querySelector('.post-preview');
   if (preview) {
     clipCopy(preview.textContent);
@@ -1250,6 +1269,20 @@ function copyImagePrompt(btn) {
     btn.style.color = '#000';
     setTimeout(() => { btn.textContent = 'Copy Prompt'; btn.style.background = ''; btn.style.color = ''; }, 2000);
     toast('Image prompt copied to clipboard');
+  }
+}
+
+function copyForPlatform(btn, platformName) {
+  const card = btn.closest('div').closest('div[style*="background:#111318"]');
+  const preview = card.querySelector('.post-preview');
+  if (preview) {
+    clipCopy(preview.textContent);
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    btn.style.background = 'var(--green)';
+    btn.style.color = '#000';
+    setTimeout(() => { btn.textContent = orig; btn.style.background = ''; btn.style.color = ''; }, 2000);
+    toast('Prompt copied for ' + platformName);
   }
 }
 
@@ -1768,6 +1801,138 @@ async function submitFeedback(packageId) {
   } catch (e) { toast('Feedback failed: ' + e.message, false); }
 }
 
+// REVISED COPY FORM
+function showRevisedCopyForm(packageId, btn) {
+  const existing = document.getElementById('revised-form-' + packageId);
+  if (existing) { existing.remove(); return; }
+  // Find the package data from the card
+  const card = btn.closest('.pkg-card');
+  const fbDiv = card.querySelector('[id^="fb-"]');
+  const liDiv = card.querySelector('[id^="li-"]');
+  const fbText = fbDiv ? fbDiv.querySelector('.post-preview')?.textContent || '' : '';
+  const liText = liDiv ? liDiv.querySelector('.post-preview')?.textContent || '' : '';
+  const fbWords = fbText.trim().split(/\\s+/).length;
+  const liWords = liText.trim().split(/\\s+/).length;
+  let html = '<div id="revised-form-' + packageId + '" style="background:#111318;border:1px solid var(--accent);border-radius:8px;padding:16px;margin-top:12px">';
+  html += '<div style="font-size:14px;font-weight:600;color:var(--accent2);margin-bottom:4px">Submit Revised Copy</div>';
+  html += '<div style="font-size:12px;color:var(--dim);margin-bottom:12px">Paste what you actually published. The system learns from your edits to match your voice.</div>';
+  // Facebook
+  html += '<div style="margin-bottom:12px">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><label style="font-size:13px;font-weight:600;color:var(--green)">Facebook Post</label><span id="rev-fb-wc-' + packageId + '" style="font-size:11px;color:var(--dim)">' + fbWords + ' words</span></div>';
+  html += '<textarea id="rev-fb-' + packageId + '" style="width:100%;min-height:200px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-size:13px;resize:vertical;line-height:1.5" oninput="updateWordCount(this, \\'rev-fb-wc-' + packageId + '\\')">' + esc(fbText) + '</textarea>';
+  html += '</div>';
+  // LinkedIn
+  html += '<div style="margin-bottom:12px">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><label style="font-size:13px;font-weight:600;color:var(--blue, #3b82f6)">LinkedIn Post</label><span id="rev-li-wc-' + packageId + '" style="font-size:11px;color:var(--dim)">' + liWords + ' words</span></div>';
+  html += '<textarea id="rev-li-' + packageId + '" style="width:100%;min-height:200px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-size:13px;resize:vertical;line-height:1.5" oninput="updateWordCount(this, \\'rev-li-wc-' + packageId + '\\')">' + esc(liText) + '</textarea>';
+  html += '</div>';
+  // Diff preview area
+  html += '<div id="rev-diff-' + packageId + '" style="display:none;margin-bottom:12px"></div>';
+  // Buttons
+  html += '<div style="display:flex;gap:8px">';
+  html += '<button class="btn btn-primary" onclick="submitRevisedCopy(\\'' + packageId + '\\')">Submit Revised Copy</button>';
+  html += '<button class="btn btn-dim" onclick="previewDiff(\\'' + packageId + '\\')">Preview Changes</button>';
+  html += '<button class="btn btn-dim" onclick="document.getElementById(\\'revised-form-' + packageId + '\\').remove()">Cancel</button>';
+  html += '</div></div>';
+  card.insertAdjacentHTML('beforeend', html);
+}
+
+function updateWordCount(textarea, wcId) {
+  const wc = textarea.value.trim() ? textarea.value.trim().split(/\\s+/).length : 0;
+  document.getElementById(wcId).textContent = wc + ' words';
+}
+
+function previewDiff(packageId) {
+  const form = document.getElementById('revised-form-' + packageId);
+  const card = form.closest('.pkg-card');
+  const fbDiv = card.querySelector('[id^="fb-"]');
+  const liDiv = card.querySelector('[id^="li-"]');
+  const origFb = fbDiv ? fbDiv.querySelector('.post-preview')?.textContent || '' : '';
+  const origLi = liDiv ? liDiv.querySelector('.post-preview')?.textContent || '' : '';
+  const newFb = document.getElementById('rev-fb-' + packageId).value;
+  const newLi = document.getElementById('rev-li-' + packageId).value;
+  const diffArea = document.getElementById('rev-diff-' + packageId);
+  let html = '';
+  if (origFb !== newFb) {
+    html += '<div style="margin-bottom:8px"><strong style="color:var(--green);font-size:12px">Facebook changes:</strong></div>';
+    html += '<div style="font-size:12px;background:#0d1117;padding:10px;border-radius:6px;border:1px solid var(--border);margin-bottom:12px">' + wordDiff(origFb, newFb) + '</div>';
+  }
+  if (origLi !== newLi) {
+    html += '<div style="margin-bottom:8px"><strong style="color:#3b82f6;font-size:12px">LinkedIn changes:</strong></div>';
+    html += '<div style="font-size:12px;background:#0d1117;padding:10px;border-radius:6px;border:1px solid var(--border);margin-bottom:12px">' + wordDiff(origLi, newLi) + '</div>';
+  }
+  if (!html) html = '<div style="font-size:12px;color:var(--dim);padding:8px">No changes detected.</div>';
+  diffArea.innerHTML = html;
+  diffArea.style.display = '';
+}
+
+function wordDiff(oldText, newText) {
+  const oldWords = oldText.split(/\\b/);
+  const newWords = newText.split(/\\b/);
+  // Simple LCS-based word diff
+  const m = oldWords.length, n = newWords.length;
+  // For performance, if texts are very long use simplified approach
+  if (m > 500 || n > 500) {
+    return '<span style="color:var(--red);text-decoration:line-through">' + esc(oldText.slice(0, 200)) + '...</span> <span style="color:var(--green)">' + esc(newText.slice(0, 200)) + '...</span>';
+  }
+  const dp = Array.from({length: m + 1}, () => new Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) {
+    dp[i][j] = oldWords[i-1] === newWords[j-1] ? dp[i-1][j-1] + 1 : Math.max(dp[i-1][j], dp[i][j-1]);
+  }
+  const result = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldWords[i-1] === newWords[j-1]) {
+      result.unshift(esc(oldWords[i-1]));
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
+      result.unshift('<span style="color:var(--green);background:#05200e">' + esc(newWords[j-1]) + '</span>');
+      j--;
+    } else {
+      result.unshift('<span style="color:var(--red);text-decoration:line-through;background:#200505">' + esc(oldWords[i-1]) + '</span>');
+      i--;
+    }
+  }
+  return result.join('');
+}
+
+async function submitRevisedCopy(packageId) {
+  const form = document.getElementById('revised-form-' + packageId);
+  const card = form.closest('.pkg-card');
+  const fbDiv = card.querySelector('[id^="fb-"]');
+  const liDiv = card.querySelector('[id^="li-"]');
+  const origFb = fbDiv ? fbDiv.querySelector('.post-preview')?.textContent || '' : '';
+  const origLi = liDiv ? liDiv.querySelector('.post-preview')?.textContent || '' : '';
+  const newFb = document.getElementById('rev-fb-' + packageId).value;
+  const newLi = document.getElementById('rev-li-' + packageId).value;
+  // Auto-generate revision summary
+  const fbChanged = origFb !== newFb;
+  const liChanged = origLi !== newLi;
+  if (!fbChanged && !liChanged) { toast('No changes detected', false); return; }
+  let summary = '';
+  if (fbChanged) summary += 'FB post edited';
+  if (liChanged) summary += (summary ? ', ' : '') + 'LI post edited';
+  try {
+    await api('/feedback/', {
+      method: 'POST',
+      body: JSON.stringify({
+        package_id: packageId,
+        action_taken: 'revised',
+        revision_summary: summary,
+        revised_facebook_post: fbChanged ? newFb : null,
+        revised_linkedin_post: liChanged ? newLi : null,
+        feedback_notes: 'Copy revision submitted via dashboard',
+      }),
+    });
+    toast('Revised copy submitted - system will learn from your edits');
+    // Show diff inline after submit
+    previewDiff(packageId);
+    // Disable submit button
+    const submitBtn = form.querySelector('.btn-primary');
+    if (submitBtn) { submitBtn.textContent = 'Submitted'; submitBtn.disabled = true; submitBtn.style.background = 'var(--green)'; submitBtn.style.color = '#000'; }
+  } catch (e) { toast('Submit failed: ' + e.message, false); }
+}
+
 // ANALYTICS TAB
 async function renderAnalytics() {
   const app = document.getElementById('app');
@@ -1844,6 +2009,29 @@ async function renderAnalytics() {
         html += '</div></div>';
       }
     }
+    // Voice Learning section
+    const revisedFeedback = feedback.filter(f => f.revised_facebook_post || f.revised_linkedin_post);
+    html += '<div class="card" style="margin-bottom:16px"><h3 style="color:var(--accent2)">Voice Learning</h3>';
+    html += '<div style="margin-top:12px">';
+    if (revisedFeedback.length) {
+      html += '<div style="display:flex;gap:16px;margin-bottom:12px">';
+      html += '<div style="padding:12px 20px;background:#0d1117;border-radius:8px;border:1px solid var(--border);text-align:center">';
+      html += '<div style="font-size:24px;font-weight:700;color:var(--accent2)">' + revisedFeedback.length + '</div>';
+      html += '<div style="font-size:12px;color:var(--dim)">Revised copies submitted</div></div>';
+      const fbRevised = revisedFeedback.filter(f => f.revised_facebook_post).length;
+      const liRevised = revisedFeedback.filter(f => f.revised_linkedin_post).length;
+      html += '<div style="padding:12px 20px;background:#0d1117;border-radius:8px;border:1px solid var(--border);text-align:center">';
+      html += '<div style="font-size:24px;font-weight:700;color:var(--green)">' + fbRevised + '</div>';
+      html += '<div style="font-size:12px;color:var(--dim)">FB posts edited</div></div>';
+      html += '<div style="padding:12px 20px;background:#0d1117;border-radius:8px;border:1px solid var(--border);text-align:center">';
+      html += '<div style="font-size:24px;font-weight:700;color:#3b82f6">' + liRevised + '</div>';
+      html += '<div style="font-size:12px;color:var(--dim)">LI posts edited</div></div>';
+      html += '</div>';
+      html += '<div style="font-size:12px;color:var(--dim);padding:8px;background:#0d1117;border-radius:6px">The Learning Loop agent analyzes your edits to identify voice patterns and adjust future content generation. More revisions = smarter content.</div>';
+    } else {
+      html += '<div class="empty" style="padding:16px">No revised copies submitted yet. Use the "Edit & Submit Copy" button on packages to teach the system your voice.</div>';
+    }
+    html += '</div></div>';
     // DM Fulfillment section
     html += '<div class="card"><h3>DM Fulfillment Status</h3>';
     html += '<div style="margin-top:12px">';

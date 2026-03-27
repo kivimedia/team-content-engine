@@ -12,6 +12,8 @@ class OperatorFeedbackCreate(BaseModel):
     feedback_notes: str | None = None
     action_taken: str  # approved/revised/rejected
     revision_summary: str | None = None
+    revised_facebook_post: str | None = None
+    revised_linkedin_post: str | None = None
     created_by: str | None = None
 
 
@@ -24,6 +26,8 @@ class OperatorFeedbackRead(BaseModel):
     feedback_notes: str | None
     action_taken: str
     revision_summary: str | None
+    revised_facebook_post: str | None
+    revised_linkedin_post: str | None
     created_by: str | None
     created_at: datetime
     updated_at: datetime

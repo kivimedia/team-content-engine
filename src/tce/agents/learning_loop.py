@@ -24,6 +24,12 @@ RESPONSIBILITIES:
 - Track CTA keyword conversion rates
 - Track visual direction performance
 - Analyze feedback tag frequencies and recommend system adjustments
+- When revised copy is available (revised_facebook_post / revised_linkedin_post in feedback), \
+compare the original post vs the operator's revised version to identify:
+  * Consistent tone/style adjustments the operator makes
+  * Phrases or patterns the operator always removes or adds
+  * Structural changes (shorter paragraphs, different hook style, CTA rewording)
+  * Voice profile weight adjustments based on actual edits
 
 OUTPUT FORMAT (JSON):
 - week_summary: 2-3 sentence overview
@@ -32,6 +38,7 @@ OUTPUT FORMAT (JSON):
 - voice_weight_adjustments: suggested changes to house voice weights
 - top_feedback_tags: array of {tag, count, recommendation}
 - cost_efficiency: notes on agent cost vs output quality
+- voice_drift_analysis: {patterns_found: [...], suggested_voice_adjustments: [...]}
 - action_items: prioritized list of changes for next week
 """
 

@@ -22,6 +22,10 @@ class OperatorFeedback(Base):
     action_taken: Mapped[str] = mapped_column(String(20))  # approved/revised/rejected
     revision_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Revised copy (operator's edited version of the posts)
+    revised_facebook_post: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revised_linkedin_post: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Authorship
     created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
