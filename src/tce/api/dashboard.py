@@ -472,9 +472,9 @@ function showPlanReview(planData, mondayStr) {
     html += '<div><label style="font-size:11px;color:var(--dim)">Visual Direction</label>';
     html += '<select id="pr-day-' + i + '-visual" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)">';
     ['cinematic_symbolic', 'proof_diagram', 'emotional_alternate'].forEach(v => {
-      html += '<option value="' + v + '"' + (d.visual_job === v ? ' selected' : '') + '>' + v.replace(/_/g, ' ') + '<\/option>';
+      html += '<option value="' + v + '"' + (d.visual_job === v ? ' selected' : '') + '>' + v.replace(/_/g, ' ') + '</option>';
     });
-    html += '<\/select></div>';
+    html += '</select></div>';
     html += '<div><label style="font-size:11px;color:var(--dim)">Gift Connection</label>';
     html += '<input id="pr-day-' + i + '-gift" type="text" value="' + escHtml(days[i].connection_to_gift || d.connection_to_gift || '') + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)"></div>';
     html += '</div></div>';
