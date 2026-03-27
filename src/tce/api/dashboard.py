@@ -47,6 +47,12 @@ select,input{padding:8px 12px;border:1px solid var(--border);background:var(--ca
 .step-badge.running{background:#1e3a5f;border-color:#3b82f6;color:#93c5fd}
 .step-badge.pending{background:var(--card);color:var(--dim)}
 .step-badge.failed{background:#7f1d1d;border-color:#ef4444;color:#fecaca}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:20px;height:20px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0}
+.plan-steps{display:flex;gap:6px;margin-top:12px}
+.plan-step{padding:4px 12px;border-radius:12px;font-size:12px;font-weight:500;border:1px solid var(--border);color:var(--dim)}
+.plan-step.active{border-color:var(--accent);color:var(--accent);background:rgba(99,102,241,0.1)}
+.plan-step.done{border-color:var(--green);color:var(--green);background:rgba(34,197,94,0.1)}
 .post-preview{background:#111318;border:1px solid var(--border);border-radius:8px;padding:16px;margin:8px 0;white-space:pre-wrap;font-size:14px;line-height:1.6;max-height:300px;overflow-y:auto}
 .tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}
 .tag-draft{background:#2d2000;color:var(--yellow)}
@@ -375,12 +381,38 @@ async function renderWeek() {
 let deepPlanId = null;
 let approvedPlan = null;
 
+let planElapsedTimer = null;
+
 async function planWeekDeep(mondayStr) {
   const theme = document.getElementById('week-theme')?.value || null;
   const btn = document.getElementById('plan-week-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Planning...'; }
   const panel = document.getElementById('plan-review-panel');
-  if (panel) panel.innerHTML = '<div class="card" style="padding:20px;margin-bottom:16px"><div style="display:flex;align-items:center;gap:12px"><div class="spinner"></div><div id="plan-progress-text">Starting weekly planning - trend research + strategy...</div></div></div>';
+  const planStartTime = Date.now();
+
+  // Build progress card with spinner, elapsed timer, and step indicators
+  if (panel) panel.innerHTML = '<div class="card" style="padding:20px;margin-bottom:16px;border-left:4px solid var(--accent)">' +
+    '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">' +
+    '<div class="spinner"></div>' +
+    '<div style="flex:1"><div id="plan-progress-text" style="font-weight:600">Starting weekly planning...</div>' +
+    '<div style="font-size:12px;color:var(--dim);margin-top:4px">This takes about 60-90 seconds</div></div>' +
+    '<div id="plan-elapsed" style="font-size:24px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums">0s</div>' +
+    '</div>' +
+    '<div class="plan-steps" id="plan-steps">' +
+    '<span class="plan-step active" id="ps-trend">Trend Research</span>' +
+    '<span class="plan-step" id="ps-strategy">Strategy</span>' +
+    '<span class="plan-step" id="ps-saving">Saving Plan</span>' +
+    '</div></div>';
+
+  // Start elapsed timer
+  if (planElapsedTimer) clearInterval(planElapsedTimer);
+  planElapsedTimer = setInterval(() => {
+    const el = document.getElementById('plan-elapsed');
+    if (el) {
+      const secs = Math.floor((Date.now() - planStartTime) / 1000);
+      el.textContent = secs < 60 ? secs + 's' : Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+    }
+  }, 1000);
 
   try {
     const r = await api('/calendar/plan-week-deep', {
@@ -399,15 +431,30 @@ async function planWeekDeep(mondayStr) {
         failCount = 0;
         const progEl = document.getElementById('plan-progress-text');
         if (progEl) {
-          const phases = { starting: 'Starting...', trend_research: 'Researching current trends across AI, tech, and business...', strategist: 'Strategist choosing 5 topics, gift theme, and CTA keyword...', completed: 'Plan ready!', failed: 'Planning failed' };
+          const phases = {
+            starting: 'Initializing planning engine...',
+            trend_research: 'Searching the web for current AI, tech, and business trends...',
+            strategist: 'Opus strategist choosing 5 topics, gift theme, and CTA keyword...',
+            completed: 'Plan ready for review!',
+            failed: 'Planning failed'
+          };
           progEl.textContent = phases[st.phase] || st.phase_detail || st.phase;
         }
+        // Update step indicators
+        const stepMap = { starting: 0, trend_research: 0, strategist: 1, completed: 3, failed: -1 };
+        const stepIdx = stepMap[st.phase] !== undefined ? stepMap[st.phase] : 0;
+        ['ps-trend', 'ps-strategy', 'ps-saving'].forEach((id, i) => {
+          const el = document.getElementById(id);
+          if (el) {
+            el.className = 'plan-step' + (i < stepIdx ? ' done' : i === stepIdx ? ' active' : '');
+          }
+        });
         if (st.status === 'completed') {
           done = true;
           showPlanReview(st, mondayStr);
         } else if (st.status === 'failed') {
           done = true;
-          if (panel) panel.innerHTML = '<div class="card" style="padding:20px;margin-bottom:16px;border-left:4px solid var(--danger)"><b>Planning failed:</b> ' + (st.error || 'Unknown error') + '</div>';
+          if (panel) panel.innerHTML = '<div class="card" style="padding:20px;margin-bottom:16px;border-left:4px solid var(--red)"><b>Planning failed:</b> ' + (st.error || 'Unknown error') + '</div>';
           toast('Planning failed: ' + (st.error || 'Unknown error'), false);
         }
       } catch (e) {
@@ -419,8 +466,9 @@ async function planWeekDeep(mondayStr) {
     toast('Failed to start planning: ' + e.message, false);
     if (panel) panel.innerHTML = '';
   }
+  if (planElapsedTimer) { clearInterval(planElapsedTimer); planElapsedTimer = null; }
   if (btn) { btn.disabled = false; btn.textContent = 'Plan This Week'; }
-  await renderWeek();
+  // DON'T call renderWeek() here - it would wipe the plan review panel
 }
 
 function showPlanReview(planData, mondayStr) {
@@ -430,80 +478,97 @@ function showPlanReview(planData, mondayStr) {
   const giftTheme = wp.gift_theme || {};
   const giftTitle = typeof giftTheme === 'string' ? giftTheme : (giftTheme.title || '');
   const giftSubtitle = typeof giftTheme === 'string' ? '' : (giftTheme.subtitle || '');
+  const giftSections = wp.gift_sections || [];
   approvedPlan = { weekly_theme: wp.weekly_theme || '', gift_theme: giftTheme, cta_keyword: wp.cta_keyword || '', days: days };
 
-  let html = '<div class="card" style="padding:24px;margin-bottom:16px;border-left:4px solid var(--accent)">';
-  html += '<h3 style="margin:0 0 16px 0;color:var(--accent)">Weekly Plan Review</h3>';
-  html += '<p style="margin:0 0 16px 0;color:var(--dim)">Review the AI-generated plan below. Edit any field, then approve to start generation.</p>';
+  let html = '<div style="margin-bottom:24px">';
 
-  // Top-level fields
-  html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">';
-  html += '<div><label style="font-size:11px;color:var(--dim);display:block;margin-bottom:4px">Weekly Theme</label>';
-  html += '<input id="pr-weekly-theme" type="text" value="' + escHtml(wp.weekly_theme || '') + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg)"></div>';
-  html += '<div><label style="font-size:11px;color:var(--dim);display:block;margin-bottom:4px">Gift Theme</label>';
-  html += '<input id="pr-gift-theme" type="text" value="' + escHtml(giftTitle) + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg)"></div>';
-  html += '<div><label style="font-size:11px;color:var(--dim);display:block;margin-bottom:4px">CTA Keyword</label>';
-  html += '<input id="pr-cta-keyword" type="text" value="' + escHtml(wp.cta_keyword || '') + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);text-transform:uppercase"></div>';
+  // === BIG HEADER: Weekly Direction ===
+  html += '<div class="card" style="padding:24px;margin-bottom:16px;border:2px solid var(--accent);border-radius:12px">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:20px">';
+  html += '<div><h2 style="margin:0 0 4px 0;color:var(--accent);font-size:20px">Weekly Plan Review</h2>';
+  html += '<p style="margin:0;color:var(--dim);font-size:13px">Edit anything below, then approve to start content generation.</p></div>';
+  html += '<div style="text-align:right;font-size:12px;color:var(--dim)">Plan ID: ' + (deepPlanId || '').substring(0, 8) + '</div>';
   html += '</div>';
 
-  // Day cards
-  const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-  const angleLabels = { big_shift_explainer: 'Big Shift Explainer', tactical_workflow_guide: 'Tactical Workflow', contrarian_diagnosis: 'Contrarian Diagnosis', case_study_build_story: 'Case Study / Build', second_order_implication: 'Second-Order Implication' };
+  // Weekly Theme - big and prominent
+  html += '<div style="margin-bottom:16px">';
+  html += '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px;font-weight:600">OVERARCHING DIRECTION - What ties the whole week together?</label>';
+  html += '<textarea id="pr-weekly-theme" rows="2" style="width:100%;padding:10px;border:1px solid var(--accent);border-radius:6px;background:var(--bg);color:var(--fg);font-size:15px;resize:vertical">' + escHtml(wp.weekly_theme || '') + '</textarea>';
+  html += '</div>';
 
+  // Gift Theme - prominent box
+  html += '<div style="background:rgba(34,197,94,0.08);border:1px solid var(--green);border-radius:8px;padding:16px;margin-bottom:16px">';
+  html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">&#127873;</span><label style="font-size:12px;color:var(--green);font-weight:700;text-transform:uppercase">Weekly Gift / Lead Magnet</label></div>';
+  html += '<textarea id="pr-gift-theme" rows="2" style="width:100%;padding:10px;border:1px solid var(--green);border-radius:6px;background:var(--bg);color:var(--fg);font-size:14px;resize:vertical">' + escHtml(giftTitle + (giftSubtitle ? ' - ' + giftSubtitle : '')) + '</textarea>';
+  if (giftSections.length > 0) {
+    html += '<div style="margin-top:8px;font-size:12px;color:var(--dim)"><b>Guide sections:</b> ' + giftSections.map(s => escHtml(s)).join(' / ') + '</div>';
+  }
+  html += '<div style="display:flex;gap:16px;margin-top:12px">';
+  html += '<div style="flex:1"><label style="font-size:11px;color:var(--dim);display:block;margin-bottom:4px">CTA Keyword (what readers comment to get the gift)</label>';
+  html += '<input id="pr-cta-keyword" type="text" value="' + escHtml(wp.cta_keyword || '') + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);text-transform:uppercase;font-weight:700;font-size:16px;letter-spacing:2px"></div>';
+  html += '</div>';
+  html += '</div>';
+  html += '</div>';
+
+  // === DAY CARDS ===
+  const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const angleLabels = { big_shift_explainer: 'Big Shift', tactical_workflow_guide: 'Tactical How-To', contrarian_diagnosis: 'Contrarian Take', case_study_build_story: 'Case Study', second_order_implication: 'Big Picture' };
+  const angleColors = { big_shift_explainer: '#6366f1', tactical_workflow_guide: '#22c55e', contrarian_diagnosis: '#ef4444', case_study_build_story: '#eab308', second_order_implication: '#3b82f6' };
+
+  html += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">';
   for (let i = 0; i < days.length; i++) {
     const d = days[i].story_brief || days[i];
     const dayNum = days[i].day_of_week !== undefined ? days[i].day_of_week : i;
     const angle = d.angle_type || '';
     const angleLabel = angleLabels[angle] || angle;
-    html += '<div style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px">';
-    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
-    html += '<h4 style="margin:0;color:var(--fg)">' + dayNames[dayNum] + '</h4>';
-    html += '<span style="font-size:11px;padding:3px 10px;border-radius:12px;background:var(--accent);color:white">' + escHtml(angleLabel) + '</span>';
+    const angleColor = angleColors[angle] || 'var(--accent)';
+    html += '<div class="card" style="padding:14px;border-top:3px solid ' + angleColor + '">';
+    html += '<div style="font-size:11px;color:var(--dim);margin-bottom:2px">' + dayNames[dayNum] + '</div>';
+    html += '<div style="font-size:11px;padding:2px 8px;border-radius:8px;background:' + angleColor + '22;color:' + angleColor + ';display:inline-block;margin-bottom:8px;font-weight:600">' + escHtml(angleLabel) + '</div>';
+    html += '<div style="margin-bottom:6px"><label style="font-size:10px;color:var(--dim);text-transform:uppercase">Topic</label>';
+    html += '<textarea id="pr-day-' + i + '-topic" rows="3" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:12px;resize:vertical">' + escHtml(d.topic || '') + '</textarea></div>';
+    html += '<div style="margin-bottom:6px"><label style="font-size:10px;color:var(--dim);text-transform:uppercase">Core Argument</label>';
+    html += '<textarea id="pr-day-' + i + '-thesis" rows="2" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:11px;resize:vertical">' + escHtml(d.thesis || '') + '</textarea></div>';
+    html += '<div style="margin-bottom:6px"><label style="font-size:10px;color:var(--dim);text-transform:uppercase">Audience</label>';
+    html += '<input id="pr-day-' + i + '-audience" type="text" value="' + escHtml(d.audience || '') + '" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:11px"></div>';
+    html += '<div style="margin-bottom:6px"><label style="font-size:10px;color:var(--dim);text-transform:uppercase">Belief Shift</label>';
+    html += '<input id="pr-day-' + i + '-belief" type="text" value="' + escHtml(d.desired_belief_shift || '') + '" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:11px"></div>';
+    html += '<div><label style="font-size:10px;color:var(--dim);text-transform:uppercase">Gift Connection</label>';
+    html += '<input id="pr-day-' + i + '-gift" type="text" value="' + escHtml(days[i].connection_to_gift || d.connection_to_gift || '') + '" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:11px"></div>';
+    // Hidden fields for visual
+    html += '<input id="pr-day-' + i + '-visual" type="hidden" value="' + escHtml(d.visual_job || 'cinematic_symbolic') + '">';
     html += '</div>';
-    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">';
-    html += '<div style="grid-column:1/-1"><label style="font-size:11px;color:var(--dim)">Topic</label>';
-    html += '<input id="pr-day-' + i + '-topic" type="text" value="' + escHtml(d.topic || '') + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)"></div>';
-    html += '<div style="grid-column:1/-1"><label style="font-size:11px;color:var(--dim)">Thesis</label>';
-    html += '<input id="pr-day-' + i + '-thesis" type="text" value="' + escHtml(d.thesis || '') + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)"></div>';
-    html += '<div><label style="font-size:11px;color:var(--dim)">Audience</label>';
-    html += '<input id="pr-day-' + i + '-audience" type="text" value="' + escHtml(d.audience || '') + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)"></div>';
-    html += '<div><label style="font-size:11px;color:var(--dim)">Belief Shift</label>';
-    html += '<input id="pr-day-' + i + '-belief" type="text" value="' + escHtml(d.desired_belief_shift || '') + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)"></div>';
-    html += '<div><label style="font-size:11px;color:var(--dim)">Visual Direction</label>';
-    html += '<select id="pr-day-' + i + '-visual" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)">';
-    ['cinematic_symbolic', 'proof_diagram', 'emotional_alternate'].forEach(v => {
-      html += '<option value="' + v + '"' + (d.visual_job === v ? ' selected' : '') + '>' + v.replace(/_/g, ' ') + '</option>';
-    });
-    html += '</select></div>';
-    html += '<div><label style="font-size:11px;color:var(--dim)">Gift Connection</label>';
-    html += '<input id="pr-day-' + i + '-gift" type="text" value="' + escHtml(days[i].connection_to_gift || d.connection_to_gift || '') + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)"></div>';
-    html += '</div></div>';
   }
+  html += '</div>';
 
-  // Trend brief (read-only)
+  // Trend brief (collapsible)
   if (trends.length > 0) {
-    html += '<details style="margin-top:16px"><summary style="cursor:pointer;color:var(--dim);font-size:13px">Trend Brief (' + trends.length + ' trends found)</summary>';
-    html += '<div style="margin-top:8px;font-size:12px;color:var(--dim)">';
+    html += '<details style="margin-bottom:16px"><summary style="cursor:pointer;color:var(--dim);font-size:13px;padding:8px 0">Trend Brief - ' + trends.length + ' trends found (click to expand)</summary>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">';
     trends.forEach(t => {
-      html += '<div style="padding:4px 0;border-bottom:1px solid var(--border)">';
-      html += '<span style="color:var(--fg)">' + escHtml(t.headline) + '</span>';
-      html += ' <span style="opacity:0.6">(relevance: ' + t.relevance_score + '/10)</span>';
-      if (t.source_url) html += ' <a href="' + escHtml(t.source_url) + '" target="_blank" style="color:var(--accent);font-size:11px">source</a>';
-      html += '</div>';
+      html += '<div style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px">';
+      html += '<div style="color:var(--fg);margin-bottom:2px">' + escHtml(t.headline) + '</div>';
+      html += '<div style="color:var(--dim);font-size:11px">Relevance: ' + t.relevance_score + '/10';
+      if (t.source_url) html += ' - <a href="' + escHtml(t.source_url) + '" target="_blank" style="color:var(--accent)">source</a>';
+      html += '</div></div>';
     });
     html += '</div></details>';
   }
 
-  // Action buttons
-  html += '<div style="display:flex;gap:12px;margin-top:20px">';
-  html += '<button class="btn btn-green" onclick="approveAndGenerate(\\'' + mondayStr + '\\')">Approve & Generate</button>';
-  html += '<button class="btn btn-primary" onclick="savePlanOnly(\\'' + mondayStr + '\\')">Save Plan Only</button>';
-  html += '<button class="btn btn-dim" onclick="dismissPlanReview()">Dismiss</button>';
+  // Action buttons - big and clear
+  html += '<div style="display:flex;gap:12px;padding:16px 0;border-top:1px solid var(--border)">';
+  html += '<button class="btn btn-green" style="padding:12px 24px;font-size:15px;font-weight:600" onclick="approveAndGenerate(\\'' + mondayStr + '\\')">Approve & Generate All 5 Days</button>';
+  html += '<button class="btn btn-primary" style="padding:12px 24px" onclick="savePlanOnly(\\'' + mondayStr + '\\')">Save Plan Only</button>';
+  html += '<button class="btn btn-dim" style="padding:12px 24px" onclick="dismissPlanReview()">Dismiss</button>';
   html += '</div>';
+
   html += '</div>';
 
   const panel = document.getElementById('plan-review-panel');
   if (panel) panel.innerHTML = html;
+  // Scroll to the plan review
+  panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function collectEditedPlan() {
@@ -623,7 +688,7 @@ async function generateFromApprovedPlan(plan) {
 }
 
 function escHtml(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function dismissPlanReview() { const p = document.getElementById('plan-review-panel'); if (p) p.innerHTML = ''; }
+function dismissPlanReview() { const p = document.getElementById('plan-review-panel'); if (p) p.innerHTML = ''; renderWeek(); }
 
 async function generateFromPlan() {
   // Check if there is an approved plan in calendar entries
