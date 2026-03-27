@@ -1289,8 +1289,27 @@ async function generateImages(packageId, btn) {
     if (progressEl) progressEl.innerHTML = '';
     toast(generated + ' image(s) generated' + (failed ? ', ' + failed + ' failed' : ''));
 
-    // Refresh packages to show images
-    setTimeout(() => renderPackages(), 1500);
+    // Refresh packages and jump back to this package's Images tab
+    const targetPkgId = packageId;
+    setTimeout(async () => {
+      await renderPackages();
+      // Find the package card and switch to Images tab
+      setTimeout(() => {
+        const pid = targetPkgId.replace(/-/g, '');
+        const imgTab = document.getElementById('img-' + pid);
+        if (imgTab) {
+          // Find and click the Images tab button
+          const card = imgTab.closest('.pkg-card');
+          if (card) {
+            const imgBtn = Array.from(card.querySelectorAll('.tabs button')).find(b => b.textContent.startsWith('Images'));
+            if (imgBtn) showPostTab(imgBtn, 'img-' + pid);
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            card.style.outline = '2px solid var(--green)';
+            setTimeout(() => card.style.outline = '', 3000);
+          }
+        }
+      }, 200);
+    }, 500);
   } catch (e) {
     btn.textContent = 'Failed - try again';
     btn.style.background = 'var(--red)';
