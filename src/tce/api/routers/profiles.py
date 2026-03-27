@@ -169,6 +169,7 @@ async def analyze_creator_voice(
     if analysis.get("style_notes"):
         profile.style_notes = analysis["style_notes"]
     await db.flush()
+    await db.refresh(profile)
 
     logger.info(
         "creator.voice_analyzed",
