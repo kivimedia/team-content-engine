@@ -443,3 +443,71 @@ async def approve_deep_plan(
         "status": "approved",
         "message": "Plan approved and calendar entries updated",
     }
+
+
+@router.post("/ai-revise-field")
+async def ai_revise_field(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Use AI to revise a single plan/package field based on operator feedback."""
+    field_name = payload.get("field_name", "")
+    current_value = payload.get("current_value", "")
+    feedback = payload.get("feedback", "")
+    context = payload.get("context", {})
+
+    if not feedback.strip():
+        raise HTTPException(status_code=400, detail="Feedback text is required")
+
+    import anthropic
+
+    from tce.services.cost_tracker import CostTracker
+
+    s = Settings()
+    api_key = s.anthropic_api_key
+    if hasattr(api_key, "get_secret_value"):
+        api_key = api_key.get_secret_value()
+    client = anthropic.AsyncAnthropic(api_key=api_key)
+
+    system_prompt = (
+        "You are a content strategist for a B2B social media team. "
+        "The operator wants you to revise a specific field in their weekly content plan. "
+        "Apply the feedback precisely. Return ONLY the revised text - no explanation, no quotes, no markdown."
+    )
+
+    context_str = ""
+    if context.get("weekly_theme"):
+        context_str += f"Weekly theme: {context['weekly_theme']}\n"
+    if context.get("day_topic"):
+        context_str += f"Day topic: {context['day_topic']}\n"
+
+    user_msg = (
+        f"Field: {field_name}\n"
+        f"Current value: {current_value}\n"
+        f"{context_str}"
+        f"\nFeedback from operator: {feedback}\n\n"
+        f"Rewrite this field applying the feedback. Return ONLY the revised text."
+    )
+
+    resp = await client.messages.create(
+        model=s.haiku_model,
+        max_tokens=512,
+        temperature=0.5,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+
+    revised = resp.content[0].text.strip()
+
+    # Record cost
+    tracker = CostTracker(db)
+    await tracker.record(
+        run_id=uuid.uuid4(),
+        agent_name="field_reviser",
+        model_used=s.haiku_model,
+        input_tokens=resp.usage.input_tokens,
+        output_tokens=resp.usage.output_tokens,
+    )
+    await db.commit()
+
+    return {"revised": revised, "model": s.haiku_model}

@@ -54,6 +54,11 @@ select,input{padding:8px 12px;border:1px solid var(--border);background:var(--ca
 .plan-step.active{border-color:var(--accent);color:var(--accent);background:rgba(99,102,241,0.1)}
 .plan-step.done{border-color:var(--green);color:var(--green);background:rgba(34,197,94,0.1)}
 .post-preview{background:#111318;border:1px solid var(--border);border-radius:8px;padding:16px;margin:8px 0;white-space:pre-wrap;font-size:14px;line-height:1.6;max-height:300px;overflow-y:auto}
+.fb-btn{display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border:1px solid transparent;background:transparent;color:var(--dim);cursor:pointer;border-radius:4px;font-size:11px;vertical-align:middle;margin-left:4px;transition:all .15s}
+.fb-btn:hover{border-color:var(--accent);color:var(--accent);background:rgba(99,102,241,0.08)}
+.fb-popover{position:absolute;z-index:100;background:var(--card);border:1px solid var(--accent);border-radius:8px;padding:12px;width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
+.fb-popover textarea{width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;resize:vertical;min-height:60px}
+.fb-actions{display:flex;gap:6px;margin-top:8px;justify-content:flex-end}
 .tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}
 .tag-draft{background:#2d2000;color:var(--yellow)}
 .tag-approved{background:#052e16;color:var(--green)}
@@ -515,6 +520,91 @@ async function planWeekDeep(mondayStr) {
   // DON'T call renderWeek() here - it would wipe the plan review panel
 }
 
+// === AI FEEDBACK BUTTONS ===
+function makeFbBtn(fieldId, label) {
+  return ' <button class="fb-btn" onclick="openFeedbackPopover(this,\\'' + fieldId + '\\',\\'' + label + '\\')" title="AI feedback on this field">&#9998;</button>';
+}
+function openFeedbackPopover(btn, fieldId, label) {
+  // Close any existing popover
+  document.querySelectorAll('.fb-popover').forEach(p => p.remove());
+  const rect = btn.getBoundingClientRect();
+  const pop = document.createElement('div');
+  pop.className = 'fb-popover';
+  pop.style.top = (rect.bottom + window.scrollY + 4) + 'px';
+  pop.style.left = Math.min(rect.left, window.innerWidth - 340) + 'px';
+  pop.innerHTML = '<div style="font-size:12px;color:var(--dim);margin-bottom:6px">Tell the AI what to change about <b>' + label + '</b></div>'
+    + '<textarea id="fb-input-' + fieldId + '" placeholder="e.g. make it shorter, more provocative, target younger audience..." rows="3"></textarea>'
+    + '<div class="fb-actions">'
+    + '<button class="btn btn-dim" style="padding:4px 10px;font-size:12px" onclick="this.closest(\\'.fb-popover\\').remove()">Cancel</button>'
+    + '<button class="btn btn-primary" style="padding:4px 10px;font-size:12px" onclick="submitFieldFeedback(\\'' + fieldId + '\\',this)">Revise with AI</button>'
+    + '</div>';
+  document.body.appendChild(pop);
+  pop.querySelector('textarea').focus();
+}
+async function submitFieldFeedback(fieldId, btn) {
+  const textarea = document.getElementById('fb-input-' + fieldId);
+  if (!textarea) return;
+  const feedback = textarea.value.trim();
+  if (!feedback) { toast('Please type your feedback', false); return; }
+  const field = document.getElementById(fieldId);
+  if (!field) return;
+  const currentValue = field.value || field.textContent || '';
+  btn.disabled = true; btn.textContent = 'Revising...';
+  // Gather context
+  const ctx = {};
+  const themeEl = document.getElementById('pr-weekly-theme');
+  if (themeEl) ctx.weekly_theme = themeEl.value;
+  // For day fields, grab the topic for context
+  const dayMatch = fieldId.match(/pr-day-(\\d+)/);
+  if (dayMatch) {
+    const topicEl = document.getElementById('pr-day-' + dayMatch[1] + '-topic');
+    if (topicEl) ctx.day_topic = topicEl.value;
+  }
+  try {
+    const result = await api('/calendar/ai-revise-field', {
+      method: 'POST',
+      body: JSON.stringify({ field_name: fieldId, current_value: currentValue, feedback: feedback, context: ctx })
+    });
+    if (field.tagName === 'TEXTAREA' || field.tagName === 'INPUT') {
+      field.value = result.revised;
+    } else {
+      field.textContent = result.revised;
+    }
+    field.style.borderColor = 'var(--green)';
+    setTimeout(() => { field.style.borderColor = ''; }, 2000);
+    toast('Field revised by AI');
+    btn.closest('.fb-popover')?.remove();
+  } catch (e) {
+    toast('AI revision failed: ' + e.message, false);
+    btn.disabled = false; btn.textContent = 'Revise with AI';
+  }
+}
+// Also for packages - revise post content with AI
+async function aiRevisePost(packageId, platform) {
+  const previewEl = document.getElementById(platform + '-' + packageId);
+  if (!previewEl) return;
+  const postDiv = previewEl.querySelector('.post-preview');
+  if (!postDiv) return;
+  const feedback = prompt('What should the AI change about this ' + platform.toUpperCase() + ' post?');
+  if (!feedback || !feedback.trim()) return;
+  const currentText = postDiv.textContent;
+  postDiv.style.opacity = '0.5';
+  postDiv.insertAdjacentHTML('afterbegin', '<div class="spinner" style="margin:0 auto 8px"></div>');
+  try {
+    const result = await api('/calendar/ai-revise-field', {
+      method: 'POST',
+      body: JSON.stringify({ field_name: platform + '_post', current_value: currentText, feedback: feedback.trim(), context: {} })
+    });
+    postDiv.textContent = result.revised;
+    postDiv.style.opacity = '1';
+    toast(platform.toUpperCase() + ' post revised by AI');
+  } catch (e) {
+    postDiv.style.opacity = '1';
+    postDiv.querySelector('.spinner')?.remove();
+    toast('AI revision failed: ' + e.message, false);
+  }
+}
+
 function showPlanReview(planData, mondayStr) {
   const wp = planData.weekly_plan || {};
   const days = wp.days || [];
@@ -537,13 +627,13 @@ function showPlanReview(planData, mondayStr) {
 
   // Weekly Theme - big and prominent
   html += '<div style="margin-bottom:16px">';
-  html += '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px;font-weight:600">OVERARCHING DIRECTION - What ties the whole week together?</label>';
+  html += '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px;font-weight:600">OVERARCHING DIRECTION - What ties the whole week together?' + makeFbBtn('pr-weekly-theme', 'Weekly Theme') + '</label>';
   html += '<textarea id="pr-weekly-theme" rows="2" style="width:100%;padding:10px;border:1px solid var(--accent);border-radius:6px;background:var(--bg);color:var(--text);font-size:15px;resize:vertical">' + escHtml(wp.weekly_theme || '') + '</textarea>';
   html += '</div>';
 
   // Gift Theme - prominent box
   html += '<div style="background:rgba(34,197,94,0.08);border:1px solid var(--green);border-radius:8px;padding:16px;margin-bottom:16px">';
-  html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">&#127873;</span><label style="font-size:12px;color:var(--green);font-weight:700;text-transform:uppercase">Weekly Gift / Lead Magnet</label></div>';
+  html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">&#127873;</span><label style="font-size:12px;color:var(--green);font-weight:700;text-transform:uppercase">Weekly Gift / Lead Magnet' + makeFbBtn('pr-gift-theme', 'Gift Theme') + '</label></div>';
   html += '<textarea id="pr-gift-theme" rows="2" style="width:100%;padding:10px;border:1px solid var(--green);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;resize:vertical">' + escHtml(giftTitle + (giftSubtitle ? ' - ' + giftSubtitle : '')) + '</textarea>';
   if (giftSections.length > 0) {
     html += '<div style="margin-top:8px;font-size:12px;color:var(--dim)"><b>Guide sections:</b> ' + giftSections.map(s => escHtml(s)).join(' / ') + '</div>';
@@ -573,17 +663,17 @@ function showPlanReview(planData, mondayStr) {
     html += '<span style="font-size:12px;padding:3px 10px;border-radius:8px;background:' + angleColor + '22;color:' + angleColor + ';font-weight:600">' + escHtml(angleLabel) + '</span>';
     html += '</div>';
     html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
-    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Topic (what is this post about?)</label>';
+    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Topic' + makeFbBtn('pr-day-' + i + '-topic', 'Topic') + '</label>';
     html += '<textarea id="pr-day-' + i + '-topic" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;resize:vertical;line-height:1.4" placeholder="Write like you would describe it to a friend...">' + escHtml(d.topic || '') + '</textarea></div>';
-    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Core Argument (what should the reader believe?)</label>';
+    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Core Argument' + makeFbBtn('pr-day-' + i + '-thesis', 'Thesis') + '</label>';
     html += '<textarea id="pr-day-' + i + '-thesis" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;resize:vertical;line-height:1.4" placeholder="The main takeaway...">' + escHtml(d.thesis || '') + '</textarea></div>';
     html += '</div>';
     html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px">';
-    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Audience</label>';
+    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Audience' + makeFbBtn('pr-day-' + i + '-audience', 'Audience') + '</label>';
     html += '<input id="pr-day-' + i + '-audience" type="text" value="' + escHtml(d.audience || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px" placeholder="Who is this for?"></div>';
-    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Belief Shift</label>';
+    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Belief Shift' + makeFbBtn('pr-day-' + i + '-belief', 'Belief Shift') + '</label>';
     html += '<input id="pr-day-' + i + '-belief" type="text" value="' + escHtml(d.desired_belief_shift || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px" placeholder="FROM x TO y"></div>';
-    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Gift Connection</label>';
+    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Gift Connection' + makeFbBtn('pr-day-' + i + '-gift', 'Gift Connection') + '</label>';
     html += '<input id="pr-day-' + i + '-gift" type="text" value="' + escHtml(days[i].connection_to_gift || d.connection_to_gift || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px" placeholder="How does this tie to the gift?"></div>';
     html += '</div>';
     html += '<input id="pr-day-' + i + '-visual" type="hidden" value="' + escHtml(d.visual_job || 'cinematic_symbolic') + '">';
@@ -1718,6 +1808,8 @@ async function renderPackages() {
       html += '<button class="btn btn-blue" onclick="exportPackage(\\'' + p.id + '\\')">Export</button>';
       html += '<button class="btn btn-dim" onclick="showFeedbackForm(\\'' + p.id + '\\', this)">Feedback</button>';
       html += '<button class="btn btn-dim" style="border-color:var(--accent)" onclick="showRevisedCopyForm(\\'' + p.id + '\\', this)">Edit & Submit Copy</button>';
+      html += '<button class="btn btn-dim" style="border-color:var(--yellow);color:var(--yellow)" onclick="aiRevisePost(\\'' + p.id + '\\', \\'fb\\')">AI Revise FB</button>';
+      html += '<button class="btn btn-dim" style="border-color:var(--yellow);color:var(--yellow)" onclick="aiRevisePost(\\'' + p.id + '\\', \\'li\\')">AI Revise LI</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'' + pid + '\\', this, \\'Facebook post\\')">Copy FB Post</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'li-' + pid + '\\', this, \\'LinkedIn post\\')">Copy LI Post</button>';
       if (p.is_archived) {
