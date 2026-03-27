@@ -322,6 +322,9 @@ async function renderWeek() {
         </div>
         <button class="btn btn-primary" id="plan-week-btn" onclick="planWeekDeep('${fmtDate(monday)}
         ')">Plan This Week</button>
+        <span id="plan-cost-hint" style="font-size:11px;color:var(--dim);margin-left:6px"
+        title="Trend scout (Sonnet) + Weekly planner (Opus)">
+        ~$0.25 per plan</span>
         <button class="btn btn-green" id="gen-all-btn" onclick="generateFromPlan()
         " ${genAllState?.running ? 'disabled' : ''}
         >${genAllState?.running ? (genAllState.unified ? 'Running...' : 'Generating...')
@@ -444,12 +447,28 @@ async function renderWeek() {
   // Render generate-all progress bar if active
   renderGenAllProgress();
 
-  // Load daily cost
+  // Load daily cost + planning cost
   try {
-    const dailyCost = await api('/costs/daily');
+    const [dailyCost, planCost] = await Promise.all([
+      api('/costs/daily'), api('/costs/planning'),
+    ]);
     const costEl = document.getElementById('week-cost');
-    if (costEl && dailyCost.total_cost_usd > 0)
-    costEl.textContent = 'Today: $' + dailyCost.total_cost_usd.toFixed(2);
+    if (costEl) {
+      let parts = [];
+      if (dailyCost.total_cost_usd > 0)
+        parts.push('Today: $' + dailyCost.total_cost_usd.toFixed(2));
+      if (planCost.last_cost > 0)
+        parts.push('Last plan: $' + planCost.last_cost.toFixed(2));
+      if (planCost.total_planning_cost > 0)
+        parts.push('Total planning: $'
+        + planCost.total_planning_cost.toFixed(2));
+      costEl.textContent = parts.join(' | ');
+    }
+    // Update plan cost hint with real avg
+    const hint = document.getElementById('plan-cost-hint');
+    if (hint && planCost.avg_cost > 0)
+      hint.textContent = '~$' + planCost.avg_cost.toFixed(2)
+      + ' per plan (avg of ' + planCost.plan_runs + ' runs)';
   } catch {}
 
   // Load weekly guides

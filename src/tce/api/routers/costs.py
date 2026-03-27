@@ -181,6 +181,48 @@ async def get_cache_efficiency(
     }
 
 
+@router.get("/planning")
+async def get_planning_costs(
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Get cost breakdown for weekly planning runs."""
+    from sqlalchemy import func, select
+
+    from tce.models.cost_event import CostEvent
+
+    planning_agents = ["weekly_planner", "trend_scout"]
+    result = await db.execute(
+        select(
+            CostEvent.run_id,
+            func.sum(CostEvent.computed_cost_usd).label("total"),
+            func.sum(CostEvent.input_tokens).label("input_tok"),
+            func.sum(CostEvent.output_tokens).label("output_tok"),
+            func.max(CostEvent.created_at).label("when"),
+        )
+        .where(CostEvent.agent_name.in_(planning_agents))
+        .group_by(CostEvent.run_id)
+        .order_by(func.max(CostEvent.created_at).desc())
+        .limit(10)
+    )
+    runs = result.all()
+    costs = [float(r[1]) for r in runs] if runs else []
+    return {
+        "plan_runs": len(runs),
+        "avg_cost": round(sum(costs) / len(costs), 4) if costs else 0,
+        "last_cost": round(costs[0], 4) if costs else 0,
+        "total_planning_cost": round(sum(costs), 4),
+        "runs": [
+            {
+                "run_id": str(r[0]),
+                "cost_usd": round(float(r[1]), 4),
+                "tokens": r[2] + r[3],
+                "created_at": str(r[4]),
+            }
+            for r in runs
+        ],
+    }
+
+
 @router.get("/per-post")
 async def get_cost_per_post(
     days: int = 30,
