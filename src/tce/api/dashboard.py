@@ -525,19 +525,19 @@ function showPlanReview(planData, mondayStr) {
   // Weekly Theme - big and prominent
   html += '<div style="margin-bottom:16px">';
   html += '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px;font-weight:600">OVERARCHING DIRECTION - What ties the whole week together?</label>';
-  html += '<textarea id="pr-weekly-theme" rows="2" style="width:100%;padding:10px;border:1px solid var(--accent);border-radius:6px;background:var(--bg);color:var(--fg);font-size:15px;resize:vertical">' + escHtml(wp.weekly_theme || '') + '</textarea>';
+  html += '<textarea id="pr-weekly-theme" rows="2" style="width:100%;padding:10px;border:1px solid var(--accent);border-radius:6px;background:var(--bg);color:var(--text);font-size:15px;resize:vertical">' + escHtml(wp.weekly_theme || '') + '</textarea>';
   html += '</div>';
 
   // Gift Theme - prominent box
   html += '<div style="background:rgba(34,197,94,0.08);border:1px solid var(--green);border-radius:8px;padding:16px;margin-bottom:16px">';
   html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">&#127873;</span><label style="font-size:12px;color:var(--green);font-weight:700;text-transform:uppercase">Weekly Gift / Lead Magnet</label></div>';
-  html += '<textarea id="pr-gift-theme" rows="2" style="width:100%;padding:10px;border:1px solid var(--green);border-radius:6px;background:var(--bg);color:var(--fg);font-size:14px;resize:vertical">' + escHtml(giftTitle + (giftSubtitle ? ' - ' + giftSubtitle : '')) + '</textarea>';
+  html += '<textarea id="pr-gift-theme" rows="2" style="width:100%;padding:10px;border:1px solid var(--green);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;resize:vertical">' + escHtml(giftTitle + (giftSubtitle ? ' - ' + giftSubtitle : '')) + '</textarea>';
   if (giftSections.length > 0) {
     html += '<div style="margin-top:8px;font-size:12px;color:var(--dim)"><b>Guide sections:</b> ' + giftSections.map(s => escHtml(s)).join(' / ') + '</div>';
   }
   html += '<div style="display:flex;gap:16px;margin-top:12px">';
   html += '<div style="flex:1"><label style="font-size:11px;color:var(--dim);display:block;margin-bottom:4px">CTA Keyword (what readers comment to get the gift)</label>';
-  html += '<input id="pr-cta-keyword" type="text" value="' + escHtml(wp.cta_keyword || '') + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);text-transform:uppercase;font-weight:700;font-size:16px;letter-spacing:2px"></div>';
+  html += '<input id="pr-cta-keyword" type="text" value="' + escHtml(wp.cta_keyword || '') + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);text-transform:uppercase;font-weight:700;font-size:16px;letter-spacing:2px"></div>';
   html += '</div>';
   html += '</div>';
   html += '</div>';
@@ -547,27 +547,32 @@ function showPlanReview(planData, mondayStr) {
   const angleLabels = { big_shift_explainer: 'Big Shift', tactical_workflow_guide: 'Tactical How-To', contrarian_diagnosis: 'Contrarian Take', case_study_build_story: 'Case Study', second_order_implication: 'Big Picture' };
   const angleColors = { big_shift_explainer: '#6366f1', tactical_workflow_guide: '#22c55e', contrarian_diagnosis: '#ef4444', case_study_build_story: '#eab308', second_order_implication: '#3b82f6' };
 
-  html += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">';
+  html += '<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px">';
   for (let i = 0; i < days.length; i++) {
     const d = days[i].story_brief || days[i];
     const dayNum = days[i].day_of_week !== undefined ? days[i].day_of_week : i;
     const angle = d.angle_type || '';
     const angleLabel = angleLabels[angle] || angle;
     const angleColor = angleColors[angle] || 'var(--accent)';
-    html += '<div class="card" style="padding:14px;border-top:3px solid ' + angleColor + '">';
-    html += '<div style="font-size:11px;color:var(--dim);margin-bottom:2px">' + dayNames[dayNum] + '</div>';
-    html += '<div style="font-size:11px;padding:2px 8px;border-radius:8px;background:' + angleColor + '22;color:' + angleColor + ';display:inline-block;margin-bottom:8px;font-weight:600">' + escHtml(angleLabel) + '</div>';
-    html += '<div style="margin-bottom:6px"><label style="font-size:10px;color:var(--dim);text-transform:uppercase">Topic</label>';
-    html += '<textarea id="pr-day-' + i + '-topic" rows="3" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:12px;resize:vertical">' + escHtml(d.topic || '') + '</textarea></div>';
-    html += '<div style="margin-bottom:6px"><label style="font-size:10px;color:var(--dim);text-transform:uppercase">Core Argument</label>';
-    html += '<textarea id="pr-day-' + i + '-thesis" rows="2" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:11px;resize:vertical">' + escHtml(d.thesis || '') + '</textarea></div>';
-    html += '<div style="margin-bottom:6px"><label style="font-size:10px;color:var(--dim);text-transform:uppercase">Audience</label>';
-    html += '<input id="pr-day-' + i + '-audience" type="text" value="' + escHtml(d.audience || '') + '" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:11px"></div>';
-    html += '<div style="margin-bottom:6px"><label style="font-size:10px;color:var(--dim);text-transform:uppercase">Belief Shift</label>';
-    html += '<input id="pr-day-' + i + '-belief" type="text" value="' + escHtml(d.desired_belief_shift || '') + '" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:11px"></div>';
-    html += '<div><label style="font-size:10px;color:var(--dim);text-transform:uppercase">Gift Connection</label>';
-    html += '<input id="pr-day-' + i + '-gift" type="text" value="' + escHtml(days[i].connection_to_gift || d.connection_to_gift || '') + '" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:11px"></div>';
-    // Hidden fields for visual
+    html += '<div class="card" style="padding:16px 20px;border-left:4px solid ' + angleColor + '">';
+    html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">';
+    html += '<span style="font-size:16px;font-weight:700">' + dayNames[dayNum] + '</span>';
+    html += '<span style="font-size:12px;padding:3px 10px;border-radius:8px;background:' + angleColor + '22;color:' + angleColor + ';font-weight:600">' + escHtml(angleLabel) + '</span>';
+    html += '</div>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Topic (what is this post about?)</label>';
+    html += '<textarea id="pr-day-' + i + '-topic" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;resize:vertical;line-height:1.4" placeholder="Write like you would describe it to a friend...">' + escHtml(d.topic || '') + '</textarea></div>';
+    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Core Argument (what should the reader believe?)</label>';
+    html += '<textarea id="pr-day-' + i + '-thesis" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;resize:vertical;line-height:1.4" placeholder="The main takeaway...">' + escHtml(d.thesis || '') + '</textarea></div>';
+    html += '</div>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px">';
+    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Audience</label>';
+    html += '<input id="pr-day-' + i + '-audience" type="text" value="' + escHtml(d.audience || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px" placeholder="Who is this for?"></div>';
+    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Belief Shift</label>';
+    html += '<input id="pr-day-' + i + '-belief" type="text" value="' + escHtml(d.desired_belief_shift || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px" placeholder="FROM x TO y"></div>';
+    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Gift Connection</label>';
+    html += '<input id="pr-day-' + i + '-gift" type="text" value="' + escHtml(days[i].connection_to_gift || d.connection_to_gift || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px" placeholder="How does this tie to the gift?"></div>';
+    html += '</div>';
     html += '<input id="pr-day-' + i + '-visual" type="hidden" value="' + escHtml(d.visual_job || 'cinematic_symbolic') + '">';
     html += '</div>';
   }
@@ -579,7 +584,7 @@ function showPlanReview(planData, mondayStr) {
     html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">';
     trends.forEach(t => {
       html += '<div style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px">';
-      html += '<div style="color:var(--fg);margin-bottom:2px">' + escHtml(t.headline) + '</div>';
+      html += '<div style="color:var(--text);margin-bottom:2px">' + escHtml(t.headline) + '</div>';
       html += '<div style="color:var(--dim);font-size:11px">Relevance: ' + t.relevance_score + '/10';
       if (t.source_url) html += ' - <a href="' + escHtml(t.source_url) + '" target="_blank" style="color:var(--accent)">source</a>';
       html += '</div></div>';
