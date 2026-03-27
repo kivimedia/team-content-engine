@@ -1624,13 +1624,13 @@ async function viewExamples(docId, name) {
       hook_type: ex.hook_type, body_structure: ex.body_structure, story_arc: ex.story_arc,
       cta_type: ex.cta_type, tone_tags: ex.tone_tags, topic_tags: ex.topic_tags,
       hook_text: ex.hook_text, cta_text: ex.cta_text
-    }))) + ';\n';
+    }))) + ';\\n';
     h += 'const CREATOR_MAP = ' + JSON.stringify(Object.fromEntries(
       Object.entries(creatorMap).map(([id, c]) => [id, {
         creator_name: c.creator_name, style_notes: c.style_notes,
         allowed_influence_weight: c.allowed_influence_weight, top_patterns: c.top_patterns
       }])
-    )) + ';\n';
+    )) + ';\\n';
     h += `
 async function inspireFromExample(idx) {
   const ex = EXAMPLES_DATA[idx];
@@ -2354,4 +2354,5 @@ render();
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     """Serve the operator dashboard."""
-    return DASHBOARD_HTML
+    from fastapi.responses import HTMLResponse as HR
+    return HR(content=DASHBOARD_HTML, headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
