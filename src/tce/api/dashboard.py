@@ -637,24 +637,28 @@ async function useHook(packageId, hookIdx) {
   const pkg = _pkgCache?.find(p => p.id === packageId);
   if (!pkg || !pkg.hook_variants?.[hookIdx]) { toast('Hook not found', false); return; }
   const hook = pkg.hook_variants[hookIdx];
-  const replaceLine = (text) => {
-    if (!text) return text;
-    const lines = text.split('\\n');
-    lines[0] = hook;
-    return lines.join('\\n');
-  };
-  const updates = {};
-  if (pkg.facebook_post) updates.facebook_post = replaceLine(pkg.facebook_post);
-  if (pkg.linkedin_post) updates.linkedin_post = replaceLine(pkg.linkedin_post);
-  if (!Object.keys(updates).length) { toast('No posts to update', false); return; }
   const btn = document.querySelector('#hooks-' + pid + ' [data-hi="' + hookIdx + '"]');
-  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Rewriting...'; }
+  const updates = {};
+  const revise = async (platform, text) => {
+    if (!text) return;
+    const result = await api('/calendar/ai-revise-field', {
+      method: 'POST',
+      body: JSON.stringify({ field_name: platform + '_post', current_value: text, feedback: 'Replace the opening hook/first line with this new hook: "' + hook + '". Rewrite the first 2-3 sentences so they transition smoothly from this new hook into the rest of the post. Keep the rest of the post unchanged.', context: {} })
+    });
+    updates[platform + '_post'] = result.revised;
+  };
   try {
+    await Promise.all([
+      pkg.facebook_post ? revise('facebook', pkg.facebook_post) : null,
+      pkg.linkedin_post ? revise('linkedin', pkg.linkedin_post) : null
+    ]);
+    if (!Object.keys(updates).length) { toast('No posts to update', false); return; }
     const result = await api('/content/packages/' + packageId, { method: 'PATCH', body: JSON.stringify(updates) });
     const ci = _pkgCache.findIndex(p => p.id === packageId);
     if (ci !== -1) { Object.assign(_pkgCache[ci], result); }
     _renderPkgFromCache();
-    toast('Hook applied to posts');
+    toast('Hook applied and posts rewritten');
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = 'Use this'; }
     toast('Failed: ' + e.message, false);
