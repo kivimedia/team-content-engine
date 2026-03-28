@@ -2050,7 +2050,6 @@ function _renderPkgCard(p) {
         html += '<button class="btn btn-dim" onclick="resetPackageStatus(\\'' + p.id + '\\')">Reset to Draft</button>';
       }
       html += '<button class="btn btn-dim" style="border-color:var(--accent2);color:var(--accent2)" onclick="loadPackageContext(\\'' + p.id + '\\', this)">Show Context</button>';
-      html += '<button class="btn btn-blue" onclick="exportPackage(\\'' + p.id + '\\')">Export</button>';
       html += '<button class="btn btn-dim" onclick="showFeedbackForm(\\'' + p.id + '\\', this)">Feedback</button>';
       html += '<button class="btn btn-dim" style="border-color:var(--accent)" onclick="showRevisedCopyForm(\\'' + p.id + '\\', this)">Edit & Submit Copy</button>';
       html += '<button class="btn btn-dim" style="border-color:var(--yellow);color:var(--yellow)" onclick="aiRevisePost(\\'' + p.id + '\\', \\'fb\\')">AI Revise FB</button>';
