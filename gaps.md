@@ -220,4 +220,112 @@
 ### GAP-36: Creator influence weights not adjustable
 - **PRD:** 4.4
 - **Issue:** Shows weights but no sliders/controls to change them. PRD: "edit influence weights."
+- **Status:** [x] Closed - GAP-17 through GAP-36 deployed 2026-03-28
+
+---
+
+## Bugs Found (2026-03-28 second audit)
+
+### BUG-01: `_packagesCache` vs `_pkgCache` variable mismatch
+- **Impact:** Download All, inline edit, DM edit, schedulePublish all broken - wrong variable name
+- **Fix:** Replace all `_packagesCache` with `_pkgCache`
+- **Status:** [x] Fixed
+
+### BUG-02: `switchTab()` function not defined
+- **Impact:** "Package" button in weekly plan summary throws ReferenceError
+- **Fix:** Added `switchTab(tabName)` helper function
+- **Status:** [x] Fixed
+
+### BUG-03: Chat tab unreachable
+- **Impact:** Chat tab existed in router map but had no nav button
+- **Fix:** Added `<button data-tab="chat">Chat</button>` to nav
+- **Status:** [x] Fixed
+
+### BUG-04: Settings save buttons not persisting
+- **Impact:** Budget and audience settings lost on page refresh
+- **Fix:** Wired to localStorage with pre-population on render
+- **Status:** [x] Fixed
+
+---
+
+## Remaining PRD Gaps (2026-03-28 second audit)
+
+### GAP-37: Visual Prompt Review - image selection + individual regeneration
+- **PRD:** 41.2
+- **Issue:** PRD requires operator to select 1 of 3 images (radio select), regenerate individual images with adjusted prompts. Current UI shows all images but has no selection or per-image regen.
+- **Status:** [ ]
+
+### GAP-38: Relearning Review Screen
+- **PRD:** 48.7
+- **Issue:** Before/after comparison of corpus changes. Proposed template/score/weight changes with approve/reject per change. No screen exists.
+- **Status:** [ ]
+
+### GAP-39: Founder Voice editing
+- **PRD:** 50
+- **Issue:** Voice Profile tab is read-only. PRD: editable vocabulary signature, values/beliefs, metaphor families, taboos, "I don't talk like that anymore" correction.
+- **Status:** [ ]
+
+### GAP-40: House Voice axis sliders
+- **PRD:** 14.1
+- **Issue:** 10 voice axes (curiosity, sharpness, practicality, etc.) need adjustable sliders, not just display bars.
+- **Status:** [ ]
+
+### GAP-41: Cost Dashboard visualizations
+- **PRD:** 36.4
+- **Issue:** PRD requires stacked bar charts (daily spend by agent), weekly/monthly trend lines, budget threshold markers. Current: numbers only.
+- **Status:** [ ]
+
+### GAP-42: A/B Testing Framework UI
+- **PRD:** 43.2
+- **Issue:** experiment_id/variant tagging on packages, hook/CTA/visual/prompt variant testing, results in analytics. Nothing exists.
+- **Status:** [ ]
+
+### GAP-43: Creator management controls
+- **PRD:** 16.4
+- **Issue:** Approve/reject creators, exclude from angle types (checkboxes per template family), edit anti-clone markers. Only name + weight shown.
+- **Status:** [ ]
+
+### GAP-44: Engagement Scorer controls
+- **PRD:** 9.2
+- **Issue:** Change scoring weights (shares/comments multipliers), exclude low-confidence posts. No controls.
+- **Status:** [ ]
+
+### GAP-45: CTA Flow Editor (full)
+- **PRD:** 9.7
+- **Issue:** Full CTA editor: weekly primary keyword, per-post secondary, DM reply chain builder with fulfillment checklist. Current DM Flow edit is field-level only.
+- **Status:** [ ]
+
+### GAP-46: DOCX Guide Viewer
+- **PRD:** 9.9
+- **Issue:** Inline guide preview, Export PDF, markdown mirror, operator fulfillment checklist. Currently: DOCX download link only.
+- **Status:** [ ]
+
+### GAP-47: Seasonal adjustment controls
+- **PRD:** 43.3
+- **Issue:** Override 5-day cadence for holidays/launches. No controls.
+- **Status:** [ ]
+
+### GAP-48: Humanitarian override with justification
+- **PRD:** 51.5
+- **Issue:** Override button on flagged posts, required written justification, logged in weekly report. No such control exists.
+- **Status:** [ ]
+
+### GAP-49: Pipeline partial resume
+- **PRD:** 42.4
+- **Issue:** Resume from last successful step (step indicator showing where it stopped). Current: retry-all only.
+- **Status:** [ ]
+
+### GAP-50: Per-creator influence weights per angle type
+- **PRD:** 14.2
+- **Issue:** Different weights per angle type (e.g. creator X at 40% for case_study but 10% for contrarian). Current slider is global only.
+- **Status:** [ ]
+
+### GAP-51: Prompt side-by-side comparison
+- **PRD:** 39
+- **Issue:** Compare two prompt versions side-by-side, see which packages used which version. Current: version list with rollback only.
+- **Status:** [ ]
+
+### GAP-52: Corpus low-confidence flagging
+- **PRD:** 22.1
+- **Issue:** Corpus Review should flag low-confidence parsed items for operator review. Not implemented.
 - **Status:** [ ]

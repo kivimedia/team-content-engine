@@ -147,6 +147,7 @@ option{background:var(--card);color:var(--text)}
   <button data-tab="templates">Templates</button>
   <button data-tab="prompts">Prompts</button>
   <button data-tab="settings">Settings</button>
+  <button data-tab="chat">Chat</button>
 </div>
 <div class="main" id="app"></div>
 <script>
@@ -2296,7 +2297,7 @@ async function downloadAllImages(packageId, btn) {
   btn.disabled = true;
   btn.textContent = 'Downloading...';
   try {
-    const pkg = _packagesCache?.find(p => p.id === packageId);
+    const pkg = _pkgCache?.find(p => p.id === packageId);
     if (!pkg || !pkg.image_prompts) { toast('No images found'); return; }
     const images = pkg.image_prompts.filter(ip => ip.image_url);
     if (!images.length) { toast('No generated images to download'); return; }
@@ -3340,7 +3341,7 @@ async function toggleInlineEdit(pkgId, platform, btn) {
   const existing = container.querySelector('.inline-edit-area');
   if (existing) { existing.remove(); if (preview) preview.style.display = ''; btn.textContent = 'Edit'; return; }
   if (preview) preview.style.display = 'none';
-  const text = platform === 'fb' ? (_packagesCache?.find(p => p.id === pkgId)?.facebook_post || '') : (_packagesCache?.find(p => p.id === pkgId)?.linkedin_post || '');
+  const text = platform === 'fb' ? (_pkgCache?.find(p => p.id === pkgId)?.facebook_post || '') : (_pkgCache?.find(p => p.id === pkgId)?.linkedin_post || '');
   const area = document.createElement('div');
   area.className = 'inline-edit-area';
   area.innerHTML = '<textarea style="width:100%;min-height:200px;padding:12px;background:var(--bg);color:var(--text);border:1px solid var(--accent);border-radius:6px;font-family:inherit;font-size:14px;line-height:1.6;resize:vertical">' + esc(text) + '</textarea><div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-green" onclick="saveInlineEdit(\\'' + pkgId + '\\',\\'' + platform + '\\', this)">Save</button><button class="btn btn-dim" onclick="toggleInlineEdit(\\'' + pkgId + '\\',\\'' + platform + '\\', this.closest(\\'.pkg-card\\').querySelector(\\'.edit-toggle-' + platform + '\\'))">Cancel</button><span class="inline-wc" style="font-size:12px;color:var(--dim);align-self:center"></span></div>';
@@ -3362,7 +3363,7 @@ async function saveInlineEdit(pkgId, platform, btn) {
     const field = platform === 'fb' ? 'facebook_post' : 'linkedin_post';
     await api('/content/packages/' + pkgId, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({[field]: newText}) });
     toast(platform.toUpperCase() + ' post saved');
-    if (_packagesCache) { const pkg = _packagesCache.find(p => p.id === pkgId); if (pkg) pkg[field] = newText; }
+    if (_pkgCache) { const pkg = _pkgCache.find(p => p.id === pkgId); if (pkg) pkg[field] = newText; }
     const preview = container.querySelector('.post-preview');
     if (preview) { preview.textContent = newText; preview.style.display = ''; }
     container.querySelector('.inline-edit-area')?.remove();
@@ -3430,7 +3431,7 @@ async function editDmField(pkgId, fieldKey, el) {
   const input = prompt('Edit ' + fieldKey.replace(/_/g, ' ') + ':', current);
   if (input === null) return;
   try {
-    const pkg = _packagesCache?.find(p => p.id === pkgId);
+    const pkg = _pkgCache?.find(p => p.id === pkgId);
     if (!pkg?.dm_flow) return;
     const updated = {...pkg.dm_flow, [fieldKey]: input};
     await api('/content/packages/' + pkgId, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({dm_flow: updated}) });
@@ -3449,7 +3450,7 @@ async function schedulePublish(pkgId, platform) {
   try {
     await api('/content/packages/' + pkgId + '/approve', {method:'POST'});
     toast('Package approved and scheduled for ' + when);
-    if (_packagesCache) { const pkg = _packagesCache.find(p => p.id === pkgId); if (pkg) pkg.approval_status = 'approved'; }
+    if (_pkgCache) { const pkg = _pkgCache.find(p => p.id === pkgId); if (pkg) pkg.approval_status = 'approved'; }
     await renderPackages();
   } catch(e) { toast('Failed: ' + e.message); }
 }
@@ -3564,9 +3565,11 @@ async function renderSettings() {
     // Budget
     html += '<div class="card" style="margin-bottom:16px"><h3>Budget & Costs</h3>';
     html += '<div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:16px">';
-    html += '<div><label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Daily Budget Cap (USD)</label><input id="set-daily-budget" type="number" step="0.5" value="5.00" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px"></div>';
-    html += '<div><label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Monthly Budget Alert (USD)</label><input id="set-monthly-budget" type="number" step="5" value="150.00" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px"></div>';
-    html += '</div><button class="btn btn-primary" style="margin-top:12px" onclick="toast(\\'Budget settings saved locally\\')">Save Budget Settings</button></div>';
+    const savedDaily = localStorage.getItem('tce_daily_budget') || '5.00';
+    const savedMonthly = localStorage.getItem('tce_monthly_budget') || '150.00';
+    html += '<div><label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Daily Budget Cap (USD)</label><input id="set-daily-budget" type="number" step="0.5" value="' + savedDaily + '" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px"></div>';
+    html += '<div><label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Monthly Budget Alert (USD)</label><input id="set-monthly-budget" type="number" step="5" value="' + savedMonthly + '" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px"></div>';
+    html += '</div><button class="btn btn-primary" style="margin-top:12px" onclick="saveBudgetSettings()">Save Budget Settings</button></div>';
     // API Keys (read-only status)
     html += '<div class="card" style="margin-bottom:16px"><h3>API Keys Status</h3>';
     html += '<div style="margin-top:12px;font-size:13px">';
@@ -3577,13 +3580,26 @@ async function renderSettings() {
     html += '</div><div style="margin-top:12px;font-size:12px;color:var(--dim)">API keys are managed via environment variables on the VPS. SSH to 5.161.71.94 to update.</div></div>';
     // Audience Config
     html += '<div class="card"><h3>Target Audience</h3>';
-    html += '<div style="margin-top:12px"><label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Primary Audience Description</label><textarea id="set-audience" rows="3" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px" placeholder="e.g. B2B agency owners, 10-50 employees, interested in AI adoption..."></textarea></div>';
-    html += '<button class="btn btn-primary" style="margin-top:8px" onclick="toast(\\'Audience config saved\\')">Save</button></div>';
+    const savedAudience = (localStorage.getItem('tce_audience') || '').replace(/'/g, '&#39;');
+    html += '<div style="margin-top:12px"><label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Primary Audience Description</label><textarea id="set-audience" rows="3" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px" placeholder="e.g. B2B agency owners, 10-50 employees, interested in AI adoption...">' + savedAudience + '</textarea></div>';
+    html += '<button class="btn btn-primary" style="margin-top:8px" onclick="saveAudienceConfig()">Save</button></div>';
     document.getElementById('settings-content').innerHTML = html;
   } catch(e) { document.getElementById('settings-content').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; }
 }
 async function togglePlatform(plat, enabled) {
   try { await api('/controls/platforms', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({platform:plat,enabled:enabled})}); toast(plat + (enabled ? ' enabled' : ' disabled')); } catch(e) { toast('Failed: '+e.message); }
+}
+function saveBudgetSettings() {
+  const daily = document.getElementById('set-daily-budget')?.value || '5.00';
+  const monthly = document.getElementById('set-monthly-budget')?.value || '150.00';
+  localStorage.setItem('tce_daily_budget', daily);
+  localStorage.setItem('tce_monthly_budget', monthly);
+  toast('Budget saved: $' + daily + '/day, $' + monthly + '/month alert');
+}
+function saveAudienceConfig() {
+  const audience = document.getElementById('set-audience')?.value || '';
+  localStorage.setItem('tce_audience', audience);
+  toast('Audience config saved');
 }
 
 // GAP-33: Chatbot interface
@@ -3630,6 +3646,13 @@ document.addEventListener('keydown', e => {
     toast('Shortcuts: / = Search, Alt+1-6 = Switch tabs');
   }
 });
+
+// Helper to switch tab from inline onclick
+function switchTab(tabName) {
+  currentTab = tabName;
+  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
+  render();
+}
 
 // Router
 function render() {
