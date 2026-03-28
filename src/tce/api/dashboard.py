@@ -2100,7 +2100,7 @@ async function renderPackages() {
         if (g.cta_keyword) ghtml += '<span>CTA: <strong>' + esc(g.cta_keyword) + '</strong></span>';
         ghtml += '</div>';
         ghtml += '<div class="btn-group" style="margin:12px 0">';
-        if (g.docx_path) ghtml += '<a class="btn btn-green" href="' + API + '/content/guides/' + g.id + '/download" target="_blank">Download DOCX</a>';
+        if (g.docx_path) ghtml += '<button class="btn btn-green" onclick="downloadGuide(\\'' + g.id + '\\',\\'' + esc(g.guide_title).replace(/'/g, '') + '\\')">Download DOCX</button>';
         if (g.fulfillment_link) ghtml += '<a class="btn btn-blue" href="' + esc(g.fulfillment_link) + '" target="_blank">Fulfillment Link</a>';
         ghtml += '<button class="btn btn-dim" onclick="archiveGuide(\\'' + g.id + '\\')">Archive</button>';
         ghtml += '</div>';
@@ -4105,7 +4105,7 @@ async function showWeekGuide(mondayStr) {
     html += '<div style="font-size:13px;color:var(--dim);margin-bottom:16px">Week of ' + guide.week_start_date + ' - Theme: ' + esc(guide.weekly_theme) + '</div>';
     // Action buttons
     html += '<div class="btn-group" style="margin-bottom:20px">';
-    if (guide.docx_path) html += '<a class="btn btn-green" href="' + API + '/content/guides/' + guide.id + '/download" target="_blank">Download DOCX</a>';
+    if (guide.docx_path) html += '<button class="btn btn-green" onclick="downloadGuide(\\'' + guide.id + '\\',\\'' + esc(guide.guide_title).replace(/'/g, '') + '\\')">Download DOCX</button>';
     if (guide.fulfillment_link) html += '<a class="btn btn-dim" style="border-color:var(--blue);color:var(--blue)" href="' + esc(guide.fulfillment_link) + '" target="_blank">Fulfillment Link</a>';
     if (guide.cta_keyword) html += '<span style="padding:6px 14px;background:rgba(234,179,8,0.1);border:1px solid rgba(234,179,8,0.3);border-radius:6px;font-weight:700;color:var(--yellow);font-size:13px">CTA: ' + esc(guide.cta_keyword) + '</span>';
     html += '</div>';
@@ -4126,6 +4126,17 @@ async function showWeekGuide(mondayStr) {
   } catch(e) {
     app.innerHTML = '<div class="section"><button class="btn btn-dim" onclick="switchTab(\\'week\\')" style="margin-bottom:16px">Back to Week Planner</button><div class="empty">Error loading guide: ' + e.message + '</div></div>';
   }
+}
+
+// Download guide via fetch+blob (bypasses browser insecure-download block on HTTP)
+async function downloadGuide(guideId, title) {
+  try {
+    const resp = await fetch(API + '/content/guides/' + guideId + '/download');
+    if (!resp.ok) throw new Error('Download failed');
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = (title || 'guide') + '.docx'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  } catch(e) { toast('Download failed: ' + e.message, false); }
 }
 
 // Router
