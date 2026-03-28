@@ -38,8 +38,13 @@ class PatternTemplateRead(BaseModel):
     risk_notes: str | None
     anti_patterns: str | None
     source_influence_weights: dict | None
+    example_ids: list[str] | None
     median_score: float | None
     sample_size: int
+    confidence_avg: float | None
+    creator_diversity_count: int
+    proof_requirements: str | None
+    best_for: str | None
     status: str
     created_at: datetime
     updated_at: datetime

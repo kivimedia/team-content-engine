@@ -56,6 +56,9 @@ class PostExample(Base):
     raw_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     final_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # Template linkage (set by enrichment pipeline)
+    template_family: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
     # Review
     manual_review_status: Mapped[str] = mapped_column(String(20), default="pending")
     parser_notes: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -3722,9 +3722,10 @@ async function renderTemplates() {
     const templates = await api('/patterns/templates');
     if (!templates.length) { document.getElementById('tmpl-content').innerHTML = '<div class="empty">No templates found. Templates are created by the Pattern Miner agent during corpus ingestion.</div>'; return; }
     const families = [...new Set(templates.map(t => t.template_family).filter(Boolean))];
-    let html = '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">';
+    let html = '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">';
     html += '<button class="btn btn-primary btn-sm tmpl-filter active" onclick="filterTemplates(null,this)">All (' + templates.length + ')</button>';
     families.forEach(f => { const count = templates.filter(t => t.template_family === f).length; html += '<button class="btn btn-dim btn-sm tmpl-filter" onclick="filterTemplates(\\'' + esc(f) + '\\',this)">' + esc(f) + ' (' + count + ')</button>'; });
+    html += '<div style="margin-left:auto"><button class="btn btn-primary btn-sm" id="enrich-btn" onclick="enrichFromCorpus(this)" style="background:var(--green);border-color:var(--green)">Enrich from Corpus</button></div>';
     html += '</div>';
     html += '<div id="tmpl-grid" class="grid">';
     for (const t of templates) {
@@ -3737,8 +3738,13 @@ async function renderTemplates() {
       if (t.hook_formula) html += '<div style="font-size:12px;margin-bottom:4px"><strong style="color:var(--green)">Hook:</strong> ' + esc(t.hook_formula) + '</div>';
       if (t.body_formula) html += '<div style="font-size:12px;margin-bottom:4px"><strong style="color:var(--blue)">Body:</strong> ' + esc(String(t.body_formula).substring(0, 120)) + '</div>';
       if (t.platform_fit) html += '<div style="font-size:12px;margin-bottom:4px"><strong>Platform:</strong> ' + esc(t.platform_fit) + '</div>';
+      if (t.proof_requirements) html += '<div style="font-size:12px;margin-bottom:4px"><strong style="color:var(--accent)">Proof:</strong> ' + esc(t.proof_requirements) + '</div>';
+      if (t.cta_compatibility && t.cta_compatibility.length) html += '<div style="font-size:12px;margin-bottom:4px"><strong>CTAs:</strong> ' + t.cta_compatibility.map(c => '<span style="background:var(--accent)22;padding:1px 6px;border-radius:3px;margin-right:4px;font-size:11px">' + esc(c) + '</span>').join('') + '</div>';
+      if (t.visual_compatibility && t.visual_compatibility.length) html += '<div style="font-size:12px;margin-bottom:4px"><strong>Visuals:</strong> ' + t.visual_compatibility.map(v => '<span style="background:var(--blue)22;padding:1px 6px;border-radius:3px;margin-right:4px;font-size:11px">' + esc(v) + '</span>').join('') + '</div>';
+      if (t.tone_profile) { const tones = Object.entries(t.tone_profile).slice(0,5).map(([k,v]) => esc(k) + ':' + v).join(', '); html += '<div style="font-size:12px;margin-bottom:4px"><strong>Tones:</strong> ' + tones + '</div>'; }
       if (t.risk_notes) html += '<div style="font-size:12px;color:var(--yellow);margin-top:6px">Risk: ' + esc(t.risk_notes) + '</div>';
-      if (t.median_score != null) html += '<div style="font-size:12px;margin-top:6px;color:var(--dim)">Score: ' + t.median_score.toFixed(1) + ' | Samples: ' + (t.sample_size || 0) + '</div>';
+      if (t.anti_patterns) html += '<div style="font-size:12px;color:var(--red);margin-top:4px">Avoid: ' + esc(t.anti_patterns) + '</div>';
+      if (t.median_score != null) html += '<div style="font-size:12px;margin-top:6px;color:var(--dim)">Score: ' + t.median_score.toFixed(1) + ' | Samples: ' + (t.sample_size || 0) + (t.confidence_avg != null ? ' | Conf: ' + t.confidence_avg.toFixed(2) : '') + ' | Creators: ' + (t.creator_diversity_count || 0) + '</div>';
       html += '<div style="display:flex;gap:6px;margin-top:8px">';
       if (t.status !== 'locked') html += '<button class="btn btn-dim" style="font-size:11px" onclick="lockTemplate(\\'' + esc(t.template_name) + '\\')">Lock</button>';
       else html += '<button class="btn btn-dim" style="font-size:11px" onclick="unlockTemplate(\\'' + esc(t.template_name) + '\\')">Unlock</button>';
@@ -3757,6 +3763,34 @@ function filterTemplates(family, btn) {
 async function lockTemplate(name) { try { await api('/controls/templates/lock', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({template_name:name,reason:'Operator locked'})}); toast('Template locked'); renderTemplates(); } catch(e) { toast('Failed: '+e.message); } }
 async function unlockTemplate(name) { try { await api('/controls/templates/unlock', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({template_name:name})}); toast('Template unlocked'); renderTemplates(); } catch(e) { toast('Failed: '+e.message); } }
 async function banTemplate(name) { if(!confirm('Ban template "'+name+'"?')) return; try { await api('/controls/templates/ban', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({template_name:name,reason:'Operator banned'})}); toast('Template banned'); renderTemplates(); } catch(e) { toast('Failed: '+e.message); } }
+
+async function enrichFromCorpus(btn) {
+  if (!confirm('This will:\\n1. Score all corpus posts\\n2. Classify posts into template families\\n3. Aggregate stats per template\\n4. AI-enrich template descriptions\\n\\nEstimated cost: ~$0.05. Continue?')) return;
+  btn.disabled = true; btn.textContent = 'Starting...';
+  try {
+    // Start enrichment - show progress by polling status
+    const statusDiv = document.createElement('div');
+    statusDiv.id = 'enrich-status';
+    statusDiv.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;font-size:13px';
+    statusDiv.innerHTML = '<strong>Enrichment running...</strong> Phase 1/4: Scoring posts...';
+    btn.parentElement.parentElement.insertBefore(statusDiv, btn.parentElement.nextSibling);
+    // Poll status while waiting
+    const pollId = setInterval(async () => {
+      try {
+        const st = await api('/patterns/templates/enrich-status');
+        if (st.status === 'running') {
+          statusDiv.innerHTML = '<strong>Enrichment running...</strong> Phase ' + st.phase + '/4: ' + (st.detail || '');
+        }
+      } catch(e) {}
+    }, 2000);
+    const result = await api('/patterns/templates/enrich', {method:'POST'});
+    clearInterval(pollId);
+    const sd = document.getElementById('enrich-status');
+    if (sd) sd.innerHTML = '<strong style="color:var(--green)">Enrichment complete!</strong> Scored: ' + result.posts_scored + ' posts, Classified: ' + result.posts_classified + ', Templates enriched: ' + result.templates_enriched + ' (AI: ' + result.templates_ai_enriched + ')';
+    btn.textContent = 'Enrich from Corpus'; btn.disabled = false;
+    setTimeout(() => renderTemplates(), 2000);
+  } catch(e) { btn.textContent = 'Enrich from Corpus'; btn.disabled = false; toast('Enrichment failed: ' + e.message); const sd = document.getElementById('enrich-status'); if (sd) sd.innerHTML = '<strong style="color:var(--red)">Failed:</strong> ' + e.message; }
+}
 
 // GAP-32: Prompt Library
 async function renderPrompts() {
