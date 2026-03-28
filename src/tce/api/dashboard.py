@@ -1901,8 +1901,13 @@ function _renderPkgCard(p) {
           }
           // Show image first if available
           if (ip.image_url) {
-            html += '<div style="margin-bottom:12px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">';
+            const imgName = (ip.prompt_name || ip.visual_job || 'image').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+            html += '<div style="margin-bottom:12px;border-radius:8px;overflow:hidden;border:1px solid var(--border);position:relative">';
             html += '<img src="' + esc(ip.image_url) + '" style="width:100%;display:block" loading="lazy">';
+            html += '<div style="position:absolute;top:8px;right:8px;display:flex;gap:6px">';
+            html += '<a href="' + esc(ip.image_url) + '" download="' + imgName + '.jpg" style="background:rgba(0,0,0,0.75);color:#fff;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" target="_blank">Download</a>';
+            html += '<button onclick="navigator.clipboard.writeText(\\'' + esc(ip.image_url).replace(/'/g, "\\\\'") + '\\');toast(\\'Image URL copied\\')" style="background:rgba(0,0,0,0.75);color:#fff;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;border:none;cursor:pointer">Copy URL</button>';
+            html += '</div>';
             html += '</div>';
           }
           if (ip.visual_intent) html += '<div style="font-size:12px;color:var(--text);margin-bottom:8px;font-style:italic">' + esc(ip.visual_intent) + '</div>';
