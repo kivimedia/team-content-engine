@@ -624,7 +624,14 @@ async function aiRevisePost(packageId, platform) {
     });
     postDiv.textContent = result.revised;
     postDiv.style.opacity = '1';
-    toast(platform.toUpperCase() + ' post revised by AI');
+    const fieldKey = platform === 'fb' ? 'facebook_post' : 'linkedin_post';
+    const patchResult = await api('/content/packages/' + packageId, { method: 'PATCH', body: JSON.stringify({ [fieldKey]: result.revised }) });
+    const ci = _pkgCache?.findIndex(p => p.id === packageId);
+    if (ci !== undefined && ci !== -1) { Object.assign(_pkgCache[ci], patchResult); }
+    toast(platform.toUpperCase() + ' post revised and saved');
+    api('/content/packages/' + packageId + '/regenerate-hooks', { method: 'POST' })
+      .then(updated => { const ci2 = _pkgCache?.findIndex(p => p.id === packageId); if (ci2 !== undefined && ci2 !== -1) { Object.assign(_pkgCache[ci2], updated); } _renderPkgFromCache(); toast('Hooks refreshed'); })
+      .catch(() => {});
   } catch (e) {
     postDiv.style.opacity = '1';
     postDiv.querySelector('.spinner')?.remove();
@@ -658,10 +665,41 @@ async function useHook(packageId, hookIdx) {
     const ci = _pkgCache.findIndex(p => p.id === packageId);
     if (ci !== -1) { Object.assign(_pkgCache[ci], result); }
     _renderPkgFromCache();
-    toast('Hook applied and posts rewritten');
+    toast('Hook applied - regenerating hooks to match...');
+    api('/content/packages/' + packageId + '/regenerate-hooks', { method: 'POST' })
+      .then(updated => { const ci2 = _pkgCache.findIndex(p => p.id === packageId); if (ci2 !== -1) { Object.assign(_pkgCache[ci2], updated); } _renderPkgFromCache(); toast('Hooks refreshed (' + (updated.hook_variants?.length || 0) + ' hooks)'); })
+      .catch(() => {});
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = 'Use this'; }
     toast('Failed: ' + e.message, false);
+  }
+}
+
+async function regenerateHooks(packageId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Regenerating...'; }
+  try {
+    const result = await api('/content/packages/' + packageId + '/regenerate-hooks', { method: 'POST' });
+    const ci = _pkgCache.findIndex(p => p.id === packageId);
+    if (ci !== -1) { Object.assign(_pkgCache[ci], result); }
+    _renderPkgFromCache();
+    toast('Hooks regenerated (' + (result.hook_variants?.length || 0) + ' new hooks)');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Regenerate Hooks'; }
+    toast('Failed: ' + e.message, false);
+  }
+}
+
+async function backfillHooks(btn) {
+  if (!confirm('Regenerate hooks for ALL packages using AI? This may take a few minutes and cost API tokens.')) return;
+  btn.disabled = true; btn.textContent = 'Backfilling...';
+  try {
+    const result = await api('/content/packages/backfill-hooks', { method: 'POST' });
+    btn.disabled = false; btn.textContent = 'Backfill All Hooks';
+    toast('Backfill done: ' + result.updated + '/' + result.total + ' updated' + (result.errors?.length ? ', ' + result.errors.length + ' errors' : ''));
+    _pkgCache = null; renderPackages();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Backfill All Hooks';
+    toast('Backfill failed: ' + e.message, false);
   }
 }
 
@@ -1775,7 +1813,7 @@ function _renderPkgCard(p) {
         html += '<div style="padding:12px;margin-bottom:10px;border-radius:8px;background:#1a2e1a;border:1px solid var(--green)">';
         html += '<div style="font-size:11px;font-weight:600;color:var(--green);margin-bottom:4px">CURRENT HOOK</div>';
         html += '<div style="font-size:14px;line-height:1.5">' + esc(currentHook || 'No hook set') + '</div></div>';
-        html += '<div style="font-size:11px;color:var(--dim);margin-bottom:8px">Click "Use this" to replace the current hook:</div>';
+        html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px"><span style="font-size:11px;color:var(--dim)">Click "Use this" to replace the current hook:</span><button class="btn btn-dim" style="font-size:11px;padding:3px 10px;border-color:var(--accent);color:var(--accent)" onclick="regenerateHooks(\\'' + p.id + '\\', this)">Regenerate Hooks</button></div>';
         p.hook_variants.forEach((h, i) => {
           const isCurrent = currentHook === h;
           html += '<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;margin-bottom:6px;border-radius:8px;background:' + (isCurrent ? '#1a2e1a' : '#111318') + ';border:1px solid ' + (isCurrent ? 'var(--green)' : 'var(--border)') + '">';
@@ -1950,7 +1988,7 @@ function _renderPkgCard(p) {
 
 async function renderPackages() {
   const app = document.getElementById('app');
-  app.innerHTML = '<div class="section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><h2>Content Packages</h2><label style="font-size:12px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:6px"><input type="checkbox" id="show-archived" ' + (showArchived ? 'checked' : '') + ' onchange="showArchived=this.checked;_pkgCache=null;renderPackages()"> Show archived</label></div><div id="pkg-day-tabs"></div><div id="pkg-list"><div class="empty">Loading packages...</div></div></div>';
+  app.innerHTML = '<div class="section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><h2>Content Packages</h2><div style="display:flex;align-items:center;gap:12px"><button class="btn btn-dim" style="font-size:11px;padding:4px 10px" onclick="backfillHooks(this)">Backfill All Hooks</button><label style="font-size:12px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:6px"><input type="checkbox" id="show-archived" ' + (showArchived ? 'checked' : '') + ' onchange="showArchived=this.checked;_pkgCache=null;renderPackages()"> Show archived</label></div></div><div id="pkg-day-tabs"></div><div id="pkg-list"><div class="empty">Loading packages...</div></div></div>';
   try {
     const [pkgs, calEntries] = await Promise.all([
       api('/content/packages' + (showArchived ? '?include_archived=true' : '')),

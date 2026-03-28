@@ -38,6 +38,7 @@ class PostPackageUpdate(BaseModel):
     approval_status: str | None = None
     cta_keyword: str | None = None
     is_archived: bool | None = None
+    hook_variants: list[str] | None = None
 
 
 class PostPackageFull(PostPackageRead):

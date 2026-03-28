@@ -116,6 +116,103 @@ async def unarchive_package(
     return pkg
 
 
+async def _regenerate_hooks_for_package(pkg: PostPackage, db: AsyncSession) -> None:
+    """Regenerate hook_variants from current post content via LLM."""
+    import json
+
+    import anthropic
+
+    from tce.services.cost_tracker import CostTracker
+    from tce.services.pipeline_saver import _clean_list
+    from tce.settings import Settings
+
+    if not pkg.facebook_post and not pkg.linkedin_post:
+        return
+
+    s = Settings()
+    api_key = s.anthropic_api_key
+    if hasattr(api_key, "get_secret_value"):
+        api_key = api_key.get_secret_value()
+    client = anthropic.AsyncAnthropic(api_key=api_key)
+
+    system_prompt = (
+        "You are a B2B social media content strategist. "
+        "Given a social media post, generate 5 alternative opening hooks. "
+        "Each hook must be 1-2 sentences max and could replace the current first line. "
+        "The hooks MUST be about the SAME topic and message as the post. "
+        "Return ONLY a JSON array of 5 strings. No explanation, no markdown."
+    )
+
+    hooks: list[str] = []
+    tracker = CostTracker(db)
+    for platform, text in [("Facebook", pkg.facebook_post), ("LinkedIn", pkg.linkedin_post)]:
+        if not text:
+            continue
+        resp = await client.messages.create(
+            model=s.haiku_model,
+            max_tokens=512,
+            temperature=0.7,
+            system=system_prompt,
+            messages=[{"role": "user", "content": f"Platform: {platform}\n\nPost:\n{text}"}],
+        )
+        try:
+            platform_hooks = json.loads(resp.content[0].text.strip())
+            if isinstance(platform_hooks, list):
+                hooks.extend([str(h) for h in platform_hooks[:5]])
+        except (json.JSONDecodeError, IndexError):
+            pass
+        await tracker.record(
+            run_id=uuid.uuid4(),
+            agent_name="hook_regenerator",
+            model_used=s.haiku_model,
+            input_tokens=resp.usage.input_tokens,
+            output_tokens=resp.usage.output_tokens,
+        )
+
+    pkg.hook_variants = _clean_list(hooks) if hooks else None
+
+
+@router.post("/packages/backfill-hooks")
+async def backfill_hooks(db: AsyncSession = Depends(get_db)) -> dict:
+    """Regenerate hooks for ALL non-archived packages from their current post content."""
+    result = await db.execute(
+        select(PostPackage)
+        .where(PostPackage.is_archived.is_(False))
+        .order_by(PostPackage.created_at.desc())
+    )
+    packages = list(result.scalars().all())
+    total = len(packages)
+    updated = 0
+    errors: list[dict] = []
+    for pkg in packages:
+        if not pkg.facebook_post and not pkg.linkedin_post:
+            continue
+        try:
+            await _regenerate_hooks_for_package(pkg, db)
+            updated += 1
+        except Exception as e:
+            errors.append({"id": str(pkg.id), "error": str(e)})
+    await db.flush()
+    return {"total": total, "updated": updated, "errors": errors}
+
+
+@router.post("/packages/{package_id}/regenerate-hooks", response_model=PostPackageRead)
+async def regenerate_hooks(
+    package_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> PostPackage:
+    """Regenerate hook_variants from current post content via LLM."""
+    pkg = await db.get(PostPackage, package_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Package not found")
+    if not pkg.facebook_post and not pkg.linkedin_post:
+        raise HTTPException(status_code=400, detail="No post content to generate hooks from")
+    await _regenerate_hooks_for_package(pkg, db)
+    await db.flush()
+    await db.refresh(pkg)
+    return pkg
+
+
 @router.post("/packages/{package_id}/generate-images")
 async def generate_images(
     package_id: uuid.UUID,
