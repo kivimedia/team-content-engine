@@ -218,6 +218,44 @@ class PipelineOrchestrator:
                         success = sum(1 for g in generated if g.get("status") == "generated")
                         ts2 = datetime.datetime.now().strftime("%H:%M:%S")
                         log_list.append(f"[{ts2}] {success}/{len(image_prompts)} images generated")
+
+                        # Write image URLs back to the package record
+                        pkg_id = self.context.get("_post_package_id")
+                        if pkg_id and success > 0:
+                            try:
+                                from tce.models.image_asset import ImageAsset
+                                from tce.models.post_package import PostPackage
+
+                                pkg = await self.db.get(PostPackage, pkg_id)
+                                if pkg and pkg.image_prompts:
+                                    updated = list(pkg.image_prompts)
+                                    for idx, g in enumerate(generated):
+                                        if g.get("status") == "generated" and idx < len(updated):
+                                            updated[idx]["image_url"] = g.get("image_url")
+                                    pkg.image_prompts = updated
+
+                                    # Also update ImageAsset records
+                                    from sqlalchemy import select
+
+                                    ia_result = await self.db.execute(
+                                        select(ImageAsset)
+                                        .where(ImageAsset.package_id == pkg_id)
+                                        .order_by(ImageAsset.created_at)
+                                    )
+                                    assets = list(ia_result.scalars().all())
+                                    for idx, g in enumerate(generated):
+                                        if g.get("status") == "generated" and idx < len(assets):
+                                            assets[idx].image_url = g.get("image_url")
+                                            assets[idx].image_s3_path = g.get("image_s3_path")
+                                            assets[idx].fal_model_used = g.get("fal_model_used")
+                                            assets[idx].fal_request_id = g.get("fal_request_id")
+                                            assets[idx].generation_time_seconds = g.get("generation_time_seconds")
+                                            assets[idx].generation_cost_usd = g.get("generation_cost_usd")
+
+                                    await self.db.flush()
+                                    log_list.append(f"[{ts2}] Image URLs saved to package")
+                            except Exception:
+                                logger.exception("image_gen.save_urls_failed")
                     except Exception as img_err:
                         ts2 = datetime.datetime.now().strftime("%H:%M:%S")
                         log_list.append(f"[{ts2}] Image generation failed: {str(img_err)[:80]}")

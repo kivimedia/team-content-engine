@@ -40,7 +40,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .btn-blue{background:var(--blue);color:#fff}
 .btn-dim{background:var(--border);color:var(--text)}
 .btn-group{display:flex;gap:8px;flex-wrap:wrap}
-select,input{padding:8px 12px;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:6px;font-size:13px}
+select,input{padding:8px 12px;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:6px;font-size:13px;color-scheme:dark}
+option{background:var(--card);color:var(--text)}
 .pipeline-steps{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
 .step-badge{padding:6px 12px;border-radius:16px;font-size:12px;font-weight:500;border:1px solid var(--border)}
 .step-badge.completed{background:#166534;border-color:#22c55e;color:#bbf7d0}
@@ -606,10 +607,11 @@ async function submitFieldFeedback(fieldId, btn) {
 }
 // Also for packages - revise post content with AI
 async function aiRevisePost(packageId, platform) {
-  const previewEl = document.getElementById(platform + '-' + packageId);
-  if (!previewEl) return;
+  const pid = packageId.replace(/-/g, '');
+  const previewEl = document.getElementById(platform + '-' + pid);
+  if (!previewEl) { toast('Could not find ' + platform.toUpperCase() + ' post element', false); return; }
   const postDiv = previewEl.querySelector('.post-preview');
-  if (!postDiv) return;
+  if (!postDiv) { toast('No post content found', false); return; }
   const feedback = prompt('What should the AI change about this ' + platform.toUpperCase() + ' post?');
   if (!feedback || !feedback.trim()) return;
   const currentText = postDiv.textContent;
@@ -1644,14 +1646,68 @@ async function downloadLatestGuide() {
 }
 
 // PACKAGES TAB
+let pkgDayFilter = Math.min(new Date().getDay() - 1, 4); // Default to today (0=Mon, 4=Fri)
+if (pkgDayFilter < 0) pkgDayFilter = 0; // Weekend defaults to Monday
 async function renderPackages() {
   const app = document.getElementById('app');
-  app.innerHTML = '<div class="section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><h2>Content Packages</h2><label style="font-size:12px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:6px"><input type="checkbox" id="show-archived" ' + (showArchived ? 'checked' : '') + ' onchange="showArchived=this.checked;renderPackages()"> Show archived</label></div><div id="pkg-list"><div class="empty">Loading...</div></div></div>';
+  app.innerHTML = '<div class="section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><h2>Content Packages</h2><label style="font-size:12px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:6px"><input type="checkbox" id="show-archived" ' + (showArchived ? 'checked' : '') + ' onchange="showArchived=this.checked;renderPackages()"> Show archived</label></div><div id="pkg-day-tabs"></div><div id="pkg-list"><div class="empty">Loading...</div></div></div>';
   try {
     const pkgs = await api('/content/packages' + (showArchived ? '?include_archived=true' : ''));
     if (!pkgs.length) { document.getElementById('pkg-list').innerHTML = '<div class="empty">No packages yet. Run a pipeline first.</div>'; return; }
+
+    // Fetch calendar to map packages to days
+    const monday = getMondayOfWeek();
+    const friday = new Date(monday); friday.setDate(friday.getDate() + 4);
+    let calEntries = [];
+    try { calEntries = await api('/calendar/?start=' + fmtDate(monday) + '&end=' + fmtDate(friday)); } catch {}
+    const pkgDayMap = {};
+    for (const e of calEntries) {
+      if (e.post_package_id) pkgDayMap[e.post_package_id] = { day: e.day_of_week, date: e.date, topic: e.topic, angle: e.angle_type };
+    }
+
+    // Build day tabs
+    const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    let tabHtml = '<div style="display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap">';
+    for (let d = 0; d < 5; d++) {
+      const dayDate = new Date(monday); dayDate.setDate(dayDate.getDate() + d);
+      const dateLabel = dayDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const hasPkg = Object.values(pkgDayMap).some(m => m.day === d);
+      const isActive = pkgDayFilter === d;
+      const dotColor = hasPkg ? 'var(--green)' : 'var(--border)';
+      tabHtml += '<button onclick="pkgDayFilter=' + d + ';renderPackages()" style="padding:8px 14px;border:1px solid ' + (isActive ? 'var(--accent)' : 'var(--border)') + ';background:' + (isActive ? 'var(--accent)' : 'var(--card)') + ';color:' + (isActive ? '#fff' : 'var(--text)') + ';border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:' + dotColor + ';display:inline-block"></span>' + dayNames[d] + ' ' + dateLabel + '</button>';
+    }
+    // Other tab for unlinked packages
+    const unlinkedCount = pkgs.filter(p => !pkgDayMap[p.id]).length;
+    if (unlinkedCount > 0) {
+      const isOther = pkgDayFilter === 'other';
+      tabHtml += '<button onclick="pkgDayFilter=\\'other\\';renderPackages()" style="padding:8px 14px;border:1px solid ' + (isOther ? 'var(--accent)' : 'var(--border)') + ';background:' + (isOther ? 'var(--accent)' : 'var(--card)') + ';color:' + (isOther ? '#fff' : 'var(--dim)') + ';border-radius:6px;cursor:pointer;font-size:13px">Other (' + unlinkedCount + ')</button>';
+    }
+    // All tab
+    const isAll = pkgDayFilter === null;
+    tabHtml += '<button onclick="pkgDayFilter=null;renderPackages()" style="padding:8px 14px;border:1px solid ' + (isAll ? 'var(--accent)' : 'var(--border)') + ';background:' + (isAll ? 'var(--accent)' : 'var(--card)') + ';color:' + (isAll ? '#fff' : 'var(--dim)') + ';border-radius:6px;cursor:pointer;font-size:13px">All (' + pkgs.length + ')</button>';
+    tabHtml += '</div>';
+    document.getElementById('pkg-day-tabs').innerHTML = tabHtml;
+
+    // Filter packages by selected day
+    let filteredPkgs = pkgs;
+    if (pkgDayFilter !== null && pkgDayFilter !== 'other') {
+      const dayPkgIds = new Set(Object.entries(pkgDayMap).filter(([, m]) => m.day === pkgDayFilter).map(([id]) => id));
+      filteredPkgs = pkgs.filter(p => dayPkgIds.has(p.id));
+    } else if (pkgDayFilter === 'other') {
+      filteredPkgs = pkgs.filter(p => !pkgDayMap[p.id]);
+    }
+
+    if (!filteredPkgs.length) { document.getElementById('pkg-list').innerHTML = '<div class="empty" style="padding:24px;text-align:center">No packages for this day yet.</div>'; return; }
+
     let html = '<div class="packages-list">';
-    for (const p of pkgs) {
+    for (const p of filteredPkgs) {
+      // Day context header
+      const dayInfo = pkgDayMap[p.id];
+      if (dayInfo) {
+        const dayLabel = DAY_NAMES[dayInfo.day] || '';
+        const angleLabel = ANGLE_LABELS[dayInfo.angle] || (dayInfo.angle || '').replace(/_/g, ' ');
+        html += '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;display:flex;align-items:center;gap:8px"><span style="color:var(--accent2);font-weight:600">' + dayLabel + ' ' + dayInfo.date + '</span><span>' + angleLabel + '</span></div>';
+      }
       const statusTag = p.approval_status === 'approved' ? 'tag-approved' : p.approval_status === 'rejected' ? 'tag-rejected' : 'tag-draft';
       html += '<div class="pkg-card" id="pkg-' + p.id + '"' + (p.is_archived ? ' style="opacity:0.5"' : '') + '>';
       html += '<div class="pkg-header"><span class="tag ' + statusTag + '">' + p.approval_status + '</span>';
