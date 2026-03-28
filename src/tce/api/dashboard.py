@@ -287,7 +287,6 @@ async function renderWeek() {
       <div id="plan-review-panel"></div>
       <div id="gen-all-progress"></div>
       <div class="week-grid" id="week-grid"><div class="empty" style="grid-column:1/-1">Loading calendar...</div></div>
-      <div id="guide-section"></div>
     </div>`;
 
   // Load calendar entries for this week
@@ -315,6 +314,7 @@ async function renderWeek() {
         summaryHtml += '<div style="font-size:14px;font-weight:600">' + escHtml(giftTitle) + '</div>';
         if (giftSubtitle) summaryHtml += '<div style="font-size:12px;color:var(--dim);margin-top:2px">' + escHtml(giftSubtitle) + '</div>';
         if (sections.length) summaryHtml += '<div style="font-size:11px;color:var(--dim);margin-top:6px">' + sections.length + ' sections planned</div>';
+        summaryHtml += '<button class="btn btn-green" style="margin-top:8px;font-size:11px;padding:4px 12px" onclick="switchTab(\\'packages\\')">Package</button>';
         summaryHtml += '</div>';
       }
       if (cta) {
@@ -406,50 +406,6 @@ async function renderWeek() {
     if (hint && planCost.avg_cost > 0) hint.textContent = '~$' + planCost.avg_cost.toFixed(2) + ' per plan (avg of ' + planCost.plan_runs + ' runs)';
   } catch {}
 
-  // Load weekly guides
-  try {
-    const showArchivedGuides = document.getElementById('show-archived-guides')?.checked || false;
-    const guides = await api('/content/guides' + (showArchivedGuides ? '?include_archived=true' : ''));
-    if (guides.length) {
-      let html = '<h2 style="margin-top:24px;margin-bottom:12px;display:flex;align-items:center;gap:16px">Gift of the Week (Weekly Guides)';
-      html += '<label style="font-size:12px;font-weight:400;color:var(--dim);display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="show-archived-guides" onchange="renderWeek()" ' + (showArchivedGuides ? 'checked' : '') + '> Show Archived</label>';
-      html += '</h2>';
-      for (const g of guides) {
-        const archived = g.is_archived;
-        html += '<div class="guide-card" style="' + (archived ? 'opacity:0.5;border-color:var(--dim)' : '') + '">';
-        if (archived) html += '<div style="display:inline-block;background:var(--dim);color:#000;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;margin-bottom:8px">ARCHIVED</div>';
-        html += '<h3>' + esc(g.guide_title) + '</h3>';
-        html += '<div class="guide-meta">';
-        html += '<span>Week of ' + g.week_start_date + '</span>';
-        html += '<span>Theme: ' + esc(g.weekly_theme) + '</span>';
-        if (g.cta_keyword) html += '<span>CTA: <strong>' + esc(g.cta_keyword) + '</strong></span>';
-        html += '</div>';
-        html += '<div class="btn-group" style="margin:12px 0">';
-        if (g.docx_path) html += '<a class="btn btn-green" href="' + API + '/content/guides/' + g.id + '/download" target="_blank">Download DOCX</a>';
-        if (g.fulfillment_link) html += '<a class="btn btn-blue" href="' + esc(g.fulfillment_link) + '" target="_blank">Fulfillment Link</a>';
-        if (archived) {
-          html += '<button class="btn btn-dim" onclick="unarchiveGuide(\\'' + g.id + '\\')">Unarchive</button>';
-        } else {
-          html += '<button class="btn btn-dim" onclick="archiveGuide(\\'' + g.id + '\\')">Archive</button>';
-        }
-        html += '</div>';
-        if (g.markdown_content) {
-          html += '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--accent2);font-size:13px">View Guide Content</summary>';
-          html += '<div class="post-preview" style="margin-top:8px;max-height:400px;overflow-y:auto;white-space:pre-wrap">' + esc(g.markdown_content) + '</div>';
-          html += '</details>';
-        }
-        html += '<div class="guide-stats">';
-        html += '<div class="guide-stat"><div class="val">' + (g.downloads_count || 0) + '</div><div class="lbl">Downloads</div></div>';
-        html += '<div class="guide-stat"><div class="val">' + (g.conversion_rate != null ? (g.conversion_rate * 100).toFixed(1) + '%' : 'N/A') + '</div><div class="lbl">Conversion</div></div>';
-        html += '</div>';
-        html += '<div style="font-size:11px;color:var(--dim);margin-top:8px">Created: ' + new Date(g.created_at).toLocaleString() + '</div>';
-        html += '</div>';
-      }
-      document.getElementById('guide-section').innerHTML = html;
-    } else {
-      document.getElementById('guide-section').innerHTML = '<div class="card" style="margin-top:16px;text-align:center;padding:24px"><div style="font-size:14px;color:var(--dim)">No weekly guides yet. Click "Generate Weekly Guide" to create your first gift of the week.</div></div>';
-    }
-  } catch {}
 }
 
 let deepPlanId = null;
@@ -2003,6 +1959,33 @@ async function renderPackages() {
     _pkgDayMapCache = pkgDayMap;
     _renderPkgFromCache();
   } catch (e) { document.getElementById('pkg-list').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; }
+  // Load weekly guides into packages tab
+  try {
+    const guides = await api('/content/guides');
+    if (guides.length) {
+      let ghtml = '<div style="margin-top:24px"><h2 style="margin-bottom:12px">Weekly Guides</h2>';
+      for (const g of guides) {
+        ghtml += '<div class="guide-card">';
+        ghtml += '<h3>' + esc(g.guide_title) + '</h3>';
+        ghtml += '<div class="guide-meta"><span>Week of ' + g.week_start_date + '</span><span>Theme: ' + esc(g.weekly_theme) + '</span>';
+        if (g.cta_keyword) ghtml += '<span>CTA: <strong>' + esc(g.cta_keyword) + '</strong></span>';
+        ghtml += '</div>';
+        ghtml += '<div class="btn-group" style="margin:12px 0">';
+        if (g.docx_path) ghtml += '<a class="btn btn-green" href="' + API + '/content/guides/' + g.id + '/download" target="_blank">Download DOCX</a>';
+        if (g.fulfillment_link) ghtml += '<a class="btn btn-blue" href="' + esc(g.fulfillment_link) + '" target="_blank">Fulfillment Link</a>';
+        ghtml += '<button class="btn btn-dim" onclick="archiveGuide(\\'' + g.id + '\\')">Archive</button>';
+        ghtml += '</div>';
+        if (g.markdown_content) {
+          ghtml += '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--accent2);font-size:13px">View Guide Content</summary>';
+          ghtml += '<div class="post-preview" style="margin-top:8px;max-height:400px;overflow-y:auto;white-space:pre-wrap">' + esc(g.markdown_content) + '</div></details>';
+        }
+        ghtml += '<div style="font-size:11px;color:var(--dim);margin-top:8px">Created: ' + new Date(g.created_at).toLocaleString() + '</div>';
+        ghtml += '</div>';
+      }
+      ghtml += '</div>';
+      document.getElementById('pkg-list').insertAdjacentHTML('afterend', ghtml);
+    }
+  } catch {}
 }
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
@@ -2061,7 +2044,7 @@ async function archiveGuide(id) {
   try {
     await api('/content/guides/' + id + '/archive', { method: 'POST' });
     toast('Guide archived');
-    await renderWeek();
+    await renderPackages();
   } catch (e) { toast('Archive failed: ' + e.message, false); }
 }
 
@@ -2069,7 +2052,7 @@ async function unarchiveGuide(id) {
   try {
     await api('/content/guides/' + id + '/unarchive', { method: 'POST' });
     toast('Guide unarchived');
-    await renderWeek();
+    await renderPackages();
   } catch (e) { toast('Unarchive failed: ' + e.message, false); }
 }
 
