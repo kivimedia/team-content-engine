@@ -333,7 +333,7 @@ async function renderWeek() {
         summaryHtml += '<div style="font-size:14px;font-weight:600">' + escHtml(giftTitle) + '</div>';
         if (giftSubtitle) summaryHtml += '<div style="font-size:12px;color:var(--dim);margin-top:2px">' + escHtml(giftSubtitle) + '</div>';
         if (sections.length) summaryHtml += '<div style="font-size:11px;color:var(--dim);margin-top:6px">' + sections.length + ' sections planned</div>';
-        summaryHtml += '<button class="btn btn-green" style="margin-top:8px;font-size:11px;padding:4px 12px" onclick="switchTab(\\'packages\\')">Package</button>';
+        summaryHtml += '<button class="btn btn-green" style="margin-top:8px;font-size:11px;padding:4px 12px" onclick="goToGuides()">Package</button>';
         summaryHtml += '</div>';
       }
       if (cta) {
@@ -2092,7 +2092,7 @@ async function renderPackages() {
   try {
     const guides = await api('/content/guides');
     if (guides.length) {
-      let ghtml = '<div style="margin-top:24px"><h2 style="margin-bottom:12px">Weekly Guides</h2>';
+      let ghtml = '<div id="weekly-guides-section" style="margin-top:24px"><h2 style="margin-bottom:12px">Weekly Guides</h2>';
       for (const g of guides) {
         ghtml += '<div class="guide-card">';
         ghtml += '<h3>' + esc(g.guide_title) + '</h3>';
@@ -4079,6 +4079,17 @@ function switchTab(tabName) {
   currentTab = tabName;
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
   render();
+}
+
+function goToGuides() {
+  switchTab('packages');
+  // Poll for the guides section to appear (it loads async), then scroll to it
+  let attempts = 0;
+  const poll = setInterval(() => {
+    const el = document.getElementById('weekly-guides-section');
+    if (el) { clearInterval(poll); el.scrollIntoView({behavior:'smooth', block:'start'}); }
+    if (++attempts > 30) clearInterval(poll);
+  }, 200);
 }
 
 // Router
