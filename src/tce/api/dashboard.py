@@ -333,7 +333,7 @@ async function renderWeek() {
         summaryHtml += '<div style="font-size:14px;font-weight:600">' + escHtml(giftTitle) + '</div>';
         if (giftSubtitle) summaryHtml += '<div style="font-size:12px;color:var(--dim);margin-top:2px">' + escHtml(giftSubtitle) + '</div>';
         if (sections.length) summaryHtml += '<div style="font-size:11px;color:var(--dim);margin-top:6px">' + sections.length + ' sections planned</div>';
-        summaryHtml += '<button class="btn btn-green" style="margin-top:8px;font-size:11px;padding:4px 12px" onclick="goToGuides()">Package</button>';
+        summaryHtml += '<button class="btn btn-green" style="margin-top:8px;font-size:11px;padding:4px 12px" onclick="showWeekGuide(\\'' + fmtDate(monday) + '\\')">Package</button>';
         summaryHtml += '</div>';
       }
       if (cta) {
@@ -2092,7 +2092,7 @@ async function renderPackages() {
   try {
     const guides = await api('/content/guides');
     if (guides.length) {
-      let ghtml = '<div id="weekly-guides-section" style="margin-top:24px"><h2 style="margin-bottom:12px">Weekly Guides</h2>';
+      let ghtml = '<div style="margin-top:24px"><h2 style="margin-bottom:12px">Weekly Guides</h2>';
       for (const g of guides) {
         ghtml += '<div class="guide-card">';
         ghtml += '<h3>' + esc(g.guide_title) + '</h3>';
@@ -4081,15 +4081,45 @@ function switchTab(tabName) {
   render();
 }
 
-function goToGuides() {
-  switchTab('packages');
-  // Poll for the guides section to appear (it loads async), then scroll to it
-  let attempts = 0;
-  const poll = setInterval(() => {
-    const el = document.getElementById('weekly-guides-section');
-    if (el) { clearInterval(poll); el.scrollIntoView({behavior:'smooth', block:'start'}); }
-    if (++attempts > 30) clearInterval(poll);
-  }, 200);
+async function showWeekGuide(mondayStr) {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="section"><div class="empty">Loading guide...</div></div>';
+  try {
+    const guides = await api('/content/guides');
+    const guide = guides.find(g => g.week_start_date === mondayStr);
+    if (!guide) {
+      app.innerHTML = '<div class="section"><button class="btn btn-dim" onclick="switchTab(\\'week\\')" style="margin-bottom:16px">Back to Week Planner</button><div class="empty">No guide found for this week yet. Run the full pipeline first - the guide is built in the final phase.</div></div>';
+      return;
+    }
+    let html = '<div class="section">';
+    html += '<button class="btn btn-dim" onclick="switchTab(\\'week\\')" style="margin-bottom:16px">Back to Week Planner</button>';
+    html += '<div style="background:linear-gradient(135deg,#1a1d27,#1e2235);border:1px solid var(--green);border-radius:12px;padding:24px">';
+    html += '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--green);margin-bottom:8px">Weekly Free Guide</div>';
+    html += '<h2 style="margin-bottom:4px">' + esc(guide.guide_title) + '</h2>';
+    html += '<div style="font-size:13px;color:var(--dim);margin-bottom:16px">Week of ' + guide.week_start_date + ' - Theme: ' + esc(guide.weekly_theme) + '</div>';
+    // Action buttons
+    html += '<div class="btn-group" style="margin-bottom:20px">';
+    if (guide.docx_path) html += '<a class="btn btn-green" href="' + API + '/content/guides/' + guide.id + '/download" target="_blank">Download DOCX</a>';
+    if (guide.fulfillment_link) html += '<a class="btn btn-dim" style="border-color:var(--blue);color:var(--blue)" href="' + esc(guide.fulfillment_link) + '" target="_blank">Fulfillment Link</a>';
+    if (guide.cta_keyword) html += '<span style="padding:6px 14px;background:rgba(234,179,8,0.1);border:1px solid rgba(234,179,8,0.3);border-radius:6px;font-weight:700;color:var(--yellow);font-size:13px">CTA: ' + esc(guide.cta_keyword) + '</span>';
+    html += '</div>';
+    // Guide content
+    if (guide.markdown_content) {
+      html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:20px;max-height:600px;overflow-y:auto;white-space:pre-wrap;font-size:14px;line-height:1.7">' + esc(guide.markdown_content) + '</div>';
+    } else {
+      html += '<div class="empty">Guide content not yet generated.</div>';
+    }
+    // Stats
+    html += '<div style="display:flex;gap:16px;margin-top:16px;font-size:12px;color:var(--dim)">';
+    html += '<span>Downloads: ' + (guide.downloads_count || 0) + '</span>';
+    if (guide.conversion_rate != null) html += '<span>Conversion: ' + (guide.conversion_rate * 100).toFixed(1) + '%</span>';
+    html += '<span>Created: ' + new Date(guide.created_at).toLocaleString() + '</span>';
+    html += '</div>';
+    html += '</div></div>';
+    app.innerHTML = html;
+  } catch(e) {
+    app.innerHTML = '<div class="section"><button class="btn btn-dim" onclick="switchTab(\\'week\\')" style="margin-bottom:16px">Back to Week Planner</button><div class="empty">Error loading guide: ' + e.message + '</div></div>';
+  }
 }
 
 // Router
