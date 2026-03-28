@@ -271,7 +271,9 @@ async def generate_images(
         )
 
     # Also update image_prompts JSONB with URLs for dashboard display
-    updated_prompts = list(pkg.image_prompts)
+    # Deep-copy to ensure SQLAlchemy detects the JSONB mutation
+    import json as _json
+    updated_prompts = _json.loads(_json.dumps(pkg.image_prompts))
     for g in generated:
         idx = g["index"]
         if g["status"] == "generated" and idx < len(updated_prompts):
