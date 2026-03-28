@@ -13,7 +13,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <title>TCE - Operator Dashboard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e4e4e7;--dim:#9ca3af;--accent:#6366f1;--accent2:#818cf8;--green:#22c55e;--red:#ef4444;--yellow:#eab308;--blue:#3b82f6}
+:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e4e4e7;--dim:#9ca3af;--accent:#6366f1;--accent2:#818cf8;--green:#22c55e;--red:#ef4444;--yellow:#eab308;--blue:#3b82f6;color-scheme:dark}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 .header{background:var(--card);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
 .header h1{font-size:20px;font-weight:600}
@@ -40,8 +40,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .btn-blue{background:var(--blue);color:#fff}
 .btn-dim{background:var(--border);color:var(--text)}
 .btn-group{display:flex;gap:8px;flex-wrap:wrap}
-select,input{padding:8px 12px;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:6px;font-size:13px;color-scheme:dark}
+select,input,textarea{padding:8px 12px;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:6px;font-size:13px;color-scheme:dark}
 option{background:var(--card);color:var(--text)}
+img{background:var(--card)}
 .pipeline-steps{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
 .step-badge{padding:6px 12px;border-radius:16px;font-size:12px;font-weight:500;border:1px solid var(--border)}
 .step-badge.completed{background:#166534;border-color:#22c55e;color:#bbf7d0}
@@ -1771,8 +1772,8 @@ function _renderPkgFromCache() {
   tabHtml += '</div>';
   // GAP-29: Status and QA filters
   tabHtml += '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">';
-  tabHtml += '<select id="pkg-status-filter" onchange="filterPkgStatus()" style="padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"><option value="">All statuses</option><option value="draft">Draft</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>';
-  tabHtml += '<select id="pkg-qa-filter" onchange="filterPkgStatus()" style="padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"><option value="">Any QA</option><option value="pass">QA Pass (7+)</option><option value="conditional">Conditional (5-7)</option><option value="fail">QA Fail (&lt;5)</option></select>';
+  tabHtml += '<select id="pkg-status-filter" onchange="filterPkgStatus()" style="padding:4px 8px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"><option value="">All statuses</option><option value="draft">Draft</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>';
+  tabHtml += '<select id="pkg-qa-filter" onchange="filterPkgStatus()" style="padding:4px 8px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"><option value="">Any QA</option><option value="pass">QA Pass (7+)</option><option value="conditional">Conditional (5-7)</option><option value="fail">QA Fail (&lt;5)</option></select>';
   tabHtml += '</div>';
   document.getElementById('pkg-day-tabs').innerHTML = tabHtml;
 
