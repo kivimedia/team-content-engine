@@ -1360,20 +1360,21 @@ async function retryOneDay(dayIndex) {
 }
 
 function viewPackage(pkgId) {
-  // Switch to packages tab and scroll to the specific package
+  // Find which day this package belongs to and set the day filter
+  if (_pkgDayMapCache && _pkgDayMapCache[pkgId]) {
+    pkgDayFilter = _pkgDayMapCache[pkgId].day;
+  }
+  // Switch to packages tab
   currentTab = 'packages';
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'packages'));
   render();
-  // After render, try to highlight the package
+  // After render, scroll to the specific package card by its id attribute
   setTimeout(() => {
-    const cards = document.querySelectorAll('.pkg-card');
-    for (const card of cards) {
-      if (card.innerHTML.includes(pkgId.substring(0, 8))) {
-        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        card.style.outline = '2px solid var(--accent)';
-        setTimeout(() => card.style.outline = '', 3000);
-        break;
-      }
+    const card = document.getElementById('pkg-' + pkgId);
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.style.outline = '2px solid var(--accent)';
+      setTimeout(() => card.style.outline = '', 3000);
     }
   }, 500);
 }
