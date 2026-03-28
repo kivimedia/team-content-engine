@@ -1646,68 +1646,69 @@ async function downloadLatestGuide() {
 }
 
 // PACKAGES TAB
-let pkgDayFilter = Math.min(new Date().getDay() - 1, 4); // Default to today (0=Mon, 4=Fri)
-if (pkgDayFilter < 0) pkgDayFilter = 0; // Weekend defaults to Monday
-async function renderPackages() {
-  const app = document.getElementById('app');
-  app.innerHTML = '<div class="section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><h2>Content Packages</h2><label style="font-size:12px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:6px"><input type="checkbox" id="show-archived" ' + (showArchived ? 'checked' : '') + ' onchange="showArchived=this.checked;renderPackages()"> Show archived</label></div><div id="pkg-day-tabs"></div><div id="pkg-list"><div class="empty">Loading...</div></div></div>';
-  try {
-    const pkgs = await api('/content/packages' + (showArchived ? '?include_archived=true' : ''));
-    if (!pkgs.length) { document.getElementById('pkg-list').innerHTML = '<div class="empty">No packages yet. Run a pipeline first.</div>'; return; }
+let pkgDayFilter = Math.min(Math.max(new Date().getDay() - 1, 0), 4);
+let _pkgCache = null;
+let _pkgDayMapCache = null;
 
-    // Fetch calendar to map packages to days
-    const monday = getMondayOfWeek();
-    const friday = new Date(monday); friday.setDate(friday.getDate() + 4);
-    let calEntries = [];
-    try { calEntries = await api('/calendar/?start=' + fmtDate(monday) + '&end=' + fmtDate(friday)); } catch {}
-    const pkgDayMap = {};
-    for (const e of calEntries) {
-      if (e.post_package_id) pkgDayMap[e.post_package_id] = { day: e.day_of_week, date: e.date, topic: e.topic, angle: e.angle_type };
+function switchPkgDay(day) {
+  pkgDayFilter = day;
+  _renderPkgFromCache();
+}
+
+function _renderPkgFromCache() {
+  if (!_pkgCache) return;
+  const pkgs = _pkgCache;
+  const pkgDayMap = _pkgDayMapCache || {};
+
+  // Build day tabs
+  const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+  const monday = getMondayOfWeek();
+  let tabHtml = '<div style="display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap">';
+  for (let d = 0; d < 5; d++) {
+    const dayDate = new Date(monday); dayDate.setDate(dayDate.getDate() + d);
+    const dateLabel = dayDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const hasPkg = Object.values(pkgDayMap).some(m => m.day === d);
+    const isActive = pkgDayFilter === d;
+    const dotColor = hasPkg ? 'var(--green)' : 'var(--border)';
+    tabHtml += '<button onclick="switchPkgDay(' + d + ')" style="padding:8px 14px;border:1px solid ' + (isActive ? 'var(--accent)' : 'var(--border)') + ';background:' + (isActive ? 'var(--accent)' : 'var(--card)') + ';color:' + (isActive ? '#fff' : 'var(--text)') + ';border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:' + dotColor + ';display:inline-block"></span>' + dayNames[d] + ' ' + dateLabel + '</button>';
+  }
+  const unlinkedCount = pkgs.filter(p => !pkgDayMap[p.id]).length;
+  if (unlinkedCount > 0) {
+    const isOther = pkgDayFilter === 'other';
+    tabHtml += '<button onclick="switchPkgDay(&quot;other&quot;)" style="padding:8px 14px;border:1px solid ' + (isOther ? 'var(--accent)' : 'var(--border)') + ';background:' + (isOther ? 'var(--accent)' : 'var(--card)') + ';color:' + (isOther ? '#fff' : 'var(--dim)') + ';border-radius:6px;cursor:pointer;font-size:13px">Other (' + unlinkedCount + ')</button>';
+  }
+  const isAll = pkgDayFilter === null;
+  tabHtml += '<button onclick="switchPkgDay(null)" style="padding:8px 14px;border:1px solid ' + (isAll ? 'var(--accent)' : 'var(--border)') + ';background:' + (isAll ? 'var(--accent)' : 'var(--card)') + ';color:' + (isAll ? '#fff' : 'var(--dim)') + ';border-radius:6px;cursor:pointer;font-size:13px">All (' + pkgs.length + ')</button>';
+  tabHtml += '</div>';
+  document.getElementById('pkg-day-tabs').innerHTML = tabHtml;
+
+  // Filter
+  let filteredPkgs = pkgs;
+  if (pkgDayFilter !== null && pkgDayFilter !== 'other') {
+    const dayPkgIds = new Set(Object.entries(pkgDayMap).filter(([, m]) => m.day === pkgDayFilter).map(([id]) => id));
+    filteredPkgs = pkgs.filter(p => dayPkgIds.has(p.id));
+  } else if (pkgDayFilter === 'other') {
+    filteredPkgs = pkgs.filter(p => !pkgDayMap[p.id]);
+  }
+
+  if (!filteredPkgs.length) { document.getElementById('pkg-list').innerHTML = '<div class="empty" style="padding:24px;text-align:center">No packages for this day.</div>'; return; }
+
+  let html = '<div class="packages-list">';
+  for (const p of filteredPkgs) {
+    const dayInfo = pkgDayMap[p.id];
+    if (dayInfo) {
+      const dayLabel = DAY_NAMES[dayInfo.day] || '';
+      const angleLabel = ANGLE_LABELS[dayInfo.angle] || (dayInfo.angle || '').replace(/_/g, ' ');
+      html += '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;display:flex;align-items:center;gap:8px"><span style="color:var(--accent2);font-weight:600">' + dayLabel + ' ' + dayInfo.date + '</span><span>' + angleLabel + '</span></div>';
     }
+    html += _renderPkgCard(p);
+  }
+  html += '</div>';
+  document.getElementById('pkg-list').innerHTML = html;
+}
 
-    // Build day tabs
-    const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
-    let tabHtml = '<div style="display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap">';
-    for (let d = 0; d < 5; d++) {
-      const dayDate = new Date(monday); dayDate.setDate(dayDate.getDate() + d);
-      const dateLabel = dayDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      const hasPkg = Object.values(pkgDayMap).some(m => m.day === d);
-      const isActive = pkgDayFilter === d;
-      const dotColor = hasPkg ? 'var(--green)' : 'var(--border)';
-      tabHtml += '<button onclick="pkgDayFilter=' + d + ';renderPackages()" style="padding:8px 14px;border:1px solid ' + (isActive ? 'var(--accent)' : 'var(--border)') + ';background:' + (isActive ? 'var(--accent)' : 'var(--card)') + ';color:' + (isActive ? '#fff' : 'var(--text)') + ';border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:' + dotColor + ';display:inline-block"></span>' + dayNames[d] + ' ' + dateLabel + '</button>';
-    }
-    // Other tab for unlinked packages
-    const unlinkedCount = pkgs.filter(p => !pkgDayMap[p.id]).length;
-    if (unlinkedCount > 0) {
-      const isOther = pkgDayFilter === 'other';
-      tabHtml += '<button onclick="pkgDayFilter=\\'other\\';renderPackages()" style="padding:8px 14px;border:1px solid ' + (isOther ? 'var(--accent)' : 'var(--border)') + ';background:' + (isOther ? 'var(--accent)' : 'var(--card)') + ';color:' + (isOther ? '#fff' : 'var(--dim)') + ';border-radius:6px;cursor:pointer;font-size:13px">Other (' + unlinkedCount + ')</button>';
-    }
-    // All tab
-    const isAll = pkgDayFilter === null;
-    tabHtml += '<button onclick="pkgDayFilter=null;renderPackages()" style="padding:8px 14px;border:1px solid ' + (isAll ? 'var(--accent)' : 'var(--border)') + ';background:' + (isAll ? 'var(--accent)' : 'var(--card)') + ';color:' + (isAll ? '#fff' : 'var(--dim)') + ';border-radius:6px;cursor:pointer;font-size:13px">All (' + pkgs.length + ')</button>';
-    tabHtml += '</div>';
-    document.getElementById('pkg-day-tabs').innerHTML = tabHtml;
-
-    // Filter packages by selected day
-    let filteredPkgs = pkgs;
-    if (pkgDayFilter !== null && pkgDayFilter !== 'other') {
-      const dayPkgIds = new Set(Object.entries(pkgDayMap).filter(([, m]) => m.day === pkgDayFilter).map(([id]) => id));
-      filteredPkgs = pkgs.filter(p => dayPkgIds.has(p.id));
-    } else if (pkgDayFilter === 'other') {
-      filteredPkgs = pkgs.filter(p => !pkgDayMap[p.id]);
-    }
-
-    if (!filteredPkgs.length) { document.getElementById('pkg-list').innerHTML = '<div class="empty" style="padding:24px;text-align:center">No packages for this day yet.</div>'; return; }
-
-    let html = '<div class="packages-list">';
-    for (const p of filteredPkgs) {
-      // Day context header
-      const dayInfo = pkgDayMap[p.id];
-      if (dayInfo) {
-        const dayLabel = DAY_NAMES[dayInfo.day] || '';
-        const angleLabel = ANGLE_LABELS[dayInfo.angle] || (dayInfo.angle || '').replace(/_/g, ' ');
-        html += '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;display:flex;align-items:center;gap:8px"><span style="color:var(--accent2);font-weight:600">' + dayLabel + ' ' + dayInfo.date + '</span><span>' + angleLabel + '</span></div>';
-      }
+function _renderPkgCard(p) {
+  let html = '';
       const statusTag = p.approval_status === 'approved' ? 'tag-approved' : p.approval_status === 'rejected' ? 'tag-rejected' : 'tag-draft';
       html += '<div class="pkg-card" id="pkg-' + p.id + '"' + (p.is_archived ? ' style="opacity:0.5"' : '') + '>';
       html += '<div class="pkg-header"><span class="tag ' + statusTag + '">' + p.approval_status + '</span>';
@@ -1898,11 +1899,27 @@ async function renderPackages() {
       } else {
         html += '<button class="btn btn-dim" onclick="archivePackage(\\'' + p.id + '\\')">Archive</button>';
       }
-      html += '</div>';
-      html += '</div>';
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+async function renderPackages() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><h2>Content Packages</h2><label style="font-size:12px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:6px"><input type="checkbox" id="show-archived" ' + (showArchived ? 'checked' : '') + ' onchange="showArchived=this.checked;_pkgCache=null;renderPackages()"> Show archived</label></div><div id="pkg-day-tabs"></div><div id="pkg-list"><div class="empty">Loading packages...</div></div></div>';
+  try {
+    const [pkgs, calEntries] = await Promise.all([
+      api('/content/packages' + (showArchived ? '?include_archived=true' : '')),
+      api('/calendar/?start=' + fmtDate(getMondayOfWeek()) + '&end=' + fmtDate((() => { const f = getMondayOfWeek(); f.setDate(f.getDate() + 4); return f; })())).catch(() => [])
+    ]);
+    if (!pkgs.length) { document.getElementById('pkg-list').innerHTML = '<div class="empty">No packages yet. Run a pipeline first.</div>'; return; }
+    const pkgDayMap = {};
+    for (const e of calEntries) {
+      if (e.post_package_id) pkgDayMap[e.post_package_id] = { day: e.day_of_week, date: e.date, topic: e.topic, angle: e.angle_type };
     }
-    html += '</div>';
-    document.getElementById('pkg-list').innerHTML = html;
+    _pkgCache = pkgs;
+    _pkgDayMapCache = pkgDayMap;
+    _renderPkgFromCache();
   } catch (e) { document.getElementById('pkg-list').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; }
 }
 
