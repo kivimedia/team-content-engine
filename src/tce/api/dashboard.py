@@ -1767,10 +1767,15 @@ function _renderPkgCard(p) {
       html += '<div id="li-' + pid + '" style="display:none"><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div></div>';
       if (p.hook_variants?.length) {
         html += '<div id="hooks-' + pid + '" style="display:none">';
+        const currentHook = (p.facebook_post || p.linkedin_post || '').split('\\n')[0];
+        html += '<div style="padding:12px;margin-bottom:10px;border-radius:8px;background:#1a2e1a;border:1px solid var(--green)">';
+        html += '<div style="font-size:11px;font-weight:600;color:var(--green);margin-bottom:4px">CURRENT HOOK</div>';
+        html += '<div style="font-size:14px;line-height:1.5">' + esc(currentHook || 'No hook set') + '</div></div>';
+        html += '<div style="font-size:11px;color:var(--dim);margin-bottom:8px">Click "Use this" to replace the current hook:</div>';
         p.hook_variants.forEach((h, i) => {
-          const isCurrent = (p.facebook_post && p.facebook_post.split('\\n')[0] === h) || (p.linkedin_post && p.linkedin_post.split('\\n')[0] === h);
+          const isCurrent = currentHook === h;
           html += '<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;margin-bottom:6px;border-radius:8px;background:' + (isCurrent ? '#1a2e1a' : '#111318') + ';border:1px solid ' + (isCurrent ? 'var(--green)' : 'var(--border)') + '">';
-          html += '<div style="flex:1;font-size:13px;line-height:1.5;white-space:pre-wrap">' + (isCurrent ? '<span style="color:var(--green);font-size:11px;font-weight:600">ACTIVE</span><br>' : '') + esc(h) + '</div>';
+          html += '<div style="flex:1;font-size:13px;line-height:1.5;white-space:pre-wrap">' + esc(h) + '</div>';
           if (!isCurrent) html += '<button data-hi="' + i + '" class="btn btn-dim" style="flex-shrink:0;font-size:11px;padding:4px 10px" onclick="useHook(\\'' + p.id + '\\',' + i + ')">Use this</button>';
           html += '</div>';
         });
