@@ -464,10 +464,12 @@ def _render_closing(doc, section: dict, guide_data: dict) -> None:
 
     headline = section.get("headline", "")
     if headline:
+        # Short headlines (under 80 chars) get large treatment; longer ones get body size
+        is_short = len(headline) < 80
         p_big = doc.add_paragraph()
         p_big.paragraph_format.space_before = Pt(20)
         p_big.paragraph_format.space_after = Pt(16)
-        _add_run(p_big, headline, bold=True, size=22, color=CLR_NEAR_BLACK)
+        _add_run(p_big, headline, bold=True, size=18 if is_short else 13, color=CLR_NEAR_BLACK)
 
     for i, step_text in enumerate(section.get("recap_steps", []), 1):
         p = doc.add_paragraph()
