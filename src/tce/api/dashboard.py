@@ -3768,9 +3768,9 @@ async function renderPrompts() {
     let html = '';
     for (const a of agents) {
       html += '<div class="card" style="margin-bottom:12px">';
-      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h3 style="font-size:14px;text-transform:none">' + esc(a.agent_name) + '</h3>';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h3 style="font-size:14px;text-transform:none">' + esc(a.name) + '</h3>';
       html += '<span style="font-size:12px;padding:3px 10px;border-radius:6px;background:var(--accent)22;color:var(--accent)">' + esc(a.model || 'default') + '</span></div>';
-      html += '<div id="prompt-versions-' + esc(a.agent_name) + '"><button class="btn btn-dim" style="font-size:12px" onclick="loadPromptVersions(\\'' + esc(a.agent_name) + '\\')">View Prompt Versions</button></div>';
+      html += '<div id="prompt-versions-' + esc(a.name) + '"><button class="btn btn-dim" style="font-size:12px" onclick="loadPromptVersions(\\'' + esc(a.name) + '\\')">View Prompt Versions</button></div>';
       html += '</div>';
     }
     document.getElementById('prompt-content').innerHTML = html || '<div class="empty">No agents configured.</div>';
