@@ -4086,7 +4086,13 @@ async function showWeekGuide(mondayStr) {
   app.innerHTML = '<div class="section"><div class="empty">Loading guide...</div></div>';
   try {
     const guides = await api('/content/guides');
-    const guide = guides.find(g => g.week_start_date === mondayStr);
+    // Match guide to week: guide.week_start_date falls within Mon-Sun of the viewed week
+    const mon = new Date(mondayStr + 'T00:00:00');
+    const sun = new Date(mon); sun.setDate(sun.getDate() + 6);
+    const guide = guides.find(g => {
+      const gd = new Date(g.week_start_date + 'T00:00:00');
+      return gd >= mon && gd <= sun;
+    });
     if (!guide) {
       app.innerHTML = '<div class="section"><button class="btn btn-dim" onclick="switchTab(\\'week\\')" style="margin-bottom:16px">Back to Week Planner</button><div class="empty">No guide found for this week yet. Run the full pipeline first - the guide is built in the final phase.</div></div>';
       return;
