@@ -619,9 +619,10 @@ async def select_image(
 async def regenerate_single_image(
     package_id: uuid.UUID,
     image_index: int,
+    body: dict | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Regenerate a single image from its prompt."""
+    """Regenerate a single image from its prompt, optionally with a modification note."""
     import json as _json
 
     from tce.services.image_generation import ImageGenerationService
@@ -633,9 +634,16 @@ async def regenerate_single_image(
         raise HTTPException(status_code=400, detail="Invalid image index")
 
     prompt = pkg.image_prompts[image_index]
+    base_prompt = prompt.get("prompt_text", prompt.get("detailed_prompt", ""))
+
+    # If a modification comment is provided, append it to the prompt
+    modification = (body or {}).get("modification", "").strip()
+    if modification:
+        base_prompt = f"{base_prompt}\n\nModification: {modification}"
+
     svc = ImageGenerationService()
     result = await svc.generate_image(
-        prompt_text=prompt.get("prompt_text", prompt.get("detailed_prompt", "")),
+        prompt_text=base_prompt,
         negative_prompt=prompt.get("negative_prompt"),
         aspect_ratio=prompt.get("aspect_ratio"),
     )

@@ -1989,6 +1989,11 @@ function _renderPkgCard(p) {
             html += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;color:' + (isSelected ? 'var(--green)' : 'var(--dim)') + '"><input type="radio" name="img-select-' + pid + '" ' + (isSelected ? 'checked' : '') + ' onchange="selectImage(\\'' + p.id + '\\',' + _imgIdx + ')" style="accent-color:var(--green)">' + (isSelected ? 'Selected' : 'Select') + '</label>';
             html += '<button class="btn btn-dim" style="font-size:10px;padding:3px 8px" onclick="regenSingleImage(\\'' + p.id + '\\',' + _imgIdx + ',this)">Regen</button>';
             html += '</div>';
+            // Modification comment input
+            html += '<div style="display:flex;gap:4px;margin-bottom:8px">';
+            html += '<input id="img-mod-' + pid + '-' + _imgIdx + '" type="text" placeholder="e.g. make it brighter, add more people..." style="flex:1;font-size:11px;padding:4px 8px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px">';
+            html += '<button class="btn btn-dim" style="font-size:10px;padding:3px 8px;white-space:nowrap" onclick="regenWithMod(\\'' + p.id + '\\',' + _imgIdx + ',this)">Regen with note</button>';
+            html += '</div>';
           }
           // Header with platform badge
           html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
@@ -2387,6 +2392,23 @@ async function regenSingleImage(pkgId, idx, btn) {
       if (p && p.image_prompts && p.image_prompts[idx]) p.image_prompts[idx].image_url = r.image_url;
     }
     toast('Image regenerated'); _renderPkgFromCache();
+  } catch(e) { toast('Regen failed: ' + e.message, false); } finally { btn.textContent = orig; btn.disabled = false; }
+}
+
+// Regen with modification comment
+async function regenWithMod(pkgId, idx, btn) {
+  const pid = pkgId.replace(/-/g, '');
+  const input = document.getElementById('img-mod-' + pid + '-' + idx);
+  const mod = (input && input.value || '').trim();
+  if (!mod) { toast('Enter a modification note first', false); input && input.focus(); return; }
+  const orig = btn.textContent; btn.disabled = true; btn.textContent = 'Generating...';
+  try {
+    const r = await api('/content/packages/' + pkgId + '/regenerate-image/' + idx, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({modification: mod})});
+    if (r.status === 'generated' && _pkgCache) {
+      const p = _pkgCache.find(x => x.id === pkgId);
+      if (p && p.image_prompts && p.image_prompts[idx]) p.image_prompts[idx].image_url = r.image_url;
+    }
+    toast('Image regenerated with modification'); input.value = ''; _renderPkgFromCache();
   } catch(e) { toast('Regen failed: ' + e.message, false); } finally { btn.textContent = orig; btn.disabled = false; }
 }
 
