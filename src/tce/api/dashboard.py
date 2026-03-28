@@ -290,6 +290,13 @@ async function renderWeek() {
             Sensitive Period
           </label>
         </div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--dim);cursor:pointer" title="Override seasonal plan context for this week">
+            <input type="checkbox" id="seasonal-override-toggle" style="accent-color:var(--yellow)">
+            Seasonal Override
+          </label>
+          <input id="seasonal-context" type="text" placeholder="e.g. Post-holiday focus, Q1 planning season..." style="display:none;width:240px;font-size:11px;padding:4px 8px">
+        </div>
         <span id="plan-cost-hint" style="font-size:11px;color:var(--dim);margin-left:6px" title="Trend scout (Sonnet) + Weekly planner (Opus)">~$0.25 per plan</span>
         <button class="btn btn-green" id="gen-all-btn" onclick="generateFromPlan()" ${genAllState?.running ? 'disabled' : ''}>${genAllState?.running ? (genAllState.unified ? 'Running...' : 'Generating...') : 'Generate from Plan'}</button>
       </div>
@@ -449,6 +456,9 @@ let planElapsedTimer = null;
 async function planWeekDeep(mondayStr) {
   const theme = document.getElementById('week-theme')?.value || null;
   const sensitivePeriod = document.getElementById('sensitive-period-toggle')?.checked || false;
+  // GAP-47: Seasonal override context
+  const seasonalOverride = document.getElementById('seasonal-override-toggle')?.checked || false;
+  const seasonalContext = document.getElementById('seasonal-context')?.value || null;
   const btn = document.getElementById('plan-week-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Planning...'; }
   const panel = document.getElementById('plan-review-panel');
@@ -481,7 +491,7 @@ async function planWeekDeep(mondayStr) {
   try {
     const r = await api('/calendar/plan-week-deep', {
       method: 'POST',
-      body: JSON.stringify({ week_start: mondayStr, weekly_theme: theme || null, sensitive_period: sensitivePeriod }),
+      body: JSON.stringify({ week_start: mondayStr, weekly_theme: theme || null, sensitive_period: sensitivePeriod, humanitarian_context: seasonalOverride ? seasonalContext : null }),
     });
     deepPlanId = r.plan_id;
 
@@ -1870,8 +1880,14 @@ function _renderPkgCard(p) {
           const icon = score >= 7 ? '\\u2713' : score >= 5 ? '\\u26A0' : '\\u2717';
           html += '<div style="background:#111318;border:1px solid var(--border);border-radius:6px;padding:10px 14px">';
           html += '<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:13px;font-weight:600">' + icon + ' ' + k.replace(/_/g, ' ') + '</div>';
-          html += '<div style="font-size:18px;font-weight:700;color:' + color + '">' + (typeof score === 'number' ? score.toFixed(1) : score) + '</div></div>';
+          html += '<div style="display:flex;align-items:center;gap:8px"><div style="font-size:18px;font-weight:700;color:' + color + '">' + (typeof score === 'number' ? score.toFixed(1) : score) + '</div>';
+          // GAP-48: Humanitarian override button on failing dimensions
+          if (typeof score === 'number' && score < 7) html += '<button class="btn btn-dim" style="font-size:10px;padding:2px 6px" onclick="humanitarianOverride(\\'' + p.id + '\\',\\'' + k + '\\')">Override</button>';
+          html += '</div></div>';
           if (justification) html += '<div style="font-size:12px;color:var(--dim);margin-top:6px;line-height:1.5">' + esc(justification) + '</div>';
+          // Show existing override if present
+          const override = p.quality_scores.operator_overrides?.[k];
+          if (override) html += '<div style="font-size:11px;color:var(--yellow);margin-top:4px;padding:4px 8px;background:#2d2000;border-radius:4px">Override: ' + esc(override.justification || 'Operator approved') + '</div>';
           html += '</div>';
         }
         html += '</div></div>';
@@ -1915,7 +1931,25 @@ function _renderPkgCard(p) {
           }
         }
         html += '</div>';
-        html += '<button class="btn btn-dim" style="margin-top:12px;font-size:12px" onclick="copyDmFlow(this, \\'' + pid + '\\')">Copy All DM Messages</button>';
+        html += '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">';
+        html += '<button class="btn btn-dim" style="font-size:12px" onclick="copyDmFlow(this, \\'' + pid + '\\')">Copy All DM Messages</button>';
+        // GAP-45: CTA Flow Editor - fulfillment checklist
+        html += '<button class="btn btn-dim" style="font-size:12px;border-color:var(--accent);color:var(--accent)" onclick="showCtaChecklist(\\'' + pid + '\\')">Fulfillment Checklist</button>';
+        html += '</div>';
+        html += '<div id="cta-checklist-' + pid + '" style="display:none;margin-top:12px;background:#111318;border:1px solid var(--border);border-radius:8px;padding:14px">';
+        html += '<div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--accent2)">CTA Fulfillment Checklist</div>';
+        const checkItems = [
+          {id:'guide-ready', label:'Guide/resource file is ready and uploaded'},
+          {id:'trigger-set', label:'Comment trigger keyword is set in automation tool'},
+          {id:'ack-copied', label:'Instant reply (ack) message is loaded'},
+          {id:'delivery-copied', label:'Delivery DM message is loaded with link'},
+          {id:'followup-scheduled', label:'Follow-up message is scheduled (24-48h)'},
+          {id:'landing-live', label:'Landing page or resource URL is live and tested'},
+        ];
+        for (const item of checkItems) {
+          html += '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;cursor:pointer"><input type="checkbox" style="accent-color:var(--green)" id="ck-' + pid + '-' + item.id + '"> ' + esc(item.label) + '</label>';
+        }
+        html += '</div>';
         html += '</div>';
       }
       if (p.image_prompts?.length) {
@@ -1936,14 +1970,23 @@ function _renderPkgCard(p) {
         html += '<div id="gen-img-progress-' + pid + '"></div>';
         // Image grid
         html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px">';
-        for (const ip of p.image_prompts) {
+        for (let _imgIdx = 0; _imgIdx < p.image_prompts.length; _imgIdx++) {
+          const ip = p.image_prompts[_imgIdx];
           const promptText = ip.prompt_text || ip.detailed_prompt || '';
           const bestPlat = ip.best_platform || 'fal_ai';
           const platColors = { fal_ai: '#16a34a', midjourney: '#a855f7', gemini: '#3b82f6', dall_e: '#f97316' };
           const platLabels = { fal_ai: 'fal.ai', midjourney: 'Midjourney', gemini: 'Gemini', dall_e: 'DALL-E' };
           const platColor = platColors[bestPlat] || '#888';
           const platLabel = platLabels[bestPlat] || bestPlat;
-          html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:16px">';
+          const isSelected = ip.selected === true;
+          html += '<div style="background:#111318;border:2px solid ' + (isSelected ? 'var(--green)' : 'var(--border)') + ';border-radius:8px;padding:16px;position:relative">';
+          // GAP-37: Selection radio + regen button
+          if (ip.image_url) {
+            html += '<div style="display:flex;justify-content:space-between;margin-bottom:8px">';
+            html += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;color:' + (isSelected ? 'var(--green)' : 'var(--dim)') + '"><input type="radio" name="img-select-' + pid + '" ' + (isSelected ? 'checked' : '') + ' onchange="selectImage(\\'' + p.id + '\\',' + _imgIdx + ')" style="accent-color:var(--green)">' + (isSelected ? 'Selected' : 'Select') + '</label>';
+            html += '<button class="btn btn-dim" style="font-size:10px;padding:3px 8px" onclick="regenSingleImage(\\'' + p.id + '\\',' + _imgIdx + ',this)">Regen</button>';
+            html += '</div>';
+          }
           // Header with platform badge
           html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
           html += '<div style="font-weight:600;font-size:14px;color:var(--accent2);flex:1">' + esc(ip.prompt_name || ip.visual_job || 'Image') + '</div>';
@@ -2323,6 +2366,60 @@ async function downloadAllImages(packageId, btn) {
   }
 }
 
+// GAP-37: Select image from package
+async function selectImage(pkgId, idx) {
+  try {
+    await api('/content/packages/' + pkgId + '/select-image', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:idx})});
+    if (_pkgCache) { const p = _pkgCache.find(x => x.id === pkgId); if (p && p.image_prompts) p.image_prompts.forEach((ip,i) => ip.selected = i === idx); }
+    toast('Image ' + (idx+1) + ' selected');
+    _renderPkgFromCache();
+  } catch(e) { toast('Select failed: ' + e.message, false); }
+}
+// GAP-37: Regenerate single image
+async function regenSingleImage(pkgId, idx, btn) {
+  const orig = btn.textContent; btn.disabled = true; btn.textContent = '...';
+  try {
+    const r = await api('/content/packages/' + pkgId + '/regenerate-image/' + idx, {method:'POST'});
+    if (r.status === 'generated' && _pkgCache) {
+      const p = _pkgCache.find(x => x.id === pkgId);
+      if (p && p.image_prompts && p.image_prompts[idx]) p.image_prompts[idx].image_url = r.image_url;
+    }
+    toast('Image regenerated'); _renderPkgFromCache();
+  } catch(e) { toast('Regen failed: ' + e.message, false); } finally { btn.textContent = orig; btn.disabled = false; }
+}
+
+// GAP-48: Humanitarian override with justification
+async function humanitarianOverride(pkgId, dimName) {
+  const reason = prompt('Justification for overriding humanitarian flag on "' + dimName + '":');
+  if (!reason) return;
+  try {
+    const pkg = _pkgCache?.find(p => p.id === pkgId);
+    if (!pkg) return;
+    const qs = JSON.parse(JSON.stringify(pkg.quality_scores || {}));
+    if (!qs.operator_overrides) qs.operator_overrides = {};
+    qs.operator_overrides[dimName] = {score: 10, reason: reason, overridden_at: new Date().toISOString()};
+    await api('/content/packages/' + pkgId, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({quality_scores: qs})});
+    pkg.quality_scores = qs;
+    toast('Override recorded with justification');
+    _renderPkgFromCache();
+  } catch(e) { toast('Override failed: ' + e.message, false); }
+}
+
+// GAP-49: Resume pipeline from last successful step
+async function resumePipeline(runId) {
+  try {
+    const status = await api('/pipeline/' + runId + '/status');
+    const failedSteps = Object.entries(status.step_status || {}).filter(([,s]) => s === 'failed' || s === 'pending').map(([k]) => k);
+    if (!failedSteps.length) { toast('No failed steps to resume'); return; }
+    toast('Retrying ' + failedSteps.length + ' remaining steps...');
+    const r = await api('/pipeline/run', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow: status.workflow || 'daily_content', day_of_week: status.day_of_week ?? 0, resume_from_run: runId})});
+    activePipelineRun = r.run_id;
+    localStorage.setItem('tce_active_run', r.run_id);
+    pollPipeline();
+    if (!pollInterval) pollInterval = setInterval(pollPipeline, 3000);
+  } catch(e) { toast('Resume failed: ' + e.message, false); }
+}
+
 // GAP-20: Save operator notes
 async function saveOperatorNote(entryId, note) {
   try { await api('/calendar/' + entryId, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({operator_notes:note})}); } catch(e) {}
@@ -2383,11 +2480,66 @@ async function renderCorpus() {
       html += '<div class="doc-row">';
       html += '<div class="doc-info"><div class="doc-name">' + esc(d.file_name) + '</div>';
       html += '<div class="doc-meta">' + d.file_type + ' - ' + (d.pages || '?') + ' pages - ' + new Date(d.created_at).toLocaleDateString() + '</div></div>';
+      html += '<div style="display:flex;gap:6px">';
       html += '<button class="btn btn-dim" onclick="viewExamples(\\'' + d.id + '\\',\\'' + esc(d.file_name) + '\\')">View Examples</button>';
-      html += '</div>';
+      // GAP-46: Guide preview button
+      html += '<button class="btn btn-dim" style="font-size:11px" onclick="viewGuide(\\'' + d.id + '\\',\\'' + esc(d.file_name) + '\\')">Preview</button>';
+      html += '</div></div>';
     }
     html += '</div>';
     document.getElementById('docs-list').innerHTML = html;
+    // GAP-38: Relearning Review section
+    try {
+      const relearn = await api('/relearning/status');
+      let rlHtml = '<div class="card" style="margin-top:24px"><h3 style="color:var(--accent2)">Relearning Review</h3>';
+      rlHtml += '<div style="display:flex;gap:16px;margin:12px 0;flex-wrap:wrap">';
+      rlHtml += '<div style="padding:10px 16px;background:#111318;border:1px solid var(--border);border-radius:8px;text-align:center"><div style="font-size:20px;font-weight:700;color:var(--accent)">' + (relearn.total_feedback || 0) + '</div><div style="font-size:11px;color:var(--dim)">Feedback Items</div></div>';
+      rlHtml += '<div style="padding:10px 16px;background:#111318;border:1px solid var(--border);border-radius:8px;text-align:center"><div style="font-size:20px;font-weight:700;color:var(--green)">' + (relearn.approved_proposals || 0) + '</div><div style="font-size:11px;color:var(--dim)">Approved Proposals</div></div>';
+      rlHtml += '<div style="padding:10px 16px;background:#111318;border:1px solid var(--border);border-radius:8px;text-align:center"><div style="font-size:20px;font-weight:700;color:var(--yellow)">' + (relearn.pending_proposals || 0) + '</div><div style="font-size:11px;color:var(--dim)">Pending Proposals</div></div>';
+      rlHtml += '</div>';
+      rlHtml += '<div style="display:flex;gap:8px;margin-bottom:12px"><button class="btn btn-primary" onclick="triggerRelearn()">Evaluate Now</button></div>';
+      // Show pending proposals
+      try {
+        const proposals = await api('/relearning/proposals');
+        if (proposals.length) {
+          rlHtml += '<div style="margin-top:12px"><div style="font-size:13px;font-weight:600;margin-bottom:8px">Pending Proposals</div>';
+          for (const pr of proposals) {
+            rlHtml += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">';
+            rlHtml += '<div style="display:flex;justify-content:space-between;align-items:center">';
+            rlHtml += '<div style="font-size:13px;font-weight:500">' + esc(pr.description || pr.type || 'Proposal') + '</div>';
+            rlHtml += '<div style="display:flex;gap:6px">';
+            rlHtml += '<button class="btn btn-green" style="font-size:11px;padding:4px 10px" onclick="approveProposal(\\'' + pr.id + '\\')">Approve</button>';
+            rlHtml += '<button class="btn btn-red" style="font-size:11px;padding:4px 10px" onclick="rejectProposal(\\'' + pr.id + '\\')">Reject</button>';
+            rlHtml += '</div></div>';
+            if (pr.details) rlHtml += '<div style="font-size:12px;color:var(--dim);margin-top:6px">' + esc(typeof pr.details === 'string' ? pr.details : JSON.stringify(pr.details).substring(0, 200)) + '</div>';
+            rlHtml += '</div>';
+          }
+          rlHtml += '</div>';
+        }
+      } catch {}
+      rlHtml += '</div>';
+      document.getElementById('docs-list').insertAdjacentHTML('afterend', rlHtml);
+    } catch {}
+    // GAP-52: Corpus low-confidence flagging
+    try {
+      const examples = await api('/documents/' + docs[0]?.id + '/examples').catch(() => []);
+      const lowConf = examples.filter(ex => ex.engagement_confidence === 'C' || (ex.ocr_confidence != null && ex.ocr_confidence < 0.7));
+      if (lowConf.length) {
+        let lcHtml = '<div class="card" style="margin-top:16px;border-left:3px solid var(--yellow)"><h3 style="color:var(--yellow)">Low-Confidence Examples (' + lowConf.length + ')</h3>';
+        lcHtml += '<div style="margin-top:12px;font-size:12px;color:var(--dim);margin-bottom:8px">These posts have low engagement confidence or OCR quality. Review and update manually.</div>';
+        for (const ex of lowConf.slice(0, 10)) {
+          lcHtml += '<div style="background:#111318;border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center">';
+          lcHtml += '<div style="flex:1"><div style="font-size:13px">' + esc((ex.hook_text || ex.post_text_raw || '').substring(0, 80)) + '</div>';
+          lcHtml += '<div style="font-size:11px;color:var(--dim);margin-top:2px">Confidence: <span style="color:var(--yellow)">' + (ex.engagement_confidence || '?') + '</span>';
+          if (ex.ocr_confidence != null) lcHtml += ' | OCR: <span style="color:' + (ex.ocr_confidence < 0.7 ? 'var(--red)' : 'var(--green)') + '">' + (ex.ocr_confidence * 100).toFixed(0) + '%</span>';
+          lcHtml += '</div></div>';
+          lcHtml += '<span style="font-size:11px;padding:3px 8px;border-radius:4px;background:#2d2000;color:var(--yellow)">Review</span>';
+          lcHtml += '</div>';
+        }
+        lcHtml += '</div>';
+        document.getElementById('docs-list').insertAdjacentHTML('afterend', lcHtml);
+      }
+    } catch {}
   } catch (e) { document.getElementById('docs-list').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; }
 }
 
@@ -2575,7 +2727,7 @@ async function inspireFromExample(idx) {
   } catch (e) { toast('Error: ' + e.message, false); }
 }
 
-// VOICE PROFILE TAB
+// VOICE PROFILE TAB (GAP-39 editing, GAP-40 sliders)
 async function renderVoice() {
   const app = document.getElementById('app');
   app.innerHTML = '<div class="section"><h2>Founder Voice Profiles</h2><div id="voice-list"><div class="empty">Loading...</div></div></div>';
@@ -2585,38 +2737,52 @@ async function renderVoice() {
     let html = '';
     for (const p of profiles) {
       html += '<div class="voice-profile">';
-      html += '<h4>Profile from: ' + (p.source_document_ids?.join(', ') || 'unknown').substring(0, 36) + '...</h4>';
-      // Tone range bars
+      html += '<div style="display:flex;justify-content:space-between;align-items:center"><h4>Profile from: ' + (p.source_document_ids?.join(', ') || 'unknown').substring(0, 36) + '...</h4>';
+      html += '<button class="btn btn-dim" style="font-size:11px" onclick="toggleVoiceEdit(\\'' + p.id + '\\')">Edit Profile</button></div>';
+      // GAP-40: Tone range SLIDERS (not just bars)
       if (p.tone_range) {
         html += '<div style="margin:8px 0">';
-        for (const [k, v] of Object.entries(p.tone_range)) {
-          html += '<div class="tone-bar"><span class="name">' + k + '</span><div class="bar" style="width:' + (v * 10) + '%"></div><span>' + v + '/10</span></div>';
+        const axes = ['curiosity','sharpness','practicality','strategic_depth','emotional_intensity','sentence_punch','executive_clarity','contrarian_heat','friendliness','urgency'];
+        for (const k of axes) {
+          const v = p.tone_range[k] || 0;
+          html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="width:120px;font-size:11px;color:var(--dim)">' + k.replace(/_/g,' ') + '</span>';
+          html += '<input type="range" min="0" max="10" step="0.5" value="' + v + '" style="flex:1;accent-color:var(--accent)" onchange="saveVoiceAxis(\\'' + p.id + '\\',\\'' + k + '\\',this.value)">';
+          html += '<span style="width:30px;font-size:12px;text-align:right">' + v + '</span></div>';
         }
         html += '</div>';
       }
-      if (p.humor_type) html += '<div style="font-size:13px;margin:4px 0">Humor: <strong>' + p.humor_type + '</strong></div>';
+      if (p.humor_type) html += '<div style="font-size:13px;margin:4px 0">Humor: <strong>' + esc(p.humor_type) + '</strong></div>';
+      // GAP-39: Editable lists
+      html += '<div id="voice-edit-' + p.id + '" style="display:none;margin-top:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px">';
+      html += '<div style="margin-bottom:8px"><label style="font-size:12px;color:var(--dim)">Values & Beliefs (one per line)</label>';
+      html += '<textarea id="ve-values-' + p.id + '" rows="3" style="width:100%;margin-top:4px;padding:6px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">' + (p.values_and_beliefs || []).join('\\n') + '</textarea></div>';
+      html += '<div style="margin-bottom:8px"><label style="font-size:12px;color:var(--dim)">Metaphor Families (one per line)</label>';
+      html += '<textarea id="ve-metaphors-' + p.id + '" rows="2" style="width:100%;margin-top:4px;padding:6px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">' + (p.metaphor_families || []).join('\\n') + '</textarea></div>';
+      html += '<div style="margin-bottom:8px"><label style="font-size:12px;color:var(--dim)">Taboos - things to NEVER say (one per line)</label>';
+      html += '<textarea id="ve-taboos-' + p.id + '" rows="2" style="width:100%;margin-top:4px;padding:6px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">' + (p.taboos || []).join('\\n') + '</textarea></div>';
+      html += '<div style="margin-bottom:8px"><label style="font-size:12px;color:var(--dim)">Recurring Themes (one per line)</label>';
+      html += '<textarea id="ve-themes-' + p.id + '" rows="2" style="width:100%;margin-top:4px;padding:6px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">' + (p.recurring_themes || []).join('\\n') + '</textarea></div>';
+      html += '<button class="btn btn-primary" onclick="saveVoiceProfile(\\'' + p.id + '\\')">Save Changes</button>';
+      html += '</div>';
+      // Read-only display of lists
       if (p.values_and_beliefs?.length) {
-        html += '<div style="margin:8px 0"><div style="font-size:12px;color:var(--dim)">Core Values (' + p.values_and_beliefs.length + ')</div>';
-        html += '<div class="voice-tags">';
+        html += '<div style="margin:8px 0"><div style="font-size:12px;color:var(--dim)">Core Values (' + p.values_and_beliefs.length + ')</div><div class="voice-tags">';
         p.values_and_beliefs.slice(0, 8).forEach(v => html += '<span class="voice-tag">' + esc(v.substring(0, 60)) + '</span>');
         if (p.values_and_beliefs.length > 8) html += '<span class="voice-tag">+' + (p.values_and_beliefs.length - 8) + ' more</span>';
         html += '</div></div>';
       }
       if (p.metaphor_families?.length) {
-        html += '<div style="margin:8px 0"><div style="font-size:12px;color:var(--dim)">Metaphor Families</div>';
-        html += '<div class="voice-tags">';
+        html += '<div style="margin:8px 0"><div style="font-size:12px;color:var(--dim)">Metaphor Families</div><div class="voice-tags">';
         p.metaphor_families.forEach(m => html += '<span class="voice-tag">' + esc(m) + '</span>');
         html += '</div></div>';
       }
       if (p.taboos?.length) {
-        html += '<div style="margin:8px 0"><div style="font-size:12px;color:var(--dim)">Taboos</div>';
-        html += '<div class="voice-tags">';
+        html += '<div style="margin:8px 0"><div style="font-size:12px;color:var(--dim)">Taboos</div><div class="voice-tags">';
         p.taboos.slice(0, 6).forEach(t => html += '<span class="voice-tag" style="background:#2d0000;color:#fecaca">' + esc(t.substring(0, 50)) + '</span>');
         html += '</div></div>';
       }
       if (p.vocabulary_signature?.phrases?.length) {
-        html += '<div style="margin:8px 0"><div style="font-size:12px;color:var(--dim)">Signature Phrases (' + p.vocabulary_signature.phrases.length + ')</div>';
-        html += '<div class="voice-tags">';
+        html += '<div style="margin:8px 0"><div style="font-size:12px;color:var(--dim)">Signature Phrases (' + p.vocabulary_signature.phrases.length + ')</div><div class="voice-tags">';
         p.vocabulary_signature.phrases.slice(0, 10).forEach(ph => html += '<span class="voice-tag" style="background:#1e1b4b;color:#c7d2fe">' + esc(ph) + '</span>');
         if (p.vocabulary_signature.phrases.length > 10) html += '<span class="voice-tag">+' + (p.vocabulary_signature.phrases.length - 10) + ' more</span>';
         html += '</div></div>';
@@ -2626,6 +2792,15 @@ async function renderVoice() {
     }
     document.getElementById('voice-list').innerHTML = html;
   } catch (e) { document.getElementById('voice-list').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; }
+}
+function toggleVoiceEdit(profileId) { const el = document.getElementById('voice-edit-' + profileId); if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none'; }
+async function saveVoiceAxis(profileId, axis, val) {
+  try { await api('/profiles/founder-voice/' + profileId, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({tone_range:{[axis]:parseFloat(val)}})}); } catch(e) { toast('Save failed: ' + e.message, false); }
+}
+async function saveVoiceProfile(profileId) {
+  const toArr = id => (document.getElementById(id)?.value || '').split('\\n').map(s=>s.trim()).filter(Boolean);
+  const body = {values_and_beliefs: toArr('ve-values-'+profileId), metaphor_families: toArr('ve-metaphors-'+profileId), taboos: toArr('ve-taboos-'+profileId), recurring_themes: toArr('ve-themes-'+profileId)};
+  try { await api('/profiles/founder-voice/' + profileId, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); toast('Voice profile updated'); renderVoice(); } catch(e) { toast('Save failed: ' + e.message, false); }
 }
 
 // CREATORS TAB
@@ -2659,6 +2834,24 @@ async function renderCreators() {
       } else {
         html += '<div style="margin-top:12px;padding:12px;border:1px dashed #2a2d3a;border-radius:6px;text-align:center;color:#71717a;font-size:12px">No voice axes data yet.<br><button class="btn btn-primary" style="margin-top:8px;padding:6px 14px;font-size:12px" onclick="analyzeVoice(\\'' + c.id + '\\')">Analyze Voice from Posts</button></div>';
       }
+      // GAP-43: Creator management controls
+      html += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px">';
+      // Anti-clone markers
+      html += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span style="font-size:11px;color:var(--dim)">Anti-clone:</span>';
+      const markers = c.disallowed_clone_markers || [];
+      markers.forEach(m => html += '<span style="padding:2px 6px;border-radius:3px;font-size:10px;background:#2d0000;color:#fecaca">' + esc(m) + '</span>');
+      html += '<button class="btn btn-dim" style="font-size:10px;padding:2px 6px" onclick="editAntiClone(\\'' + c.id + '\\')">Edit</button></div>';
+      // GAP-50: Per-angle weights
+      html += '<div style="margin-top:6px"><span style="font-size:11px;color:var(--dim)">Angle Preferences:</span>';
+      html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">';
+      const angleTypes = Object.keys(ANGLE_LABELS);
+      for (const angle of angleTypes) {
+        const weight = c.angle_weights?.[angle] != null ? c.angle_weights[angle] : 1;
+        const excluded = weight === 0;
+        html += '<button style="padding:2px 8px;border:1px solid ' + (excluded ? 'var(--red)' : 'var(--border)') + ';background:' + (excluded ? '#2d0000' : 'transparent') + ';color:' + (excluded ? 'var(--red)' : 'var(--dim)') + ';border-radius:4px;font-size:10px;cursor:pointer" onclick="toggleCreatorAngle(\\'' + c.id + '\\',\\'' + angle + '\\',' + (excluded ? '1' : '0') + ')" title="Click to ' + (excluded ? 'enable' : 'exclude') + '">' + ANGLE_LABELS[angle] + (excluded ? ' X' : '') + '</button>';
+      }
+      html += '</div></div>';
+      html += '</div>';
       html += '</div>';
     }
     html += '</div>';
@@ -2789,6 +2982,40 @@ async function renderCosts() {
     html += '<div class="sub">' + perPost.total_runs + ' pipeline runs</div>';
     html += '</div>';
     html += '</div>';
+    // GAP-41: SVG cost trend chart
+    try {
+      const chartDays = 14;
+      const endD = new Date(); const startD = new Date(); startD.setDate(startD.getDate() - chartDays);
+      const costHistory = await api('/costs/daily?start=' + fmtDate(startD) + '&end=' + fmtDate(endD)).catch(() => null);
+      if (costHistory?.daily_costs?.length > 1) {
+        const points = costHistory.daily_costs;
+        const maxCost = Math.max(...points.map(p => p.cost), 0.01);
+        const w = 700, h = 160, pad = 40;
+        const xStep = (w - 2 * pad) / (points.length - 1);
+        let pathD = ''; let dots = '';
+        points.forEach((pt, i) => {
+          const x = pad + i * xStep;
+          const y = h - pad - ((pt.cost / maxCost) * (h - 2 * pad));
+          pathD += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1);
+          dots += '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="3" fill="var(--accent)" />';
+          dots += '<title>' + pt.date + ': $' + pt.cost.toFixed(2) + '</title>';
+        });
+        html += '<div class="card" style="margin-bottom:16px"><h3>Cost Trend (Last ' + chartDays + ' Days)</h3>';
+        html += '<svg viewBox="0 0 ' + w + ' ' + h + '" style="width:100%;height:180px;margin-top:12px">';
+        // Grid lines
+        for (let g = 0; g <= 4; g++) {
+          const gy = pad + g * ((h - 2 * pad) / 4);
+          const gval = (maxCost * (4 - g) / 4).toFixed(2);
+          html += '<line x1="' + pad + '" y1="' + gy + '" x2="' + (w - pad) + '" y2="' + gy + '" stroke="var(--border)" stroke-dasharray="4"/>';
+          html += '<text x="' + (pad - 4) + '" y="' + (gy + 4) + '" text-anchor="end" fill="var(--dim)" font-size="10">$' + gval + '</text>';
+        }
+        html += '<path d="' + pathD + '" fill="none" stroke="var(--accent)" stroke-width="2"/>';
+        html += dots;
+        // X-axis labels (every 3rd)
+        points.forEach((pt, i) => { if (i % 3 === 0 || i === points.length - 1) { const x = pad + i * xStep; html += '<text x="' + x + '" y="' + (h - 8) + '" text-anchor="middle" fill="var(--dim)" font-size="9">' + pt.date.substring(5) + '</text>'; } });
+        html += '</svg></div>';
+      }
+    } catch {}
     // Agent breakdown table
     html += '<div class="card" style="margin-bottom:16px"><h3>Agent Cost Breakdown (' + byAgent.date + ')</h3>';
     if (byAgent.agents.length) {
@@ -2866,7 +3093,7 @@ async function renderCosts() {
       if (runs.length) {
         html += '<div class="card" style="margin-top:16px"><h3>Recent Pipeline Runs</h3>';
         html += '<table style="width:100%;border-collapse:collapse;margin-top:12px;font-size:13px">';
-        html += '<tr style="border-bottom:1px solid var(--border);color:var(--dim);font-size:12px"><th style="text-align:left;padding:8px 12px">Run ID</th><th style="text-align:left;padding:8px 12px">Workflow</th><th style="text-align:left;padding:8px 12px">Status</th><th style="text-align:left;padding:8px 12px">Day</th><th style="text-align:left;padding:8px 12px">Started</th><th style="text-align:left;padding:8px 12px">Error</th></tr>';
+        html += '<tr style="border-bottom:1px solid var(--border);color:var(--dim);font-size:12px"><th style="text-align:left;padding:8px 12px">Run ID</th><th style="text-align:left;padding:8px 12px">Workflow</th><th style="text-align:left;padding:8px 12px">Status</th><th style="text-align:left;padding:8px 12px">Day</th><th style="text-align:left;padding:8px 12px">Started</th><th style="text-align:left;padding:8px 12px">Error</th><th style="text-align:left;padding:8px 12px">Actions</th></tr>';
         for (const r of runs) {
           const stColor = r.status === 'completed' ? 'var(--green)' : r.status === 'failed' ? 'var(--red)' : 'var(--blue)';
           html += '<tr style="border-bottom:1px solid var(--border)">';
@@ -2876,6 +3103,10 @@ async function renderCosts() {
           html += '<td style="padding:8px 12px">' + (r.day_of_week != null ? DAY_NAMES[r.day_of_week] || r.day_of_week : '-') + '</td>';
           html += '<td style="padding:8px 12px;color:var(--dim)">' + (r.started_at ? new Date(r.started_at).toLocaleString() : '-') + '</td>';
           html += '<td style="padding:8px 12px;color:var(--red);font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(r.error_message || '') + '">' + esc((r.error_message || '').substring(0, 80)) + '</td>';
+          // GAP-49: Resume button for failed/partial runs
+          html += '<td style="padding:8px 12px">';
+          if (r.status === 'failed') html += '<button class="btn btn-dim" style="font-size:10px;padding:2px 8px" onclick="resumePipeline(\\'' + r.run_id + '\\')">Resume</button>';
+          html += '</td>';
           html += '</tr>';
         }
         html += '</table></div>';
@@ -3224,6 +3455,33 @@ async function renderAnalytics() {
         html += '</div></div>';
       }
     }
+    // GAP-42: A/B Testing Framework
+    try {
+      const experiments = await api('/experiments/').catch(() => []);
+      html += '<div class="card" style="margin-bottom:16px"><h3 style="color:var(--accent2)">A/B Experiments</h3>';
+      html += '<div style="display:flex;gap:8px;margin:12px 0"><button class="btn btn-primary" style="font-size:12px" onclick="createExperiment()">New Experiment</button></div>';
+      if (experiments.length) {
+        for (const exp of experiments) {
+          const stColor = exp.status === 'active' ? 'var(--green)' : exp.status === 'completed' ? 'var(--blue)' : 'var(--dim)';
+          html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:8px">';
+          html += '<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:14px;font-weight:600">' + esc(exp.name || exp.id) + '</div>';
+          html += '<span style="font-size:11px;padding:2px 8px;border-radius:4px;background:' + stColor + '22;color:' + stColor + '">' + (exp.status || 'draft') + '</span></div>';
+          if (exp.description) html += '<div style="font-size:12px;color:var(--dim);margin-top:4px">' + esc(exp.description) + '</div>';
+          html += '<div style="font-size:12px;margin-top:8px;color:var(--dim)">Type: <strong>' + esc(exp.experiment_type || 'hook_variant') + '</strong> | Variants: <strong>' + (exp.variants?.length || 2) + '</strong></div>';
+          if (exp.results) {
+            html += '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">';
+            for (const [variant, data] of Object.entries(exp.results)) {
+              html += '<div style="padding:6px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:12px"><strong>' + esc(variant) + '</strong>: ' + (data.approval_rate != null ? (data.approval_rate * 100).toFixed(0) + '% approval' : JSON.stringify(data).substring(0, 60)) + '</div>';
+            }
+            html += '</div>';
+          }
+          html += '</div>';
+        }
+      } else {
+        html += '<div style="color:var(--dim);font-size:13px;padding:12px">No experiments yet. Create one to test hook variants, CTAs, or post structures.</div>';
+      }
+      html += '</div>';
+    } catch {}
     // DM Fulfillment section
     html += '<div class="card"><h3>DM Fulfillment Status</h3>';
     html += '<div style="margin-top:12px">';
@@ -3529,9 +3787,12 @@ async function loadPromptVersions(agentName) {
     for (const v of versions) {
       const isActive = v.is_active;
       h += '<div style="padding:8px;margin-bottom:6px;border:1px solid ' + (isActive ? 'var(--green)' : 'var(--border)') + ';border-radius:6px;background:' + (isActive ? 'rgba(34,197,94,0.05)' : 'transparent') + '">';
-      h += '<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:12px;font-weight:600">v' + v.version_number + (isActive ? ' (active)' : '') + '</span>';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:6px"><span style="font-size:12px;font-weight:600">v' + v.version_number + (isActive ? ' (active)' : '') + '</span>';
+      h += '<div style="display:flex;gap:4px">';
+      // GAP-51: Side-by-side comparison
+      if (!isActive && v.prompt_text) h += '<button class="btn btn-dim" style="font-size:10px;padding:2px 6px" onclick="comparePrompts(\\'' + agentName + '\\',' + v.version_number + ')">Compare</button>';
       if (!isActive) h += '<button class="btn btn-dim" style="font-size:11px" onclick="rollbackPrompt(\\'' + agentName + '\\',' + v.version_number + ')">Rollback to this</button>';
-      h += '</div>';
+      h += '</div></div>';
       if (v.prompt_text) h += '<div style="font-size:12px;color:var(--dim);margin-top:4px;max-height:100px;overflow-y:auto;white-space:pre-wrap">' + esc(v.prompt_text.substring(0, 500)) + (v.prompt_text.length > 500 ? '...' : '') + '</div>';
       h += '</div>';
     }
@@ -3583,6 +3844,20 @@ async function renderSettings() {
     const savedAudience = (localStorage.getItem('tce_audience') || '').replace(/'/g, '&#39;');
     html += '<div style="margin-top:12px"><label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Primary Audience Description</label><textarea id="set-audience" rows="3" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px" placeholder="e.g. B2B agency owners, 10-50 employees, interested in AI adoption...">' + savedAudience + '</textarea></div>';
     html += '<button class="btn btn-primary" style="margin-top:8px" onclick="saveAudienceConfig()">Save</button></div>';
+    // GAP-44: Engagement Scorer Controls
+    html += '<div class="card" style="margin-top:16px"><h3>Engagement Scorer Weights</h3>';
+    html += '<div style="margin-top:12px;font-size:12px;color:var(--dim);margin-bottom:12px">Adjust how the engagement scorer weighs different signals when evaluating post examples.</div>';
+    const scorerWeights = JSON.parse(localStorage.getItem('tce_scorer_weights') || '{"comments":0.4,"shares":0.25,"reactions":0.2,"saves":0.15}');
+    const weightKeys = ['comments', 'shares', 'reactions', 'saves'];
+    html += '<div style="display:flex;flex-direction:column;gap:10px">';
+    for (const k of weightKeys) {
+      const val = (scorerWeights[k] || 0);
+      html += '<div style="display:flex;align-items:center;gap:10px"><span style="width:80px;font-size:13px;color:var(--text)">' + k.charAt(0).toUpperCase() + k.slice(1) + '</span>';
+      html += '<input type="range" min="0" max="100" value="' + (val * 100).toFixed(0) + '" style="flex:1;accent-color:var(--accent)" oninput="this.nextElementSibling.textContent=this.value+\\'%\\'" id="scorer-' + k + '">';
+      html += '<span style="width:40px;font-size:12px;text-align:right">' + (val * 100).toFixed(0) + '%</span></div>';
+    }
+    html += '</div>';
+    html += '<button class="btn btn-primary" style="margin-top:12px" onclick="saveScorerWeights()">Save Scorer Weights</button></div>';
     document.getElementById('settings-content').innerHTML = html;
   } catch(e) { document.getElementById('settings-content').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; }
 }
@@ -3600,6 +3875,16 @@ function saveAudienceConfig() {
   const audience = document.getElementById('set-audience')?.value || '';
   localStorage.setItem('tce_audience', audience);
   toast('Audience config saved');
+}
+// GAP-44: Save scorer weights
+function saveScorerWeights() {
+  const weights = {};
+  for (const k of ['comments','shares','reactions','saves']) {
+    const el = document.getElementById('scorer-' + k);
+    weights[k] = el ? parseFloat(el.value) / 100 : 0.25;
+  }
+  localStorage.setItem('tce_scorer_weights', JSON.stringify(weights));
+  toast('Scorer weights saved');
 }
 
 // GAP-33: Chatbot interface
@@ -3646,6 +3931,90 @@ document.addEventListener('keydown', e => {
     toast('Shortcuts: / = Search, Alt+1-6 = Switch tabs');
   }
 });
+
+// GAP-51: Side-by-side prompt comparison
+async function comparePrompts(agentName, versionNum) {
+  try {
+    const versions = await api('/prompts/' + agentName);
+    const active = versions.find(v => v.is_active);
+    const target = versions.find(v => v.version_number === versionNum);
+    if (!active || !target) { toast('Cannot find versions to compare', false); return; }
+    const w = window.open('', '_blank');
+    let h = '<html><head><style>body{font-family:monospace;background:#0f1117;color:#e4e4e7;padding:20px;margin:0}h1{font-family:-apple-system,sans-serif;font-size:18px;margin-bottom:16px;color:#818cf8}.cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;height:calc(100vh - 80px)}.col{background:#1a1d27;border:1px solid #2a2d3a;border-radius:10px;padding:16px;overflow-y:auto}.col h2{font-family:-apple-system,sans-serif;font-size:14px;margin-bottom:12px;position:sticky;top:0;background:#1a1d27;padding:4px 0}pre{white-space:pre-wrap;font-size:12px;line-height:1.6}</style></head><body>';
+    h += '<h1>' + agentName + ' - v' + active.version_number + ' (active) vs v' + versionNum + '</h1>';
+    h += '<div class="cols">';
+    h += '<div class="col"><h2 style="color:#22c55e">v' + active.version_number + ' (Active)</h2><pre>' + (active.prompt_text || '').replace(/</g, '&lt;') + '</pre></div>';
+    h += '<div class="col"><h2 style="color:#eab308">v' + versionNum + '</h2><pre>' + (target.prompt_text || '').replace(/</g, '&lt;') + '</pre></div>';
+    h += '</div></body></html>';
+    w.document.write(h);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+// GAP-47: Seasonal override toggle
+document.addEventListener('change', e => {
+  if (e.target.id === 'seasonal-override-toggle') {
+    const input = document.getElementById('seasonal-context');
+    if (input) input.style.display = e.target.checked ? 'block' : 'none';
+  }
+});
+
+// GAP-46: View document guide preview
+async function viewGuide(docId, name) {
+  try {
+    const doc = await api('/documents/' + docId);
+    const text = doc.extracted_text || doc.notes || '';
+    if (!text) { toast('No extracted text for this document', false); return; }
+    const w = window.open('', '_blank');
+    let h = '<html><head><style>body{font-family:-apple-system,sans-serif;padding:20px;max-width:800px;margin:auto;background:#0f1117;color:#e4e4e7}h1{font-size:20px;margin-bottom:8px;color:#818cf8}.meta{font-size:12px;color:#71717a;margin-bottom:20px}.content{background:#1a1d27;border:1px solid #2a2d3a;border-radius:10px;padding:24px;white-space:pre-wrap;font-size:14px;line-height:1.8;direction:rtl;text-align:right}</style></head><body>';
+    h += '<h1>' + name + '</h1>';
+    h += '<div class="meta">Document ID: ' + docId + ' | ' + (doc.pages || '?') + ' pages | Uploaded: ' + new Date(doc.created_at).toLocaleDateString() + '</div>';
+    h += '<div class="content">' + text.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
+    h += '</body></html>';
+    w.document.write(h);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+// GAP-45: Toggle CTA fulfillment checklist
+function showCtaChecklist(pid) { const el = document.getElementById('cta-checklist-' + pid); if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none'; }
+
+// GAP-43: Edit anti-clone markers
+async function editAntiClone(creatorId) {
+  const current = prompt('Enter anti-clone markers (comma-separated phrases to NEVER copy from this creator):');
+  if (current === null) return;
+  const markers = current.split(',').map(s => s.trim()).filter(Boolean);
+  try { await api('/profiles/creators/' + creatorId, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({disallowed_clone_markers: markers})}); toast('Anti-clone markers updated'); renderCreators(); } catch(e) { toast('Failed: ' + e.message, false); }
+}
+
+// GAP-50: Toggle creator angle weight
+async function toggleCreatorAngle(creatorId, angle, newWeight) {
+  try {
+    const creator = await api('/profiles/creators/' + creatorId);
+    const weights = creator.angle_weights || {};
+    weights[angle] = parseFloat(newWeight);
+    await api('/profiles/creators/' + creatorId, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({angle_weights: weights})});
+    toast(angle.replace(/_/g,' ') + (newWeight > 0 ? ' enabled' : ' excluded'));
+    renderCreators();
+  } catch(e) { toast('Failed: ' + e.message, false); }
+}
+
+// GAP-42: Create A/B experiment
+async function createExperiment() {
+  const name = prompt('Experiment name:');
+  if (!name) return;
+  const types = ['hook_variant', 'cta_variant', 'post_structure', 'image_style'];
+  const type = prompt('Experiment type (' + types.join(', ') + '):', 'hook_variant');
+  if (!type) return;
+  try {
+    const r = await api('/experiments/', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name, experiment_type: type, variants: ['control', 'variant_a']})});
+    toast('Experiment created: ' + r.id);
+    renderAnalytics();
+  } catch(e) { toast('Failed: ' + e.message, false); }
+}
+
+// GAP-38: Relearning functions
+async function triggerRelearn() { try { const r = await api('/relearning/evaluate', {method:'POST'}); toast('Evaluation complete: ' + (r.proposals_created || 0) + ' proposals'); renderCorpus(); } catch(e) { toast('Failed: ' + e.message, false); } }
+async function approveProposal(id) { try { await api('/relearning/proposals/' + id + '/approve', {method:'POST'}); toast('Proposal approved'); renderCorpus(); } catch(e) { toast('Failed: ' + e.message, false); } }
+async function rejectProposal(id) { try { await api('/relearning/proposals/' + id + '/reject', {method:'POST'}); toast('Proposal rejected'); renderCorpus(); } catch(e) { toast('Failed: ' + e.message, false); } }
 
 // Helper to switch tab from inline onclick
 function switchTab(tabName) {

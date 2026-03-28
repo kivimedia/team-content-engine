@@ -27,6 +27,7 @@ class CreatorProfileRead(BaseModel):
     disallowed_clone_markers: list[str] | None
     top_patterns: list[str] | None
     voice_axes: dict | None
+    angle_weights: dict | None
     created_at: datetime
     updated_at: datetime
 
@@ -36,3 +37,5 @@ class CreatorProfileUpdate(BaseModel):
     style_notes: str | None = None
     allowed_influence_weight: float | None = None
     voice_axes: dict | None = None
+    disallowed_clone_markers: list[str] | None = None
+    angle_weights: dict | None = None

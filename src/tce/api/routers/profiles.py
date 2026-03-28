@@ -273,3 +273,27 @@ async def extract_founder_voice(
             "Check /profiles/founder-voice for results."
         ),
     }
+
+
+# GAP-39: Update founder voice profile
+@router.patch("/founder-voice/{profile_id}")
+async def update_founder_voice(
+    profile_id: uuid.UUID,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Update founder voice profile fields (vocabulary, values, taboos, etc.)."""
+    profile = await db.get(FounderVoiceProfile, profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Voice profile not found")
+
+    allowed = {
+        "vocabulary_signature", "sentence_rhythm_profile", "values_and_beliefs",
+        "metaphor_families", "tone_range", "taboos", "recurring_themes", "humor_type",
+    }
+    for key, val in body.items():
+        if key in allowed:
+            setattr(profile, key, val)
+    await db.flush()
+    await db.refresh(profile)
+    return {"id": str(profile.id), "updated": list(body.keys())}

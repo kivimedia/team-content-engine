@@ -17,6 +17,7 @@ class CreatorProfile(Base):
     disallowed_clone_markers: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     top_patterns: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     voice_axes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    angle_weights: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Relationships
     post_examples: Mapped[list["PostExample"]] = relationship(  # noqa: F821

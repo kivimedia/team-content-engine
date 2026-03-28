@@ -577,3 +577,74 @@ async def download_guide(
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=f"{guide.guide_title}.docx",
     )
+
+
+# GAP-37: Select an image from a package
+@router.post("/packages/{package_id}/select-image")
+async def select_image(
+    package_id: uuid.UUID,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Mark one image as operator-selected in a package."""
+    import json as _json
+
+    idx = body.get("index", 0)
+    pkg = await db.get(PostPackage, package_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Package not found")
+    if not pkg.image_prompts or idx >= len(pkg.image_prompts):
+        raise HTTPException(status_code=400, detail="Invalid image index")
+
+    updated = _json.loads(_json.dumps(pkg.image_prompts))
+    for i, ip in enumerate(updated):
+        ip["selected"] = i == idx
+    pkg.image_prompts = updated
+    await db.flush()
+    await db.refresh(pkg)
+
+    # Also update ImageAsset.operator_selected if exists
+    from tce.models.image_asset import ImageAsset
+
+    assets = await db.execute(select(ImageAsset).where(ImageAsset.package_id == package_id))
+    for i, asset in enumerate(assets.scalars().all()):
+        asset.operator_selected = i == idx
+    await db.flush()
+
+    return {"selected_index": idx}
+
+
+# GAP-37: Regenerate a single image
+@router.post("/packages/{package_id}/regenerate-image/{image_index}")
+async def regenerate_single_image(
+    package_id: uuid.UUID,
+    image_index: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Regenerate a single image from its prompt."""
+    import json as _json
+
+    from tce.services.image_generation import ImageGenerationService
+
+    pkg = await db.get(PostPackage, package_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Package not found")
+    if not pkg.image_prompts or image_index >= len(pkg.image_prompts):
+        raise HTTPException(status_code=400, detail="Invalid image index")
+
+    prompt = pkg.image_prompts[image_index]
+    svc = ImageGenerationService()
+    result = await svc.generate_image(
+        prompt_text=prompt.get("prompt_text", prompt.get("detailed_prompt", "")),
+        negative_prompt=prompt.get("negative_prompt"),
+        aspect_ratio=prompt.get("aspect_ratio"),
+    )
+
+    if result.get("status") == "generated":
+        updated = _json.loads(_json.dumps(pkg.image_prompts))
+        updated[image_index]["image_url"] = result["image_url"]
+        pkg.image_prompts = updated
+        await db.flush()
+        await db.refresh(pkg)
+
+    return {"index": image_index, **result}
