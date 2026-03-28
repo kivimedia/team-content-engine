@@ -2739,10 +2739,10 @@ async function renderVoice() {
       html += '<div class="voice-profile">';
       html += '<div style="display:flex;justify-content:space-between;align-items:center"><h4>Profile from: ' + (p.source_document_ids?.join(', ') || 'unknown').substring(0, 36) + '...</h4>';
       html += '<button class="btn btn-dim" style="font-size:11px" onclick="toggleVoiceEdit(\\'' + p.id + '\\')">Edit Profile</button></div>';
-      // GAP-40: Tone range SLIDERS (not just bars)
-      if (p.tone_range) {
+      // GAP-40: Tone range SLIDERS - render whatever axes exist in DB
+      if (p.tone_range && Object.keys(p.tone_range).length) {
         html += '<div style="margin:8px 0">';
-        const axes = ['curiosity','sharpness','practicality','strategic_depth','emotional_intensity','sentence_punch','executive_clarity','contrarian_heat','friendliness','urgency'];
+        const axes = Object.keys(p.tone_range);
         for (const k of axes) {
           const v = p.tone_range[k] || 0;
           html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="width:120px;font-size:11px;color:var(--dim)">' + k.replace(/_/g,' ') + '</span>';
@@ -2877,7 +2877,7 @@ async function analyzeVoice(creatorId) {
 // GAP-36: Save creator influence weight
 async function saveCreatorWeight(creatorId, pct) {
   try {
-    await api('/controls/weights', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({creator_id:creatorId,weight:pct/100})});
+    await api('/profiles/creators/' + creatorId, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({allowed_influence_weight: pct / 100})});
     toast('Weight updated to ' + pct + '%');
   } catch(e) { toast('Failed: ' + e.message, false); }
 }
