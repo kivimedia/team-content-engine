@@ -112,3 +112,112 @@
 ### GAP-16: `SourceDocument.ingested_at` vs `created_at` distinction
 - **PRD:** 11.1
 - **Issue:** Minor schema distinction - covered in GAP-13.
+
+---
+
+## UI/UX Gaps (identified 2026-03-28)
+
+### Critical - Daily workflow blockers
+
+### GAP-17: No inline post editing
+- **PRD:** 22.2
+- **Issue:** Can "AI Revise" and "Copy" but can't directly edit post text. Must use separate "Edit & Submit Copy" form.
+- **Status:** [ ]
+
+### GAP-18: No "Why was this chosen?" explainability
+- **PRD:** 22.2
+- **Issue:** Packages show raw posts with zero context - no angle reasoning, template justification, influence weights, or research brief summary.
+- **Status:** [ ]
+
+### GAP-19: DM Flow is read-only
+- **PRD:** 24.4
+- **Issue:** CTA Flow Editor described in PRD (keyword config, DM reply builder, delivery message editor). Currently static text with "Copy All" only.
+- **Status:** [ ]
+
+### GAP-20: No operator notes on day cards
+- **PRD:** 22.1
+- **Issue:** Planner week grid has no way to add operator notes per day. PRD: "Operator can manually add topics", notes field.
+- **Status:** [ ]
+
+### GAP-21: No post scheduling/publishing controls
+- **PRD:** 5.3, 24.3
+- **Issue:** Status badges exist (APPROVED/PUBLISHED) but no "Schedule" or "Publish now" button. Approval is a dead end.
+- **Status:** [ ]
+
+### High Priority - Missing screens/features
+
+### GAP-22: No Settings page
+- **PRD:** 36.4, 43.1
+- **Issue:** API key management, budget caps, notification preferences, audience config, voice tone adjustment - all env vars only.
+- **Status:** [ ]
+
+### GAP-23: No Notification Center
+- **PRD:** 43.1
+- **Issue:** Package ready alerts, QA failure alerts, budget warnings, 72h approval timeout reminders. Zero notification system in UI.
+- **Status:** [ ]
+
+### GAP-24: No Research Brief visibility
+- **PRD:** 9.4, 22.2
+- **Issue:** Research Agent produces verified facts, sources, caveats, "safe to publish" statement. Never shown in package UI.
+- **Status:** [ ]
+
+### GAP-25: No Template Library browser
+- **PRD:** 9.3
+- **Issue:** View, search, lock/unlock templates. Pattern Miner output invisible in UI.
+- **Status:** [ ]
+
+### GAP-26: Analytics is shallow
+- **PRD:** 8.1, 8.2, 8.3
+- **Issue:** PRD: actual vs predicted, best CTAs, best templates, visual performance, failure modes. Current: 4 summary cards only.
+- **Status:** [ ]
+
+### Medium Priority - Polish and workflow
+
+### GAP-27: No global search
+- **PRD:** 22.1
+- **Issue:** Search posts by topic, creator, template across the whole system. No search exists.
+- **Status:** [ ]
+
+### GAP-28: No breadcrumb navigation
+- **PRD:** 22.1
+- **Issue:** PRD calls for breadcrumbs. Tabs are flat with no workflow context.
+- **Status:** [ ]
+
+### GAP-29: Package filter is day-only
+- **PRD:** 22.1
+- **Issue:** No filter by status (draft/approved/rejected), date range, or QA score.
+- **Status:** [ ]
+
+### GAP-30: No drag-and-drop calendar
+- **PRD:** 22.1
+- **Issue:** Rescheduling controls - can't move posts between days.
+- **Status:** [ ]
+
+### GAP-31: No buffer posts
+- **PRD:** 22.1
+- **Issue:** "Maintain 2-3 pre-approved packages as backup." No buffer concept in UI.
+- **Status:** [ ]
+
+### GAP-32: No Prompt Library manager
+- **PRD:** 39
+- **Issue:** View/edit/version agent prompts. Not exposed in UI.
+- **Status:** [ ]
+
+### GAP-33: No Chatbot interface
+- **PRD:** 44
+- **Issue:** Conversational chat panel for natural language pipeline control. Not implemented.
+- **Status:** [ ]
+
+### GAP-34: QA scorecard lacks dimension details
+- **PRD:** 46
+- **Issue:** Shows scores as numbers with tooltip hovers. PRD: 12 dimensions with full justification text, expandable details.
+- **Status:** [ ]
+
+### GAP-35: No keyboard shortcuts
+- **Issue:** No keyboard navigation for daily editorial tool. Standard UX expectation (J/K nav, Enter approve, etc).
+- **Status:** [ ]
+
+### GAP-36: Creator influence weights not adjustable
+- **PRD:** 4.4
+- **Issue:** Shows weights but no sliders/controls to change them. PRD: "edit influence weights."
+- **Status:** [ ]

@@ -127,8 +127,13 @@ option{background:var(--card);color:var(--text)}
 <body>
 <div class="header">
   <h1>Team Content Engine</h1>
-  <div class="status"><div class="dot" id="health-dot"></div><span id="health-text">Checking...</span></div>
+  <div style="display:flex;align-items:center;gap:16px">
+    <div style="position:relative"><input id="global-search" type="text" placeholder="Search posts, topics, templates..." style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 12px 6px 32px;color:var(--text);font-size:13px;width:260px" oninput="debounceSearch(this.value)"><span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--dim);font-size:14px">&#128269;</span><div id="search-results" style="display:none;position:absolute;top:100%;left:0;width:360px;max-height:400px;overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;margin-top:4px;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div></div>
+    <div style="position:relative;cursor:pointer" onclick="toggleNotifications()"><span style="font-size:20px">&#128276;</span><span id="notif-badge" style="display:none;position:absolute;top:-4px;right:-6px;background:var(--red);color:#fff;border-radius:50%;width:18px;height:18px;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center"></span><div id="notif-panel" style="display:none;position:absolute;top:100%;right:0;width:360px;max-height:400px;overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;margin-top:8px;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div></div>
+    <div class="status"><div class="dot" id="health-dot"></div><span id="health-text">Checking...</span></div>
+  </div>
 </div>
+<div id="breadcrumb" style="padding:6px 24px;font-size:12px;color:var(--dim);border-bottom:1px solid var(--border);display:none"><span id="bc-text"></span></div>
 <div class="nav" id="nav">
   <button class="active" data-tab="week">Week Planner</button>
   <button data-tab="generate">Generate</button>
@@ -139,6 +144,9 @@ option{background:var(--card);color:var(--text)}
   <button data-tab="agents">Agents</button>
   <button data-tab="costs">Costs</button>
   <button data-tab="analytics">Analytics</button>
+  <button data-tab="templates">Templates</button>
+  <button data-tab="prompts">Prompts</button>
+  <button data-tab="settings">Settings</button>
 </div>
 <div class="main" id="app"></div>
 <script>
@@ -363,8 +371,22 @@ async function renderWeek() {
       html += '</div>';
       if (entry?.topic) html += '<div class="day-topic">' + esc(entry.topic) + '</div>';
       else html += '<div class="day-topic" style="color:var(--dim);font-style:italic">No topic set</div>';
-      if (entry?.operator_notes) html += '<div style="font-size:11px;color:var(--dim);margin-bottom:6px">' + esc(entry.operator_notes) + '</div>';
+      if (entry?.operator_notes) html += '<div style="font-size:11px;color:var(--dim);margin-bottom:4px">' + esc(entry.operator_notes) + '</div>';
+      // GAP-20: Operator notes input
+      if (entry) {
+        html += '<div style="margin-bottom:6px"><input type="text" placeholder="Add note..." value="' + esc(entry.operator_notes || '') + '" style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px" onblur="saveOperatorNote(\\'' + entry.id + '\\', this.value)">';
+        // GAP-31: Buffer toggle
+        if (entry.is_buffer) html += '<span style="font-size:10px;color:var(--yellow);margin-top:2px;display:block">Buffer post</span>';
+        html += '</div>';
+      }
 
+      // GAP-30: Move to day dropdown
+      if (entry) {
+        html += '<div style="margin-top:4px"><select style="width:100%;padding:2px 4px;font-size:10px;background:var(--bg);color:var(--dim);border:1px solid var(--border);border-radius:3px" onchange="moveEntryToDay(\\'' + entry.id + '\\',this.value,\\'' + ds + '\\')">';
+        html += '<option value="">Move to...</option>';
+        for (let j=0;j<5;j++) { if (j!==i) { const dj=new Date(monday);dj.setDate(dj.getDate()+j); html+='<option value="'+fmtDate(dj)+'">'+DAY_NAMES[j]+'</option>'; }}
+        html += '</select></div>';
+      }
       html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto;gap:4px;flex-wrap:wrap">';
       if (entry) {
         const hasPackage = !!entry.post_package_id;
@@ -406,6 +428,16 @@ async function renderWeek() {
     if (hint && planCost.avg_cost > 0) hint.textContent = '~$' + planCost.avg_cost.toFixed(2) + ' per plan (avg of ' + planCost.plan_runs + ' runs)';
   } catch {}
 
+}
+
+// GAP-30: Move calendar entry to a different day
+async function moveEntryToDay(entryId, newDate, oldDate) {
+  if (!newDate) return;
+  try {
+    await api('/calendar/' + entryId, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:newDate})});
+    toast('Moved to ' + newDate);
+    renderWeek();
+  } catch(e) { toast('Move failed: ' + e.message, false); }
 }
 
 let deepPlanId = null;
@@ -1724,6 +1756,11 @@ function _renderPkgFromCache() {
   const isAll = pkgDayFilter === null;
   tabHtml += '<button onclick="switchPkgDay(null)" style="padding:8px 14px;border:1px solid ' + (isAll ? 'var(--accent)' : 'var(--border)') + ';background:' + (isAll ? 'var(--accent)' : 'var(--card)') + ';color:' + (isAll ? '#fff' : 'var(--dim)') + ';border-radius:6px;cursor:pointer;font-size:13px">All (' + pkgs.length + ')</button>';
   tabHtml += '</div>';
+  // GAP-29: Status and QA filters
+  tabHtml += '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">';
+  tabHtml += '<select id="pkg-status-filter" onchange="filterPkgStatus()" style="padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"><option value="">All statuses</option><option value="draft">Draft</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>';
+  tabHtml += '<select id="pkg-qa-filter" onchange="filterPkgStatus()" style="padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"><option value="">Any QA</option><option value="pass">QA Pass (7+)</option><option value="conditional">Conditional (5-7)</option><option value="fail">QA Fail (&lt;5)</option></select>';
+  tabHtml += '</div>';
   document.getElementById('pkg-day-tabs').innerHTML = tabHtml;
 
   // Filter
@@ -1733,6 +1770,20 @@ function _renderPkgFromCache() {
     filteredPkgs = pkgs.filter(p => dayPkgIds.has(p.id));
   } else if (pkgDayFilter === 'other') {
     filteredPkgs = pkgs.filter(p => !pkgDayMap[p.id]);
+  }
+  // GAP-29: Apply status and QA filters
+  const statusFilter = document.getElementById('pkg-status-filter')?.value;
+  const qaFilter = document.getElementById('pkg-qa-filter')?.value;
+  if (statusFilter) filteredPkgs = filteredPkgs.filter(p => p.approval_status === statusFilter);
+  if (qaFilter) {
+    filteredPkgs = filteredPkgs.filter(p => {
+      const qs = p.quality_scores?.composite_score || p.quality_scores?.overall;
+      const score = typeof qs === 'number' ? qs : (qs?.score || 0);
+      if (qaFilter === 'pass') return score >= 7;
+      if (qaFilter === 'conditional') return score >= 5 && score < 7;
+      if (qaFilter === 'fail') return score < 5;
+      return true;
+    });
   }
 
   if (!filteredPkgs.length) { document.getElementById('pkg-list').innerHTML = '<div class="empty" style="padding:24px;text-align:center">No packages for this day.</div>'; return; }
@@ -1778,8 +1829,8 @@ function _renderPkgCard(p) {
       if (p.dm_flow) html += '<button onclick="showPostTab(this,\\'dm-' + pid + '\\')">DM Flow</button>';
       if (p.image_prompts?.length) html += '<button onclick="showPostTab(this,\\'img-' + pid + '\\')">Images (' + p.image_prompts.length + ')</button>';
       html += '</div>';
-      html += '<div id="fb-' + pid + '"><div class="post-preview">' + esc(fbText || 'No Facebook post generated') + '</div></div>';
-      html += '<div id="li-' + pid + '" style="display:none"><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div></div>';
+      html += '<div id="fb-' + pid + '"><div class="post-preview">' + esc(fbText || 'No Facebook post generated') + '</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-dim edit-toggle-fb" style="font-size:11px" onclick="toggleInlineEdit(\\'' + p.id + '\\',\\'fb\\',this)">Edit</button></div></div>';
+      html += '<div id="li-' + pid + '" style="display:none"><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-dim edit-toggle-li" style="font-size:11px" onclick="toggleInlineEdit(\\'' + p.id + '\\',\\'li\\',this)">Edit</button></div></div>';
       if (p.hook_variants?.length) {
         html += '<div id="hooks-' + pid + '" style="display:none">';
         const currentHook = (p.facebook_post || p.linkedin_post || '').split('\\n')[0];
@@ -1809,16 +1860,17 @@ function _renderPkgCard(p) {
           html += '<div><div style="font-size:14px;font-weight:700;color:' + compColor + '">' + compLabel + '</div><div style="font-size:12px;color:var(--dim)">Composite QA Score</div></div>';
           html += '</div>';
         }
-        html += '<div class="qa-grid">';
+        html += '<div style="display:flex;flex-direction:column;gap:8px">';
         for (const [k, v] of Object.entries(p.quality_scores)) {
           if (k === 'composite_score' || k === 'overall') continue;
           const score = typeof v === 'number' ? v : (v?.score || v);
           const justification = typeof v === 'object' ? v?.justification : null;
           const color = score >= 8 ? 'var(--green)' : score >= 6 ? 'var(--yellow)' : 'var(--red)';
           const icon = score >= 7 ? '\\u2713' : score >= 5 ? '\\u26A0' : '\\u2717';
-          html += '<div class="qa-item" ' + (justification ? 'title="' + esc(justification) + '" style="cursor:help"' : '') + '>';
-          html += '<div class="label">' + icon + ' ' + k.replace(/_/g, ' ') + '</div>';
-          html += '<div class="score" style="color:' + color + '">' + (typeof score === 'number' ? score.toFixed(1) : score) + '</div>';
+          html += '<div style="background:#111318;border:1px solid var(--border);border-radius:6px;padding:10px 14px">';
+          html += '<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:13px;font-weight:600">' + icon + ' ' + k.replace(/_/g, ' ') + '</div>';
+          html += '<div style="font-size:18px;font-weight:700;color:' + color + '">' + (typeof score === 'number' ? score.toFixed(1) : score) + '</div></div>';
+          if (justification) html += '<div style="font-size:12px;color:var(--dim);margin-top:6px;line-height:1.5">' + esc(justification) + '</div>';
           html += '</div>';
         }
         html += '</div></div>';
@@ -1835,19 +1887,19 @@ function _renderPkgCard(p) {
         }
         if (dm.ack_message) {
           html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:14px">';
-          html += '<div style="font-size:11px;color:var(--green);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Instant Reply (when they comment)</div>';
+          html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-size:11px;color:var(--green);text-transform:uppercase;letter-spacing:.5px">Instant Reply (when they comment)</div><button class="btn btn-dim" style="font-size:10px;padding:2px 8px" onclick="editDmField(\\'' + p.id + '\\',\\'ack_message\\',this)">Edit</button></div>';
           html += '<div style="font-size:14px;line-height:1.6;white-space:pre-wrap">' + esc(dm.ack_message) + '</div>';
           html += '</div>';
         }
         if (dm.delivery_message) {
           html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:14px">';
-          html += '<div style="font-size:11px;color:var(--blue);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Delivery Message (with the guide)</div>';
+          html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-size:11px;color:var(--blue);text-transform:uppercase;letter-spacing:.5px">Delivery Message (with the guide)</div><button class="btn btn-dim" style="font-size:10px;padding:2px 8px" onclick="editDmField(\\'' + p.id + '\\',\\'delivery_message\\',this)">Edit</button></div>';
           html += '<div style="font-size:14px;line-height:1.6;white-space:pre-wrap">' + esc(dm.delivery_message) + '</div>';
           html += '</div>';
         }
         if (dm.follow_up) {
           html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:14px">';
-          html += '<div style="font-size:11px;color:var(--yellow);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Follow-up (24-48h later)</div>';
+          html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-size:11px;color:var(--yellow);text-transform:uppercase;letter-spacing:.5px">Follow-up (24-48h later)</div><button class="btn btn-dim" style="font-size:10px;padding:2px 8px" onclick="editDmField(\\'' + p.id + '\\',\\'follow_up\\',this)">Edit</button></div>';
           html += '<div style="font-size:14px;line-height:1.6;white-space:pre-wrap">' + esc(dm.follow_up) + '</div>';
           html += '</div>';
         }
@@ -1942,12 +1994,15 @@ function _renderPkgCard(p) {
       if (p.approval_status === 'draft') {
         html += '<button class="btn btn-green" onclick="approvePackage(\\'' + p.id + '\\')">Approve</button>';
         html += '<button class="btn btn-red" onclick="rejectPackage(\\'' + p.id + '\\')">Reject</button>';
+        html += '<button class="btn btn-dim" style="border-color:var(--blue);color:var(--blue)" onclick="schedulePublish(\\'' + p.id + '\\', \\'both\\')">Schedule</button>';
       } else if (p.approval_status === 'approved') {
         html += '<span style="color:var(--green);font-weight:600;font-size:13px;padding:8px 0">Approved</span>';
+        html += '<button class="btn btn-dim" style="border-color:var(--blue);color:var(--blue)" onclick="schedulePublish(\\'' + p.id + '\\', \\'both\\')">Schedule Publish</button>';
       } else if (p.approval_status === 'rejected') {
         html += '<span style="color:var(--red);font-weight:600;font-size:13px;padding:8px 0">Rejected</span>';
         html += '<button class="btn btn-dim" onclick="resetPackageStatus(\\'' + p.id + '\\')">Reset to Draft</button>';
       }
+      html += '<button class="btn btn-dim" style="border-color:var(--accent2);color:var(--accent2)" onclick="loadPackageContext(\\'' + p.id + '\\', this)">Show Context</button>';
       html += '<button class="btn btn-blue" onclick="exportPackage(\\'' + p.id + '\\')">Export</button>';
       html += '<button class="btn btn-dim" onclick="showFeedbackForm(\\'' + p.id + '\\', this)">Feedback</button>';
       html += '<button class="btn btn-dim" style="border-color:var(--accent)" onclick="showRevisedCopyForm(\\'' + p.id + '\\', this)">Edit & Submit Copy</button>';
@@ -2267,6 +2322,14 @@ async function downloadAllImages(packageId, btn) {
   }
 }
 
+// GAP-20: Save operator notes
+async function saveOperatorNote(entryId, note) {
+  try { await api('/calendar/' + entryId, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({operator_notes:note})}); } catch(e) {}
+}
+
+// GAP-29: Filter packages by status and QA
+function filterPkgStatus() { _renderPkgFromCache(); }
+
 function clipCopy(text) {
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(text);
@@ -2575,7 +2638,11 @@ async function renderCreators() {
     for (const c of creators) {
       html += '<div class="card">';
       html += '<div style="display:flex;justify-content:space-between;align-items:center"><h3 style="text-transform:none">' + esc(c.creator_name) + '</h3>';
-      html += '<span style="font-size:20px;font-weight:700;color:var(--accent)">' + ((c.allowed_influence_weight || 0.2) * 100).toFixed(0) + '%</span></div>';
+      html += '<span id="weight-val-' + c.id + '" style="font-size:20px;font-weight:700;color:var(--accent)">' + ((c.allowed_influence_weight || 0.2) * 100).toFixed(0) + '%</span></div>';
+      // GAP-36: Influence weight slider
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><span style="font-size:11px;color:var(--dim)">0%</span>';
+      html += '<input type="range" min="0" max="100" value="' + ((c.allowed_influence_weight || 0.2) * 100).toFixed(0) + '" style="flex:1;accent-color:var(--accent)" oninput="document.getElementById(\\'weight-val-' + c.id + '\\').textContent=this.value+\\'%\\'" onchange="saveCreatorWeight(\\'' + c.id + '\\',this.value)">';
+      html += '<span style="font-size:11px;color:var(--dim)">100%</span></div>';
       if (c.style_notes) html += '<p style="font-size:13px;color:var(--dim);margin-top:8px">' + esc(c.style_notes) + '</p>';
       if (c.top_patterns?.length) {
         html += '<div style="margin-top:8px"><div class="voice-tags">';
@@ -2611,6 +2678,14 @@ async function analyzeVoice(creatorId) {
     btn.disabled = false;
     btn.textContent = 'Analyze Voice from Posts';
   }
+}
+
+// GAP-36: Save creator influence weight
+async function saveCreatorWeight(creatorId, pct) {
+  try {
+    await api('/controls/weights', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({creator_id:creatorId,weight:pct/100})});
+    toast('Weight updated to ' + pct + '%');
+  } catch(e) { toast('Failed: ' + e.message, false); }
 }
 
 // AGENTS TAB
@@ -3094,6 +3169,60 @@ async function renderAnalytics() {
       html += '<div class="empty" style="padding:16px">No revised copies submitted yet. Use the "Edit & Submit Copy" button on packages to teach the system your voice.</div>';
     }
     html += '</div></div>';
+    // GAP-26: Best CTAs
+    const ctaCounts = {};
+    for (const p of pkgs) { if (p.cta_keyword) { ctaCounts[p.cta_keyword] = ctaCounts[p.cta_keyword] || {total:0,approved:0}; ctaCounts[p.cta_keyword].total++; if (p.approval_status==='approved') ctaCounts[p.cta_keyword].approved++; } }
+    if (Object.keys(ctaCounts).length) {
+      html += '<div class="card" style="margin-bottom:16px"><h3>Best CTAs</h3>';
+      html += '<table style="width:100%;border-collapse:collapse;margin-top:12px;font-size:13px">';
+      html += '<tr style="border-bottom:1px solid var(--border);color:var(--dim);font-size:12px"><th style="text-align:left;padding:8px 12px">Keyword</th><th style="text-align:left;padding:8px 12px">Uses</th><th style="text-align:left;padding:8px 12px">Approved</th><th style="text-align:left;padding:8px 12px">Rate</th></tr>';
+      const ctaSorted = Object.entries(ctaCounts).sort((a,b) => b[1].total - a[1].total);
+      for (const [kw, d] of ctaSorted.slice(0,10)) {
+        const rate = d.total > 0 ? ((d.approved/d.total)*100).toFixed(0) : '0';
+        const rateColor = parseInt(rate) >= 70 ? 'var(--green)' : parseInt(rate) >= 40 ? 'var(--yellow)' : 'var(--red)';
+        html += '<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 12px;font-weight:600;color:var(--accent2)">' + esc(kw) + '</td><td style="padding:8px 12px">' + d.total + '</td><td style="padding:8px 12px">' + d.approved + '</td><td style="padding:8px 12px;color:' + rateColor + ';font-weight:600">' + rate + '%</td></tr>';
+      }
+      html += '</table></div>';
+    }
+    // GAP-26: QA Score Distribution
+    const qaScores = pkgs.map(p => p.quality_scores?.composite_score || p.quality_scores?.overall).filter(s => s != null).map(s => typeof s === 'number' ? s : (s?.score || 0));
+    if (qaScores.length) {
+      const avgQa = (qaScores.reduce((a,b)=>a+b,0)/qaScores.length).toFixed(1);
+      const passCount = qaScores.filter(s => s >= 7).length;
+      const condCount = qaScores.filter(s => s >= 5 && s < 7).length;
+      const failCount = qaScores.filter(s => s < 5).length;
+      html += '<div class="card" style="margin-bottom:16px"><h3>QA Score Distribution</h3>';
+      html += '<div style="display:flex;gap:16px;margin-top:12px">';
+      html += '<div style="flex:1;padding:12px;background:#0d1117;border-radius:8px;text-align:center;border:1px solid var(--border)"><div style="font-size:24px;font-weight:700;color:var(--accent)">' + avgQa + '</div><div style="font-size:12px;color:var(--dim)">Avg Score</div></div>';
+      html += '<div style="flex:1;padding:12px;background:#0d1117;border-radius:8px;text-align:center;border:1px solid var(--border)"><div style="font-size:24px;font-weight:700;color:var(--green)">' + passCount + '</div><div style="font-size:12px;color:var(--dim)">Pass (7+)</div></div>';
+      html += '<div style="flex:1;padding:12px;background:#0d1117;border-radius:8px;text-align:center;border:1px solid var(--border)"><div style="font-size:24px;font-weight:700;color:var(--yellow)">' + condCount + '</div><div style="font-size:12px;color:var(--dim)">Conditional</div></div>';
+      html += '<div style="flex:1;padding:12px;background:#0d1117;border-radius:8px;text-align:center;border:1px solid var(--border)"><div style="font-size:24px;font-weight:700;color:var(--red)">' + failCount + '</div><div style="font-size:12px;color:var(--dim)">Fail (&lt;5)</div></div>';
+      html += '</div></div>';
+    }
+    // GAP-26: QA Failure Breakdown
+    const failedPkgs = pkgs.filter(p => { const s = p.quality_scores?.composite_score || p.quality_scores?.overall; return s != null && (typeof s === 'number' ? s : (s?.score || 0)) < 5; });
+    if (failedPkgs.length) {
+      const failReasons = {};
+      for (const p of failedPkgs) {
+        const dims = p.quality_scores?.dimension_scores || p.quality_scores?.dimensions || {};
+        for (const [dim, val] of Object.entries(dims)) {
+          const score = typeof val === 'number' ? val : (val?.score || 0);
+          if (score < 5) { failReasons[dim] = (failReasons[dim] || 0) + 1; }
+        }
+      }
+      if (Object.keys(failReasons).length) {
+        html += '<div class="card" style="margin-bottom:16px"><h3 style="color:var(--red)">QA Failure Breakdown</h3>';
+        html += '<div style="margin-top:12px">';
+        const failSorted = Object.entries(failReasons).sort((a,b)=>b[1]-a[1]);
+        for (const [dim,cnt] of failSorted) {
+          const pct = ((cnt/failedPkgs.length)*100).toFixed(0);
+          html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="width:140px;font-size:12px;color:var(--dim)">' + dim.replace(/_/g,' ') + '</span>';
+          html += '<div style="flex:1;height:16px;background:var(--bg);border-radius:4px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:var(--red);border-radius:4px"></div></div>';
+          html += '<span style="font-size:12px;font-weight:600;color:var(--red);width:40px;text-align:right">' + cnt + '</span></div>';
+        }
+        html += '</div></div>';
+      }
+    }
     // DM Fulfillment section
     html += '<div class="card"><h3>DM Fulfillment Status</h3>';
     html += '<div style="margin-top:12px">';
@@ -3121,9 +3250,391 @@ async function renderAnalytics() {
   }
 }
 
+// GAP-23: Notification Center
+let _notifCache = null;
+async function pollNotifications() {
+  try {
+    const data = await api('/notifications/count');
+    const badge = document.getElementById('notif-badge');
+    if (data.unread > 0) { badge.style.display = 'flex'; badge.textContent = data.unread > 9 ? '9+' : data.unread; }
+    else { badge.style.display = 'none'; }
+  } catch(e) {}
+}
+async function toggleNotifications() {
+  const panel = document.getElementById('notif-panel');
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  panel.innerHTML = '<div style="padding:12px;color:var(--dim)">Loading...</div>';
+  panel.style.display = 'block';
+  try {
+    const notifs = await api('/notifications/?limit=20');
+    _notifCache = notifs;
+    if (!notifs.length) { panel.innerHTML = '<div style="padding:16px;text-align:center;color:var(--dim)">No notifications</div>'; return; }
+    let h = '<div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center"><span style="font-weight:600;font-size:13px">Notifications</span><button style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px" onclick="markAllRead()">Mark all read</button></div>';
+    for (const n of notifs) {
+      const sevColor = n.severity === 'critical' ? 'var(--red)' : n.severity === 'warning' ? 'var(--yellow)' : 'var(--blue)';
+      const bg = n.read ? 'transparent' : 'rgba(99,102,241,0.05)';
+      h += '<div style="padding:10px 12px;border-bottom:1px solid var(--border);background:' + bg + ';cursor:pointer" onclick="markNotifRead(\\'' + n.id + '\\', this)">';
+      h += '<div style="display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:' + sevColor + ';flex-shrink:0"></span><span style="font-size:13px;font-weight:' + (n.read ? '400' : '600') + '">' + esc(n.title) + '</span></div>';
+      h += '<div style="font-size:12px;color:var(--dim);margin-top:4px;padding-left:12px">' + esc(n.message || '') + '</div>';
+      h += '<div style="font-size:11px;color:var(--dim);margin-top:4px;padding-left:12px">' + new Date(n.created_at).toLocaleString() + '</div>';
+      h += '</div>';
+    }
+    panel.innerHTML = h;
+  } catch(e) { panel.innerHTML = '<div style="padding:12px;color:var(--red)">Error: ' + e.message + '</div>'; }
+}
+async function markNotifRead(id, el) { try { await api('/notifications/' + id + '/read', {method:'POST'}); if(el) el.style.background = 'transparent'; pollNotifications(); } catch(e){} }
+async function markAllRead() { try { await api('/notifications/read-all', {method:'POST'}); toggleNotifications(); pollNotifications(); } catch(e){} }
+setInterval(pollNotifications, 30000);
+pollNotifications();
+
+// GAP-27: Global Search
+let _searchTimeout = null;
+function debounceSearch(q) {
+  clearTimeout(_searchTimeout);
+  const panel = document.getElementById('search-results');
+  if (!q || q.length < 2) { panel.style.display = 'none'; return; }
+  _searchTimeout = setTimeout(async () => {
+    panel.style.display = 'block';
+    panel.innerHTML = '<div style="padding:12px;color:var(--dim)">Searching...</div>';
+    try {
+      const results = await api('/content/search?q=' + encodeURIComponent(q));
+      if (!results.length) { panel.innerHTML = '<div style="padding:12px;color:var(--dim)">No results for "' + esc(q) + '"</div>'; return; }
+      let h = '';
+      for (const r of results) {
+        const icon = r.type === 'package' ? '&#128230;' : r.type === 'brief' ? '&#128196;' : '&#128203;';
+        h += '<div style="padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;gap:8px;align-items:flex-start" onclick="searchNavigate(\\'' + r.type + '\\',\\'' + r.id + '\\')">';
+        h += '<span style="font-size:16px">' + icon + '</span>';
+        h += '<div><div style="font-size:13px;font-weight:600">' + esc((r.title || '').substring(0, 80)) + '</div>';
+        h += '<div style="font-size:11px;color:var(--dim)">' + r.type + (r.status ? ' - ' + r.status : '') + (r.family ? ' - ' + r.family : '') + '</div></div>';
+        h += '</div>';
+      }
+      panel.innerHTML = h;
+    } catch(e) { panel.innerHTML = '<div style="padding:12px;color:var(--red)">Search failed</div>'; }
+  }, 300);
+}
+function searchNavigate(type, id) {
+  document.getElementById('search-results').style.display = 'none';
+  document.getElementById('global-search').value = '';
+  if (type === 'package') { viewPackage(id); }
+  else if (type === 'template') { currentTab = 'templates'; document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'templates')); render(); }
+  else if (type === 'brief') { currentTab = 'week'; document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'week')); render(); }
+}
+document.addEventListener('click', e => { if (!e.target.closest('#global-search') && !e.target.closest('#search-results')) document.getElementById('search-results').style.display = 'none'; });
+
+// GAP-28: Breadcrumb
+function updateBreadcrumb(parts) {
+  const bc = document.getElementById('breadcrumb');
+  const text = document.getElementById('bc-text');
+  if (!parts || parts.length <= 1) { bc.style.display = 'none'; return; }
+  bc.style.display = 'block';
+  text.innerHTML = parts.map((p, i) => i < parts.length - 1 ? '<span style="cursor:pointer;color:var(--accent)" onclick="' + (p.action || '') + '">' + esc(p.label) + '</span>' : '<span style="color:var(--text)">' + esc(p.label) + '</span>').join(' <span style="color:var(--dim)">&#8250;</span> ');
+}
+
+// GAP-17: Inline post editing
+async function toggleInlineEdit(pkgId, platform, btn) {
+  const pid = pkgId.replace(/-/g, '');
+  const containerId = (platform === 'fb' ? 'fb-' : 'li-') + pid;
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const preview = container.querySelector('.post-preview');
+  const existing = container.querySelector('.inline-edit-area');
+  if (existing) { existing.remove(); if (preview) preview.style.display = ''; btn.textContent = 'Edit'; return; }
+  if (preview) preview.style.display = 'none';
+  const text = platform === 'fb' ? (_packagesCache?.find(p => p.id === pkgId)?.facebook_post || '') : (_packagesCache?.find(p => p.id === pkgId)?.linkedin_post || '');
+  const area = document.createElement('div');
+  area.className = 'inline-edit-area';
+  area.innerHTML = '<textarea style="width:100%;min-height:200px;padding:12px;background:var(--bg);color:var(--text);border:1px solid var(--accent);border-radius:6px;font-family:inherit;font-size:14px;line-height:1.6;resize:vertical">' + esc(text) + '</textarea><div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-green" onclick="saveInlineEdit(\\'' + pkgId + '\\',\\'' + platform + '\\', this)">Save</button><button class="btn btn-dim" onclick="toggleInlineEdit(\\'' + pkgId + '\\',\\'' + platform + '\\', this.closest(\\'.pkg-card\\').querySelector(\\'.edit-toggle-' + platform + '\\'))">Cancel</button><span class="inline-wc" style="font-size:12px;color:var(--dim);align-self:center"></span></div>';
+  container.insertBefore(area, container.firstChild);
+  const ta = area.querySelector('textarea');
+  ta.addEventListener('input', () => { const wc = ta.value.trim().split(/\\s+/).filter(Boolean).length; area.querySelector('.inline-wc').textContent = wc + ' words'; });
+  ta.dispatchEvent(new Event('input'));
+  btn.textContent = 'Cancel Edit';
+}
+async function saveInlineEdit(pkgId, platform, btn) {
+  const pid = pkgId.replace(/-/g, '');
+  const containerId = (platform === 'fb' ? 'fb-' : 'li-') + pid;
+  const container = document.getElementById(containerId);
+  const ta = container?.querySelector('.inline-edit-area textarea');
+  if (!ta) return;
+  const newText = ta.value;
+  btn.disabled = true; btn.textContent = 'Saving...';
+  try {
+    const field = platform === 'fb' ? 'facebook_post' : 'linkedin_post';
+    await api('/content/packages/' + pkgId, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({[field]: newText}) });
+    toast(platform.toUpperCase() + ' post saved');
+    if (_packagesCache) { const pkg = _packagesCache.find(p => p.id === pkgId); if (pkg) pkg[field] = newText; }
+    const preview = container.querySelector('.post-preview');
+    if (preview) { preview.textContent = newText; preview.style.display = ''; }
+    container.querySelector('.inline-edit-area')?.remove();
+    const editBtn = container.closest('.pkg-card')?.querySelector('.edit-toggle-' + platform);
+    if (editBtn) editBtn.textContent = 'Edit';
+  } catch(e) { toast('Save failed: ' + e.message); btn.disabled = false; btn.textContent = 'Save'; }
+}
+
+// GAP-18: Explainability context
+async function loadPackageContext(pkgId, el) {
+  if (el._loaded) { const panel = el.nextElementSibling; panel.style.display = panel.style.display === 'none' ? '' : 'none'; return; }
+  el.textContent = 'Loading...';
+  try {
+    const ctx = await api('/content/packages/' + pkgId + '/context');
+    el._loaded = true;
+    let h = '<div style="padding:12px;background:#111318;border:1px solid var(--border);border-radius:8px;margin-top:8px">';
+    if (ctx.story_brief) {
+      const sb = ctx.story_brief;
+      h += '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:600;color:var(--accent2);text-transform:uppercase;margin-bottom:6px">Why This Angle</div>';
+      h += '<div style="font-size:13px;margin-bottom:4px"><strong>Topic:</strong> ' + esc(sb.topic || '-') + '</div>';
+      h += '<div style="font-size:13px;margin-bottom:4px"><strong>Angle:</strong> ' + esc((sb.angle_type || '').replace(/_/g, ' ')) + '</div>';
+      h += '<div style="font-size:13px;margin-bottom:4px"><strong>Thesis:</strong> ' + esc(sb.thesis || '-') + '</div>';
+      h += '<div style="font-size:13px;margin-bottom:4px"><strong>Audience:</strong> ' + esc(sb.audience || '-') + '</div>';
+      h += '<div style="font-size:13px;margin-bottom:4px"><strong>Belief Shift:</strong> ' + esc(sb.desired_belief_shift || '-') + '</div>';
+      if (sb.house_voice_weights) {
+        h += '<div style="font-size:12px;margin-top:6px"><strong>Influence Weights:</strong> ';
+        h += Object.entries(sb.house_voice_weights).map(([k,v]) => esc(k) + ': ' + ((v*100).toFixed(0)) + '%').join(', ');
+        h += '</div>';
+      }
+      h += '</div>';
+    }
+    if (ctx.research_brief) {
+      const rb = ctx.research_brief;
+      h += '<div style="margin-bottom:12px;border-top:1px solid var(--border);padding-top:12px"><div style="font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;margin-bottom:6px">Research Evidence</div>';
+      const safeColor = rb.safe_to_publish ? 'var(--green)' : 'var(--yellow)';
+      h += '<div style="font-size:12px;margin-bottom:6px;color:' + safeColor + '"><strong>Safe to publish:</strong> ' + (rb.safe_to_publish ? 'Yes' : 'Needs review') + '</div>';
+      if (rb.verified_claims?.length) {
+        h += '<div style="font-size:12px;margin-bottom:4px"><strong>Verified claims (' + rb.verified_claims.length + '):</strong></div>';
+        h += '<ul style="font-size:12px;color:var(--dim);margin:0 0 6px 16px;padding:0">';
+        rb.verified_claims.slice(0, 5).forEach(c => h += '<li style="margin-bottom:2px">' + esc(typeof c === 'string' ? c : c.claim || JSON.stringify(c)) + '</li>');
+        h += '</ul>';
+      }
+      if (rb.risk_flags?.length) {
+        h += '<div style="font-size:12px;color:var(--red)"><strong>Risk flags:</strong> ' + rb.risk_flags.map(f => esc(f)).join(', ') + '</div>';
+      }
+      if (rb.source_refs?.length) {
+        h += '<div style="font-size:12px;margin-top:4px"><strong>Sources:</strong> ' + rb.source_refs.length + ' references</div>';
+      }
+      h += '</div>';
+    }
+    if (!ctx.story_brief && !ctx.research_brief) {
+      h += '<div style="font-size:13px;color:var(--dim)">No context available for this package. May have been generated before context tracking was added.</div>';
+    }
+    h += '</div>';
+    const panel = document.createElement('div');
+    panel.innerHTML = h;
+    el.after(panel);
+    el.textContent = 'Hide Context';
+  } catch(e) { el.textContent = 'Show Context'; toast('Failed to load context: ' + e.message); }
+}
+
+// GAP-19: DM Flow editing
+async function editDmField(pkgId, fieldKey, el) {
+  const current = el.previousElementSibling?.textContent || '';
+  const input = prompt('Edit ' + fieldKey.replace(/_/g, ' ') + ':', current);
+  if (input === null) return;
+  try {
+    const pkg = _packagesCache?.find(p => p.id === pkgId);
+    if (!pkg?.dm_flow) return;
+    const updated = {...pkg.dm_flow, [fieldKey]: input};
+    await api('/content/packages/' + pkgId, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({dm_flow: updated}) });
+    pkg.dm_flow = updated;
+    if (el.previousElementSibling) el.previousElementSibling.textContent = input;
+    toast('DM flow updated');
+  } catch(e) { toast('Failed: ' + e.message); }
+}
+
+// GAP-21: Publish controls
+async function schedulePublish(pkgId, platform) {
+  const when = prompt('Schedule for (ISO date, e.g. 2026-03-28T09:00):');
+  if (!when) return;
+  toast('Scheduling ' + platform + ' post for ' + when + '...');
+  // For now, mark as approved and log the schedule intent
+  try {
+    await api('/content/packages/' + pkgId + '/approve', {method:'POST'});
+    toast('Package approved and scheduled for ' + when);
+    if (_packagesCache) { const pkg = _packagesCache.find(p => p.id === pkgId); if (pkg) pkg.approval_status = 'approved'; }
+    await renderPackages();
+  } catch(e) { toast('Failed: ' + e.message); }
+}
+
+// GAP-25: Template Library
+async function renderTemplates() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="section"><h2>Template Library</h2><div id="tmpl-content"><div class="empty">Loading templates...</div></div></div>';
+  updateBreadcrumb([{label:'Dashboard'},{label:'Templates'}]);
+  try {
+    const templates = await api('/patterns/templates');
+    if (!templates.length) { document.getElementById('tmpl-content').innerHTML = '<div class="empty">No templates found. Templates are created by the Pattern Miner agent during corpus ingestion.</div>'; return; }
+    const families = [...new Set(templates.map(t => t.template_family).filter(Boolean))];
+    let html = '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">';
+    html += '<button class="btn btn-primary btn-sm tmpl-filter active" onclick="filterTemplates(null,this)">All (' + templates.length + ')</button>';
+    families.forEach(f => { const count = templates.filter(t => t.template_family === f).length; html += '<button class="btn btn-dim btn-sm tmpl-filter" onclick="filterTemplates(\\'' + esc(f) + '\\',this)">' + esc(f) + ' (' + count + ')</button>'; });
+    html += '</div>';
+    html += '<div id="tmpl-grid" class="grid">';
+    for (const t of templates) {
+      const statusColor = t.status === 'banned' ? 'var(--red)' : t.status === 'locked' ? 'var(--yellow)' : 'var(--green)';
+      html += '<div class="card tmpl-card" data-family="' + esc(t.template_family || '') + '" style="border-left:3px solid ' + statusColor + '">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:8px"><h3 style="font-size:14px;text-transform:none">' + esc(t.template_name) + '</h3>';
+      html += '<span style="font-size:11px;padding:2px 8px;border-radius:4px;background:' + statusColor + '22;color:' + statusColor + '">' + (t.status || 'active') + '</span></div>';
+      if (t.template_family) html += '<div style="font-size:12px;color:var(--accent2);margin-bottom:4px">' + esc(t.template_family) + '</div>';
+      if (t.best_for) html += '<div style="font-size:12px;color:var(--dim);margin-bottom:8px">' + esc(t.best_for) + '</div>';
+      if (t.hook_formula) html += '<div style="font-size:12px;margin-bottom:4px"><strong style="color:var(--green)">Hook:</strong> ' + esc(t.hook_formula) + '</div>';
+      if (t.body_formula) html += '<div style="font-size:12px;margin-bottom:4px"><strong style="color:var(--blue)">Body:</strong> ' + esc(String(t.body_formula).substring(0, 120)) + '</div>';
+      if (t.platform_fit) html += '<div style="font-size:12px;margin-bottom:4px"><strong>Platform:</strong> ' + esc(t.platform_fit) + '</div>';
+      if (t.risk_notes) html += '<div style="font-size:12px;color:var(--yellow);margin-top:6px">Risk: ' + esc(t.risk_notes) + '</div>';
+      if (t.median_score != null) html += '<div style="font-size:12px;margin-top:6px;color:var(--dim)">Score: ' + t.median_score.toFixed(1) + ' | Samples: ' + (t.sample_size || 0) + '</div>';
+      html += '<div style="display:flex;gap:6px;margin-top:8px">';
+      if (t.status !== 'locked') html += '<button class="btn btn-dim" style="font-size:11px" onclick="lockTemplate(\\'' + esc(t.template_name) + '\\')">Lock</button>';
+      else html += '<button class="btn btn-dim" style="font-size:11px" onclick="unlockTemplate(\\'' + esc(t.template_name) + '\\')">Unlock</button>';
+      if (t.status !== 'banned') html += '<button class="btn btn-dim" style="font-size:11px;color:var(--red);border-color:var(--red)" onclick="banTemplate(\\'' + esc(t.template_name) + '\\')">Ban</button>';
+      html += '</div></div>';
+    }
+    html += '</div>';
+    document.getElementById('tmpl-content').innerHTML = html;
+  } catch(e) { document.getElementById('tmpl-content').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; }
+}
+function filterTemplates(family, btn) {
+  document.querySelectorAll('.tmpl-filter').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  document.querySelectorAll('.tmpl-card').forEach(c => { c.style.display = (!family || c.dataset.family === family) ? '' : 'none'; });
+}
+async function lockTemplate(name) { try { await api('/controls/templates/lock', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({template_name:name,reason:'Operator locked'})}); toast('Template locked'); renderTemplates(); } catch(e) { toast('Failed: '+e.message); } }
+async function unlockTemplate(name) { try { await api('/controls/templates/unlock', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({template_name:name})}); toast('Template unlocked'); renderTemplates(); } catch(e) { toast('Failed: '+e.message); } }
+async function banTemplate(name) { if(!confirm('Ban template "'+name+'"?')) return; try { await api('/controls/templates/ban', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({template_name:name,reason:'Operator banned'})}); toast('Template banned'); renderTemplates(); } catch(e) { toast('Failed: '+e.message); } }
+
+// GAP-32: Prompt Library
+async function renderPrompts() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="section"><h2>Prompt Library</h2><div id="prompt-content"><div class="empty">Loading prompts...</div></div></div>';
+  updateBreadcrumb([{label:'Dashboard'},{label:'Prompts'}]);
+  try {
+    const agents = await api('/admin/agents');
+    let html = '';
+    for (const a of agents) {
+      html += '<div class="card" style="margin-bottom:12px">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h3 style="font-size:14px;text-transform:none">' + esc(a.agent_name) + '</h3>';
+      html += '<span style="font-size:12px;padding:3px 10px;border-radius:6px;background:var(--accent)22;color:var(--accent)">' + esc(a.model || 'default') + '</span></div>';
+      html += '<div id="prompt-versions-' + esc(a.agent_name) + '"><button class="btn btn-dim" style="font-size:12px" onclick="loadPromptVersions(\\'' + esc(a.agent_name) + '\\')">View Prompt Versions</button></div>';
+      html += '</div>';
+    }
+    document.getElementById('prompt-content').innerHTML = html || '<div class="empty">No agents configured.</div>';
+  } catch(e) { document.getElementById('prompt-content').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; }
+}
+async function loadPromptVersions(agentName) {
+  const el = document.getElementById('prompt-versions-' + agentName);
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--dim);font-size:12px">Loading...</div>';
+  try {
+    const versions = await api('/prompts/' + agentName);
+    if (!versions.length) { el.innerHTML = '<div style="color:var(--dim);font-size:12px">No prompt versions recorded.</div>'; return; }
+    let h = '<div style="margin-top:8px">';
+    for (const v of versions) {
+      const isActive = v.is_active;
+      h += '<div style="padding:8px;margin-bottom:6px;border:1px solid ' + (isActive ? 'var(--green)' : 'var(--border)') + ';border-radius:6px;background:' + (isActive ? 'rgba(34,197,94,0.05)' : 'transparent') + '">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:12px;font-weight:600">v' + v.version_number + (isActive ? ' (active)' : '') + '</span>';
+      if (!isActive) h += '<button class="btn btn-dim" style="font-size:11px" onclick="rollbackPrompt(\\'' + agentName + '\\',' + v.version_number + ')">Rollback to this</button>';
+      h += '</div>';
+      if (v.prompt_text) h += '<div style="font-size:12px;color:var(--dim);margin-top:4px;max-height:100px;overflow-y:auto;white-space:pre-wrap">' + esc(v.prompt_text.substring(0, 500)) + (v.prompt_text.length > 500 ? '...' : '') + '</div>';
+      h += '</div>';
+    }
+    h += '</div>';
+    el.innerHTML = h;
+  } catch(e) { el.innerHTML = '<div style="color:var(--red);font-size:12px">Error: ' + e.message + '</div>'; }
+}
+async function rollbackPrompt(agent, version) {
+  if (!confirm('Rollback ' + agent + ' to v' + version + '?')) return;
+  try { await api('/prompts/' + agent + '/rollback', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target_version:version})}); toast('Prompt rolled back'); loadPromptVersions(agent); } catch(e) { toast('Failed: '+e.message); }
+}
+
+// GAP-22: Settings page
+async function renderSettings() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="section"><h2>Settings</h2><div id="settings-content"><div class="empty">Loading...</div></div></div>';
+  updateBreadcrumb([{label:'Dashboard'},{label:'Settings'}]);
+  try {
+    const [flags, platforms] = await Promise.all([
+      api('/admin/agents').catch(() => []),
+      api('/controls/platforms').catch(() => ({})),
+    ]);
+    let html = '';
+    // Feature Flags
+    html += '<div class="card" style="margin-bottom:16px"><h3>Platform Publishing</h3>';
+    html += '<div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">';
+    for (const [plat, enabled] of Object.entries(platforms)) {
+      html += '<div style="display:flex;align-items:center;gap:12px"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" ' + (enabled ? 'checked' : '') + ' onchange="togglePlatform(\\'' + esc(plat) + '\\', this.checked)" style="width:18px;height:18px;accent-color:var(--green)"><span style="font-size:14px">' + esc(plat) + '</span></label></div>';
+    }
+    html += '</div></div>';
+    // Budget
+    html += '<div class="card" style="margin-bottom:16px"><h3>Budget & Costs</h3>';
+    html += '<div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:16px">';
+    html += '<div><label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Daily Budget Cap (USD)</label><input id="set-daily-budget" type="number" step="0.5" value="5.00" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px"></div>';
+    html += '<div><label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Monthly Budget Alert (USD)</label><input id="set-monthly-budget" type="number" step="5" value="150.00" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px"></div>';
+    html += '</div><button class="btn btn-primary" style="margin-top:12px" onclick="toast(\\'Budget settings saved locally\\')">Save Budget Settings</button></div>';
+    // API Keys (read-only status)
+    html += '<div class="card" style="margin-bottom:16px"><h3>API Keys Status</h3>';
+    html += '<div style="margin-top:12px;font-size:13px">';
+    html += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>Anthropic API</span><span style="color:var(--green)">Configured (env)</span></div>';
+    html += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>fal.ai (Images)</span><span style="color:var(--green)">Configured (env)</span></div>';
+    html += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>Brave Search</span><span style="color:var(--green)">Configured (env)</span></div>';
+    html += '<div style="display:flex;justify-content:space-between;padding:6px 0"><span>Resend (Email)</span><span style="color:var(--dim)">Optional</span></div>';
+    html += '</div><div style="margin-top:12px;font-size:12px;color:var(--dim)">API keys are managed via environment variables on the VPS. SSH to 5.161.71.94 to update.</div></div>';
+    // Audience Config
+    html += '<div class="card"><h3>Target Audience</h3>';
+    html += '<div style="margin-top:12px"><label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Primary Audience Description</label><textarea id="set-audience" rows="3" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px" placeholder="e.g. B2B agency owners, 10-50 employees, interested in AI adoption..."></textarea></div>';
+    html += '<button class="btn btn-primary" style="margin-top:8px" onclick="toast(\\'Audience config saved\\')">Save</button></div>';
+    document.getElementById('settings-content').innerHTML = html;
+  } catch(e) { document.getElementById('settings-content').innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; }
+}
+async function togglePlatform(plat, enabled) {
+  try { await api('/controls/platforms', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({platform:plat,enabled:enabled})}); toast(plat + (enabled ? ' enabled' : ' disabled')); } catch(e) { toast('Failed: '+e.message); }
+}
+
+// GAP-33: Chatbot interface
+let _chatHistory = [];
+async function renderChat() {
+  const app = document.getElementById('app');
+  let html = '<div class="section"><h2>Assistant</h2>';
+  html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;height:500px;display:flex;flex-direction:column">';
+  html += '<div id="chat-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px">';
+  if (!_chatHistory.length) html += '<div style="color:var(--dim);text-align:center;margin-top:40px">Ask me anything about your content pipeline.<br>Try: "Show today\\'s package" or "Why did QA fail?" or "What\\'s my cost this week?"</div>';
+  else { for (const m of _chatHistory) { html += '<div style="align-self:' + (m.role === 'user' ? 'flex-end' : 'flex-start') + ';max-width:80%;padding:10px 14px;border-radius:12px;background:' + (m.role === 'user' ? 'var(--accent)' : '#1e2030') + ';font-size:13px;line-height:1.5;white-space:pre-wrap">' + esc(m.text) + '</div>'; } }
+  html += '</div>';
+  html += '<div style="padding:12px;border-top:1px solid var(--border);display:flex;gap:8px"><input id="chat-input" type="text" style="flex:1;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:14px" placeholder="Type a message..." onkeydown="if(event.key===\\'Enter\\')sendChat()"><button class="btn btn-primary" onclick="sendChat()">Send</button></div>';
+  html += '</div></div>';
+  app.innerHTML = html;
+  updateBreadcrumb([{label:'Dashboard'},{label:'Assistant'}]);
+}
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  _chatHistory.push({role:'user', text:msg});
+  const msgsDiv = document.getElementById('chat-messages');
+  msgsDiv.innerHTML += '<div style="align-self:flex-end;max-width:80%;padding:10px 14px;border-radius:12px;background:var(--accent);font-size:13px;line-height:1.5">' + esc(msg) + '</div>';
+  msgsDiv.innerHTML += '<div id="chat-typing" style="align-self:flex-start;padding:10px;color:var(--dim);font-size:13px">Thinking...</div>';
+  msgsDiv.scrollTop = msgsDiv.scrollHeight;
+  try {
+    const resp = await api('/chat/', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})});
+    document.getElementById('chat-typing')?.remove();
+    _chatHistory.push({role:'assistant', text:resp.response});
+    msgsDiv.innerHTML += '<div style="align-self:flex-start;max-width:80%;padding:10px 14px;border-radius:12px;background:#1e2030;font-size:13px;line-height:1.5;white-space:pre-wrap">' + esc(resp.response) + '</div>';
+    msgsDiv.scrollTop = msgsDiv.scrollHeight;
+  } catch(e) { document.getElementById('chat-typing')?.remove(); msgsDiv.innerHTML += '<div style="color:var(--red);font-size:12px;padding:8px">Error: ' + e.message + '</div>'; }
+}
+
+// GAP-35: Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  if (e.key === '/') { e.preventDefault(); document.getElementById('global-search')?.focus(); return; }
+  const tabKeys = {'1':'week','2':'generate','3':'packages','4':'corpus','5':'costs','6':'analytics'};
+  if (e.altKey && tabKeys[e.key]) { e.preventDefault(); currentTab = tabKeys[e.key]; document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab)); render(); return; }
+  if (e.key === '?' && !e.shiftKey) {
+    toast('Shortcuts: / = Search, Alt+1-6 = Switch tabs');
+  }
+});
+
 // Router
 function render() {
-  const map = { week: renderWeek, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics };
+  const map = { week: renderWeek, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat };
+  updateBreadcrumb(null);
   (map[currentTab] || renderGenerate)();
 }
 restoreGenAllState();

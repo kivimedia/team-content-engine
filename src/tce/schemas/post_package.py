@@ -39,6 +39,7 @@ class PostPackageUpdate(BaseModel):
     cta_keyword: str | None = None
     is_archived: bool | None = None
     hook_variants: list[str] | None = None
+    dm_flow: dict | None = None
 
 
 class PostPackageFull(PostPackageRead):

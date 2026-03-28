@@ -286,6 +286,151 @@ async def generate_images(
     return {"package_id": str(package_id), "results": generated}
 
 
+@router.get("/packages/{package_id}/context")
+async def get_package_context(
+    package_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Get explainability context for a package - story brief, research brief, plan context."""
+    from tce.models.content_calendar import ContentCalendarEntry as ContentCalendar
+    from tce.models.research_brief import ResearchBrief
+    from tce.models.story_brief import StoryBrief
+
+    pkg = await db.get(PostPackage, package_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Package not found")
+
+    context: dict = {"package_id": str(package_id)}
+
+    # Story brief
+    if pkg.brief_id:
+        brief = await db.get(StoryBrief, pkg.brief_id)
+        if brief:
+            context["story_brief"] = {
+                "topic": brief.topic,
+                "audience": brief.audience,
+                "angle_type": brief.angle_type,
+                "thesis": brief.thesis,
+                "desired_belief_shift": brief.desired_belief_shift,
+                "evidence_requirements": brief.evidence_requirements,
+                "cta_goal": brief.cta_goal,
+                "visual_job": brief.visual_job,
+                "house_voice_weights": brief.house_voice_weights,
+            }
+
+    # Research brief (find closest by topic from story brief)
+    if context.get("story_brief", {}).get("topic"):
+        topic_search = context["story_brief"]["topic"][:60]
+        res_result = await db.execute(
+            select(ResearchBrief)
+            .where(ResearchBrief.topic.ilike(f"%{topic_search}%"))
+            .order_by(ResearchBrief.created_at.desc())
+            .limit(1)
+        )
+        research = res_result.scalar_one_or_none()
+        if research:
+            context["research_brief"] = {
+                "topic": research.topic,
+                "verified_claims": research.verified_claims,
+                "uncertain_claims": research.uncertain_claims,
+                "source_refs": research.source_refs,
+                "safe_to_publish": research.safe_to_publish,
+                "risk_flags": research.risk_flags,
+                "thesis_candidates": research.thesis_candidates,
+            }
+
+    # Plan context from calendar entry
+    cal_result = await db.execute(
+        select(ContentCalendar)
+        .where(ContentCalendar.post_package_id == package_id)
+        .limit(1)
+    )
+    cal_entry = cal_result.scalar_one_or_none()
+    if cal_entry:
+        context["calendar"] = {
+            "date": str(cal_entry.date),
+            "day_of_week": cal_entry.day_of_week,
+            "angle_type": cal_entry.angle_type,
+            "topic": cal_entry.topic,
+            "operator_notes": cal_entry.operator_notes,
+        }
+        if cal_entry.plan_context:
+            context["plan_context"] = cal_entry.plan_context
+
+    return context
+
+
+@router.get("/search")
+async def search_content(
+    q: str,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """Search across packages, briefs, and templates."""
+    from tce.models.pattern_template import PatternTemplate
+    from tce.models.story_brief import StoryBrief
+
+    results = []
+    search_term = f"%{q}%"
+
+    # Search packages
+    pkg_result = await db.execute(
+        select(PostPackage)
+        .where(
+            (PostPackage.facebook_post.ilike(search_term))
+            | (PostPackage.linkedin_post.ilike(search_term))
+            | (PostPackage.cta_keyword.ilike(search_term))
+        )
+        .limit(20)
+    )
+    for pkg in pkg_result.scalars().all():
+        results.append({
+            "type": "package",
+            "id": str(pkg.id),
+            "title": (pkg.facebook_post or "")[:80],
+            "status": pkg.approval_status,
+            "cta": pkg.cta_keyword,
+            "date": str(pkg.created_at),
+        })
+
+    # Search story briefs
+    brief_result = await db.execute(
+        select(StoryBrief)
+        .where(
+            (StoryBrief.topic.ilike(search_term))
+            | (StoryBrief.thesis.ilike(search_term))
+        )
+        .limit(10)
+    )
+    for b in brief_result.scalars().all():
+        results.append({
+            "type": "brief",
+            "id": str(b.id),
+            "title": b.topic or "",
+            "thesis": b.thesis,
+            "date": str(b.created_at),
+        })
+
+    # Search templates
+    tmpl_result = await db.execute(
+        select(PatternTemplate)
+        .where(
+            (PatternTemplate.template_name.ilike(search_term))
+            | (PatternTemplate.template_family.ilike(search_term))
+            | (PatternTemplate.best_for.ilike(search_term))
+        )
+        .limit(10)
+    )
+    for t in tmpl_result.scalars().all():
+        results.append({
+            "type": "template",
+            "id": str(t.id),
+            "title": t.template_name,
+            "family": t.template_family,
+        })
+
+    return results
+
+
 @router.post("/packages/cleanup-dashes")
 async def cleanup_dashes(db: AsyncSession = Depends(get_db)) -> dict:
     """One-time cleanup: replace emdashes/en dashes in all existing packages."""
