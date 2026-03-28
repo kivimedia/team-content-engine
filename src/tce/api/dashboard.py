@@ -330,6 +330,20 @@ async function renderWeek() {
       window._weekMondayStr = fmtDate(monday);
     }
 
+    // Update Generate from Plan button based on package state
+    const genAllBtn = document.getElementById('gen-all-btn');
+    if (genAllBtn && !genAllState?.running) {
+      const allHavePackages = entries.length >= 5 && entries.every(e => e.post_package_id);
+      const someHavePackages = entries.some(e => e.post_package_id);
+      if (allHavePackages) {
+        genAllBtn.textContent = 'Regenerate All';
+        genAllBtn.className = 'btn btn-dim';
+      } else if (someHavePackages) {
+        const remaining = entries.filter(e => !e.post_package_id).length;
+        genAllBtn.textContent = 'Generate ' + remaining + ' Remaining';
+      }
+    }
+
     let html = '';
     for (let i = 0; i < 5; i++) {
       const d = new Date(monday); d.setDate(d.getDate() + i);
@@ -352,11 +366,15 @@ async function renderWeek() {
 
       html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto;gap:4px;flex-wrap:wrap">';
       if (entry) {
-        html += '<span class="day-status day-status-' + status + '">' + status.toUpperCase() + '</span>';
-        if (status === 'planned') {
+        const hasPackage = !!entry.post_package_id;
+        const stLabel = hasPackage && status === 'planned' ? 'READY' : status.toUpperCase();
+        const stClass = hasPackage && status === 'planned' ? 'ready' : status;
+        html += '<span class="day-status day-status-' + stClass + '">' + stLabel + '</span>';
+        if (hasPackage) {
+          html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="viewPackage(\\'' + entry.post_package_id + '\\')">Package</button>';
+          html += '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="runDayPipeline(' + i + ',\\'' + (entry?.id || '') + '\\')">Regenerate</button>';
+        } else if (status === 'planned' || status === 'approved') {
           html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="runDayPipeline(' + i + ',\\'' + (entry?.id || '') + '\\')">Generate</button>';
-        } else if (entry.post_package_id) {
-          html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="viewPackage(\\'' + entry.post_package_id + '\\')">View Package</button>';
         }
       } else {
         html += '<span class="day-status" style="background:var(--border);color:var(--dim)">UNPLANNED</span>';
