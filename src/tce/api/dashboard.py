@@ -99,6 +99,8 @@ option{background:var(--card);color:var(--text)}
 .week-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:16px 0}
 .day-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;min-height:180px;display:flex;flex-direction:column}
 .day-card.today{border-color:var(--accent);box-shadow:0 0 12px rgba(99,102,241,.2)}
+.day-card.dragging{opacity:0.4;border:2px dashed var(--accent)}
+.day-card.drag-over{outline:2px solid var(--green);outline-offset:-2px;background:rgba(34,197,94,.08)}
 .day-card .day-header{font-size:13px;color:var(--dim);margin-bottom:4px}
 .day-card .day-date{font-size:18px;font-weight:700;margin-bottom:8px}
 .day-card .day-angle{font-size:12px;color:var(--accent2);background:#1e1b4b;padding:3px 8px;border-radius:4px;display:inline-block;margin-bottom:8px;position:relative}
@@ -370,22 +372,18 @@ async function renderWeek() {
       const angle = entry ? entry.angle_type : ['big_shift_explainer','tactical_workflow_guide','contrarian_diagnosis','case_study_build_story','second_order_implication'][i];
       const status = entry ? entry.status : 'unplanned';
 
-      html += '<div class="day-card' + (isToday ? ' today' : '') + '" data-day-idx="' + i + '" data-day-date="' + ds + '" ondragover="event.preventDefault();this.style.outline=\\'2px solid var(--accent)\\'" ondragleave="this.style.outline=\\'\\'" ondrop="dropEntry(event,\\'' + ds + '\\',' + i + ')">';
+      const cardDrag = entry ? ' draggable="true" ondragstart="dragEntry(event,\\'' + entry.id + '\\',\\'' + ds + '\\')"' : '';
+      html += '<div class="day-card' + (isToday ? ' today' : '') + '" data-day-idx="' + i + '" data-day-date="' + ds + '"' + cardDrag + ' ondragover="event.preventDefault();this.classList.add(\\'drag-over\\')" ondragleave="this.classList.remove(\\'drag-over\\')" ondrop="this.classList.remove(\\'drag-over\\');dropEntry(event,\\'' + ds + '\\',' + i + ')" style="' + (entry ? 'cursor:grab' : '') + '">';
       html += '<div class="day-header">' + DAY_NAMES[i] + (isToday ? ' (TODAY)' : '') + '</div>';
       html += '<div class="day-date">' + d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + '</div>';
       const tip = ANGLE_TIPS[angle] || '';
       html += '<div class="day-angle" style="position:relative;cursor:help">' + (ANGLE_LABELS[angle] || angle.replace(/_/g,' '));
       if (tip) html += ' <span class="tip-icon" data-tip="' + esc(tip) + '">i</span>';
       html += '</div>';
-      if (entry?.topic) html += '<div class="day-topic" draggable="true" style="cursor:grab" ondragstart="dragEntry(event,\\'' + entry.id + '\\',\\'' + ds + '\\')">' + esc(entry.topic) + '</div>';
+      if (entry?.topic) html += '<div class="day-topic">' + esc(entry.topic) + '</div>';
       else html += '<div class="day-topic" style="color:var(--dim);font-style:italic">No topic set</div>';
       // GAP-31: Buffer toggle
       if (entry?.is_buffer) html += '<div style="font-size:10px;color:var(--yellow);margin-bottom:4px">Buffer post</div>';
-      if (entry?.operator_notes) html += '<div style="font-size:11px;color:var(--dim);margin-bottom:4px;cursor:pointer" title="Click to edit" onclick="this.style.display=\\'none\\';this.nextElementSibling.style.display=\\'block\\';this.nextElementSibling.querySelector(\\'input\\').focus()">' + esc(entry.operator_notes) + '</div>';
-      if (entry) {
-        html += '<div style="display:' + (entry.operator_notes ? 'none' : 'block') + ';margin-bottom:6px"><input type="text" placeholder="Add note..." value="' + esc(entry.operator_notes || '') + '" style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px" onblur="saveOperatorNote(\\'' + entry.id + '\\', this.value);if(this.value){this.parentElement.style.display=\\'none\\';this.parentElement.previousElementSibling.textContent=this.value;this.parentElement.previousElementSibling.style.display=\\'block\\'}">';
-        html += '</div>';
-      }
       html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto;gap:4px;flex-wrap:wrap">';
       if (entry) {
         const hasPackage = !!entry.post_package_id;
@@ -433,12 +431,16 @@ async function renderWeek() {
 function dragEntry(ev, entryId, fromDate) {
   ev.dataTransfer.setData('text/plain', JSON.stringify({entryId, fromDate}));
   ev.dataTransfer.effectAllowed = 'move';
-  ev.target.style.opacity = '0.5';
-  setTimeout(() => { if (ev.target) ev.target.style.opacity = '1'; }, 300);
+  const card = ev.target.closest('.day-card');
+  if (card) card.classList.add('dragging');
 }
+function dragEnd(ev) {
+  document.querySelectorAll('.day-card.dragging').forEach(c => c.classList.remove('dragging'));
+  document.querySelectorAll('.day-card.drag-over').forEach(c => c.classList.remove('drag-over'));
+}
+document.addEventListener('dragend', dragEnd);
 async function dropEntry(ev, toDate, toDayIdx) {
   ev.preventDefault();
-  ev.currentTarget.style.outline = '';
   try {
     const data = JSON.parse(ev.dataTransfer.getData('text/plain'));
     if (data.fromDate === toDate) return;
