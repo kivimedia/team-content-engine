@@ -310,10 +310,16 @@ async def generate_week(
                     await bg_db.commit()
 
                     # Build context for this day - inject the pre-planned brief
+                    # plan_context stores fields at root level (topic, thesis, etc.)
+                    # not nested under story_brief, so use the whole day_plan as fallback
+                    story_brief = day_plan.get("story_brief") or {
+                        k: v for k, v in day_plan.items()
+                        if k not in ("day_of_week", "connection_to_gift", "_weekly")
+                    }
                     day_context = {
                         **request.context,
                         "day_of_week": day_num,
-                        "story_brief": day_plan.get("story_brief", {}),
+                        "story_brief": story_brief,
                         "trend_brief": trend_brief,
                         "weekly_keyword": weekly_keyword,
                         "weekly_theme": weekly_theme,
