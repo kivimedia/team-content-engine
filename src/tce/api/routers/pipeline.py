@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import datetime
 from typing import Any
@@ -311,10 +312,15 @@ async def generate_week(
 
                     # Build context for this day - inject the pre-planned brief
                     # plan_context stores fields at root level (topic, thesis, etc.)
-                    # not nested under story_brief, so use the whole day_plan as fallback
-                    story_brief = day_plan.get("story_brief") or {
-                        k: v for k, v in day_plan.items()
-                        if k not in ("day_of_week", "connection_to_gift", "_weekly")
+                    # not nested under story_brief, so extract the key fields explicitly
+                    _raw = day_plan.get("story_brief") or day_plan
+                    _brief_keys = (
+                        "topic", "thesis", "audience", "angle_type", "day_label",
+                        "visual_job", "platform_notes", "desired_belief_shift",
+                        "evidence_requirements",
+                    )
+                    story_brief = {
+                        k: _raw[k] for k in _brief_keys if k in _raw
                     }
                     day_context = {
                         **request.context,
