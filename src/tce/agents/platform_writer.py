@@ -8,6 +8,24 @@ from typing import Any
 from tce.agents.base import AgentBase
 from tce.agents.registry import register_agent
 
+
+def _clean_dash(s: str) -> str:
+    """Replace emdashes, en dashes, and double dashes with single dash."""
+    return s.replace("\u2014", " - ").replace("\u2013", " - ").replace("--", " - ")
+
+
+def _clean_writer_output(result: dict) -> dict:
+    """Clean all text fields in writer output of emdashes/en dashes."""
+    for key in ("facebook_post", "linkedin_post", "rationale"):
+        if key in result and isinstance(result[key], str):
+            result[key] = _clean_dash(result[key])
+    if "hook_variants" in result and isinstance(result["hook_variants"], list):
+        result["hook_variants"] = [
+            _clean_dash(h) if isinstance(h, str) else h
+            for h in result["hook_variants"]
+        ]
+    return result
+
 FB_SYSTEM_PROMPT = """\
 You are the Facebook Writer for Team Content Engine. Your job is to write a \
 scroll-stopping, comment-triggering post that makes people engage.
@@ -166,6 +184,9 @@ class FacebookWriter(AgentBase):
         except json.JSONDecodeError:
             result = {"facebook_post": text, "hook_variants": [], "rationale": "raw output"}
 
+        # Clean emdashes/en dashes from all text fields
+        result = _clean_writer_output(result)
+
         wc = result.get("word_count", len(result.get("facebook_post", "").split()))
         hooks = result.get("hook_variants", [])
         self._report(f"FB post drafted ({wc} words, {len(hooks)} hook variants)")
@@ -219,6 +240,9 @@ class LinkedInWriter(AgentBase):
             result = self._parse_json_response(text)
         except json.JSONDecodeError:
             result = {"linkedin_post": text, "hook_variants": [], "rationale": "raw output"}
+
+        # Clean emdashes/en dashes from all text fields
+        result = _clean_writer_output(result)
 
         wc = result.get("word_count", len(result.get("linkedin_post", "").split()))
         hooks = result.get("hook_variants", [])

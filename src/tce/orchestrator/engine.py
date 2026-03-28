@@ -203,6 +203,7 @@ class PipelineOrchestrator:
 
                 # Generate actual images from creative director prompts
                 image_prompts = self.context.get("image_prompts", [])
+                logger.info("image_gen.check", has_prompts=bool(image_prompts), count=len(image_prompts), has_key=bool(self.settings.fal_api_key))
                 if image_prompts and self.settings.fal_api_key:
                     log_list = self.step_logs.get("creative_director", [])
                     import datetime
