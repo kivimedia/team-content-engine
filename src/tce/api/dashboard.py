@@ -370,30 +370,21 @@ async function renderWeek() {
       const angle = entry ? entry.angle_type : ['big_shift_explainer','tactical_workflow_guide','contrarian_diagnosis','case_study_build_story','second_order_implication'][i];
       const status = entry ? entry.status : 'unplanned';
 
-      html += '<div class="day-card' + (isToday ? ' today' : '') + '">';
+      html += '<div class="day-card' + (isToday ? ' today' : '') + '" data-day-idx="' + i + '" data-day-date="' + ds + '" ondragover="event.preventDefault();this.style.outline=\\'2px solid var(--accent)\\'" ondragleave="this.style.outline=\\'\\'" ondrop="dropEntry(event,\\'' + ds + '\\',' + i + ')">';
       html += '<div class="day-header">' + DAY_NAMES[i] + (isToday ? ' (TODAY)' : '') + '</div>';
       html += '<div class="day-date">' + d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + '</div>';
       const tip = ANGLE_TIPS[angle] || '';
       html += '<div class="day-angle" style="position:relative;cursor:help">' + (ANGLE_LABELS[angle] || angle.replace(/_/g,' '));
       if (tip) html += ' <span class="tip-icon" data-tip="' + esc(tip) + '">i</span>';
       html += '</div>';
-      if (entry?.topic) html += '<div class="day-topic">' + esc(entry.topic) + '</div>';
+      if (entry?.topic) html += '<div class="day-topic" draggable="true" style="cursor:grab" ondragstart="dragEntry(event,\\'' + entry.id + '\\',\\'' + ds + '\\')">' + esc(entry.topic) + '</div>';
       else html += '<div class="day-topic" style="color:var(--dim);font-style:italic">No topic set</div>';
-      if (entry?.operator_notes) html += '<div style="font-size:11px;color:var(--dim);margin-bottom:4px">' + esc(entry.operator_notes) + '</div>';
-      // GAP-20: Operator notes input
+      // GAP-31: Buffer toggle
+      if (entry?.is_buffer) html += '<div style="font-size:10px;color:var(--yellow);margin-bottom:4px">Buffer post</div>';
+      if (entry?.operator_notes) html += '<div style="font-size:11px;color:var(--dim);margin-bottom:4px;cursor:pointer" title="Click to edit" onclick="this.style.display=\\'none\\';this.nextElementSibling.style.display=\\'block\\';this.nextElementSibling.querySelector(\\'input\\').focus()">' + esc(entry.operator_notes) + '</div>';
       if (entry) {
-        html += '<div style="margin-bottom:6px"><input type="text" placeholder="Add note..." value="' + esc(entry.operator_notes || '') + '" style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px" onblur="saveOperatorNote(\\'' + entry.id + '\\', this.value)">';
-        // GAP-31: Buffer toggle
-        if (entry.is_buffer) html += '<span style="font-size:10px;color:var(--yellow);margin-top:2px;display:block">Buffer post</span>';
+        html += '<div style="display:' + (entry.operator_notes ? 'none' : 'block') + ';margin-bottom:6px"><input type="text" placeholder="Add note..." value="' + esc(entry.operator_notes || '') + '" style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px" onblur="saveOperatorNote(\\'' + entry.id + '\\', this.value);if(this.value){this.parentElement.style.display=\\'none\\';this.parentElement.previousElementSibling.textContent=this.value;this.parentElement.previousElementSibling.style.display=\\'block\\'}">';
         html += '</div>';
-      }
-
-      // GAP-30: Move to day dropdown
-      if (entry) {
-        html += '<div style="margin-top:4px"><select style="width:100%;padding:2px 4px;font-size:10px;background:var(--bg);color:var(--dim);border:1px solid var(--border);border-radius:3px" onchange="moveEntryToDay(\\'' + entry.id + '\\',this.value,\\'' + ds + '\\')">';
-        html += '<option value="">Move to...</option>';
-        for (let j=0;j<5;j++) { if (j!==i) { const dj=new Date(monday);dj.setDate(dj.getDate()+j); html+='<option value="'+fmtDate(dj)+'">'+DAY_NAMES[j]+'</option>'; }}
-        html += '</select></div>';
       }
       html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto;gap:4px;flex-wrap:wrap">';
       if (entry) {
@@ -438,12 +429,21 @@ async function renderWeek() {
 
 }
 
-// GAP-30: Move calendar entry to a different day
-async function moveEntryToDay(entryId, newDate, oldDate) {
-  if (!newDate) return;
+// Drag and drop for day cards
+function dragEntry(ev, entryId, fromDate) {
+  ev.dataTransfer.setData('text/plain', JSON.stringify({entryId, fromDate}));
+  ev.dataTransfer.effectAllowed = 'move';
+  ev.target.style.opacity = '0.5';
+  setTimeout(() => { if (ev.target) ev.target.style.opacity = '1'; }, 300);
+}
+async function dropEntry(ev, toDate, toDayIdx) {
+  ev.preventDefault();
+  ev.currentTarget.style.outline = '';
   try {
-    await api('/calendar/' + entryId, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:newDate})});
-    toast('Moved to ' + newDate);
+    const data = JSON.parse(ev.dataTransfer.getData('text/plain'));
+    if (data.fromDate === toDate) return;
+    await api('/calendar/' + data.entryId, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:toDate})});
+    toast('Moved to ' + toDate);
     renderWeek();
   } catch(e) { toast('Move failed: ' + e.message, false); }
 }
