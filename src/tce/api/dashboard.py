@@ -372,7 +372,7 @@ async function renderWeek() {
         const stClass = hasPackage && status === 'planned' ? 'ready' : status;
         html += '<span class="day-status day-status-' + stClass + '">' + stLabel + '</span>';
         if (hasPackage) {
-          html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="viewPackage(\\'' + entry.post_package_id + '\\')">Package</button>';
+          html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="viewPackage(\\'' + entry.post_package_id + '\\',' + i + ')">Package</button>';
           html += '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="runDayPipeline(' + i + ',\\'' + (entry?.id || '') + '\\')">Regenerate</button>';
         } else if (status === 'planned' || status === 'approved') {
           html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="runDayPipeline(' + i + ',\\'' + (entry?.id || '') + '\\')">Generate</button>';
@@ -1373,9 +1373,11 @@ async function retryOneDay(dayIndex) {
   renderWeek();
 }
 
-function viewPackage(pkgId) {
-  // Find which day this package belongs to and set the day filter
-  if (_pkgDayMapCache && _pkgDayMapCache[pkgId]) {
+function viewPackage(pkgId, dayNum) {
+  // Set the day filter - use explicit dayNum if provided, else try cache
+  if (dayNum !== undefined && dayNum !== null) {
+    pkgDayFilter = dayNum;
+  } else if (_pkgDayMapCache && _pkgDayMapCache[pkgId]) {
     pkgDayFilter = _pkgDayMapCache[pkgId].day;
   }
   // Switch to packages tab
