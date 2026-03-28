@@ -1134,27 +1134,41 @@ function saveGenAllState() {
   if (genAllState) sessionStorage.setItem('genAllState', JSON.stringify(genAllState));
   else sessionStorage.removeItem('genAllState');
 }
-function restoreGenAllState() {
+async function restoreGenAllState() {
+  // First check sessionStorage for same-tab refresh
   try {
     const saved = sessionStorage.getItem('genAllState');
     if (saved) {
       const parsed = JSON.parse(saved);
       if (parsed.running) {
-        // Only restore if it was actively running - resume polling
         genAllState = parsed;
         if (parsed.unified && parsed.weekId) {
-          // Unified flow - resume week polling
           resumeUnifiedGenAll();
         } else {
           resumeGenAll();
         }
         renderGenAllProgress();
+        return;
       } else {
-        // Completed/failed state - don't show stale results on refresh
         sessionStorage.removeItem('genAllState');
       }
     }
   } catch { /* ignore */ }
+  // No session state - ask server if a generation is currently active
+  try {
+    const active = await api('/pipeline/generate-week/active');
+    if (active.active && active.week_id) {
+      genAllState = { running: true, unified: true, weekId: active.week_id, total: 5, current: active.current_day >= 0 ? active.current_day : 0, results: [], phase: active.phase || 'running', phaseDetail: active.phase_detail || 'Generation in progress...', startTime: Date.now(), weeklyTheme: active.weekly_theme || '', giftTheme: active.gift_theme || '', weeklyKeyword: active.weekly_keyword || '' };
+      if (active.day_run_ids) {
+        for (let i = 0; i < active.day_run_ids.length; i++) {
+          genAllState.results[i] = { day: DAY_NAMES[i], status: 'done', runId: active.day_run_ids[i] };
+        }
+      }
+      saveGenAllState();
+      resumeUnifiedGenAll();
+      renderGenAllProgress();
+    }
+  } catch { /* server might not support /active yet */ }
 }
 async function resumeUnifiedGenAll() {
   if (!genAllState?.weekId) { genAllState.running = false; saveGenAllState(); renderGenAllProgress(); return; }

@@ -450,6 +450,15 @@ async def generate_week(
     }
 
 
+@router.get("/generate-week/active")
+async def get_active_generation() -> dict[str, Any]:
+    """Return the currently running generation, if any."""
+    for wid, status in _week_generation.items():
+        if status.get("status") == "running":
+            return {"active": True, "week_id": wid, **status}
+    return {"active": False}
+
+
 @router.get("/generate-week/{week_id}/status")
 async def get_week_generation_status(week_id: str) -> dict[str, Any]:
     """Get the status of a generate-week orchestration."""
