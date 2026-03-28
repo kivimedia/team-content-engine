@@ -632,6 +632,35 @@ async function aiRevisePost(packageId, platform) {
   }
 }
 
+async function useHook(packageId, hookIdx) {
+  const pid = packageId.replace(/-/g, '');
+  const pkg = _pkgCache?.find(p => p.id === packageId);
+  if (!pkg || !pkg.hook_variants?.[hookIdx]) { toast('Hook not found', false); return; }
+  const hook = pkg.hook_variants[hookIdx];
+  const replaceLine = (text) => {
+    if (!text) return text;
+    const lines = text.split('\\n');
+    lines[0] = hook;
+    return lines.join('\\n');
+  };
+  const updates = {};
+  if (pkg.facebook_post) updates.facebook_post = replaceLine(pkg.facebook_post);
+  if (pkg.linkedin_post) updates.linkedin_post = replaceLine(pkg.linkedin_post);
+  if (!Object.keys(updates).length) { toast('No posts to update', false); return; }
+  const btn = document.querySelector('#hooks-' + pid + ' [data-hi="' + hookIdx + '"]');
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+  try {
+    const result = await api('/content/packages/' + packageId, { method: 'PATCH', body: JSON.stringify(updates) });
+    const ci = _pkgCache.findIndex(p => p.id === packageId);
+    if (ci !== -1) { Object.assign(_pkgCache[ci], result); }
+    _renderPkgFromCache();
+    toast('Hook applied to posts');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Use this'; }
+    toast('Failed: ' + e.message, false);
+  }
+}
+
 function showPlanReview(planData, mondayStr) {
   const wp = planData.weekly_plan || {};
   const days = wp.days || [];
@@ -1737,8 +1766,14 @@ function _renderPkgCard(p) {
       html += '<div id="fb-' + pid + '"><div class="post-preview">' + esc(fbText || 'No Facebook post generated') + '</div></div>';
       html += '<div id="li-' + pid + '" style="display:none"><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div></div>';
       if (p.hook_variants?.length) {
-        html += '<div id="hooks-' + pid + '" class="post-preview" style="display:none">';
-        p.hook_variants.forEach((h, i) => html += (i + 1) + '. ' + esc(h) + '\\n\\n');
+        html += '<div id="hooks-' + pid + '" style="display:none">';
+        p.hook_variants.forEach((h, i) => {
+          const isCurrent = (p.facebook_post && p.facebook_post.split('\\n')[0] === h) || (p.linkedin_post && p.linkedin_post.split('\\n')[0] === h);
+          html += '<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;margin-bottom:6px;border-radius:8px;background:' + (isCurrent ? '#1a2e1a' : '#111318') + ';border:1px solid ' + (isCurrent ? 'var(--green)' : 'var(--border)') + '">';
+          html += '<div style="flex:1;font-size:13px;line-height:1.5;white-space:pre-wrap">' + (isCurrent ? '<span style="color:var(--green);font-size:11px;font-weight:600">ACTIVE</span><br>' : '') + esc(h) + '</div>';
+          if (!isCurrent) html += '<button data-hi="' + i + '" class="btn btn-dim" style="flex-shrink:0;font-size:11px;padding:4px 10px" onclick="useHook(\\'' + p.id + '\\',' + i + ')">Use this</button>';
+          html += '</div>';
+        });
         html += '</div>';
       }
       if (p.quality_scores) {
