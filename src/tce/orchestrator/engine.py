@@ -229,7 +229,8 @@ class PipelineOrchestrator:
 
                                 pkg = await self.db.get(PostPackage, pkg_id)
                                 if pkg and pkg.image_prompts:
-                                    updated = list(pkg.image_prompts)
+                                    import json as _json
+                                    updated = _json.loads(_json.dumps(pkg.image_prompts))
                                     for idx, g in enumerate(generated):
                                         if g.get("status") == "generated" and idx < len(updated):
                                             updated[idx]["image_url"] = g.get("image_url")

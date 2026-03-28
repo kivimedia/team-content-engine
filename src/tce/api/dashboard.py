@@ -1875,6 +1875,7 @@ function _renderPkgCard(p) {
           html += '<span style="font-size:12px;color:var(--dim)">Uses fal.ai Flux Pro (~$0.03/image, ' + p.image_prompts.length + ' images)</span>';
         } else {
           html += '<button class="btn btn-dim" id="gen-img-btn-' + pid + '" onclick="generateImages(\\'' + p.id + '\\', this)">Regenerate Images</button>';
+          html += '<button class="btn btn-blue" onclick="downloadAllImages(\\'' + p.id + '\\', this)">Download All</button>';
           html += '<span style="font-size:12px;color:var(--green)">Images generated</span>';
         }
         html += '</div>';
@@ -2148,21 +2149,40 @@ async function generateImages(packageId, btn) {
   btn.style.background = 'var(--yellow)';
   btn.style.color = '#000';
 
-  // Show progress
-  const pid = packageId.substring(0, 8);
+  // Show animated progress
+  const pid = packageId.replace(/-/g, '');
   const progressEl = document.getElementById('gen-img-progress-' + pid) || btn.parentElement.nextElementSibling;
+  let progressPct = 0;
+  let progressInterval = null;
   if (progressEl) {
     progressEl.innerHTML = '<div style="background:#1e1b4b;border:1px solid var(--accent);border-radius:8px;padding:14px;margin-bottom:12px">' +
-      '<div style="font-size:12px;color:var(--accent2);margin-bottom:8px">Generating images with fal.ai Flux Pro...</div>' +
+      '<div id="gen-img-status-' + pid + '" style="font-size:12px;color:var(--accent2);margin-bottom:8px">Sending to fal.ai Flux Pro...</div>' +
       '<div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">' +
-      '<div style="height:100%;background:var(--accent2);width:30%;border-radius:2px"></div>' +
+      '<div id="gen-img-bar-' + pid + '" style="height:100%;background:var(--accent2);width:0%;border-radius:2px;transition:width 0.5s ease"></div>' +
       '</div>' +
-      '<div style="font-size:11px;color:var(--dim);margin-top:6px">This may take 15-30 seconds per image...</div>' +
+      '<div id="gen-img-time-' + pid + '" style="font-size:11px;color:var(--dim);margin-top:6px">Starting image generation...</div>' +
       '</div>';
+    const startTime = Date.now();
+    const bar = document.getElementById('gen-img-bar-' + pid);
+    const statusEl = document.getElementById('gen-img-status-' + pid);
+    const timeEl = document.getElementById('gen-img-time-' + pid);
+    progressInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      if (progressPct < 85) progressPct += (85 - progressPct) * 0.03;
+      if (bar) bar.style.width = Math.round(progressPct) + '%';
+      if (timeEl) timeEl.textContent = elapsed + 's elapsed - ~15-30s per image...';
+      if (statusEl) {
+        if (elapsed < 5) statusEl.textContent = 'Sending to fal.ai Flux Pro...';
+        else if (elapsed < 15) statusEl.textContent = 'Generating images - AI is rendering...';
+        else if (elapsed < 30) statusEl.textContent = 'Still rendering - complex prompts take longer...';
+        else statusEl.textContent = 'Almost done - finalizing images...';
+      }
+    }, 500);
   }
 
   try {
     const resp = await fetch('/api/v1/content/packages/' + packageId + '/generate-images', { method: 'POST' });
+    if (progressInterval) clearInterval(progressInterval);
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       throw new Error(err.detail || 'Generation failed');
@@ -2171,26 +2191,28 @@ async function generateImages(packageId, btn) {
     const generated = data.results.filter(r => r.status === 'generated').length;
     const failed = data.results.filter(r => r.status === 'failed').length;
 
+    // Finish progress bar
+    const bar = document.getElementById('gen-img-bar-' + pid);
+    if (bar) bar.style.width = '100%';
+
     btn.textContent = generated + ' images generated!';
     btn.style.background = 'var(--green)';
     btn.style.color = '#000';
-    if (progressEl) progressEl.innerHTML = '';
+    setTimeout(() => { if (progressEl) progressEl.innerHTML = ''; }, 800);
     toast(generated + ' image(s) generated' + (failed ? ', ' + failed + ' failed' : ''));
 
     // Refresh packages and jump back to this package's Images tab
     const targetPkgId = packageId;
     setTimeout(async () => {
       await renderPackages();
-      // Find the package card and switch to Images tab
       setTimeout(() => {
-        const pid = targetPkgId.replace(/-/g, '');
-        const imgTab = document.getElementById('img-' + pid);
+        const tpid = targetPkgId.replace(/-/g, '');
+        const imgTab = document.getElementById('img-' + tpid);
         if (imgTab) {
-          // Find and click the Images tab button
           const card = imgTab.closest('.pkg-card');
           if (card) {
             const imgBtn = Array.from(card.querySelectorAll('.tabs button')).find(b => b.textContent.startsWith('Images'));
-            if (imgBtn) showPostTab(imgBtn, 'img-' + pid);
+            if (imgBtn) showPostTab(imgBtn, 'img-' + tpid);
             card.scrollIntoView({ behavior: 'smooth', block: 'center' });
             card.style.outline = '2px solid var(--green)';
             setTimeout(() => card.style.outline = '', 3000);
@@ -2199,6 +2221,7 @@ async function generateImages(packageId, btn) {
       }, 200);
     }, 500);
   } catch (e) {
+    if (progressInterval) clearInterval(progressInterval);
     btn.textContent = 'Failed - try again';
     btn.style.background = 'var(--red)';
     btn.style.color = '#fff';
@@ -2210,6 +2233,37 @@ async function generateImages(packageId, btn) {
       btn.style.color = '';
       btn.disabled = false;
     }, 3000);
+  }
+}
+
+async function downloadAllImages(packageId, btn) {
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Downloading...';
+  try {
+    const pkg = _packagesCache?.find(p => p.id === packageId);
+    if (!pkg || !pkg.image_prompts) { toast('No images found'); return; }
+    const images = pkg.image_prompts.filter(ip => ip.image_url);
+    if (!images.length) { toast('No generated images to download'); return; }
+    for (let i = 0; i < images.length; i++) {
+      const ip = images[i];
+      const name = (ip.prompt_name || ip.visual_job || 'image_' + (i+1)).replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+      const a = document.createElement('a');
+      a.href = ip.image_url;
+      a.download = name + '.jpg';
+      a.target = '_blank';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      if (i < images.length - 1) await new Promise(r => setTimeout(r, 500));
+    }
+    toast(images.length + ' image(s) downloading');
+  } catch (e) {
+    toast('Download failed: ' + e.message);
+  } finally {
+    btn.textContent = origText;
+    btn.disabled = false;
   }
 }
 
