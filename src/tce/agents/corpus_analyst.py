@@ -70,6 +70,9 @@ Return a JSON array of post objects.
 # File name patterns that indicate post corpus (not books/voice material)
 POST_CORPUS_PATTERNS = ["fb_profile", "fb_post", "post_example", "swipe_file", "corpus"]
 
+# File name patterns to EXCLUDE (books, voice material - not post corpus)
+EXCLUDE_PATTERNS = ["fully_booked", "other_half", "book"]
+
 
 @register_agent
 class CorpusAnalyst(AgentBase):
@@ -108,7 +111,7 @@ class CorpusAnalyst(AgentBase):
                 continue
 
             self._report(f"Analyzing {doc_name} ({len(doc_text)} chars)")
-            chunks = self._chunk_text(doc_text, max_chars=30000)
+            chunks = self._chunk_text(doc_text, max_chars=20000)
 
             for i, chunk in enumerate(chunks):
                 chunk_label = f"{doc_name} chunk {i + 1}/{len(chunks)}"
@@ -182,8 +185,8 @@ class CorpusAnalyst(AgentBase):
         corpus_docs = []
         for doc in all_docs:
             name_lower = doc.file_name.lower().replace(" ", "_")
-            is_corpus = any(pat in name_lower for pat in POST_CORPUS_PATTERNS)
-            if is_corpus:
+            is_excluded = any(pat in name_lower for pat in EXCLUDE_PATTERNS)
+            if not is_excluded:
                 corpus_docs.append(
                     {
                         "id": str(doc.id),
