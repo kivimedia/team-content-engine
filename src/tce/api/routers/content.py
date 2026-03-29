@@ -27,7 +27,11 @@ async def list_packages(
 ) -> list[PostPackage]:
     query = select(PostPackage).order_by(PostPackage.created_at.desc())
     if pipeline_run_id:
-        query = query.where(PostPackage.pipeline_run_id == pipeline_run_id)
+        try:
+            run_uuid = uuid.UUID(pipeline_run_id)
+        except ValueError:
+            run_uuid = pipeline_run_id
+        query = query.where(PostPackage.pipeline_run_id == run_uuid)
     if status:
         query = query.where(PostPackage.approval_status == status)
     if not include_archived:
