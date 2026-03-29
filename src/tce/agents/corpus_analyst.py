@@ -108,7 +108,7 @@ class CorpusAnalyst(AgentBase):
                 continue
 
             self._report(f"Analyzing {doc_name} ({len(doc_text)} chars)")
-            chunks = self._chunk_text(doc_text, max_chars=80000)
+            chunks = self._chunk_text(doc_text, max_chars=30000)
 
             for i, chunk in enumerate(chunks):
                 chunk_label = f"{doc_name} chunk {i + 1}/{len(chunks)}"
@@ -151,6 +151,7 @@ class CorpusAnalyst(AgentBase):
                         warnings.append(f"{chunk_label}: expected array, got {type(examples)}")
                 except json.JSONDecodeError:
                     # Try to salvage truncated JSON arrays
+                    self._report(f"{chunk_label}: JSON parse failed, attempting salvage (response {len(text)} chars)")
                     salvaged = self._salvage_truncated_json(text)
                     if salvaged:
                         for ex in salvaged:
@@ -159,6 +160,7 @@ class CorpusAnalyst(AgentBase):
                         all_examples.extend(salvaged)
                         self._report(f"{chunk_label}: salvaged {len(salvaged)} posts from truncated JSON")
                     else:
+                        self._report(f"{chunk_label}: salvage also failed, first 200 chars: {text[:200]}")
                         warnings.append(f"{chunk_label}: JSON parse error, salvage also failed")
 
         self._report(f"Total: {len(all_examples)} post examples from {len(docs)} documents")
