@@ -906,8 +906,9 @@ async function generateFromApprovedPlan(plan) {
           if (!genAllState.results[st.current_day]) genAllState.results[st.current_day] = { day: DAY_NAMES[st.current_day], status: 'running', stepStatus: {} };
           else genAllState.results[st.current_day].status = 'running';
         }
-        done = st.status === 'completed' || st.status === 'failed';
+        done = st.status === 'completed' || st.status === 'failed' || st.status === 'interrupted';
         if (st.status === 'failed') genAllState.errorMsg = st.error || 'Unknown error';
+        if (st.status === 'interrupted') { genAllState.phase = 'interrupted'; genAllState.phaseDetail = 'Generation was interrupted (server restarted). You can re-run Generate from the planner.'; genAllState.errorMsg = 'Server restarted during generation'; }
       } catch (pollErr) {
         pollFailCount++;
         if (pollFailCount >= 5) { genAllState.phase = 'failed'; genAllState.phaseDetail = 'Lost connection'; done = true; }
@@ -1017,7 +1018,7 @@ function renderGenAllProgress() {
   let html = '<div class="card" style="margin-bottom:16px;padding:16px">';
 
   // Phase-aware header
-  let headerText = 'Generation complete';
+  let headerText = s.phase === 'interrupted' ? 'Generation interrupted' : (s.phase === 'failed' ? 'Generation failed' : 'Generation complete');
   if (s.running) {
     if (s.unified) {
       if (s.phase === 'planning') headerText = 'Planning the week (trend scout + strategy)...';
@@ -1132,8 +1133,10 @@ function renderGenAllProgress() {
     const done = s.results.filter(r => r?.status === 'done').length;
     const fail = s.results.filter(r => r?.status === 'failed').length;
     html += '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
-    if (s.phase === 'failed' || s.phase === 'completed') {
-      html += '<span style="font-size:13px;color:' + (s.phase === 'failed' ? 'var(--red)' : 'var(--green)') + ';font-weight:600">' + (s.phase === 'failed' ? 'Failed: ' + (s.errorMsg || s.phaseDetail || 'Unknown error') : done + '/5 completed + guide built') + '</span>';
+    if (s.phase === 'failed' || s.phase === 'completed' || s.phase === 'interrupted') {
+      const phaseColor = s.phase === 'completed' ? 'var(--green)' : (s.phase === 'interrupted' ? 'var(--yellow)' : 'var(--red)');
+      const phaseMsg = s.phase === 'completed' ? done + '/5 completed + guide built' : (s.phase === 'interrupted' ? 'Interrupted: ' + (s.phaseDetail || 'Server restarted during generation') : 'Failed: ' + (s.errorMsg || s.phaseDetail || 'Unknown error'));
+      html += '<span style="font-size:13px;color:' + phaseColor + ';font-weight:600">' + phaseMsg + '</span>';
     } else {
       html += '<span style="font-size:13px;color:var(--green);font-weight:600">' + done + '/5 completed</span>';
       if (fail) html += '<span style="font-size:13px;color:var(--red)">' + fail + ' failed</span>';
@@ -1204,14 +1207,21 @@ async function restoreGenAllState() {
   try {
     const active = await api('/pipeline/generate-week/active');
     if (active.active && active.week_id) {
-      genAllState = { running: true, unified: true, weekId: active.week_id, total: 5, current: active.current_day >= 0 ? active.current_day : 0, results: [], phase: active.phase || 'running', phaseDetail: active.phase_detail || 'Generation in progress...', startTime: Date.now(), weeklyTheme: active.weekly_theme || '', giftTheme: active.gift_theme || '', weeklyKeyword: active.weekly_keyword || '' };
+      const isInterrupted = active.status === 'interrupted' || active.phase === 'interrupted';
+      genAllState = { running: !isInterrupted, unified: true, weekId: active.week_id, total: 5, current: active.current_day >= 0 ? active.current_day : 0, results: [], phase: active.phase || 'running', phaseDetail: active.phase_detail || 'Generation in progress...', startTime: Date.now(), weeklyTheme: active.weekly_theme || '', giftTheme: active.gift_theme || '', weeklyKeyword: active.weekly_keyword || '' };
       if (active.day_run_ids) {
         for (let i = 0; i < active.day_run_ids.length; i++) {
           genAllState.results[i] = { day: DAY_NAMES[i], status: 'done', runId: active.day_run_ids[i] };
         }
       }
+      if (isInterrupted) {
+        genAllState.errorMsg = 'Server restarted during generation';
+        genAllState.phaseDetail = 'Generation was interrupted (server restarted). You can re-run Generate from the planner.';
+      }
       saveGenAllState();
-      resumeUnifiedGenAll();
+      if (!isInterrupted) {
+        resumeUnifiedGenAll();
+      }
       renderGenAllProgress();
     }
   } catch { /* server might not support /active yet */ }
@@ -1236,8 +1246,9 @@ async function resumeUnifiedGenAll() {
           if (!genAllState.results[i]) genAllState.results[i] = { day: DAY_NAMES[i], status: 'done', runId: st.day_run_ids[i] };
         }
       }
-      done = st.status === 'completed' || st.status === 'failed';
+      done = st.status === 'completed' || st.status === 'failed' || st.status === 'interrupted';
       if (st.status === 'failed') genAllState.errorMsg = st.error || 'Unknown error';
+      if (st.status === 'interrupted') { genAllState.phase = 'interrupted'; genAllState.phaseDetail = 'Generation was interrupted (server restarted). You can re-run Generate from the planner.'; genAllState.errorMsg = 'Server restarted during generation'; }
     } catch (e) {
       failCount++;
       if (failCount >= 3) {

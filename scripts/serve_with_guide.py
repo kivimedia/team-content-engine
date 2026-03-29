@@ -552,6 +552,10 @@ def main():
             await session.commit()
             return {"status": "unarchived"}
 
+    # Mark any stale "running" week generations as interrupted (server restart)
+    from tce.api.routers.pipeline import _mark_stale_generations_interrupted
+    asyncio.run(_mark_stale_generations_interrupted())
+
     print("\nStarting TCE Dashboard...")
     print("Open: http://localhost:8000/dashboard")
     print("Guide visible in Packages tab")

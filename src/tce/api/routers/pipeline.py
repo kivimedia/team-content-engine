@@ -11,7 +11,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import get_db
@@ -27,8 +27,98 @@ router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 # In-memory store for active pipeline runs (DB is the source of truth for completed)
 _active_runs: dict[str, PipelineOrchestrator] = {}
 
-# Track the active generate-week orchestration
+# Track the active generate-week orchestration (in-memory cache, DB is source of truth)
 _week_generation: dict[str, dict] = {}
+
+
+# ---------------------------------------------------------------------------
+# DB-backed persistence for week generation status
+# ---------------------------------------------------------------------------
+
+async def _ensure_week_gen_table(db: AsyncSession) -> None:
+    """Create the week_generation_status table if it doesn't exist."""
+    await db.execute(text(
+        "CREATE TABLE IF NOT EXISTS week_generation_status ("
+        "  week_id TEXT PRIMARY KEY,"
+        "  status_json TEXT NOT NULL,"
+        "  updated_at TEXT NOT NULL"
+        ")"
+    ))
+    await db.commit()
+
+
+async def _persist_week_status(week_id: str, status: dict) -> None:
+    """Write current week generation status to DB (fire-and-forget safe)."""
+    try:
+        from tce.db.session import async_session
+        async with async_session() as db:
+            await _ensure_week_gen_table(db)
+            now = datetime.utcnow().isoformat()
+            await db.execute(text(
+                "INSERT INTO week_generation_status (week_id, status_json, updated_at) "
+                "VALUES (:wid, :sj, :ua) "
+                "ON CONFLICT(week_id) DO UPDATE SET status_json = :sj, updated_at = :ua"
+            ), {"wid": week_id, "sj": json.dumps(status), "ua": now})
+            await db.commit()
+    except Exception:
+        logger.warning("persist_week_status.failed", week_id=week_id, exc_info=True)
+
+
+async def _load_week_status(week_id: str, db: AsyncSession) -> dict | None:
+    """Load week generation status from DB."""
+    try:
+        await _ensure_week_gen_table(db)
+        row = (await db.execute(
+            text("SELECT status_json FROM week_generation_status WHERE week_id = :wid"),
+            {"wid": week_id},
+        )).first()
+        if row:
+            return json.loads(row[0])
+    except Exception:
+        logger.warning("load_week_status.failed", week_id=week_id, exc_info=True)
+    return None
+
+
+async def _load_active_week(db: AsyncSession) -> dict | None:
+    """Find any running week generation from DB."""
+    try:
+        await _ensure_week_gen_table(db)
+        row = (await db.execute(
+            text("SELECT status_json FROM week_generation_status "
+                 "WHERE json_extract(status_json, '$.status') = 'running' "
+                 "ORDER BY updated_at DESC LIMIT 1"),
+        )).first()
+        if row:
+            return json.loads(row[0])
+    except Exception:
+        logger.warning("load_active_week.failed", exc_info=True)
+    return None
+
+
+async def _mark_stale_generations_interrupted() -> None:
+    """On startup, mark any 'running' generations as interrupted (server restarted)."""
+    try:
+        from tce.db.session import async_session
+        async with async_session() as db:
+            await _ensure_week_gen_table(db)
+            rows = (await db.execute(
+                text("SELECT week_id, status_json FROM week_generation_status "
+                     "WHERE json_extract(status_json, '$.status') = 'running'"),
+            )).all()
+            for row in rows:
+                status = json.loads(row[1])
+                status["status"] = "interrupted"
+                status["phase"] = "interrupted"
+                status["phase_detail"] = "Server restarted during generation"
+                await db.execute(text(
+                    "UPDATE week_generation_status SET status_json = :sj, updated_at = :ua "
+                    "WHERE week_id = :wid"
+                ), {"wid": row[0], "sj": json.dumps(status), "ua": datetime.utcnow().isoformat()})
+            await db.commit()
+            if rows:
+                logger.info("marked_stale_generations", count=len(rows))
+    except Exception:
+        logger.warning("mark_stale_generations.failed", exc_info=True)
 
 
 class PipelineRunRequest(BaseModel):
@@ -206,6 +296,10 @@ async def generate_week(
 
         status = _week_generation[week_id]
 
+        async def _save() -> None:
+            """Persist current status to both in-memory cache and DB."""
+            await _persist_week_status(week_id, status)
+
         async with async_session() as bg_db:
             try:
                 # --- Phase 1: Weekly Planner (skipped if approved_plan provided) ---
@@ -214,6 +308,7 @@ async def generate_week(
                     status["phase"] = "planning"
                     status["phase_detail"] = "Using approved plan (skipping planning phase)..."
                     status["planner_run_id"] = None
+                    await _save()
 
                     weekly_plan = request.approved_plan
                     trend_brief = {}
@@ -231,6 +326,7 @@ async def generate_week(
                     status["phase_detail"] = (
                         "Running weekly planner (trend scout + strategic planning)..."
                     )
+                    await _save()
 
                     planner_steps = WORKFLOWS["weekly_planner"]
                     planner_run_id = uuid.uuid4()
@@ -269,6 +365,7 @@ async def generate_week(
                     _active_runs.pop(str(planner_run_id), None)
 
                     status["planner_run_id"] = str(planner_run_id)
+                    await _save()
 
                     # Extract the weekly plan from the orchestrator context
                     ctx = planner_result.get("context", {})
@@ -282,6 +379,7 @@ async def generate_week(
                         status["phase"] = "failed"
                         status["error"] = "Weekly planner did not produce a valid plan"
                         status["status"] = "failed"
+                        await _save()
                         return
 
                 status["weekly_theme"] = weekly_theme
@@ -293,11 +391,13 @@ async def generate_week(
                 daily_steps = WORKFLOWS["daily_from_plan"]
                 days = weekly_plan.get("days", [])
                 day_run_ids: list[str] = []
+                await _save()
 
                 for i, day_plan in enumerate(days):
                     day_num = day_plan.get("day_of_week", i)
                     status["phase_detail"] = f"Generating day {i + 1}/5 (day_of_week={day_num})..."
                     status["current_day"] = i
+                    await _save()
 
                     day_run_id = uuid.uuid4()
                     day_record = PipelineRun(
@@ -361,10 +461,12 @@ async def generate_week(
                     day_run_ids.append(str(day_run_id))
 
                 status["day_run_ids"] = day_run_ids
+                await _save()
 
                 # --- Phase 3: Build the weekly guide ---
                 status["phase"] = "building_guide"
                 status["phase_detail"] = "Building weekly guide from all 5 days..."
+                await _save()
 
                 guide_steps = WORKFLOWS["guide_only"]
                 guide_run_id = uuid.uuid4()
@@ -418,12 +520,14 @@ async def generate_week(
                 status["phase"] = "completed"
                 status["phase_detail"] = "All 5 days + guide generated successfully"
                 status["status"] = "completed"
+                await _save()
 
             except Exception as e:
                 logger.exception("generate_week.error", week_id=week_id)
                 status["phase"] = "failed"
                 status["error"] = str(e)
                 status["status"] = "failed"
+                await _save()
 
     # Initialize status tracking
     _week_generation[week_id] = {
@@ -441,6 +545,9 @@ async def generate_week(
         "error": None,
     }
 
+    # Persist initial state to DB immediately
+    await _persist_week_status(week_id, _week_generation[week_id])
+
     asyncio.create_task(_run_week())
 
     return {
@@ -451,17 +558,54 @@ async def generate_week(
 
 
 @router.get("/generate-week/active")
-async def get_active_generation() -> dict[str, Any]:
-    """Return the currently running generation, if any."""
+async def get_active_generation(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return the currently running generation, if any.
+
+    Checks in-memory cache first, falls back to DB for cross-restart recovery.
+    """
+    # Check in-memory first (fast path for same-process)
     for wid, status in _week_generation.items():
         if status.get("status") == "running":
             return {"active": True, "week_id": wid, **status}
+
+    # Fall back to DB (handles server restart case)
+    db_status = await _load_active_week(db)
+    if db_status and db_status.get("status") == "running":
+        # Server restarted while generation was running - mark as interrupted
+        db_status["status"] = "interrupted"
+        db_status["phase"] = "interrupted"
+        db_status["phase_detail"] = "Server restarted - generation was interrupted"
+        wid = db_status.get("week_id", "unknown")
+        await _persist_week_status(wid, db_status)
+        # Return the interrupted status so frontend can show what happened
+        return {"active": True, "week_id": wid, **db_status}
+
     return {"active": False}
 
 
 @router.get("/generate-week/{week_id}/status")
-async def get_week_generation_status(week_id: str) -> dict[str, Any]:
-    """Get the status of a generate-week orchestration."""
-    if week_id not in _week_generation:
-        raise HTTPException(status_code=404, detail="Week generation not found")
-    return _week_generation[week_id]
+async def get_week_generation_status(
+    week_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Get the status of a generate-week orchestration.
+
+    Checks in-memory cache first, falls back to DB for cross-restart recovery.
+    """
+    if week_id in _week_generation:
+        return _week_generation[week_id]
+
+    # Fall back to DB
+    db_status = await _load_week_status(week_id, db)
+    if db_status:
+        # If DB says running but we don't have it in memory, it was interrupted
+        if db_status.get("status") == "running":
+            db_status["status"] = "interrupted"
+            db_status["phase"] = "interrupted"
+            db_status["phase_detail"] = "Server restarted - generation was interrupted"
+            await _persist_week_status(week_id, db_status)
+        return db_status
+
+    raise HTTPException(status_code=404, detail="Week generation not found")
