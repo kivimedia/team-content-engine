@@ -45,6 +45,7 @@ select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/tce/api/dashboard.py" = ["E501"]
+"src/tce/agents/docx_guide_builder.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

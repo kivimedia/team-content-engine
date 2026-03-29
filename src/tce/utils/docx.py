@@ -306,6 +306,59 @@ def _render_callout(doc, section: dict) -> None:
     _add_callout_box(doc, label, content, bg, text_color)
 
 
+def _render_quick_win(doc, section: dict) -> None:
+    """Render a Quick Win section - interactive worksheet with empty fill-in table."""
+    title = section.get("title", "Your 15-Minute Quick Win")
+    instruction = section.get("instruction", "")
+    headers = section.get("table_headers", [])
+    num_rows = section.get("table_rows", 5)
+    what_you_learn = section.get("what_you_learn", "")
+
+    # Section heading
+    p_h = doc.add_paragraph()
+    p_h.paragraph_format.space_before = Pt(24)
+    p_h.paragraph_format.space_after = Pt(12)
+    _add_run(p_h, title, bold=True, size=20, color=CLR_NEAR_BLACK)
+
+    # Instruction paragraph
+    if instruction:
+        _add_styled_paragraph(doc, instruction, space_after=12)
+
+    # Worksheet table: header row + blank data rows
+    if headers:
+        num_cols = len(headers)
+        table = doc.add_table(rows=num_rows + 1, cols=num_cols)
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+        # Header row - light blue background
+        for col_idx, header_text in enumerate(headers):
+            cell = table.cell(0, col_idx)
+            _set_cell_shading(cell, BG_BLUE_CALLOUT)
+            _set_cell_margins(cell, top=60, bottom=60, left=100, right=100)
+            _set_cell_border(cell, color="93C5FD", sz=4)
+            cell.paragraphs[0].clear()
+            _add_run(
+                cell.paragraphs[0], header_text, bold=True, size=10, color=CLR_BLUE_DARK
+            )
+
+        # Data rows - white background, thin borders
+        for row_idx in range(1, num_rows + 1):
+            for col_idx in range(num_cols):
+                cell = table.cell(row_idx, col_idx)
+                _set_cell_shading(cell, "FFFFFF")
+                _set_cell_margins(cell, top=50, bottom=50, left=100, right=100)
+                _set_cell_border(cell, color="CBD5E1", sz=2)
+                cell.paragraphs[0].clear()
+                # Empty cell - reader fills it in
+                _add_run(cell.paragraphs[0], " ", size=10, color=CLR_BODY)
+
+    # "What you'll learn" callout
+    if what_you_learn:
+        _add_callout_box(
+            doc, "WHAT YOU'LL LEARN", what_you_learn, BG_AMBER_CALLOUT, CLR_AMBER_DARK
+        )
+
+
 def _render_comparison(doc, section: dict) -> None:
     """Render a red/green comparison table."""
     title = section.get("title", "")
@@ -471,12 +524,32 @@ def _render_closing(doc, section: dict, guide_data: dict) -> None:
         p_big.paragraph_format.space_after = Pt(16)
         _add_run(p_big, headline, bold=True, size=18 if is_short else 13, color=CLR_NEAR_BLACK)
 
-    for i, step_text in enumerate(section.get("recap_steps", []), 1):
-        p = doc.add_paragraph()
-        p.paragraph_format.space_before = Pt(6)
-        p.paragraph_format.space_after = Pt(6)
-        _add_run(p, f"{i}. ", bold=True, size=12, color=CLR_BLUE)
-        _add_run(p, step_text, size=12, color=CLR_NEAR_BLACK)
+    # "What You Now Have" - concrete outputs the reader produced
+    you_now_have = section.get("you_now_have", [])
+    if you_now_have:
+        p_label = doc.add_paragraph()
+        p_label.paragraph_format.space_before = Pt(12)
+        p_label.paragraph_format.space_after = Pt(6)
+        _add_run(p_label, "WHAT YOU NOW HAVE:", bold=True, size=11, color=CLR_BLUE)
+
+        for item_text in you_now_have:
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(4)
+            p.paragraph_format.space_after = Pt(4)
+            p.paragraph_format.left_indent = Pt(18)
+            p.paragraph_format.first_line_indent = Pt(-14)
+            _add_run(p, "\u2713  ", size=11, color=CLR_BLUE)
+            _add_run(p, item_text, size=11, color=CLR_NEAR_BLACK)
+
+    # Fallback: legacy recap_steps (backward compat)
+    recap_steps = section.get("recap_steps", [])
+    if recap_steps and not you_now_have:
+        for i, step_text in enumerate(recap_steps, 1):
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(6)
+            p.paragraph_format.space_after = Pt(6)
+            _add_run(p, f"{i}. ", bold=True, size=12, color=CLR_BLUE)
+            _add_run(p, step_text, size=12, color=CLR_NEAR_BLACK)
 
     _add_light_rule(doc)
 
@@ -538,6 +611,7 @@ def _setup_footer(doc, author_name: str, author_url: str) -> None:
 SECTION_RENDERERS = {
     "narrative": _render_narrative,
     "callout": _render_callout,
+    "quick_win": _render_quick_win,
     "comparison": _render_comparison,
     "framework": _render_framework,
     "scenarios": _render_scenarios,

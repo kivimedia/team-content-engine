@@ -31,25 +31,55 @@ ZERO internal content. The following must NEVER appear in the guide:
 - The word "operator" or references to content scheduling
 
 THE GUIDE MUST INCLUDE:
-1. An opening narrative that hooks with a real story, builds tension, and \
-   establishes the problem. Weave in the audience's frustration naturally - \
-   don't label it "Audience and Current Frustration."
-2. A comparison table showing the before/after belief shift visually. \
-   The reader should see which side they're currently on.
-3. A framework section with 3-5 numbered steps/layers. Each step must include \
-   an explanation, bullet points, and end with a concrete ACTION the reader can take.
-4. A scenario section with 3-5 "What to do when..." situations. Each gives a \
-   specific situation the reader might face and a concrete response/recommendation.
-5. A closing section with a bold headline summarizing the core message, \
-   3-4 numbered recap steps, and a soft CTA.
+1. An opening narrative that hooks with a REAL statistic, study, or event from \
+   the research brief. NO invented characters or fictional stories. If the \
+   research brief contains a verified claim with a number, lead with it. \
+   Weave in the audience's frustration naturally - don't label it.
+2. A callout box with the key insight from the opening.
+3. A Quick Win section - a single concrete exercise the reader can complete in \
+   under 15 minutes that produces a VISIBLE result (a filled worksheet, a score, \
+   a decision). This appears BEFORE the framework so the reader has already DONE \
+   something before they even get to the main content.
+4. A comparison table showing the before/after belief shift visually.
+5. A framework section with 3-5 numbered steps. Each step must be completable \
+   in ONE SITTING (not "evaluate your entire org"). Each step MUST include a \
+   specific deliverable: "After this step you'll have: [a list / a score / a \
+   decision / a document]". At least one step must include a fill-in template, \
+   checklist, or scoring rubric. Ban vague actions like "identify", "consider", \
+   "evaluate" unless paired with a specific method or tool.
+6. A scenario section with 3-5 "What to do when..." situations with concrete \
+   responses.
+7. A closing section with a bold headline, a "you_now_have" list of 3-4 concrete \
+   things the reader produced by following the guide, and a soft CTA.
+
+EVIDENCE RULES:
+- Every claim must trace to a specific source from the research brief. If you \
+  can't cite it, don't say it.
+- The opening MUST use a real stat, study, or event from the research brief.
+- NO invented characters ("Sarah Chen stared at her dashboard..."). If a story \
+  isn't from the research brief's verified_claims, don't fabricate one.
+- Include at least 3 specific numbers/stats from the research brief in the body.
+- Ban empty credibility claims: never write "Studies show..." or "Research \
+  indicates..." without naming the actual study or source.
+
+ANTI-SLOP RULES - these phrases are BANNED:
+- "In today's..." / "In an era of..." / "In the rapidly evolving..."
+- "It's no secret..." / "The landscape is shifting..."
+- "Here's the thing:" / "Let's dive in" / "Let's break it down"
+- "Game-changer" / "Unlock" / "Leverage" / "Navigate" / "Harness"
+- "Embrace" / "Empower" / "Revolutionize" / "Cutting-edge"
+- Rhetorical questions as transitions ("But what does this mean for you?")
+- Any sentence that could appear in any guide on any topic - be specific.
+
+GENEROSITY TEST:
+Before finalizing, ask yourself: if someone paid $49 for this guide, would they \
+feel they got their money's worth? If not, add more substance. The reader gave \
+you their email - that's currency. Respect it.
 
 DESIGN RULES:
 - Write as if the reader is a smart professional who values their time
-- Every claim must be grounded in evidence from the research brief
 - Use specific numbers, names, and examples - never generic filler
-- The framework must be something the reader can actually implement
 - Scenarios must feel like real situations the reader has faced or will face
-- No AI-slop preambles ("In today's fast-paced world...")
 - Length: 2000-4000 words of actual content (not counting structure)
 
 OUTPUT FORMAT (JSON):
@@ -60,13 +90,21 @@ OUTPUT FORMAT (JSON):
     {
       "type": "narrative",
       "title": "Section title",
-      "content": "Multiple paragraphs separated by double newlines. Use - for bullet lists."
+      "content": "Multiple paragraphs separated by double newlines. Opening MUST use a real stat or event from the research brief. No fictional characters."
     },
     {
       "type": "callout",
       "label": "KEY INSIGHT",
       "content": "Important callout text",
       "callout_style": "amber"
+    },
+    {
+      "type": "quick_win",
+      "title": "Your 15-Minute Quick Win",
+      "instruction": "Clear instruction for a concrete exercise the reader does RIGHT NOW. Must produce a visible result.",
+      "table_headers": ["Column 1 Header", "Column 2 Header", "Column 3 Header"],
+      "table_rows": 5,
+      "what_you_learn": "One sentence explaining what the completed exercise reveals."
     },
     {
       "type": "comparison",
@@ -85,7 +123,8 @@ OUTPUT FORMAT (JSON):
           "label": "Step name",
           "explanation": "What this step means and why it matters",
           "bullets": ["Specific point 1", "Specific point 2"],
-          "action": "Concrete thing the reader should do right now"
+          "action": "Concrete thing the reader does in ONE SITTING - not 'evaluate your org'",
+          "deliverable": "After this step you'll have: [specific output]"
         }
       ]
     },
@@ -103,7 +142,7 @@ OUTPUT FORMAT (JSON):
     {
       "type": "closing",
       "headline": "Bold statement summarizing the core message (1-2 sentences)",
-      "recap_steps": ["Step 1 recap", "Step 2 recap", "Step 3 recap"],
+      "you_now_have": ["Concrete thing 1 the reader produced", "Concrete thing 2", "Concrete thing 3"],
       "cta": "Soft CTA - invitation to connect or learn more"
     }
   ],
@@ -111,12 +150,13 @@ OUTPUT FORMAT (JSON):
 }
 
 SECTION ORDER: You must include sections in this order:
-1. narrative (opening story/hook)
+1. narrative (opening - real stat/event, no fake stories)
 2. callout (key insight from the opening)
-3. comparison (before/after belief shift)
-4. framework (the main value - numbered steps with actions)
-5. scenarios (practical "what to do when" situations)
-6. closing (bottom line + recap)
+3. quick_win (15-minute exercise with visible output)
+4. comparison (before/after belief shift)
+5. framework (steps with completable actions + deliverables)
+6. scenarios (practical "what to do when" situations)
+7. closing (bottom line + "what you now have" + soft CTA)
 
 You may add additional narrative or callout sections between framework steps \
 for flow, but the core structure must follow this order.
@@ -255,8 +295,13 @@ class DocxGuideBuilder(AgentBase):
                 self._report(f"    [{sec_type}] {title} ({len(s.get('steps', []))} steps)")
             elif sec_type == "scenarios":
                 self._report(f"    [{sec_type}] {title} ({len(s.get('scenarios', []))} scenarios)")
+            elif sec_type == "quick_win":
+                self._report(f"    [{sec_type}] {title} ({len(s.get('table_headers', []))} cols)")
             elif sec_type == "closing":
                 self._report(f"    [{sec_type}] {s.get('headline', '')[:80]}")
+                you_now_have = s.get("you_now_have", [])
+                if you_now_have:
+                    self._report(f"      you_now_have: {len(you_now_have)} items")
             else:
                 self._report(f"    [{sec_type}] {title} ({len(s.get('content', ''))} chars)")
 
