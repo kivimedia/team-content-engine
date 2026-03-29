@@ -196,8 +196,25 @@ class AgentBase(ABC):
                 except json.JSONDecodeError:
                     pass
 
-        # Find the first { ... } block (outermost braces)
+        # Find the first [ ... ] block (array) or { ... } block (object)
+        bracket_start = cleaned.find("[")
         brace_start = cleaned.find("{")
+
+        # Try array first if it appears before the first object
+        if bracket_start != -1 and (brace_start == -1 or bracket_start < brace_start):
+            depth = 0
+            for i in range(bracket_start, len(cleaned)):
+                if cleaned[i] == "[":
+                    depth += 1
+                elif cleaned[i] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(cleaned[bracket_start : i + 1])
+                        except json.JSONDecodeError:
+                            break
+
+        # Try object
         if brace_start != -1:
             depth = 0
             for i in range(brace_start, len(cleaned)):

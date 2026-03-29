@@ -135,6 +135,12 @@ class CorpusAnalyst(AgentBase):
                 text = self._extract_text(response)
                 try:
                     examples = self._parse_json_response(text)
+                    # Handle dict wrapper - LLM sometimes returns {"post_examples": [...]}
+                    if isinstance(examples, dict):
+                        for key in ("post_examples", "posts", "examples", "data"):
+                            if key in examples and isinstance(examples[key], list):
+                                examples = examples[key]
+                                break
                     if isinstance(examples, list):
                         for ex in examples:
                             ex["document_id"] = str(doc_id)
