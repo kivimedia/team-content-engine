@@ -128,7 +128,7 @@ class CorpusAnalyst(AgentBase):
                         }
                     ],
                     system=SYSTEM_PROMPT,
-                    max_tokens=8192,
+                    max_tokens=16384,
                     temperature=0.2,
                 )
 
@@ -149,8 +149,17 @@ class CorpusAnalyst(AgentBase):
                         self._report(f"{chunk_label}: found {len(examples)} posts")
                     else:
                         warnings.append(f"{chunk_label}: expected array, got {type(examples)}")
-                except json.JSONDecodeError as e:
-                    warnings.append(f"{chunk_label}: JSON parse error: {e}")
+                except json.JSONDecodeError:
+                    # Try to salvage truncated JSON arrays
+                    salvaged = self._salvage_truncated_json(text)
+                    if salvaged:
+                        for ex in salvaged:
+                            ex["document_id"] = str(doc_id)
+                            ex["source_file"] = doc_name
+                        all_examples.extend(salvaged)
+                        self._report(f"{chunk_label}: salvaged {len(salvaged)} posts from truncated JSON")
+                    else:
+                        warnings.append(f"{chunk_label}: JSON parse error, salvage also failed")
 
         self._report(f"Total: {len(all_examples)} post examples from {len(docs)} documents")
         return {
@@ -187,6 +196,44 @@ class CorpusAnalyst(AgentBase):
                 )
 
         return corpus_docs
+
+    @staticmethod
+    def _salvage_truncated_json(text: str) -> list[dict[str, Any]] | None:
+        """Try to extract complete JSON objects from a truncated array response."""
+        import re
+
+        # Find the start of the JSON array
+        match = re.search(r"\[", text)
+        if not match:
+            return None
+
+        # Extract everything after the opening bracket
+        content = text[match.start() + 1 :]
+        # Find all complete JSON objects using brace matching
+        objects = []
+        i = 0
+        while i < len(content):
+            if content[i] == "{":
+                depth = 0
+                for j in range(i, len(content)):
+                    if content[j] == "{":
+                        depth += 1
+                    elif content[j] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                obj = json.loads(content[i : j + 1])
+                                objects.append(obj)
+                            except json.JSONDecodeError:
+                                pass
+                            i = j + 1
+                            break
+                else:
+                    break  # Truncated - no closing brace
+            else:
+                i += 1
+
+        return objects if objects else None
 
     def _chunk_text(self, text: str, max_chars: int = 80000) -> list[str]:
         """Split text into chunks, trying to break at paragraph boundaries."""
