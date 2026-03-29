@@ -10,6 +10,7 @@ the most recently generated guide JSON into the DB on startup.
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 import uuid
 from datetime import date, datetime, timedelta
@@ -23,6 +24,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "tce_local.db")
 DB_URL = f"sqlite+aiosqlite:///{DB_PATH}"
 os.environ["TCE_DATABASE_URL"] = DB_URL
+
+# Register SQLite adapters for Python types that PostgreSQL handles natively.
+# ARRAY and JSONB columns store list/dict values - SQLite needs them as JSON strings.
+# UUID columns (PG_UUID compiled to TEXT) need string conversion.
+sqlite3.register_adapter(list, lambda v: json.dumps(v))
+sqlite3.register_adapter(dict, lambda v: json.dumps(v))
+sqlite3.register_adapter(uuid.UUID, lambda v: str(v))
 
 import uvicorn
 from sqlalchemy import text
