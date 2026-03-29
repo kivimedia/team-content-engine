@@ -27,14 +27,39 @@ os.environ["TCE_DATABASE_URL"] = DB_URL
 
 # Register SQLite adapters for Python types that PostgreSQL handles natively.
 # ARRAY and JSONB columns store list/dict values - SQLite needs them as JSON strings.
-# UUID columns (PG_UUID compiled to TEXT) need string conversion.
 sqlite3.register_adapter(list, lambda v: json.dumps(v))
 sqlite3.register_adapter(dict, lambda v: json.dumps(v))
-sqlite3.register_adapter(uuid.UUID, lambda v: str(v))
 
 import uvicorn
-from sqlalchemy import text
+from sqlalchemy import Uuid as _SA_Uuid, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+# Fix UUID storage format: SQLAlchemy's built-in Uuid type stores as CHAR(32) hex (no dashes)
+# on non-PG backends, but our manual INSERTs use dashed format (str(uuid4())).
+# Override the Uuid type to use dashed TEXT on SQLite so everything is consistent.
+_orig_uuid_bp = _SA_Uuid.bind_processor
+_orig_uuid_rp = _SA_Uuid.result_processor
+
+def _uuid_bind_sqlite(self, dialect):
+    if dialect.name == "sqlite":
+        def process(value):
+            if value is not None:
+                return str(value) if isinstance(value, uuid.UUID) else value
+            return None
+        return process
+    return _orig_uuid_bp(self, dialect)
+
+def _uuid_result_sqlite(self, dialect, coltype):
+    if dialect.name == "sqlite":
+        def process(value):
+            if value is not None:
+                return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+            return None
+        return process
+    return _orig_uuid_rp(self, dialect, coltype)
+
+_SA_Uuid.bind_processor = _uuid_bind_sqlite
+_SA_Uuid.result_processor = _uuid_result_sqlite
 
 # Register SQLite compilers for PostgreSQL-specific column types.
 # This lets Base.metadata.create_all() work on SQLite with models that use JSONB/ARRAY/PG_UUID.
