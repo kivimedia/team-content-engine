@@ -22,9 +22,12 @@ router = APIRouter(prefix="/content", tags=["content"])
 async def list_packages(
     status: str | None = None,
     include_archived: bool = False,
+    pipeline_run_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> list[PostPackage]:
     query = select(PostPackage).order_by(PostPackage.created_at.desc())
+    if pipeline_run_id:
+        query = query.where(PostPackage.pipeline_run_id == pipeline_run_id)
     if status:
         query = query.where(PostPackage.approval_status == status)
     if not include_archived:

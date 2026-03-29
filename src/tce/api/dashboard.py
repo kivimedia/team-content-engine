@@ -4634,18 +4634,26 @@ async function pollPolish() {
       clearInterval(polishPollInterval); polishPollInterval = null;
       activePolishRun = null; localStorage.removeItem('tce_active_polish');
       _pkgCache = null;
+      // Clear the textarea to avoid confusion
+      const ta = document.getElementById('polish-copy-input');
+      if (ta) ta.value = '';
       // Fetch the created package and render inline
       if (r.pipeline_run_id) {
         try {
-          const pkgs = await api('/content/packages');
-          const pkg = pkgs.find(p => p.pipeline_run_id === r.pipeline_run_id);
+          const pkgs = await api('/content/packages?pipeline_run_id=' + encodeURIComponent(r.pipeline_run_id));
+          const pkg = pkgs && pkgs.length > 0 ? pkgs[0] : null;
           if (pkg) {
-            container.innerHTML = badges + '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span style="color:var(--green);font-weight:600;font-size:15px">Package created successfully!</span><button class="btn btn-dim" style="font-size:11px" onclick="openBrainstorm(\\''+pkg.id+'\\')">Brainstorm</button></div>' + _renderPkgCard(pkg) + '</div>';
+            let hdr = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">';
+            hdr += '<span style="color:var(--green);font-weight:600;font-size:15px">Package created!</span>';
+            hdr += '<button class="btn btn-dim" style="font-size:11px" onclick="openBrainstorm(\\'' + pkg.id + '\\')">Brainstorm</button>';
+            hdr += '<button class="btn btn-blue" style="font-size:11px" onclick="switchTab(\\'packages\\')">View in Packages</button>';
+            hdr += '</div>';
+            container.innerHTML = badges + '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">' + hdr + _renderPkgCard(pkg) + '</div>';
             return;
           }
-        } catch(e) { /* fall through */ }
+        } catch(e) { console.error('Failed to render inline package:', e); }
       }
-      container.innerHTML = badges + '<div style="margin-top:12px;color:var(--green);font-weight:600">Package created successfully! Check the Packages tab.</div>';
+      container.innerHTML = badges + '<div style="margin-top:12px;color:var(--green);font-weight:600">Package created successfully! <button class="btn btn-blue" style="font-size:12px;margin-left:8px" onclick="switchTab(\\'packages\\')">View in Packages</button></div>';
     } else if (r.status === 'failed' || r.status === 'interrupted') {
       container.innerHTML = badges + '<div style="margin-top:12px;color:var(--red);font-weight:600">Failed: ' + esc(r.error || r.phase_detail || 'Unknown error') + '</div>';
       if (btn) { btn.disabled = false; btn.textContent = 'Polish & Build Package'; }
