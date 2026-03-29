@@ -71,9 +71,70 @@ from sqlalchemy.ext.compiler import compiles
 def _jsonb_sqlite(type_, compiler, **kw):
     return "JSON"
 
+# JSONB bind/result processors for SQLite
+_orig_jsonb_bp = JSONB.bind_processor
+_orig_jsonb_rp = JSONB.result_processor
+
+def _jsonb_bind_sqlite(self, dialect):
+    if dialect.name == "sqlite":
+        def process(value):
+            if value is not None:
+                return json.dumps(value)
+            return None
+        return process
+    orig = _orig_jsonb_bp(self, dialect)
+    return orig
+
+def _jsonb_result_sqlite(self, dialect, coltype):
+    if dialect.name == "sqlite":
+        def process(value):
+            if value is not None and isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return value
+        return process
+    orig = _orig_jsonb_rp(self, dialect, coltype)
+    return orig
+
+JSONB.bind_processor = _jsonb_bind_sqlite
+JSONB.result_processor = _jsonb_result_sqlite
+
 @compiles(ARRAY, "sqlite")
 def _array_sqlite(type_, compiler, **kw):
     return "JSON"
+
+# ARRAY bind/result processors: SQLAlchemy's ARRAY iterates strings as chars on SQLite.
+# Override to store as JSON string and parse back correctly.
+_orig_array_bp = ARRAY.bind_processor
+_orig_array_rp = ARRAY.result_processor
+
+def _array_bind_sqlite(self, dialect):
+    if dialect.name == "sqlite":
+        def process(value):
+            if value is not None:
+                return json.dumps(value)
+            return None
+        return process
+    orig = _orig_array_bp(self, dialect)
+    return orig
+
+def _array_result_sqlite(self, dialect, coltype):
+    if dialect.name == "sqlite":
+        def process(value):
+            if value is not None and isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return value
+        return process
+    orig = _orig_array_rp(self, dialect, coltype)
+    return orig
+
+ARRAY.bind_processor = _array_bind_sqlite
+ARRAY.result_processor = _array_result_sqlite
 
 @compiles(PG_UUID, "sqlite")
 def _pguuid_sqlite(type_, compiler, **kw):
@@ -585,9 +646,14 @@ def main():
             await session.commit()
             return {"status": "unarchived"}
 
-    # Mark any stale "running" week generations as interrupted (server restart)
+    # Mark any stale "running" week generations as interrupted (server restart).
+    # MUST use a FastAPI startup event - NOT asyncio.run() - because asyncio.run()
+    # creates a separate event loop that poisons SQLAlchemy's greenlet context.
     from tce.api.routers.pipeline import _mark_stale_generations_interrupted
-    asyncio.run(_mark_stale_generations_interrupted())
+
+    @app.on_event("startup")
+    async def _startup_mark_stale():
+        await _mark_stale_generations_interrupted()
 
     print("\nStarting TCE Dashboard...")
     print("Open: http://localhost:8000/dashboard")

@@ -1,9 +1,21 @@
 """Schemas for PostPackage."""
 
+import json
 import uuid
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
+
+
+def _parse_json_str(v: Any) -> Any:
+    """Parse JSON strings from SQLite back to Python objects."""
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return v
 
 
 class PostPackageCreate(BaseModel):
@@ -30,6 +42,11 @@ class PostPackageRead(BaseModel):
     pipeline_run_id: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("hook_variants", "image_prompts", "dm_flow", "quality_scores", mode="before")
+    @classmethod
+    def parse_json_strings(cls, v: Any) -> Any:
+        return _parse_json_str(v)
 
 
 class PostPackageUpdate(BaseModel):

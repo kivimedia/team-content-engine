@@ -20,6 +20,9 @@ from tce.models.source_document import SourceDocument
 from tce.models.story_brief import StoryBrief
 from tce.models.system_version import SystemVersion
 from tce.models.trend_brief import TrendBrief
+from tce.models.narration_script import NarrationScript
+from tce.models.render_queue import RenderQueueJob
+from tce.models.video_asset import VideoAsset
 from tce.models.weekly_guide import WeeklyGuide
 
 __all__ = [
@@ -38,10 +41,13 @@ __all__ = [
     "PostPackage",
     "PromptVersion",
     "QAScorecard",
+    "NarrationScript",
+    "RenderQueueJob",
     "ResearchBrief",
     "SourceDocument",
     "StoryBrief",
     "SystemVersion",
     "TrendBrief",
+    "VideoAsset",
     "WeeklyGuide",
 ]

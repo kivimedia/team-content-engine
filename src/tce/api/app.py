@@ -2,8 +2,13 @@
 
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from tce.settings import settings
 
 from tce.api import dashboard
 from tce.api.routers import (
@@ -18,6 +23,7 @@ from tce.api.routers import (
     experiments,
     feedback,
     health,
+    narration,
     notifications,
     onboarding,
     operator_controls,
@@ -28,6 +34,7 @@ from tce.api.routers import (
     qa,
     relearning,
     trends,
+    videos,
 )
 from tce.api.routers import (
     scheduler as scheduler_router,
@@ -96,9 +103,16 @@ def create_app() -> FastAPI:
     app.include_router(operator_controls.router, prefix=prefix)
     app.include_router(dm_fulfillment.router, prefix=prefix)
     app.include_router(relearning.router, prefix=prefix)
+    app.include_router(videos.router, prefix=prefix)
+    app.include_router(narration.router, prefix=prefix)
 
     # Dashboard - no API prefix, served at root /dashboard
     app.include_router(dashboard.router)
+
+    # Static file serving for rendered videos and audio
+    media_dir = Path(settings.video_output_dir)
+    media_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/media", StaticFiles(directory=str(media_dir)), name="media")
 
     return app
 

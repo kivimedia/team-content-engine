@@ -161,6 +161,11 @@ let pollInterval = null;
 let verboseMode = localStorage.getItem('tce_verbose') === 'true';
 let showArchived = false;
 let genAllState = null; // {running, current, total, startTime, results: [{day, status, stepStatus, startTime}]}
+let activePolishRun = localStorage.getItem('tce_active_polish') || null;
+let polishPollInterval = null;
+let polishStartTime = null;
+let brainstormHistory = [];
+let brainstormPackageId = null;
 const AGENT_LABELS = {
   trend_scout: 'Scanning Trends', story_strategist: 'Building Story Brief',
   research_agent: 'Verifying Research', facebook_writer: 'Writing Facebook Post',
@@ -169,6 +174,7 @@ const AGENT_LABELS = {
   corpus_analyst: 'Analyzing Corpus', engagement_scorer: 'Scoring Engagement',
   pattern_miner: 'Mining Patterns', docx_guide_builder: 'Building Guide',
   weekly_planner: 'Planning Week', learning_agent: 'Learning from Feedback',
+  copy_analyzer: 'Analyzing Copy', copy_polisher: 'Polishing Copy',
 };
 
 // Nav
@@ -1507,8 +1513,42 @@ async function renderGenerate() {
         </label>
       </div>
       <div id="pipeline-status"></div>
+    </div>
+    <div class="section" style="margin-top:32px">
+      <h2>Start From Copy</h2>
+      <p style="font-size:13px;color:var(--dim);margin-bottom:12px">Paste copy you already wrote. The agent team will analyze it, match it to a template, polish it into FB + LI drafts, generate image prompts, and QA the result.</p>
+      <div class="card">
+        <div style="margin-bottom:12px">
+          <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Your copy</label>
+          <textarea id="polish-copy-text" rows="8" style="width:100%;resize:vertical;min-height:120px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark" placeholder="Paste your draft copy here..."></textarea>
+        </div>
+        <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:12px">
+          <div>
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Platform</label>
+            <select id="polish-platform" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+              <option value="both" style="background:var(--card);color:var(--text)">Both (FB + LI)</option>
+              <option value="facebook" style="background:var(--card);color:var(--text)">Facebook only</option>
+              <option value="linkedin" style="background:var(--card);color:var(--text)">LinkedIn only</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">CTA Keyword (optional)</label>
+            <input type="text" id="polish-cta" placeholder="e.g. agency-growth" style="width:180px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+          </div>
+          <div style="flex:1;min-width:200px">
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Notes (optional)</label>
+            <input type="text" id="polish-notes" placeholder="Any extra instructions for the team..." style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="btn btn-primary" id="polish-btn" onclick="runPolishCopy()">Polish & Build Package</button>
+          <span id="polish-elapsed" style="font-size:12px;color:var(--dim)"></span>
+        </div>
+        <div id="polish-status" style="margin-top:12px"></div>
+      </div>
     </div>`;
   if (activePipelineRun) { pollPipeline(); if(!pollInterval) pollInterval = setInterval(pollPipeline, 3000); }
+  if (activePolishRun) { pollPolish(); if(!polishPollInterval) polishPollInterval = setInterval(pollPolish, 3000); }
   updateWfDesc();
 }
 
@@ -1844,6 +1884,8 @@ function _renderPkgCard(p) {
       if (fbWc) html += '<span style="color:var(--accent2);font-weight:600">FB: ' + fbWc + ' words</span>';
       if (liWc) html += '<span style="color:var(--accent2);font-weight:600">LI: ' + liWc + ' words</span>';
       if (p.pipeline_run_id) html += '<span>Run: ' + p.pipeline_run_id.substring(0, 8) + '</span>';
+      const tplName = p.quality_scores?.matched_template?.template_name;
+      if (tplName) html += '<span style="color:var(--yellow)">Template: <strong>' + esc(tplName) + '</strong></span>';
       html += '</div>';
       // Tabs
       html += '<div class="tabs">';
@@ -1853,11 +1895,13 @@ function _renderPkgCard(p) {
       if (p.quality_scores) html += '<button onclick="showPostTab(this,\\'qa-' + pid + '\\')">QA Scores</button>';
       if (p.dm_flow) html += '<button onclick="showPostTab(this,\\'dm-' + pid + '\\')">DM Flow</button>';
       if (p.image_prompts?.length) html += '<button onclick="showPostTab(this,\\'img-' + pid + '\\')">Images (' + p.image_prompts.length + ')</button>';
+      html += '<button onclick="showPostTab(this,\\'vid-' + pid + '\\');loadVideos(\\'' + p.id + '\\',\\'' + pid + '\\')">Videos</button>';
+      html += '<button onclick="showPostTab(this,\\'scr-' + pid + '\\');loadScripts(\\'' + p.id + '\\',\\'' + pid + '\\')">Script</button>';
       html += '</div>';
-      html += '<div id="fb-' + pid + '"><div class="post-preview">' + esc(fbText || 'No Facebook post generated') + '</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-dim edit-toggle-fb" style="font-size:11px" onclick="toggleInlineEdit(\\'' + p.id + '\\',\\'fb\\',this)">Edit</button></div></div>';
-      html += '<div id="li-' + pid + '" style="display:none"><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-dim edit-toggle-li" style="font-size:11px" onclick="toggleInlineEdit(\\'' + p.id + '\\',\\'li\\',this)">Edit</button></div></div>';
+      html += '<div id="fb-' + pid + '" class="tab-pane"><div class="post-preview">' + esc(fbText || 'No Facebook post generated') + '</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-dim edit-toggle-fb" style="font-size:11px" onclick="toggleInlineEdit(\\'' + p.id + '\\',\\'fb\\',this)">Edit</button></div></div>';
+      html += '<div id="li-' + pid + '" class="tab-pane" style="display:none"><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-dim edit-toggle-li" style="font-size:11px" onclick="toggleInlineEdit(\\'' + p.id + '\\',\\'li\\',this)">Edit</button></div></div>';
       if (p.hook_variants?.length) {
-        html += '<div id="hooks-' + pid + '" style="display:none">';
+        html += '<div id="hooks-' + pid + '" class="tab-pane" style="display:none">';
         const currentHook = (p.facebook_post || p.linkedin_post || '').split('\\n')[0];
         html += '<div style="padding:12px;margin-bottom:10px;border-radius:8px;background:#1a2e1a;border:1px solid var(--green)">';
         html += '<div style="font-size:11px;font-weight:600;color:var(--green);margin-bottom:4px">CURRENT HOOK</div>';
@@ -1873,7 +1917,7 @@ function _renderPkgCard(p) {
         html += '</div>';
       }
       if (p.quality_scores) {
-        html += '<div id="qa-' + pid + '" style="display:none">';
+        html += '<div id="qa-' + pid + '" class="tab-pane" style="display:none">';
         // Composite score badge
         const composite = p.quality_scores.composite_score || p.quality_scores.overall;
         if (composite != null) {
@@ -1908,7 +1952,7 @@ function _renderPkgCard(p) {
       }
       if (p.dm_flow) {
         const dm = p.dm_flow;
-        html += '<div id="dm-' + pid + '" style="display:none">';
+        html += '<div id="dm-' + pid + '" class="tab-pane" style="display:none">';
         html += '<div style="display:flex;flex-direction:column;gap:12px">';
         if (dm.trigger) {
           html += '<div style="background:#1e1b4b;border:1px solid var(--accent);border-radius:8px;padding:14px">';
@@ -1968,7 +2012,7 @@ function _renderPkgCard(p) {
       }
       if (p.image_prompts?.length) {
         const hasAnyImages = p.image_prompts.some(ip => ip.image_url);
-        html += '<div id="img-' + pid + '" style="display:none">';
+        html += '<div id="img-' + pid + '" class="tab-pane" style="display:none">';
         // Generate Images button
         html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">';
         if (!hasAnyImages) {
@@ -2052,6 +2096,35 @@ function _renderPkgCard(p) {
         }
         html += '</div></div>';
       }
+      // Videos tab
+      html += '<div id="vid-' + pid + '" class="tab-pane" style="display:none">';
+      html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">';
+      html += '<button class="btn btn-blue" onclick="generateVideos(\\'' + p.id + '\\', this)">Generate Videos</button>';
+      html += '<span id="vid-status-' + pid + '" style="font-size:12px;color:var(--dim)">Click to render video templates from this package</span>';
+      html += '</div>';
+      html += '<div id="vid-progress-' + pid + '"></div>';
+      html += '<div id="vid-grid-' + pid + '" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px"></div>';
+      html += '</div>';
+
+      // Script tab
+      html += '<div id="scr-' + pid + '" class="tab-pane" style="display:none">';
+      html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">';
+      html += '<button id="scr-regen-' + pid + '" class="btn btn-dim" style="display:none;border-color:var(--accent);color:var(--accent)" onclick="generateScript(\\'' + p.id + '\\', \\'' + pid + '\\', this)">Regenerate Script</button>';
+      html += '<span id="scr-status-' + pid + '" style="font-size:12px;color:var(--dim)">Script will auto-generate when you open this tab</span>';
+      html += '</div>';
+      html += '<div id="scr-segments-' + pid + '"></div>';
+      html += '<div id="scr-audio-' + pid + '" style="display:none;margin-top:16px">';
+      html += '<div style="margin-bottom:8px;font-size:13px;font-weight:600;color:var(--accent2)">Upload Audio Recording</div>';
+      html += '<div style="display:flex;align-items:center;gap:12px">';
+      html += '<input type="file" accept=".wav,.mp3,.m4a,.ogg" id="scr-file-' + pid + '" style="font-size:12px" onchange="uploadAudio(\\'' + p.id + '\\', \\'' + pid + '\\', this.files[0])">';
+      html += '<span id="scr-audio-status-' + pid + '" style="font-size:12px;color:var(--dim)"></span>';
+      html += '</div>';
+      html += '</div>';
+      html += '<div id="scr-actions-' + pid + '" style="display:none;margin-top:12px;gap:8px"></div>';
+      html += '<div id="scr-render-progress-' + pid + '"></div>';
+      html += '<div id="scr-video-player-' + pid + '"></div>';
+      html += '</div>';
+
       // Actions
       html += '<div class="btn-group" style="margin-top:12px">';
       if (p.approval_status === 'draft') {
@@ -2068,6 +2141,7 @@ function _renderPkgCard(p) {
       html += '<button class="btn btn-dim" style="border-color:var(--accent2);color:var(--accent2)" onclick="loadPackageContext(\\'' + p.id + '\\', this)">Show Context</button>';
       html += '<button class="btn btn-dim" onclick="showFeedbackForm(\\'' + p.id + '\\', this)">Feedback</button>';
       html += '<button class="btn btn-dim" style="border-color:var(--accent)" onclick="showRevisedCopyForm(\\'' + p.id + '\\', this)">Edit & Submit Copy</button>';
+      html += '<button class="btn btn-dim" style="border-color:#a78bfa;color:#a78bfa" onclick="openBrainstorm(\\'' + p.id + '\\')">Brainstorm</button>';
       html += '<button class="btn btn-dim" style="border-color:var(--yellow);color:var(--yellow)" onclick="aiRevisePost(\\'' + p.id + '\\', \\'fb\\')">AI Revise FB</button>';
       html += '<button class="btn btn-dim" style="border-color:var(--yellow);color:var(--yellow)" onclick="aiRevisePost(\\'' + p.id + '\\', \\'li\\')">AI Revise LI</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'' + pid + '\\', this, \\'Facebook post\\')">Copy FB Post</button>';
@@ -2132,8 +2206,8 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s || 
 
 function showPostTab(btn, id) {
   const card = btn.closest('.pkg-card');
-  // Hide all tab content (wrapper divs with IDs and direct post-previews)
-  card.querySelectorAll('[id^="fb-"],[id^="li-"],[id^="hooks-"],[id^="qa-"],[id^="img-"],[id^="dm-"]').forEach(el => {
+  // Hide only tab-pane containers (not their children)
+  card.querySelectorAll('.tab-pane').forEach(el => {
     if (el.closest('.pkg-card') === card) el.style.display = 'none';
   });
   card.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
@@ -2256,6 +2330,357 @@ function copyForPlatform(btn, platformName) {
     btn.style.color = '#000';
     setTimeout(() => { btn.textContent = orig; btn.style.background = ''; btn.style.color = ''; }, 2000);
     toast('Prompt copied for ' + platformName);
+  }
+}
+
+async function loadVideos(packageId, pid) {
+  const grid = document.getElementById('vid-grid-' + pid);
+  const status = document.getElementById('vid-status-' + pid);
+  if (!grid) return;
+  try {
+    const resp = await fetch('/api/v1/videos?package_id=' + packageId);
+    const videos = await resp.json();
+    if (!videos.length) {
+      status.textContent = 'No videos yet - click Generate to create them';
+      grid.innerHTML = '';
+      return;
+    }
+    status.textContent = videos.length + ' video(s) rendered';
+    status.style.color = 'var(--green)';
+    grid.innerHTML = '';
+    videos.forEach(v => {
+      const card = document.createElement('div');
+      const selected = v.operator_selected ? 'var(--green)' : 'var(--border)';
+      card.style.cssText = 'background:#111318;border:2px solid ' + selected + ';border-radius:8px;padding:16px';
+      let inner = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+      inner += '<div style="font-weight:600;font-size:14px;color:var(--accent2)">' + esc(v.template_name.replace(/_/g, ' ')) + '</div>';
+      inner += '<span style="padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;background:#16a34a22;color:#16a34a;border:1px solid #16a34a44">' + esc(v.resolution || '') + '</span>';
+      inner += '</div>';
+      if (v.thumbnail_url) {
+        inner += '<div style="margin-bottom:8px;border-radius:8px;overflow:hidden;border:1px solid var(--border)"><img src="' + esc(v.thumbnail_url) + '" style="width:100%;display:block" loading="lazy"></div>';
+      }
+      if (v.video_url) {
+        inner += '<div style="margin-bottom:8px;border-radius:8px;overflow:hidden;border:1px solid var(--border)"><video src="' + esc(v.video_url) + '" controls style="width:100%;display:block" preload="metadata"></video></div>';
+      }
+      inner += '<div style="font-size:12px;color:var(--dim);display:flex;gap:12px;flex-wrap:wrap">';
+      if (v.duration_seconds) inner += '<span>' + v.duration_seconds + 's</span>';
+      if (v.codec) inner += '<span>' + esc(v.codec) + '</span>';
+      if (v.file_size_bytes) inner += '<span>' + (v.file_size_bytes / 1024).toFixed(0) + ' KB</span>';
+      if (v.render_time_seconds) inner += '<span>Rendered in ' + v.render_time_seconds + 's</span>';
+      inner += '</div>';
+      inner += '<div style="display:flex;gap:6px;margin-top:8px">';
+      inner += '<button class="btn btn-dim" style="font-size:11px" onclick="selectVideo(\\'' + v.id + '\\', ' + !v.operator_selected + ', this)">\\u2713 ' + (v.operator_selected ? 'Selected' : 'Select') + '</button>';
+      if (v.video_url) inner += '<a href="' + esc(v.video_url) + '" download class="btn btn-dim" style="font-size:11px;text-decoration:none">Download</a>';
+      inner += '</div>';
+      card.innerHTML = inner;
+      grid.appendChild(card);
+    });
+  } catch (e) {
+    status.textContent = 'Error loading videos: ' + e.message;
+    status.style.color = 'var(--red)';
+  }
+}
+
+async function selectVideo(videoId, selected, btn) {
+  try {
+    await fetch('/api/v1/videos/' + videoId + '/select', {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ selected })
+    });
+    btn.textContent = selected ? '\\u2713 Selected' : '\\u2713 Select';
+    btn.closest('div[style*="background:#111318"]').style.borderColor = selected ? 'var(--green)' : 'var(--border)';
+    toast(selected ? 'Video selected' : 'Video deselected');
+  } catch(e) { toast('Error: ' + e.message); }
+}
+
+async function generateVideos(packageId, btn) {
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Generating...';
+  const pid = packageId.replace(/-/g, '');
+  const statusEl = document.getElementById('vid-status-' + pid);
+  const progressEl = document.getElementById('vid-progress-' + pid);
+  if (statusEl) { statusEl.textContent = 'Starting video generation...'; statusEl.style.color = 'var(--accent2)'; }
+  if (progressEl) {
+    progressEl.innerHTML = '<div style="width:100%;height:6px;background:var(--border);border-radius:3px;margin-bottom:8px"><div id="vid-bar-' + pid + '" style="height:100%;background:var(--accent2);width:10%;border-radius:3px;transition:width 0.5s ease"></div></div>';
+  }
+  try {
+    const resp = await fetch('/api/v1/videos/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ post_package_id: packageId })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Failed to start generation');
+    if (statusEl) statusEl.textContent = 'Rendering videos (run: ' + data.run_id.substring(0, 8) + ')...';
+    const bar = document.getElementById('vid-bar-' + pid);
+    let pct = 20;
+    const interval = setInterval(() => {
+      pct = Math.min(pct + 5, 90);
+      if (bar) bar.style.width = pct + '%';
+    }, 3000);
+    // Poll for completion
+    let attempts = 0;
+    while (attempts < 60) {
+      await new Promise(r => setTimeout(r, 5000));
+      attempts++;
+      try {
+        const checkResp = await fetch('/api/v1/videos?package_id=' + packageId);
+        const videos = await checkResp.json();
+        if (videos.length > 0) {
+          clearInterval(interval);
+          if (bar) bar.style.width = '100%';
+          if (statusEl) { statusEl.textContent = videos.length + ' video(s) rendered!'; statusEl.style.color = 'var(--green)'; }
+          if (progressEl) setTimeout(() => { progressEl.innerHTML = ''; }, 1500);
+          loadVideos(packageId, pid);
+          break;
+        }
+      } catch(e) {}
+    }
+  } catch(e) {
+    if (statusEl) { statusEl.textContent = 'Error: ' + e.message; statusEl.style.color = 'var(--red)'; }
+    if (progressEl) progressEl.innerHTML = '';
+  }
+  btn.disabled = false;
+  btn.textContent = origText;
+}
+
+// --- Script (Narration) tab functions ---
+let _scriptCache = {};
+let _scrLoading = {};
+
+async function loadScripts(packageId, pid) {
+  const segEl = document.getElementById('scr-segments-' + pid);
+  const statusEl = document.getElementById('scr-status-' + pid);
+  if (!segEl) return;
+  if (_scrLoading[pid]) return;
+  _scrLoading[pid] = true;
+  segEl.innerHTML = '<div style="color:var(--dim);font-size:12px">Loading script...</div>';
+  statusEl.textContent = 'Loading script...';
+  statusEl.style.color = 'var(--dim)';
+  try {
+    // Auto endpoint: returns existing script or generates one on the fly
+    statusEl.textContent = 'Generating script with Sonnet... (may take 10-20s)';
+    const detail = await api('/narration/scripts/auto/' + packageId);
+    _scriptCache[pid] = detail;
+    const label = detail.auto_generated ? ' (auto-generated)' : '';
+    statusEl.textContent = 'Script: ' + detail.template_style + ' - ' + detail.status + label;
+    statusEl.style.color = detail.status === 'aligned' ? 'var(--green)' : detail.status === 'rendered' ? 'var(--accent2)' : 'var(--accent)';
+    renderScriptSegments(detail, pid, packageId);
+    // Show Regenerate button
+    const regenBtn = document.getElementById('scr-regen-' + pid);
+    if (regenBtn) regenBtn.style.display = '';
+  } catch(e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.style.color = 'var(--red)';
+    // Show regenerate even on error so user can retry
+    const regenBtn = document.getElementById('scr-regen-' + pid);
+    if (regenBtn) regenBtn.style.display = '';
+  }
+  _scrLoading[pid] = false;
+}
+
+function renderScriptSegments(script, pid, packageId) {
+  const segEl = document.getElementById('scr-segments-' + pid);
+  const audioEl = document.getElementById('scr-audio-' + pid);
+  const actionsEl = document.getElementById('scr-actions-' + pid);
+  if (!segEl) return;
+  const segments = script.segments || [];
+  let html = '';
+  segments.forEach((seg, i) => {
+    const dur = seg.estimatedDurationSec || '-';
+    const aligned = seg.startSec !== undefined;
+    html += '<div style="padding:12px 16px;margin-bottom:8px;border-radius:8px;background:#111318;border:1px solid var(--border)">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+    html += '<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:8px;background:rgba(46,163,242,0.15);color:var(--accent)">' + esc(seg.visualType || 'unknown') + '</span>';
+    if (aligned) {
+      html += '<span style="font-size:11px;color:var(--green)">' + seg.startSec.toFixed(1) + 's - ' + seg.endSec.toFixed(1) + 's</span>';
+    } else {
+      html += '<span style="font-size:11px;color:var(--dim)">~' + dur + 's est.</span>';
+    }
+    html += '</div>';
+    html += '<div contenteditable="true" data-seg-idx="' + i + '" style="font-size:14px;line-height:1.5;color:var(--text);outline:none;padding:4px;border-radius:4px;border:1px solid transparent" onfocus="this.style.borderColor=\\'var(--accent)\\'" onblur="this.style.borderColor=\\'transparent\\';saveSegmentEdit(this,' + i + ',\\'' + script.id + '\\',\\'' + pid + '\\',\\'' + packageId + '\\')">' + esc(seg.narratorText || '') + '</div>';
+    if (seg.visualProps) {
+      const propsStr = Object.entries(seg.visualProps).map(([k,v]) => k + ': ' + JSON.stringify(v)).join(', ');
+      html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">Props: ' + esc(propsStr).substring(0, 120) + '</div>';
+    }
+    html += '</div>';
+  });
+  segEl.innerHTML = html;
+  if (script.status === 'ready_to_record' || script.status === 'audio_uploaded' || script.status === 'aligned') {
+    audioEl.style.display = '';
+    if (script.audio_duration_sec) {
+      document.getElementById('scr-audio-status-' + pid).textContent = 'Audio: ' + script.audio_duration_sec.toFixed(1) + 's (' + (script.audio_format || 'unknown') + ')';
+    }
+  }
+  actionsEl.style.display = 'flex';
+  actionsEl.innerHTML = '';
+  if (script.status === 'audio_uploaded') {
+    actionsEl.innerHTML += '<button class="btn btn-blue" onclick="alignScript(\\'' + script.id + '\\', \\'' + pid + '\\', \\'' + packageId + '\\', this)">Align with Whisper</button>';
+  }
+  if (script.status === 'aligned') {
+    actionsEl.innerHTML += '<button class="btn btn-green" onclick="renderNarratedVideo(\\'' + script.id + '\\', \\'' + pid + '\\', this)">Render Narrated Video</button>';
+  }
+  if (script.status === 'rendered' && script.video_asset_id) {
+    actionsEl.innerHTML += '<button class="btn btn-green" onclick="renderNarratedVideo(\\'' + script.id + '\\', \\'' + pid + '\\', this)">Re-render Video</button>';
+    actionsEl.innerHTML += '<span style="color:var(--green);font-weight:600;font-size:13px;margin-left:8px">Rendered!</span>';
+  }
+  // Show existing video player if video_url present
+  var playerEl = document.getElementById('scr-video-player-' + pid);
+  if (playerEl && script.video_url) {
+    playerEl.innerHTML = '<div style="margin-top:16px;padding:16px;background:#111318;border:1px solid var(--border);border-radius:8px">' +
+      '<div style="font-size:13px;font-weight:600;color:var(--green);margin-bottom:8px">Narrated Video Ready</div>' +
+      '<video src="' + esc(script.video_url) + '" controls style="max-width:400px;width:100%;border-radius:8px;background:#000"></video>' +
+      '<div style="margin-top:8px"><a href="' + esc(script.video_url) + '" download style="color:var(--accent);font-size:12px">Download MP4</a></div>' +
+      '</div>';
+  }
+}
+
+let _segEditTimer = null;
+async function saveSegmentEdit(el, idx, scriptId, pid, packageId) {
+  clearTimeout(_segEditTimer);
+  _segEditTimer = setTimeout(async () => {
+    const cached = _scriptCache[pid];
+    if (!cached || !cached.segments) return;
+    const segs = [...cached.segments];
+    segs[idx] = { ...segs[idx], narratorText: el.textContent };
+    try {
+      await api('/narration/scripts/' + scriptId, { method: 'PATCH', body: JSON.stringify({ segments: segs }) });
+      cached.segments = segs;
+    } catch(e) { toast('Save failed: ' + e.message, false); }
+  }, 800);
+}
+
+async function generateScript(packageId, pid, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Regenerating...';
+  const statusEl = document.getElementById('scr-status-' + pid);
+  if (statusEl) { statusEl.textContent = 'Regenerating script with Sonnet... (may take 10-20s)'; statusEl.style.color = 'var(--dim)'; }
+  try {
+    const data = await api('/narration/generate-script', {
+      method: 'POST',
+      body: JSON.stringify({ package_id: packageId })
+    });
+    toast('Script regenerated! ' + (data.segments || []).length + ' segments, ~' + (data.estimated_duration_sec || 0) + 's');
+    _scrLoading[pid] = false;
+    await loadScripts(packageId, pid);
+  } catch(e) {
+    if (statusEl) { statusEl.textContent = 'Error: ' + e.message; statusEl.style.color = 'var(--red)'; }
+    toast('Script generation failed: ' + e.message, false);
+  }
+  btn.disabled = false;
+  btn.textContent = 'Regenerate Script';
+}
+
+async function uploadAudio(packageId, pid, file) {
+  if (!file) return;
+  const script = _scriptCache[pid];
+  if (!script || !script.id) { toast('No script found - generate one first', false); return; }
+  const statusEl = document.getElementById('scr-audio-status-' + pid);
+  const fileInput = document.getElementById('scr-file-' + pid);
+  statusEl.textContent = 'Uploading ' + file.name + '...';
+  if (fileInput) fileInput.disabled = true;
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const resp = await fetch('/api/v1/narration/scripts/' + script.id + '/upload-audio', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Upload failed');
+    statusEl.textContent = 'Audio uploaded! ' + (data.audio_duration_sec ? data.audio_duration_sec.toFixed(1) + 's' : '') + ' (' + (data.audio_format || '') + ')';
+    statusEl.style.color = 'var(--green)';
+    toast('Audio uploaded successfully');
+    await loadScripts(packageId, pid);
+  } catch(e) {
+    statusEl.textContent = 'Upload error: ' + e.message;
+    statusEl.style.color = 'var(--red)';
+    toast('Upload failed: ' + e.message, false);
+  }
+  if (fileInput) { fileInput.disabled = false; fileInput.value = ''; }
+}
+
+async function alignScript(scriptId, pid, packageId, btn) {
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Aligning with Whisper...';
+  try {
+    const data = await api('/narration/scripts/' + scriptId + '/align', { method: 'POST' });
+    toast('Aligned! ' + (data.whisper_word_count || 0) + ' words matched');
+    await loadScripts(packageId, pid);
+  } catch(e) {
+    toast('Alignment failed: ' + e.message, false);
+  }
+  btn.disabled = false;
+  btn.textContent = origText;
+}
+
+async function renderNarratedVideo(scriptId, pid, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Starting render...';
+  const progressEl = document.getElementById('scr-render-progress-' + pid);
+  const playerEl = document.getElementById('scr-video-player-' + pid);
+  const stepLabels = { queued: 'Queued - waiting for render slot...', rendering: 'Running Remotion render... (30-90s)', saving_asset: 'Saving video asset...', completed: 'Done! Video ready.', failed: 'Render failed.' };
+
+  function showProgress(pct, label) {
+    if (!progressEl) return;
+    progressEl.innerHTML = '<div style="background:#1e1b4b;border:1px solid var(--accent);border-radius:8px;padding:14px;margin-top:12px">' +
+      '<div style="font-size:12px;color:var(--accent2);margin-bottom:8px">' + esc(label) + '</div>' +
+      '<div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">' +
+      '<div style="height:100%;background:var(--green);width:' + pct + '%;border-radius:2px;transition:width 0.5s ease"></div>' +
+      '</div></div>';
+  }
+
+  try {
+    const data = await api('/narration/scripts/' + scriptId + '/render', { method: 'POST' });
+    const jobId = data.job_id;
+    if (!jobId) throw new Error('No job_id returned');
+    showProgress(10, stepLabels.queued);
+    btn.textContent = 'Rendering...';
+
+    // Connect SSE
+    const es = new EventSource('/api/v1/videos/queue/' + jobId + '/progress');
+    es.onmessage = function(ev) {
+      try {
+        const d = JSON.parse(ev.data);
+        const pct = d.progress || 0;
+        const step = d.step || d.status || 'rendering';
+        const label = stepLabels[step] || stepLabels[d.status] || ('Rendering... ' + pct + '%');
+        showProgress(pct, label);
+
+        if (d.status === 'completed') {
+          es.close();
+          btn.textContent = 'Render Narrated Video';
+          btn.disabled = false;
+          showProgress(100, stepLabels.completed);
+          toast('Narrated video rendered!');
+          // Show inline video player
+          if (playerEl && d.video_url) {
+            playerEl.innerHTML = '<div style="margin-top:16px;padding:16px;background:#111318;border:1px solid var(--border);border-radius:8px">' +
+              '<div style="font-size:13px;font-weight:600;color:var(--green);margin-bottom:8px">Narrated Video Ready</div>' +
+              '<video src="' + esc(d.video_url) + '" controls style="max-width:400px;width:100%;border-radius:8px;background:#000"></video>' +
+              '<div style="margin-top:8px"><a href="' + esc(d.video_url) + '" download style="color:var(--accent);font-size:12px">Download MP4</a></div>' +
+              '</div>';
+          }
+        } else if (d.status === 'failed') {
+          es.close();
+          btn.textContent = 'Render Narrated Video';
+          btn.disabled = false;
+          showProgress(pct, 'Render failed: ' + (d.error_message || 'unknown error'));
+          toast('Render failed', false);
+        }
+      } catch(_) {}
+    };
+    es.onerror = function() {
+      es.close();
+      btn.textContent = 'Render Narrated Video';
+      btn.disabled = false;
+      showProgress(0, 'Connection lost - check Videos tab for status');
+    };
+  } catch(e) {
+    toast('Render failed: ' + e.message, false);
+    showProgress(0, 'Error: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Render Narrated Video';
   }
 }
 
@@ -4159,6 +4584,150 @@ function render() {
 restoreGenAllState();
 // Tick elapsed timer every second when generating
 setInterval(() => { if (genAllState?.running) renderGenAllProgress(); }, 1000);
+
+// --- Start From Copy ---
+function runPolishCopy() {
+  var copyEl = document.getElementById('polish-copy-text');
+  var copyText = copyEl ? copyEl.value.trim() : '';
+  if (!copyText) { toast('Please paste your copy first', false); return; }
+  var platform = document.getElementById('polish-platform').value || 'both';
+  var ctaKw = document.getElementById('polish-cta').value.trim() || null;
+  var notesVal = document.getElementById('polish-notes').value.trim() || null;
+  var btn = document.getElementById('polish-btn');
+  btn.disabled = true; btn.textContent = 'Starting...';
+  polishStartTime = Date.now();
+  api('/pipeline/polish-copy', { method: 'POST', body: JSON.stringify({ copy_text: copyText, platform: platform, cta_keyword: ctaKw, notes: notesVal }) })
+    .then(function(r) {
+      activePolishRun = r.run_id;
+      localStorage.setItem('tce_active_polish', r.run_id);
+      toast('Copy polish started');
+      pollPolish();
+      if (polishPollInterval) clearInterval(polishPollInterval);
+      polishPollInterval = setInterval(pollPolish, 3000);
+    })
+    .catch(function(e) { toast('Failed: ' + e.message, false); btn.disabled = false; btn.textContent = 'Polish & Build Package'; });
+}
+
+async function pollPolish() {
+  if (!activePolishRun) return;
+  try {
+    const r = await api('/pipeline/polish-copy/' + activePolishRun + '/status');
+    const container = document.getElementById('polish-status');
+    const elapsed = document.getElementById('polish-elapsed');
+    const btn = document.getElementById('polish-btn');
+    if (!container) return;
+    const sec = polishStartTime ? Math.round((Date.now() - polishStartTime) / 1000) : 0;
+    if (elapsed) elapsed.textContent = sec > 0 ? sec + 's elapsed' : '';
+
+    const stepStatus = r.step_status || {};
+    const steps = ['copy_analyzer', 'cta_agent', 'copy_polisher', 'creative_director', 'qa_agent'];
+    let badges = '<div class="pipeline-steps">';
+    for (const s of steps) {
+      const st = stepStatus[s] || 'pending';
+      const label = AGENT_LABELS[s] || s;
+      badges += '<span class="step-badge ' + st + '">' + (st === 'running' ? '<span class="spinner" style="width:12px;height:12px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:4px"></span>' : '') + label + '</span>';
+    }
+    badges += '</div>';
+
+    if (r.status === 'completed') {
+      if (btn) { btn.disabled = false; btn.textContent = 'Polish & Build Package'; }
+      clearInterval(polishPollInterval); polishPollInterval = null;
+      activePolishRun = null; localStorage.removeItem('tce_active_polish');
+      _pkgCache = null;
+      // Fetch the created package and render inline
+      if (r.pipeline_run_id) {
+        try {
+          const pkgs = await api('/content/packages');
+          const pkg = pkgs.find(p => p.pipeline_run_id === r.pipeline_run_id);
+          if (pkg) {
+            container.innerHTML = badges + '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span style="color:var(--green);font-weight:600;font-size:15px">Package created successfully!</span><button class="btn btn-dim" style="font-size:11px" onclick="openBrainstorm(\\''+pkg.id+'\\')">Brainstorm</button></div>' + _renderPkgCard(pkg) + '</div>';
+            return;
+          }
+        } catch(e) { /* fall through */ }
+      }
+      container.innerHTML = badges + '<div style="margin-top:12px;color:var(--green);font-weight:600">Package created successfully! Check the Packages tab.</div>';
+    } else if (r.status === 'failed' || r.status === 'interrupted') {
+      container.innerHTML = badges + '<div style="margin-top:12px;color:var(--red);font-weight:600">Failed: ' + esc(r.error || r.phase_detail || 'Unknown error') + '</div>';
+      if (btn) { btn.disabled = false; btn.textContent = 'Polish & Build Package'; }
+      clearInterval(polishPollInterval); polishPollInterval = null;
+      activePolishRun = null; localStorage.removeItem('tce_active_polish');
+    } else {
+      container.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span class="spinner"></span><span>' + esc(r.phase_detail || 'Running...') + '</span></div>' + badges;
+    }
+  } catch (e) { /* ignore poll errors */ }
+}
+
+// --- Brainstorm ---
+function openBrainstorm(packageId) {
+  brainstormPackageId = packageId;
+  brainstormHistory = [];
+  let panel = document.getElementById('brainstorm-panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'brainstorm-panel';
+    panel.style.cssText = 'position:fixed;bottom:20px;right:20px;width:420px;height:500px;background:var(--card);border:1px solid var(--accent);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.5);display:flex;flex-direction:column;z-index:1000';
+    document.body.appendChild(panel);
+  }
+  panel.style.display = 'flex';
+  panel.innerHTML = `
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <div style="font-weight:600;font-size:14px">Brainstorm</div>
+      <button onclick="closeBrainstorm()" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:18px">x</button>
+    </div>
+    <div id="brainstorm-messages" style="flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px">
+      <div style="color:var(--dim);font-size:13px;text-align:center;padding:20px">Ask anything about this package - ideas, angles, improvements, alternatives...</div>
+    </div>
+    <div style="padding:12px;border-top:1px solid var(--border);display:flex;gap:8px">
+      <input type="text" id="brainstorm-input" placeholder="Type your message..." style="flex:1" onkeydown="if(event.key==='Enter')sendBrainstorm()">
+      <button class="btn btn-primary" onclick="sendBrainstorm()">Send</button>
+    </div>`;
+  document.getElementById('brainstorm-input')?.focus();
+}
+
+function closeBrainstorm() {
+  const panel = document.getElementById('brainstorm-panel');
+  if (panel) panel.style.display = 'none';
+  brainstormPackageId = null;
+  brainstormHistory = [];
+}
+
+async function sendBrainstorm() {
+  const input = document.getElementById('brainstorm-input');
+  const msg = input?.value?.trim();
+  if (!msg) return;
+  input.value = '';
+  input.disabled = true;
+
+  const messagesDiv = document.getElementById('brainstorm-messages');
+  messagesDiv.innerHTML += '<div style="align-self:flex-end;background:var(--accent);color:#fff;padding:8px 12px;border-radius:12px 12px 2px 12px;max-width:85%;font-size:13px;line-height:1.5">' + esc(msg) + '</div>';
+  messagesDiv.innerHTML += '<div id="brainstorm-typing" style="align-self:flex-start;color:var(--dim);font-size:12px;display:flex;align-items:center;gap:6px"><span class="spinner" style="width:14px;height:14px;border-width:2px"></span>Thinking...</div>';
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+  brainstormHistory.push({ role: 'user', content: msg });
+  try {
+    const r = await api('/pipeline/brainstorm', { method: 'POST', body: JSON.stringify({ message: msg, package_id: brainstormPackageId, history: brainstormHistory.slice(0, -1) }) });
+    brainstormHistory.push({ role: 'assistant', content: r.reply });
+    const typing = document.getElementById('brainstorm-typing');
+    if (typing) typing.remove();
+    messagesDiv.innerHTML += '<div style="align-self:flex-start;background:#111318;border:1px solid var(--border);padding:8px 12px;border-radius:12px 12px 12px 2px;max-width:85%;font-size:13px;line-height:1.5;white-space:pre-wrap">' + esc(r.reply) + '</div>';
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  } catch (e) {
+    const typing = document.getElementById('brainstorm-typing');
+    if (typing) typing.remove();
+    messagesDiv.innerHTML += '<div style="color:var(--red);font-size:12px;padding:4px 8px">Error: ' + esc(e.message) + '</div>';
+  }
+  input.disabled = false;
+  input.focus();
+}
+
+// Tick polish elapsed timer
+setInterval(() => {
+  if (activePolishRun && polishStartTime) {
+    const el = document.getElementById('polish-elapsed');
+    if (el) el.textContent = Math.round((Date.now() - polishStartTime) / 1000) + 's elapsed';
+  }
+}, 1000);
+
 render();
 </script>
 </body>

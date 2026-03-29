@@ -86,6 +86,12 @@ write the post using only soft/opinion claims with appropriate signal words. \
 Use the story brief thesis as your foundation. Do NOT refuse to write - \
 frame everything as perspective and opinion instead.
 
+PLAN ADHERENCE (NON-NEGOTIABLE):
+- Your topic and thesis come from STORY BRIEF - this is your assignment
+- Research brief provides supporting evidence ONLY - it does NOT change your topic
+- If research findings contradict the story brief, note the tension but STAY ON the assigned topic
+- Your post MUST be recognizably about the story_brief topic - a reader should identify it in the first 2 sentences
+
 ANTI-CLONE CHECK:
 - Do not use the same opening structure as recent posts
 - Do not contain phrases signature to a source creator

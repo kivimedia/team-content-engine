@@ -4,7 +4,7 @@ from datetime import date
 
 from sqlalchemy import Boolean, Date, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tce.db.base import Base
 
@@ -35,3 +35,8 @@ class WeeklyGuide(Base):
 
     # Operator
     operator_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Relationships
+    video_assets: Mapped[list["VideoAsset"]] = relationship(  # noqa: F821
+        back_populates="weekly_guide", cascade="all, delete-orphan"
+    )

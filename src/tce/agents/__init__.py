@@ -2,6 +2,8 @@
 
 # Import all concrete agents so @register_agent decorators fire
 from tce.agents import (  # noqa: F401
+    copy_analyzer,
+    copy_polisher,
     corpus_analyst,
     creative_director,
     cta_agent,
@@ -15,6 +17,8 @@ from tce.agents import (  # noqa: F401
     research_agent,
     story_strategist,
     trend_scout,
+    script_agent,
+    video_agent,
     weekly_planner,
 )
 from tce.agents.base import AgentBase

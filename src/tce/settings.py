@@ -1,9 +1,13 @@
 """Application settings loaded from environment variables."""
 
+import tempfile
 from decimal import Decimal
+from pathlib import Path
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_TMPDIR = Path(tempfile.gettempdir())
 
 
 class Settings(BaseSettings):
@@ -19,6 +23,7 @@ class Settings(BaseSettings):
     default_model: str = "claude-sonnet-4-20250514"
     opus_model: str = "claude-opus-4-20250514"
     haiku_model: str = "claude-haiku-4-5-20251001"
+    script_model: str = "claude-sonnet-4-20250514"  # Model for ScriptAgent narration
 
     # Budget controls (per PRD Section 36.5)
     daily_budget_usd: Decimal = Decimal("40.00")
@@ -58,6 +63,16 @@ class Settings(BaseSettings):
 
     # Per-agent cost cap (GAP-14)
     per_agent_daily_cap_usd: Decimal = Decimal("10.00")
+
+    # Video rendering (Remotion)
+    remotion_project_path: str = ""  # Auto-detected from repo root if empty
+    video_output_dir: str = str(_TMPDIR / "tce-video")
+    video_default_codec: str = "h264"
+    video_max_render_seconds: int = 120
+
+    # Audio / Narration (Whisper alignment)
+    openai_api_key: str = ""
+    audio_upload_dir: str = str(_TMPDIR / "tce-audio")
 
 
 settings = Settings()

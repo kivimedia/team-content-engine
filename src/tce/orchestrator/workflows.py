@@ -116,6 +116,37 @@ GUIDE_ONLY_WORKFLOW = [
     PipelineStep(agent_name="docx_guide_builder", depends_on=[], timeout_seconds=300),
 ]
 
+# Polish from user-provided copy (Start From Copy flow)
+POLISH_FROM_COPY_WORKFLOW = [
+    PipelineStep(agent_name="copy_analyzer", depends_on=[], timeout_seconds=120),
+    PipelineStep(agent_name="cta_agent", depends_on=["copy_analyzer"], timeout_seconds=60),
+    PipelineStep(
+        agent_name="copy_polisher",
+        depends_on=["copy_analyzer", "cta_agent"],
+        timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="creative_director",
+        depends_on=["copy_polisher"],
+        timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="qa_agent",
+        depends_on=["copy_polisher", "cta_agent", "creative_director"],
+        timeout_seconds=120,
+    ),
+]
+
+# Video generation workflow (standalone, reads from existing PostPackage context)
+VIDEO_GENERATION_WORKFLOW = [
+    PipelineStep(
+        agent_name="video_agent",
+        depends_on=[],
+        timeout_seconds=300,
+        optional=True,
+    ),
+]
+
 # Workflow registry
 WORKFLOWS: dict[str, list[PipelineStep]] = {
     "daily_content": DAILY_CONTENT_WORKFLOW,
@@ -127,4 +158,6 @@ WORKFLOWS: dict[str, list[PipelineStep]] = {
     "weekly_planner": WEEKLY_PLANNER_WORKFLOW,
     "daily_from_plan": DAILY_FROM_PLAN_WORKFLOW,
     "guide_only": GUIDE_ONLY_WORKFLOW,
+    "polish_from_copy": POLISH_FROM_COPY_WORKFLOW,
+    "video_generation": VIDEO_GENERATION_WORKFLOW,
 }

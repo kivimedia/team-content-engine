@@ -64,7 +64,7 @@ class CTAAgent(AgentBase):
         story_brief = context.get("story_brief", {})
         weekly_theme = context.get("weekly_theme", "") or story_brief.get("topic", "")
         weekly_keyword = context.get("weekly_keyword")  # May be pre-set
-        guide_title = context.get("guide_title", "")
+        guide_title = str(context.get("guide_title", "") or "")
 
         prompt_parts = []
 

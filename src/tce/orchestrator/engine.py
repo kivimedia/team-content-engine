@@ -266,6 +266,8 @@ class PipelineOrchestrator:
                 gid = await self._saver.save_weekly_guide(self.context)
                 if gid:
                     self.context["_weekly_guide_id"] = gid
+            elif step_name == "video_agent":
+                await self._persist_video_assets()
         except Exception:
             logger.exception(
                 "saver.error",
@@ -273,6 +275,42 @@ class PipelineOrchestrator:
                 run_id=str(self.run_id),
             )
             # Persistence errors are logged but don't fail the step
+
+    async def _persist_video_assets(self) -> None:
+        """Save rendered video assets to the database."""
+        from tce.models.video_asset import VideoAsset
+
+        video_assets = self.context.get("video_assets", [])
+        if not video_assets:
+            return
+
+        pkg_id = self.context.get("_post_package_id")
+        guide_id = self.context.get("_weekly_guide_id")
+        saved_ids = []
+
+        for asset in video_assets:
+            va = VideoAsset(
+                id=uuid.uuid4(),
+                package_id=pkg_id,
+                guide_id=guide_id,
+                template_name=asset["template_name"],
+                composition_id=asset.get("composition_id"),
+                composition_props=asset.get("props"),
+                video_url=asset.get("video_url"),
+                video_s3_path=asset.get("video_s3_path"),
+                duration_seconds=asset.get("duration_seconds"),
+                resolution=asset.get("resolution"),
+                codec=asset.get("codec"),
+                file_size_bytes=asset.get("file_size_bytes"),
+                render_time_seconds=asset.get("render_time_seconds"),
+                pipeline_run_id=self.run_id,
+            )
+            self.db.add(va)
+            saved_ids.append(str(va.id))
+
+        await self.db.flush()
+        self.context["_video_asset_ids"] = saved_ids
+        logger.info("video_assets.saved", count=len(saved_ids), run_id=str(self.run_id))
 
     async def _link_package_to_calendar(self, package_id: uuid.UUID) -> None:
         """Link a generated package to today's calendar entry and mark it ready."""

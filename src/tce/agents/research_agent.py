@@ -61,6 +61,10 @@ class ResearchAgent(AgentBase):
         prompt_parts = [f"Research this topic thoroughly: {topic}"]
         if thesis:
             prompt_parts.append(f"Core thesis to verify: {thesis}")
+            prompt_parts.append(
+                "CRITICAL: Your job is to find EVIDENCE supporting or challenging the thesis above. "
+                "Do NOT introduce new topics or angles. Stay focused on verifying THIS thesis."
+            )
 
         if evidence_requirements:
             prompt_parts.append(
@@ -80,8 +84,9 @@ class ResearchAgent(AgentBase):
         search = WebSearchService()
         search_context = []
         if search.api_key and topic:
-            # Search for the topic itself
-            results = await search.search(topic, count=8)
+            # Search anchored to planned thesis, not generic topic
+            search_query = f"{thesis} {topic}" if thesis else topic
+            results = await search.search(search_query, count=8)
             search_context.extend(results)
             # Search for specific evidence requirements
             for req in evidence_requirements[:3]:

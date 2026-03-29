@@ -266,21 +266,36 @@ class PipelineResultSaver:
         cta = context.get("cta_package", {})
         image_prompts = context.get("image_prompts", [])
         brief_id = context.get("_story_brief_id")
+        research_brief_id = context.get("_research_brief_id")
         guide_id = context.get("_weekly_guide_id")
 
         # Merge hook variants from both platforms
         hooks = fb.get("hook_variants", []) + li.get("hook_variants", [])
 
+        # Build quality_scores with QA results + copy analysis metadata
+        qa_scores = context.get("qa_result", context.get("quality_scores"))
+        matched_template = context.get("matched_template")
+        copy_analysis = context.get("copy_analysis")
+        quality_meta = {}
+        if qa_scores:
+            quality_meta.update(qa_scores if isinstance(qa_scores, dict) else {})
+        if matched_template:
+            quality_meta["matched_template"] = matched_template
+        if copy_analysis:
+            quality_meta["copy_analysis"] = copy_analysis
+
         record = PostPackage(
             brief_id=brief_id,
+            research_brief_id=research_brief_id,
             weekly_guide_id=guide_id,
             facebook_post=_clean_text(fb.get("facebook_post")),
             linkedin_post=_clean_text(li.get("linkedin_post")),
             hook_variants=_clean_list(hooks) if hooks else None,
-            cta_keyword=cta.get("weekly_keyword"),
+            cta_keyword=cta.get("weekly_keyword") or context.get("weekly_keyword"),
             secondary_cta_keyword=cta.get("secondary_keyword"),
             dm_flow=_clean_dict(cta.get("dm_flow")),
             image_prompts=image_prompts if image_prompts else None,
+            quality_scores=quality_meta if quality_meta else None,
             approval_status="draft",
             pipeline_run_id=self.run_id,
         )

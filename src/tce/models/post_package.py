@@ -14,6 +14,9 @@ class PostPackage(Base):
 
     # References
     brief_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("story_briefs.id"), nullable=True)
+    research_brief_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("research_briefs.id"), nullable=True
+    )
     weekly_guide_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("weekly_guides.id"), nullable=True
     )
@@ -57,4 +60,10 @@ class PostPackage(Base):
     )
     learning_event: Mapped["LearningEvent | None"] = relationship(  # noqa: F821
         back_populates="post_package", uselist=False
+    )
+    video_assets: Mapped[list["VideoAsset"]] = relationship(  # noqa: F821
+        back_populates="post_package", cascade="all, delete-orphan"
+    )
+    narration_scripts: Mapped[list["NarrationScript"]] = relationship(  # noqa: F821
+        back_populates="post_package", cascade="all, delete-orphan"
     )
