@@ -58,22 +58,49 @@ class StoryStrategist(AgentBase):
         recent_posts = context.get("recent_posts", [])
         weekly_theme = context.get("weekly_theme", "")
         operator_overrides = context.get("operator_overrides", {})
+        user_topic = context.get("topic", "")
+        template_hint = context.get("template_hint", "")
 
         cadence = DEFAULT_CADENCE.get(day_of_week, DEFAULT_CADENCE[0])
 
-        prompt_parts = [
-            f"Today is {cadence['label']}.",
-            f"Today's cadence slot: {cadence['angle']}",
-        ]
+        prompt_parts = []
+
+        # When user provided a specific topic, override cadence framing
+        if user_topic:
+            prompt_parts.append(
+                "OPERATOR-ASSIGNED TOPIC (NON-NEGOTIABLE):\n"
+                f"The operator has assigned a specific topic for this post. "
+                f"You MUST build your StoryBrief around this topic. "
+                f"Do NOT pick a different topic from the trend brief.\n\n"
+                f"TOPIC:\n{user_topic}"
+            )
+            if template_hint:
+                prompt_parts.append(
+                    f"TEMPLATE HINT: The operator suggests using the '{template_hint}' template pattern."
+                )
+            prompt_parts.append(
+                f"Cadence reference (adapt if needed): {cadence['angle']}"
+            )
+        else:
+            prompt_parts.append(f"Today is {cadence['label']}.")
+            prompt_parts.append(f"Today's cadence slot: {cadence['angle']}")
 
         if weekly_theme:
             prompt_parts.append(f"Weekly theme: {weekly_theme}")
 
         if trend_brief.get("trends"):
-            prompt_parts.append(
-                "TREND BRIEF (ranked candidates):\n"
-                f"{json.dumps(trend_brief['trends'][:10], indent=2)}"
-            )
+            if user_topic:
+                # When user topic is set, trends are supporting context only
+                prompt_parts.append(
+                    "SUPPORTING TREND CONTEXT (for evidence/framing only - "
+                    "do NOT change the topic):\n"
+                    f"{json.dumps(trend_brief['trends'][:5], indent=2)}"
+                )
+            else:
+                prompt_parts.append(
+                    "TREND BRIEF (ranked candidates):\n"
+                    f"{json.dumps(trend_brief['trends'][:10], indent=2)}"
+                )
 
         if templates:
             template_names = [

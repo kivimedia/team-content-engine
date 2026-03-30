@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -124,6 +124,7 @@ async def _mark_stale_generations_interrupted() -> None:
 class PipelineRunRequest(BaseModel):
     workflow: str = "daily_content"
     context: dict[str, Any] = {}
+    resume_from_step: str | None = None
 
 
 class PipelineRunResponse(BaseModel):
@@ -181,7 +182,10 @@ async def trigger_pipeline(
                     run_id=run_id,
                 )
                 _active_runs[str(run_id)] = orchestrator
-                result = await orchestrator.run(request.context)
+                result = await orchestrator.run(
+                    request.context,
+                    resume_from_step=request.resume_from_step,
+                )
 
             # Bookkeeping in a fresh session
             async with async_session() as bk_db:
@@ -392,6 +396,75 @@ async def generate_week(
             status["weekly_theme"] = weekly_theme
             status["gift_theme"] = gift_theme
             status["weekly_keyword"] = weekly_keyword
+
+            # --- Create calendar entries for this week ---
+            # The orchestrator links packages to calendar entries by day_of_week,
+            # so we must ensure entries exist before generating daily content.
+            from tce.models.content_calendar import ContentCalendarEntry
+
+            DEFAULT_CADENCE = {
+                0: "big_shift_explainer",
+                1: "tactical_workflow_guide",
+                2: "contrarian_diagnosis",
+                3: "case_study_build_story",
+                4: "second_order_implication",
+            }
+
+            today = date.today()
+            week_start = today - timedelta(days=today.weekday())  # Monday
+            days_list = weekly_plan.get("days", [])
+
+            async with async_session() as cal_db:
+                for i, day_plan in enumerate(days_list):
+                    day_num = day_plan.get("day_of_week", i)
+                    entry_date = week_start + timedelta(days=day_num)
+                    story = day_plan.get("story_brief") or day_plan
+
+                    result = await cal_db.execute(
+                        select(ContentCalendarEntry).where(
+                            ContentCalendarEntry.date == entry_date
+                        )
+                    )
+                    entry = result.scalar_one_or_none()
+
+                    enriched_context = {
+                        **story,
+                        "_weekly": {
+                            "weekly_theme": weekly_theme,
+                            "gift_theme": gift_theme,
+                            "cta_keyword": weekly_keyword,
+                        },
+                    }
+
+                    if entry:
+                        entry.topic = story.get("topic", entry.topic)
+                        entry.angle_type = story.get(
+                            "angle_type",
+                            DEFAULT_CADENCE.get(day_num, "big_shift_explainer"),
+                        )
+                        entry.plan_context = enriched_context
+                        entry.status = "planned"
+                        entry.post_package_id = None  # reset - will be set by orchestrator
+                    else:
+                        entry = ContentCalendarEntry(
+                            date=entry_date,
+                            day_of_week=day_num,
+                            angle_type=story.get(
+                                "angle_type",
+                                DEFAULT_CADENCE.get(day_num, "big_shift_explainer"),
+                            ),
+                            topic=story.get("topic"),
+                            status="planned",
+                            plan_context=enriched_context,
+                        )
+                        cal_db.add(entry)
+
+                await cal_db.commit()
+                logger.info(
+                    "generate_week.calendar_entries_created",
+                    week_start=str(week_start),
+                    count=len(days_list),
+                )
 
             # --- Phase 2: Daily Content for each day ---
             status["phase"] = "generating_days"
@@ -624,8 +697,363 @@ async def get_week_generation_status(
 
 
 # ---------------------------------------------------------------------------
+# "Start From Topic" — generate a post from a user-specified topic
+# ---------------------------------------------------------------------------
+
+@router.post("/start-from-topic")
+async def start_from_topic(
+    request: StartFromTopicRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Generate content from a user-specified topic with optional inspiration.
+
+    Runs the full daily_content pipeline but forces the topic through so
+    trend_scout and story_strategist respect the user's intent.
+
+    Optional: inspire_by_creator_ids loads creator style data,
+    inspire_by_post_id loads a specific post as a writing reference.
+    """
+    from tce.models.creator_profile import CreatorProfile
+    from tce.models.post_example import PostExample as PostExampleModel
+
+    run_id = str(uuid.uuid4())
+
+    # Build the creator_inspiration context if requested
+    creator_inspiration: dict[str, Any] | None = None
+
+    if request.inspire_by_post_id:
+        post = await db.get(PostExampleModel, uuid.UUID(request.inspire_by_post_id))
+        if not post:
+            raise HTTPException(status_code=404, detail="Post example not found")
+        creator_name = "Unknown"
+        if post.creator_id:
+            creator = await db.get(CreatorProfile, post.creator_id)
+            if creator:
+                creator_name = creator.creator_name
+        creator_inspiration = {
+            "creator_name": creator_name,
+            "post_text": post.post_text_raw or post.hook_text or "",
+            "hook_type": post.hook_type or "unknown",
+            "body_structure": post.body_structure or "unknown",
+            "story_arc": post.story_arc or "unknown",
+            "cta_type": post.cta_type or "unknown",
+            "tone_tags": post.tone_tags or [],
+            "topic_tags": post.topic_tags or [],
+            "word_count": len((post.post_text_raw or "").split()),
+            "influence_weight": 30,
+            "style_notes": "",
+        }
+    elif request.inspire_by_creator_ids:
+        # Load creator profiles and their top-scoring post
+        creators = []
+        best_post = None
+        best_score = -1
+        for cid in request.inspire_by_creator_ids[:3]:  # Max 3 creators
+            creator = await db.get(CreatorProfile, uuid.UUID(cid))
+            if creator:
+                creators.append(creator)
+                # Find their highest-scoring post
+                result = await db.execute(
+                    select(PostExampleModel)
+                    .where(PostExampleModel.creator_id == creator.id)
+                    .order_by(PostExampleModel.final_score.desc().nulls_last())
+                    .limit(1)
+                )
+                top_post = result.scalar_one_or_none()
+                if top_post and (top_post.final_score or 0) > best_score:
+                    best_post = top_post
+                    best_score = top_post.final_score or 0
+
+        if creators and best_post:
+            creator_names = ", ".join(c.creator_name for c in creators)
+            style_notes_parts = [c.style_notes or "" for c in creators if c.style_notes]
+            creator_inspiration = {
+                "creator_name": creator_names,
+                "post_text": best_post.post_text_raw or best_post.hook_text or "",
+                "hook_type": best_post.hook_type or "unknown",
+                "body_structure": best_post.body_structure or "unknown",
+                "story_arc": best_post.story_arc or "unknown",
+                "cta_type": best_post.cta_type or "unknown",
+                "tone_tags": best_post.tone_tags or [],
+                "topic_tags": best_post.topic_tags or [],
+                "word_count": len((best_post.post_text_raw or "").split()),
+                "influence_weight": min(20 * len(creators), 40),
+                "style_notes": "; ".join(style_notes_parts),
+            }
+
+    # Build pipeline context
+    context: dict[str, Any] = {
+        "topic": request.topic,
+        "language": request.language,
+    }
+    if request.template_hint:
+        context["template_hint"] = request.template_hint
+    if request.cta_keyword:
+        context["weekly_keyword"] = request.cta_keyword
+    if request.notes:
+        context["operator_overrides"] = {"notes": request.notes}
+    if creator_inspiration:
+        context["creator_inspiration"] = creator_inspiration
+
+    # Store status for polling
+    _start_topic_runs[run_id] = {
+        "run_id": run_id,
+        "status": "running",
+        "phase": "starting",
+        "phase_detail": "Initializing topic-based generation...",
+        "pipeline_run_id": None,
+        "step_status": {},
+        "error": None,
+        "topic": request.topic[:200],
+        "inspiration": creator_inspiration.get("creator_name") if creator_inspiration else None,
+    }
+    await _persist_start_topic_status(run_id, _start_topic_runs[run_id])
+
+    async def _run_topic() -> None:
+        from tce.db.session import async_session
+
+        status = _start_topic_runs[run_id]
+
+        async def _save() -> None:
+            await _persist_start_topic_status(run_id, status)
+
+        try:
+            status["phase"] = "running"
+            status["phase_detail"] = "Running daily_content pipeline with your topic..."
+            await _save()
+
+            pipeline_run_id = uuid.uuid4()
+
+            async with async_session() as pipe_db:
+                run_record = PipelineRun(
+                    run_id=pipeline_run_id,
+                    workflow="daily_content",
+                    status="running",
+                    started_at=datetime.utcnow(),
+                )
+                pipe_db.add(run_record)
+                await pipe_db.commit()
+                record_id = run_record.id
+
+                steps = WORKFLOWS["daily_content"]
+                orchestrator = PipelineOrchestrator(
+                    steps=steps,
+                    db=pipe_db,
+                    settings=settings,
+                    run_id=pipeline_run_id,
+                )
+                _active_runs[str(pipeline_run_id)] = orchestrator
+                status["pipeline_run_id"] = str(pipeline_run_id)
+                await _save()
+
+                result = await orchestrator.run(context)
+
+            # Bookkeeping
+            async with async_session() as bk_db:
+                run_record = await bk_db.get(PipelineRun, record_id)
+                if run_record:
+                    has_failures = any(
+                        v == "failed" for v in result.get("step_status", {}).values()
+                    )
+                    run_record.status = "failed" if has_failures else "completed"
+                    run_record.completed_at = datetime.utcnow()
+                    run_record.step_results = result.get("step_status", {})
+                    run_record.step_errors = result.get("step_errors", {})
+                    if has_failures:
+                        errors = result.get("step_errors", {})
+                        run_record.error_message = "; ".join(
+                            f"{k}: {v}" for k, v in errors.items()
+                        )
+                    await bk_db.commit()
+
+            _active_runs.pop(str(pipeline_run_id), None)
+
+            status["phase"] = "completed"
+            status["phase_detail"] = "Content generated from your topic"
+            status["status"] = "completed"
+            status["pipeline_run_id"] = str(pipeline_run_id)
+            status["step_status"] = result.get("step_status", {})
+            await _save()
+
+        except Exception as e:
+            logger.exception("start_from_topic.error", run_id=run_id)
+            status["phase"] = "failed"
+            status["error"] = str(e)
+            status["status"] = "failed"
+            await _save()
+
+    asyncio.create_task(_run_topic())
+
+    return {
+        "run_id": run_id,
+        "status": "started",
+        "status_url": f"/api/v1/pipeline/start-from-topic/{run_id}/status",
+        "topic": request.topic[:200],
+        "inspiration": creator_inspiration.get("creator_name") if creator_inspiration else None,
+    }
+
+
+_start_topic_runs: dict[str, dict] = {}
+
+
+async def _persist_start_topic_status(run_id: str, status: dict) -> None:
+    """Persist start-from-topic run status to the polish_run_status table (reuse)."""
+    try:
+        from tce.db.session import async_session
+        async with async_session() as db:
+            await _ensure_polish_table(db)
+            now = datetime.utcnow().isoformat()
+            await db.execute(text(
+                "INSERT INTO polish_run_status (run_id, status_json, updated_at) "
+                "VALUES (:rid, :sj, :ua) "
+                "ON CONFLICT(run_id) DO UPDATE SET status_json = :sj, updated_at = :ua"
+            ), {"rid": run_id, "sj": json.dumps(status), "ua": now})
+            await db.commit()
+    except Exception:
+        logger.warning("persist_start_topic_status.failed", run_id=run_id, exc_info=True)
+
+
+@router.get("/start-from-topic/{run_id}/status")
+async def get_start_from_topic_status(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Get status of a start-from-topic run."""
+    if run_id in _start_topic_runs:
+        status = _start_topic_runs[run_id]
+        pipe_id = status.get("pipeline_run_id")
+        if pipe_id and pipe_id in _active_runs:
+            live = _active_runs[pipe_id].get_status()
+            status["step_status"] = live.get("step_status", status.get("step_status", {}))
+            for sname, sval in live.get("step_status", {}).items():
+                if sval == "running":
+                    status["phase_detail"] = f"Running {sname}..."
+                    break
+        return status
+
+    db_status = await _load_polish_status(run_id, db)
+    if db_status:
+        if db_status.get("status") == "running":
+            db_status["status"] = "interrupted"
+            db_status["phase"] = "interrupted"
+            db_status["phase_detail"] = "Server restarted - generation was interrupted"
+            await _persist_start_topic_status(run_id, db_status)
+        return db_status
+
+    raise HTTPException(status_code=404, detail="Start-from-topic run not found")
+
+
+# ---------------------------------------------------------------------------
+# Inspiration selectors — list creators and top posts for UI combo/selector
+# ---------------------------------------------------------------------------
+
+@router.get("/inspiration/creators")
+async def list_inspiration_creators(
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """List creators available for inspiration, with post counts and top engagement.
+
+    Returns creators sorted by total engagement (comments + shares) descending.
+    Used by the UI to populate the "inspire by creator" combo selector.
+    """
+    from tce.models.creator_profile import CreatorProfile
+    from tce.models.post_example import PostExample as PostExampleModel
+
+    result = await db.execute(select(CreatorProfile).order_by(CreatorProfile.creator_name))
+    creators = list(result.scalars().all())
+
+    out = []
+    for c in creators:
+        posts_result = await db.execute(
+            select(PostExampleModel).where(PostExampleModel.creator_id == c.id)
+        )
+        posts = list(posts_result.scalars().all())
+        total_comments = sum(p.visible_comments or 0 for p in posts)
+        total_shares = sum(p.visible_shares or 0 for p in posts)
+        out.append({
+            "id": str(c.id),
+            "creator_name": c.creator_name,
+            "style_notes": c.style_notes,
+            "post_count": len(posts),
+            "total_comments": total_comments,
+            "total_shares": total_shares,
+            "total_engagement": total_comments + total_shares,
+            "top_patterns": c.top_patterns,
+        })
+
+    out.sort(key=lambda x: x["total_engagement"], reverse=True)
+    return out
+
+
+@router.get("/inspiration/posts")
+async def list_inspiration_posts(
+    creator_id: str | None = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """List posts available for inspiration, sorted by comments descending.
+
+    Optionally filter by creator_id. Used by the UI to populate the
+    "inspire by post" selector. Shows hook text preview and engagement stats.
+    """
+    from tce.models.creator_profile import CreatorProfile
+    from tce.models.post_example import PostExample as PostExampleModel
+
+    query = (
+        select(PostExampleModel)
+        .order_by(PostExampleModel.visible_comments.desc().nulls_last())
+        .limit(min(limit, 200))
+    )
+    if creator_id:
+        query = query.where(PostExampleModel.creator_id == uuid.UUID(creator_id))
+
+    result = await db.execute(query)
+    posts = list(result.scalars().all())
+
+    # Batch-load creator names
+    creator_ids = set(p.creator_id for p in posts if p.creator_id)
+    creator_map = {}
+    if creator_ids:
+        cr_result = await db.execute(
+            select(CreatorProfile).where(CreatorProfile.id.in_(creator_ids))
+        )
+        for cr in cr_result.scalars().all():
+            creator_map[cr.id] = cr.creator_name
+
+    out = []
+    for p in posts:
+        hook_preview = (p.hook_text or p.post_text_raw or "")[:150]
+        out.append({
+            "id": str(p.id),
+            "creator_name": creator_map.get(p.creator_id, "Unknown"),
+            "hook_preview": hook_preview,
+            "hook_type": p.hook_type,
+            "body_structure": p.body_structure,
+            "story_arc": p.story_arc,
+            "visible_comments": p.visible_comments,
+            "visible_shares": p.visible_shares,
+            "final_score": p.final_score,
+            "visual_type": p.visual_type,
+            "visual_description": p.visual_description,
+        })
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # "Start From Copy" — polish user-provided copy into a full package
 # ---------------------------------------------------------------------------
+
+class StartFromTopicRequest(BaseModel):
+    """Generate a post from a user-specified topic with optional creator/post inspiration."""
+    topic: str  # Required: what the post should be about
+    template_hint: str | None = None  # e.g. "big_shift_explainer"
+    inspire_by_creator_ids: list[str] = []  # Creator profile UUIDs (combo select)
+    inspire_by_post_id: str | None = None  # Specific post example UUID
+    cta_keyword: str | None = None
+    language: str = "english"
+    notes: str | None = None
+
 
 class PolishCopyRequest(BaseModel):
     copy_text: str

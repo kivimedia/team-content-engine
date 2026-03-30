@@ -14,23 +14,33 @@ You are the Trend Scout for a content engine focused on AI, technology, and busi
 Your job is to analyze the provided news and signals and produce a ranked Trend Brief \
 with candidate stories for a social media content calendar.
 
+RECENCY RULES (NON-NEGOTIABLE):
+- ONLY include stories published within the last 14 days. This is a HARD cutoff.
+- Ideally all stories should be from the last 7 days.
+- NEVER include stories older than 14 days, no matter how relevant they seem.
+- NEVER reference product launches, announcements, or events from months ago.
+- If a search result has an age/date showing it is older than 14 days, SKIP IT entirely.
+- If you are unsure of a story's age, do NOT include it.
+- Today's date will be provided in the prompt. Use it to verify recency.
+
 For each candidate story, provide:
 - trend_id: a short unique slug
 - headline: 1-sentence summary
-- source_url: primary source (if available)
+- source_url: primary source (REQUIRED - must be a real URL from search results)
 - source_type: news, social, company_blog, paper, creator_post
-- freshness: estimated hours since publication
+- freshness: estimated hours since publication (MUST be under 336 for 14-day cutoff)
 - relevance_score: 1-10 based on alignment with AI/business audience interests
 - template_fit: list of template families this story could power
 - angle_suggestions: 2-3 possible angles a writer could take
-- source_creator_overlap: boolean — is a known source creator already covering this?
+- source_creator_overlap: boolean - is a known source creator already covering this?
 - evidence_available: how easy it is to find primary sources (easy/moderate/hard)
 
-Rank stories by: freshness * 0.3 + relevance_score * 0.5 + evidence_available * 0.2
+Rank stories by: freshness * 0.5 + relevance_score * 0.3 + evidence_available * 0.2
+(Freshness is the DOMINANT factor - recent stories always beat older ones.)
 
 Output a JSON object with:
-- trends: array of trend objects (minimum 5)
-- summary: 2-sentence overview of the trend landscape
+- trends: array of trend objects (minimum 5, all from the last 14 days)
+- summary: 2-sentence overview of the trend landscape THIS WEEK
 """
 
 
@@ -40,10 +50,87 @@ class TrendScout(AgentBase):
     default_model = "claude-sonnet-4-20250514"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
-        """Produce a trend brief from live web search results or general knowledge."""
+        """Produce a trend brief from live web search results or general knowledge.
+
+        If context contains a "topic" key, the user has specified what to write about.
+        In that case, skip web search and build a focused trend brief from the topic.
+        """
         scan_type = context.get("scan_type", "daily")
         operator_topics = context.get("operator_topics", [])
         focus_areas = context.get("focus_areas", ["AI", "technology", "business automation"])
+        user_topic = context.get("topic", "")
+
+        # ---------------------------------------------------------------
+        # FAST PATH: User provided a specific topic - skip web search,
+        # build a trend brief directly from the topic description.
+        # ---------------------------------------------------------------
+        if user_topic:
+            self._report(f"User-provided topic detected, skipping web search")
+            self._report(f"Topic: {user_topic[:200]}")
+
+            from datetime import date as date_cls
+            today_str = date_cls.today().isoformat()
+
+            topic_prompt = (
+                f"The operator has provided a SPECIFIC topic for today's post. "
+                f"Your job is to build a Trend Brief around this topic ONLY. "
+                f"Do NOT search for or suggest alternative topics.\n\n"
+                f"TODAY: {today_str}\n"
+                f"ASSIGNED TOPIC:\n{user_topic}\n\n"
+                f"Build a trend brief with:\n"
+                f"- One primary trend entry for the assigned topic\n"
+                f"- 2-3 angle suggestions the writer could take\n"
+                f"- A summary that frames the topic's relevance right now\n"
+                f"- Use relevance_score 10 for the primary topic\n"
+                f"- Set source_url to 'operator_provided' and freshness to 1"
+            )
+
+            response = await self._call_llm(
+                messages=[{"role": "user", "content": topic_prompt}],
+                system=SYSTEM_PROMPT,
+                max_tokens=4096,
+                temperature=0.3,
+            )
+
+            text = self._extract_text(response)
+            try:
+                brief = self._parse_json_response(text)
+            except json.JSONDecodeError:
+                # Construct a minimal brief from the topic directly
+                brief = {
+                    "trends": [{
+                        "trend_id": "user-topic",
+                        "headline": user_topic[:200],
+                        "source_url": "operator_provided",
+                        "source_type": "operator",
+                        "freshness": 1,
+                        "relevance_score": 10,
+                        "template_fit": [context.get("template_hint", "big_shift_explainer")],
+                        "angle_suggestions": ["Direct analysis", "Practical guide", "Contrarian take"],
+                        "evidence_available": "moderate",
+                    }],
+                    "summary": f"Operator-assigned topic: {user_topic[:200]}",
+                }
+
+            trends = brief.get("trends", [])
+            self._report(f"Built trend brief with {len(trends)} entries from user topic")
+            for i, t in enumerate(trends, 1):
+                headline = t.get("headline", t.get("topic", "untitled"))
+                self._report(f"  {i}. {headline}")
+
+            current_events_context = f"Operator-assigned topic: {user_topic[:200]}"
+
+            return {
+                "trend_brief": brief,
+                "scan_type": "operator_topic",
+                "trend_count": len(trends),
+                "web_search_used": False,
+                "current_events_context": current_events_context,
+            }
+
+        # ---------------------------------------------------------------
+        # STANDARD PATH: Web search for trending stories
+        # ---------------------------------------------------------------
 
         # PRD Section 49.4: Multi-source web search for real trending stories
         from tce.services.web_search import WebSearchService
@@ -75,9 +162,14 @@ class TrendScout(AgentBase):
                     search_results.extend(results)
             self._report(f"Found {len(search_results)} search results from diverse sources")
 
+        from datetime import date as date_cls
+
+        today_str = date_cls.today().isoformat()
+
         prompt_parts = [
-            f"Produce a {scan_type} Trend Brief for today.",
+            f"Produce a {scan_type} Trend Brief for today ({today_str}).",
             f"Focus areas: {', '.join(focus_areas)}",
+            f"HARD RULE: Today is {today_str}. Only include stories from the last 14 days.",
         ]
 
         if operator_topics:
@@ -95,14 +187,23 @@ class TrendScout(AgentBase):
                     f"   Age: {r.get('age', 'unknown')}"
                 )
             prompt_parts.append(
-                "\nUse these real search results as your primary source of trending stories. "
-                "Verify relevance and rank by the scoring formula in your instructions."
+                "\nUse ONLY these real search results as your source of trending stories. "
+                "Do NOT add stories from your own knowledge or training data. "
+                "Every trend MUST have a source_url from the search results above. "
+                "Skip any result that appears older than 14 days based on its age field. "
+                "Rank by the scoring formula in your instructions (freshness is dominant)."
             )
         else:
             prompt_parts.append(
-                "No live search results available. "
-                "Identify the top trending AI/tech stories right now based on your knowledge. "
-                "For each, assess its potential as social media content for a business audience."
+                f"No live search results available (no search API configured). "
+                f"Today is {today_str}. Using your knowledge, identify ONLY stories that "
+                f"you are CERTAIN happened within the last 7-14 days (before {today_str}). "
+                f"For each story you MUST include the actual publication date in the headline. "
+                f"Example: 'Google announced Gemini 2.5 Pro (March 25, 2026)'. "
+                f"If you cannot confidently date a story to within the last 14 days, "
+                f"DO NOT include it. It is better to return 3 well-dated trends than "
+                f"10 trends with uncertain dates. Set source_url to the actual article URL "
+                f"if you know it, or 'unknown' if you don't."
             )
 
         response = await self._call_llm(
@@ -119,7 +220,29 @@ class TrendScout(AgentBase):
         except json.JSONDecodeError:
             brief = {"trends": [], "summary": "Failed to parse trend brief"}
 
-        trends = brief.get("trends", [])
+        # Hard recency filter: reject any trend the LLM returned with freshness > 336h (14 days)
+        raw_trends = brief.get("trends", [])
+        trends = []
+        rejected = 0
+        for t in raw_trends:
+            freshness = t.get("freshness")
+            # Reject if freshness is explicitly > 14 days (336 hours)
+            if freshness is not None:
+                try:
+                    if float(freshness) > 336:
+                        rejected += 1
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            # When we have search results, reject trends without real source URLs
+            if search_results and not t.get("source_url"):
+                rejected += 1
+                continue
+            trends.append(t)
+        brief["trends"] = trends
+        if rejected:
+            self._report(f"Filtered out {rejected} stale/unsourced trends (>14 days or no URL)")
+
         self._report(f"Found {len(trends)} trending stories:")
         for i, t in enumerate(trends, 1):
             headline = t.get("headline", t.get("topic", "untitled"))
