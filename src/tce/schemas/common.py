@@ -141,6 +141,7 @@ FEEDBACK_TAGS = [
     "voice_too_generic",
     "voice_wrong_tone",
     "voice_wrong_platform",
+    "brand_voice_mismatch",
     # Visual issues
     "visual_mismatch",
     "visual_too_generic",

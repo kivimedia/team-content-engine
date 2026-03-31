@@ -11,148 +11,330 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TCE - Operator Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+/* === DESIGN SYSTEM - Inspired by Agent Artist Studio === */
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e4e4e7;--dim:#9ca3af;--accent:#6366f1;--accent2:#818cf8;--green:#22c55e;--red:#ef4444;--yellow:#eab308;--blue:#3b82f6;color-scheme:dark}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
-.header{background:var(--card);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
-.header h1{font-size:20px;font-weight:600}
-.header .status{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim)}
-.header .dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
-.header .dot.off{background:var(--red)}
-.nav{display:flex;gap:4px;background:var(--card);padding:8px 24px;border-bottom:1px solid var(--border)}
-.nav button{padding:8px 16px;border:none;background:transparent;color:var(--dim);cursor:pointer;border-radius:6px;font-size:13px;font-weight:500}
-.nav button.active{background:var(--accent);color:#fff}
-.nav button:hover:not(.active){background:var(--border)}
-.main{max-width:1200px;margin:0 auto;padding:24px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:24px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px}
-.card h3{font-size:14px;color:var(--dim);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px}
-.card .value{font-size:28px;font-weight:700}
+:root{
+  --bg:hsl(220 20% 7%);--card:hsl(220 18% 10%);--card-hover:hsl(220 18% 12%);
+  --border:hsl(220 14% 18%);--border-hover:hsl(174 72% 52% / 0.3);
+  --text:hsl(210 20% 92%);--dim:hsl(215 12% 55%);--muted:hsl(215 16% 35%);
+  --primary:hsl(174 72% 52%);--primary-fg:#000;--primary-dim:hsl(174 72% 52% / 0.1);
+  --accent:hsl(38 92% 58%);--accent-dim:hsl(38 92% 58% / 0.1);
+  --success:hsl(150 60% 45%);--success-dim:hsl(150 60% 45% / 0.1);
+  --destructive:hsl(0 72% 55%);--destructive-dim:hsl(0 72% 55% / 0.1);
+  --warning:hsl(38 92% 58%);--warning-dim:hsl(38 92% 58% / 0.1);
+  --info:hsl(210 80% 58%);--info-dim:hsl(210 80% 58% / 0.1);
+  --gradient-card:linear-gradient(180deg,hsl(220 18% 12%),hsl(220 18% 9%));
+  --gradient-hero:linear-gradient(135deg,hsl(174 72% 52% / 0.08),hsl(38 92% 58% / 0.06));
+  --shadow-glow:0 0 12px hsl(174 72% 52% / 0.3);
+  --sidebar-w:240px;--sidebar-collapsed:56px;--header-h:56px;
+  color-scheme:dark;
+}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px;line-height:1.6;overflow:hidden}
+h1,h2,h3,h4,h5,h6,.font-display{font-family:'JetBrains Mono',monospace}
+.font-body{font-family:'Inter',sans-serif}
+
+/* === LAYOUT: Sidebar + Header + Content === */
+.app-shell{display:flex;height:100vh;overflow:hidden}
+.sidebar{width:var(--sidebar-w);background:var(--card);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:width 0.25s ease;overflow:hidden;z-index:50}
+.sidebar.collapsed{width:var(--sidebar-collapsed)}
+.sidebar-header{height:var(--header-h);padding:0 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);flex-shrink:0}
+.sidebar-header .logo{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:var(--primary);white-space:nowrap;overflow:hidden}
+.sidebar-toggle{background:none;border:none;color:var(--dim);cursor:pointer;padding:4px;font-size:16px;transition:color 0.15s}
+.sidebar-toggle:hover{color:var(--text)}
+.sidebar-nav{flex:1;overflow-y:auto;padding:8px 0}
+.sidebar-group{padding:0 8px;margin-bottom:4px}
+.sidebar-group-label{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--dim);opacity:0.6;padding:12px 12px 4px;white-space:nowrap;overflow:hidden}
+.sidebar.collapsed .sidebar-group-label{opacity:0;height:8px;padding:4px 0}
+.sidebar-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;color:var(--dim);transition:all 0.15s;position:relative;white-space:nowrap;border:none;background:none;width:100%;text-align:left}
+.sidebar-item:hover{color:var(--text);background:hsl(215 16% 35% / 0.15)}
+.sidebar-item.active{color:var(--primary);background:var(--primary-dim);font-weight:600}
+.sidebar-item.active::before{content:'';position:absolute;left:0;top:4px;bottom:4px;width:2px;background:var(--primary);border-radius:1px;animation:scale-in 0.2s ease-out}
+.sidebar-item .icon{width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.sidebar-item .label{overflow:hidden;transition:opacity 0.2s}
+.sidebar.collapsed .sidebar-item .label{opacity:0;width:0}
+.sidebar-footer{padding:8px;border-top:1px solid var(--border);flex-shrink:0}
+
+/* Header bar */
+.header-bar{height:var(--header-h);background:var(--card);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.header-title{font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:600}
+.header-actions{display:flex;align-items:center;gap:16px}
+.search-input{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px 8px 36px;color:var(--text);font-size:13px;width:200px;transition:width 0.3s ease-out,border-color 0.2s;font-family:'Inter',sans-serif}
+.search-input:focus{width:350px;outline:none;border-color:var(--primary)}
+.search-wrap{position:relative}
+.search-icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--dim);font-size:14px;pointer-events:none}
+.notif-btn{position:relative;cursor:pointer;background:none;border:none;font-size:20px;color:var(--dim);transition:color 0.15s;padding:4px}
+.notif-btn:hover{color:var(--text)}
+.notif-dot{position:absolute;top:0;right:0;width:8px;height:8px;background:var(--destructive);border-radius:50%;animation:bounce-dot 2s infinite}
+.health-dot{width:8px;height:8px;border-radius:50%;background:var(--success);flex-shrink:0}
+.health-dot.off{background:var(--destructive)}
+.health-wrap{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim)}
+
+/* Main content area */
+.main-area{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.content-scroll{flex:1;overflow-y:auto;overflow-x:hidden}
+.main{max-width:1200px;margin:0 auto;padding:16px 24px 32px}
+
+/* Breadcrumb */
+#breadcrumb{padding:8px 24px;font-size:12px;color:var(--dim);border-bottom:1px solid var(--border);font-family:'JetBrains Mono',monospace;display:none}
+
+/* === CARDS === */
+.card{background:var(--gradient-card);border:1px solid var(--border);border-radius:8px;padding:20px;transition:border-color 0.2s,transform 0.2s,box-shadow 0.2s}
+.card h3{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);margin-bottom:12px;text-transform:uppercase;letter-spacing:0.1em;font-weight:600}
+.card .value{font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:700}
 .card .sub{font-size:12px;color:var(--dim);margin-top:4px}
+.card-hero{background:var(--gradient-hero);border:1px solid hsl(174 72% 52% / 0.2);border-radius:8px;padding:20px}
+.hover-lift{transition:transform 0.2s ease-out,box-shadow 0.2s ease-out,border-color 0.2s}
+.hover-lift:hover{transform:translateY(-2px);box-shadow:0 8px 25px -5px rgba(0,0,0,0.3),0 0 10px -5px hsl(174 72% 52% / 0.1);border-color:var(--border-hover)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:24px}
 .section{margin-bottom:32px}
-.section > h2{font-size:18px;margin-bottom:16px;font-weight:600}
-.btn{padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;transition:opacity .15s}
-.btn:hover{opacity:.85}
-.btn-primary{background:var(--accent);color:#fff}
-.btn-green{background:var(--green);color:#000}
-.btn-red{background:var(--red);color:#fff}
-.btn-blue{background:var(--blue);color:#fff}
-.btn-dim{background:var(--border);color:var(--text)}
+.section > h2{font-family:'JetBrains Mono',monospace;font-size:18px;margin-bottom:16px;font-weight:600}
+.section-label{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--dim);font-weight:600;margin-bottom:12px}
+
+/* === BUTTONS === */
+.btn{padding:8px 16px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:'Inter',sans-serif;transition:all 0.15s;display:inline-flex;align-items:center;gap:6px}
+.btn:active{transform:scale(0.97)}
+.btn-primary{background:var(--primary);color:var(--primary-fg)}
+.btn-primary:hover{box-shadow:var(--shadow-glow)}
+.btn-green{background:var(--success-dim);color:var(--success);border:1px solid hsl(150 60% 45% / 0.2)}
+.btn-green:hover{background:hsl(150 60% 45% / 0.2)}
+.btn-red{background:var(--destructive-dim);color:var(--destructive);border:1px solid hsl(0 72% 55% / 0.2)}
+.btn-red:hover{background:hsl(0 72% 55% / 0.2)}
+.btn-blue{background:var(--info-dim);color:var(--info);border:1px solid hsl(210 80% 58% / 0.2)}
+.btn-blue:hover{background:hsl(210 80% 58% / 0.2)}
+.btn-dim{background:transparent;color:var(--dim);border:1px solid var(--border)}
+.btn-dim:hover{background:var(--card-hover);color:var(--text)}
 .btn-group{display:flex;gap:8px;flex-wrap:wrap}
-select,input,textarea{padding:8px 12px;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:6px;font-size:13px;color-scheme:dark}
+.btn-amber{background:var(--accent-dim);color:var(--accent);border:1px solid hsl(38 92% 58% / 0.2)}
+.btn-amber:hover{background:hsl(38 92% 58% / 0.2)}
+
+/* === FORMS === */
+select,input,textarea{padding:8px 12px;border:1px solid var(--border);background:hsl(220 18% 8%);color:var(--text);border-radius:8px;font-size:13px;font-family:'Inter',sans-serif;color-scheme:dark;transition:border-color 0.2s}
+select:focus,input:focus,textarea:focus{outline:none;border-color:hsl(174 72% 52% / 0.5)}
 option{background:var(--card);color:var(--text)}
-img{background:var(--card)}
+img{background:var(--card);border-radius:4px}
+
+/* === BADGES & TAGS === */
+.tag{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:10px;font-family:'JetBrains Mono',monospace;font-weight:600;text-transform:uppercase;letter-spacing:0.02em}
+.tag-draft{background:var(--warning-dim);color:var(--warning)}
+.tag-approved{background:var(--success-dim);color:var(--success)}
+.tag-rejected{background:var(--destructive-dim);color:var(--destructive)}
+.tag-scheduled{background:var(--info-dim);color:var(--info)}
+.tag-published{background:var(--primary-dim);color:var(--primary)}
+
+/* === PIPELINE === */
 .pipeline-steps{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
-.step-badge{padding:6px 12px;border-radius:16px;font-size:12px;font-weight:500;border:1px solid var(--border)}
-.step-badge.completed{background:#166534;border-color:#22c55e;color:#bbf7d0}
-.step-badge.running{background:#1e3a5f;border-color:#3b82f6;color:#93c5fd}
-.step-badge.pending{background:var(--card);color:var(--dim)}
-.step-badge.failed{background:#7f1d1d;border-color:#ef4444;color:#fecaca}
-@keyframes spin{to{transform:rotate(360deg)}}
-.spinner{width:20px;height:20px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0}
+.step-badge{padding:6px 14px;border-radius:9999px;font-size:11px;font-family:'JetBrains Mono',monospace;font-weight:500;border:1px solid var(--border);transition:all 0.2s}
+.step-badge.completed{background:var(--success-dim);border-color:var(--success);color:var(--success)}
+.step-badge.running{background:var(--primary-dim);border-color:var(--primary);color:var(--primary)}
+.step-badge.pending{background:transparent;color:var(--dim)}
+.step-badge.failed{background:var(--destructive-dim);border-color:var(--destructive);color:var(--destructive)}
 .plan-steps{display:flex;gap:6px;margin-top:12px}
-.plan-step{padding:4px 12px;border-radius:12px;font-size:12px;font-weight:500;border:1px solid var(--border);color:var(--dim)}
-.plan-step.active{border-color:var(--accent);color:var(--accent);background:rgba(99,102,241,0.1)}
-.plan-step.done{border-color:var(--green);color:var(--green);background:rgba(34,197,94,0.1)}
-.post-preview{background:#111318;border:1px solid var(--border);border-radius:8px;padding:16px;margin:8px 0;white-space:pre-wrap;font-size:14px;line-height:1.6;max-height:300px;overflow-y:auto}
-.fb-btn{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border:1px solid var(--border);background:rgba(99,102,241,0.06);color:var(--accent2);cursor:pointer;border-radius:5px;font-size:11px;font-weight:500;vertical-align:middle;margin-left:6px;transition:all .15s}
-.fb-btn:hover{border-color:var(--accent);color:#fff;background:var(--accent)}
-.fb-popover{position:absolute;z-index:100;background:var(--card);border:1px solid var(--accent);border-radius:8px;padding:12px;width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
-.fb-popover textarea{width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;resize:vertical;min-height:60px}
-.fb-actions{display:flex;gap:6px;margin-top:8px;justify-content:flex-end}
-.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}
-.tag-draft{background:#2d2000;color:var(--yellow)}
-.tag-approved{background:#052e16;color:var(--green)}
-.tag-rejected{background:#2d0000;color:var(--red)}
-.packages-list{display:flex;flex-direction:column;gap:16px}
-.pkg-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px}
+.plan-step{padding:4px 12px;border-radius:9999px;font-size:12px;font-family:'JetBrains Mono',monospace;font-weight:500;border:1px solid var(--border);color:var(--dim);transition:all 0.2s}
+.plan-step.active{border-color:var(--primary);color:var(--primary);background:var(--primary-dim)}
+.plan-step.done{border-color:var(--success);color:var(--success);background:var(--success-dim)}
+
+/* === PIPELINE DOT VISUALIZATION === */
+.pipeline-dots{display:flex;align-items:center;gap:4px;margin:16px 0}
+.pipeline-dot{width:10px;height:10px;border-radius:50%;transition:all 0.2s}
+.pipeline-dot.done{background:var(--success)}
+.pipeline-dot.active{background:var(--primary);animation:pulse-slow 2s ease-in-out infinite}
+.pipeline-dot.waiting{background:hsl(215 12% 25%)}
+.pipeline-dot-label{font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--dim);text-align:center;margin-top:4px}
+.pipeline-connector{width:24px;height:1px;background:var(--border)}
+
+/* === PACKAGES === */
+.packages-list{display:flex;flex-direction:column;gap:12px}
+.pkg-card{background:var(--gradient-card);border:1px solid var(--border);border-radius:8px;padding:20px;transition:border-color 0.2s}
+.pkg-card:hover{border-color:var(--border-hover)}
 .pkg-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.pkg-meta{display:flex;gap:16px;font-size:12px;color:var(--dim);margin-bottom:12px}
-.tabs{display:flex;gap:4px;margin-bottom:8px}
-.tabs button{padding:4px 10px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer;border-radius:4px;font-size:12px}
-.tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
-.qa-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-top:12px}
-.qa-item{background:#111318;padding:8px;border-radius:6px;font-size:12px}
-.qa-item .label{color:var(--dim)}
-.qa-item .score{font-size:16px;font-weight:700;margin-top:2px}
-.upload-zone{border:2px dashed var(--border);border-radius:10px;padding:40px;text-align:center;cursor:pointer;transition:border-color .15s}
-.upload-zone:hover{border-color:var(--accent)}
+.pkg-meta{display:flex;gap:16px;font-size:12px;color:var(--dim);margin-bottom:12px;font-family:'JetBrains Mono',monospace}
+/* Underline-style tabs for package content */
+.tabs{display:flex;gap:0;margin-bottom:12px;border-bottom:1px solid var(--border)}
+.tabs button{padding:8px 16px;border:none;border-bottom:2px solid transparent;background:transparent;color:var(--dim);cursor:pointer;font-size:12px;font-family:'JetBrains Mono',monospace;font-weight:500;transition:all 0.15s}
+.tabs button.active{color:var(--primary);border-bottom-color:var(--primary)}
+.tabs button:hover:not(.active){color:var(--text)}
+/* Pill-style filter tabs */
+.filter-tabs{display:inline-flex;gap:2px;background:hsl(220 18% 10%);border-radius:8px;padding:3px}
+.filter-tab{padding:6px 14px;border:none;background:transparent;color:var(--dim);cursor:pointer;border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;font-weight:500;transition:all 0.15s}
+.filter-tab.active{background:var(--bg);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,0.3)}
+.filter-tab:hover:not(.active){color:var(--text)}
+
+/* QA Grid */
+.qa-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-top:12px}
+.qa-item{background:hsl(220 20% 8%);border:1px solid var(--border);padding:10px;border-radius:8px;font-size:12px}
+.qa-item .label{color:var(--dim);font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.05em}
+.qa-item .score{font-family:'JetBrains Mono',monospace;font-size:18px;font-weight:700;margin-top:4px}
+.qa-bar{height:4px;border-radius:2px;background:hsl(220 14% 15%);margin-top:6px;overflow:hidden}
+.qa-bar-fill{height:100%;border-radius:2px;transition:width 0.3s ease}
+
+/* === CONTENT === */
+.post-preview{background:hsl(220 20% 8%);border:1px solid var(--border);border-radius:8px;padding:16px;margin:8px 0;white-space:pre-wrap;font-size:14px;line-height:1.7;max-height:300px;overflow-y:auto}
+.fb-btn{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border:1px solid var(--border);background:var(--primary-dim);color:var(--primary);cursor:pointer;border-radius:6px;font-size:11px;font-family:'JetBrains Mono',monospace;font-weight:500;vertical-align:middle;margin-left:6px;transition:all 0.15s}
+.fb-btn:hover{border-color:var(--primary);background:hsl(174 72% 52% / 0.2)}
+.fb-popover{position:absolute;z-index:100;background:var(--card);border:1px solid var(--primary);border-radius:8px;padding:12px;width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
+.fb-popover textarea{width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px;resize:vertical;min-height:60px}
+.fb-actions{display:flex;gap:6px;margin-top:8px;justify-content:flex-end}
+
+/* === CORPUS === */
+.upload-zone{border:2px dashed var(--border);border-radius:8px;padding:40px;text-align:center;cursor:pointer;transition:all 0.2s}
+.upload-zone:hover{border-color:var(--primary);box-shadow:0 0 20px hsl(174 72% 52% / 0.05)}
 .upload-zone p{color:var(--dim);margin-top:8px}
 .docs-list{display:flex;flex-direction:column;gap:8px}
-.doc-row{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--card);border:1px solid var(--border);border-radius:8px}
+.doc-row{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--gradient-card);border:1px solid var(--border);border-radius:8px;transition:border-color 0.2s}
+.doc-row:hover{border-color:var(--border-hover)}
 .doc-info{display:flex;flex-direction:column;gap:2px}
 .doc-name{font-weight:500;font-size:14px}
-.doc-meta{font-size:12px;color:var(--dim)}
-.log{background:#111318;border:1px solid var(--border);border-radius:8px;padding:12px;font-family:monospace;font-size:12px;max-height:200px;overflow-y:auto;line-height:1.5;color:var(--dim)}
-.empty{text-align:center;padding:40px;color:var(--dim)}
-.toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:999;animation:slideIn .3s ease}
-.toast-ok{background:var(--green);color:#000}
-.toast-err{background:var(--red);color:#fff}
-@keyframes slideIn{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
-.voice-profile{background:#111318;border:1px solid var(--border);border-radius:8px;padding:16px;margin:8px 0}
-.voice-profile h4{color:var(--accent2);margin-bottom:8px;font-size:14px}
+.doc-meta{font-size:12px;color:var(--dim);font-family:'JetBrains Mono',monospace}
+.log{background:hsl(220 20% 8%);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'JetBrains Mono',monospace;font-size:12px;max-height:200px;overflow-y:auto;line-height:1.5;color:var(--dim)}
+.empty{text-align:center;padding:40px;color:var(--dim);font-family:'JetBrains Mono',monospace;font-size:13px}
+
+/* === TOAST === */
+.toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:999;font-family:'JetBrains Mono',monospace;animation:toast-in 0.3s ease;box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+.toast-ok{background:var(--success);color:#000}
+.toast-err{background:var(--destructive);color:#fff}
+.toast-info{background:var(--info);color:#fff}
+
+/* === VOICE PROFILE === */
+.voice-profile{background:hsl(220 20% 8%);border:1px solid var(--border);border-radius:8px;padding:16px;margin:8px 0}
+.voice-profile h4{color:var(--primary);margin-bottom:8px;font-size:14px;font-family:'JetBrains Mono',monospace}
 .voice-tags{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
-.voice-tag{background:var(--border);padding:2px 8px;border-radius:4px;font-size:11px}
-.tone-bar{display:flex;align-items:center;gap:8px;margin:2px 0;font-size:12px}
-.tone-bar .bar{height:6px;border-radius:3px;background:var(--accent)}
-.tone-bar .name{width:90px;color:var(--dim)}
+.voice-tag{background:var(--primary-dim);color:var(--primary);padding:3px 10px;border-radius:9999px;font-size:11px;font-family:'JetBrains Mono',monospace}
+.tone-bar{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12px}
+.tone-bar .bar{height:6px;border-radius:3px;background:var(--primary);transition:width 0.3s ease}
+.tone-bar .name{width:100px;color:var(--dim);font-family:'JetBrains Mono',monospace;font-size:11px}
+
+/* === WEEK PLANNER === */
 .week-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:16px 0}
-.day-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;min-height:180px;display:flex;flex-direction:column}
-.day-card.today{border-color:var(--accent);box-shadow:0 0 12px rgba(99,102,241,.2)}
-.day-card.dragging{opacity:0.4;border:2px dashed var(--accent)}
-.day-card.drag-over{outline:2px solid var(--green);outline-offset:-2px;background:rgba(34,197,94,.08)}
-.day-card .day-header{font-size:13px;color:var(--dim);margin-bottom:4px}
-.day-card .day-date{font-size:18px;font-weight:700;margin-bottom:8px}
-.day-card .day-angle{font-size:12px;color:var(--accent2);background:#1e1b4b;padding:3px 8px;border-radius:4px;display:inline-block;margin-bottom:8px;position:relative}
-.tip-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:var(--accent2);color:#1e1b4b;font-size:9px;font-weight:700;font-style:italic;margin-left:4px;cursor:help;vertical-align:middle}
-.tip-icon:hover::after{content:attr(data-tip);position:absolute;left:0;top:calc(100% + 6px);width:260px;padding:10px 12px;background:#1e1b4b;border:1px solid var(--accent);color:var(--text);font-size:12px;font-style:normal;font-weight:400;border-radius:8px;z-index:99;line-height:1.5;white-space:normal;box-shadow:0 4px 16px rgba(0,0,0,.5)}
-.day-card .day-topic{font-size:13px;color:var(--text);margin-bottom:8px;flex:1}
-.day-card .day-status{font-size:11px;font-weight:600;text-transform:uppercase;padding:2px 6px;border-radius:3px;display:inline-block}
-.day-status-planned{background:#1e3a5f;color:#93c5fd}
-.day-status-generating{background:#1e3a5f;color:#93c5fd}
-.day-status-ready{background:#052e16;color:#bbf7d0}
-.day-status-approved{background:#052e16;color:#22c55e}
-.day-status-published{background:#1e1b4b;color:#c7d2fe}
-.day-status-skipped{background:#2d2000;color:#fbbf24}
-.day-status-failed{background:#7f1d1d;color:#fecaca}
-.guide-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;margin-top:16px}
-.guide-card h3{color:var(--accent2);font-size:16px;margin-bottom:8px}
-.guide-meta{display:flex;gap:16px;font-size:12px;color:var(--dim);margin:8px 0}
+.day-card{background:var(--gradient-card);border:1px solid var(--border);border-radius:8px;padding:16px;min-height:180px;display:flex;flex-direction:column;transition:transform 0.2s ease-out,box-shadow 0.2s ease-out,border-color 0.2s}
+.day-card:hover{transform:translateY(-2px);box-shadow:0 8px 25px -5px rgba(0,0,0,0.3);border-color:var(--border-hover)}
+.day-card.today{border-color:var(--primary);box-shadow:0 0 12px hsl(174 72% 52% / 0.15)}
+.day-card.dragging{opacity:0.4;border:2px dashed var(--primary)}
+.day-card.drag-over{outline:2px solid var(--success);outline-offset:-2px;background:hsl(150 60% 45% / 0.05)}
+.day-card .day-header{font-size:12px;color:var(--dim);margin-bottom:4px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.05em}
+.day-card .day-date{font-size:18px;font-weight:700;margin-bottom:8px;font-family:'JetBrains Mono',monospace}
+.day-card .day-angle{font-size:11px;color:var(--primary);background:var(--primary-dim);padding:3px 10px;border-radius:9999px;display:inline-block;margin-bottom:8px;position:relative;font-family:'JetBrains Mono',monospace;font-weight:500}
+.tip-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-size:9px;font-weight:700;font-style:italic;margin-left:4px;cursor:help;vertical-align:middle}
+.tip-icon:hover::after{content:attr(data-tip);position:absolute;left:0;top:calc(100% + 6px);width:260px;padding:10px 12px;background:hsl(220 18% 12%);border:1px solid var(--primary);color:var(--text);font-size:12px;font-style:normal;font-weight:400;border-radius:8px;z-index:99;line-height:1.5;white-space:normal;box-shadow:0 4px 16px rgba(0,0,0,.5)}
+.day-card .day-topic{font-size:13px;color:var(--text);margin-bottom:8px;flex:1;line-height:1.5}
+.day-card .day-status{font-size:10px;font-family:'JetBrains Mono',monospace;font-weight:600;text-transform:uppercase;padding:3px 8px;border-radius:9999px;display:inline-block;letter-spacing:0.02em}
+.day-status-planned{background:var(--info-dim);color:var(--info)}
+.day-status-generating{background:var(--primary-dim);color:var(--primary)}
+.day-status-ready{background:var(--success-dim);color:var(--success)}
+.day-status-approved{background:var(--success-dim);color:var(--success)}
+.day-status-published{background:var(--primary-dim);color:var(--primary)}
+.day-status-skipped{background:var(--warning-dim);color:var(--warning)}
+.day-status-failed{background:var(--destructive-dim);color:var(--destructive)}
+
+/* === GUIDES === */
+.guide-card{background:var(--gradient-card);border:1px solid var(--border);border-radius:8px;padding:20px;margin-top:16px;transition:border-color 0.2s}
+.guide-card:hover{border-color:var(--border-hover)}
+.guide-card h3{color:var(--primary);font-size:16px;margin-bottom:8px;font-family:'JetBrains Mono',monospace}
+.guide-meta{display:flex;gap:16px;font-size:12px;color:var(--dim);margin:8px 0;font-family:'JetBrains Mono',monospace}
 .guide-stats{display:flex;gap:24px;margin:12px 0}
 .guide-stat{text-align:center}
-.guide-stat .val{font-size:22px;font-weight:700;color:var(--accent)}
-.guide-stat .lbl{font-size:11px;color:var(--dim)}
+.guide-stat .val{font-size:22px;font-weight:700;color:var(--primary);font-family:'JetBrains Mono',monospace}
+.guide-stat .lbl{font-size:10px;color:var(--dim);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.05em}
+
+/* === ANIMATIONS === */
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:20px;height:20px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0}
+@keyframes page-enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.page-content{animation:page-enter 0.3s ease-out}
+@keyframes fade-in-up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.stagger-children > *{opacity:0;animation:fade-in-up 0.4s ease-out forwards}
+.stagger-children > *:nth-child(1){animation-delay:0ms}
+.stagger-children > *:nth-child(2){animation-delay:60ms}
+.stagger-children > *:nth-child(3){animation-delay:120ms}
+.stagger-children > *:nth-child(4){animation-delay:180ms}
+.stagger-children > *:nth-child(5){animation-delay:240ms}
+.stagger-children > *:nth-child(6){animation-delay:300ms}
+.stagger-children > *:nth-child(7){animation-delay:360ms}
+.stagger-children > *:nth-child(8){animation-delay:420ms}
+@keyframes toast-in{from{transform:translateX(120%);opacity:0}to{transform:translateX(0);opacity:1}}
+@keyframes bounce-dot{0%,100%{transform:scale(1)}50%{transform:scale(1.4)}}
+@keyframes pulse-slow{0%,100%{opacity:1}50%{opacity:0.5}}
+@keyframes shimmer{from{background-position:-200px 0}to{background-position:200px 0}}
+.shimmer{background:linear-gradient(90deg,transparent 0%,hsl(174 72% 52% / 0.08) 50%,transparent 100%);background-size:200px 100%;animation:shimmer 2s infinite}
+@keyframes scale-in{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+
+/* === SCROLLBAR === */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:hsl(220 14% 22%);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:hsl(220 14% 28%)}
+
+/* === RESPONSIVE === */
+@media(max-width:1024px){.sidebar{width:var(--sidebar-collapsed)}.sidebar .label{opacity:0;width:0}.sidebar-group-label{opacity:0;height:8px;padding:4px 0}}
 @media(max-width:900px){.week-grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:768px){.sidebar{display:none}.search-input{width:150px}.search-input:focus{width:250px}}
 @media(max-width:600px){.week-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-<div class="header">
-  <h1>Team Content Engine</h1>
-  <div style="display:flex;align-items:center;gap:16px">
-    <div style="position:relative"><input id="global-search" type="text" placeholder="Search posts, topics, templates..." style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 12px 6px 32px;color:var(--text);font-size:13px;width:260px" oninput="debounceSearch(this.value)"><span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--dim);font-size:14px">&#128269;</span><div id="search-results" style="display:none;position:absolute;top:100%;left:0;width:360px;max-height:400px;overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;margin-top:4px;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div></div>
-    <div style="position:relative;cursor:pointer" onclick="toggleNotifications()"><span style="font-size:20px">&#128276;</span><span id="notif-badge" style="display:none;position:absolute;top:-4px;right:-6px;background:var(--red);color:#fff;border-radius:50%;width:18px;height:18px;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center"></span><div id="notif-panel" style="display:none;position:absolute;top:100%;right:0;width:360px;max-height:400px;overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;margin-top:8px;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div></div>
-    <div class="status"><div class="dot" id="health-dot"></div><span id="health-text">Checking...</span></div>
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="logo">&#9878; TCE</span>
+      <button class="sidebar-toggle" onclick="toggleSidebar()" title="Collapse sidebar">&#9776;</button>
+    </div>
+    <nav class="sidebar-nav" id="nav">
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Plan</div>
+        <button class="sidebar-item active" data-tab="week"><span class="icon">&#128197;</span><span class="label">Week Planner</span></button>
+        <button class="sidebar-item" data-tab="guides"><span class="icon">&#128214;</span><span class="label">Guides</span></button>
+        <button class="sidebar-item" data-tab="trends"><span class="icon">&#128200;</span><span class="label">Trends</span></button>
+      </div>
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Create</div>
+        <button class="sidebar-item" data-tab="topic"><span class="icon">&#127919;</span><span class="label">Start from Topic</span></button>
+        <button class="sidebar-item" data-tab="generate"><span class="icon">&#9889;</span><span class="label">Generate</span></button>
+        <button class="sidebar-item" data-tab="packages"><span class="icon">&#128230;</span><span class="label">Packages</span></button>
+        <button class="sidebar-item" data-tab="templates"><span class="icon">&#128196;</span><span class="label">Templates</span></button>
+      </div>
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Knowledge</div>
+        <button class="sidebar-item" data-tab="corpus"><span class="icon">&#128218;</span><span class="label">Corpus</span></button>
+        <button class="sidebar-item" data-tab="voice"><span class="icon">&#127908;</span><span class="label">Voice Profile</span></button>
+        <button class="sidebar-item" data-tab="creators"><span class="icon">&#128101;</span><span class="label">Creators</span></button>
+        <button class="sidebar-item" data-tab="chat"><span class="icon">&#128172;</span><span class="label">Chat</span></button>
+      </div>
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">System</div>
+        <button class="sidebar-item" data-tab="agents"><span class="icon">&#129302;</span><span class="label">Agents</span></button>
+        <button class="sidebar-item" data-tab="prompts"><span class="icon">&#128221;</span><span class="label">Prompts</span></button>
+        <button class="sidebar-item" data-tab="analytics"><span class="icon">&#128202;</span><span class="label">Analytics</span></button>
+        <button class="sidebar-item" data-tab="costs"><span class="icon">&#128176;</span><span class="label">Costs</span></button>
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <button class="sidebar-item" data-tab="settings"><span class="icon">&#9881;</span><span class="label">Settings</span></button>
+      <button class="sidebar-item" data-tab="help"><span class="icon">&#10067;</span><span class="label">Help</span></button>
+    </div>
+  </aside>
+  <div class="main-area">
+    <div class="header-bar">
+      <div class="header-title" id="page-title">Week Planner</div>
+      <div class="header-actions">
+        <div class="search-wrap">
+          <span class="search-icon">&#128269;</span>
+          <input class="search-input" id="global-search" type="text" placeholder="Search posts, topics, templates..." oninput="debounceSearch(this.value)">
+          <div id="search-results" style="display:none;position:absolute;top:100%;left:0;width:360px;max-height:400px;overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;margin-top:4px;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div>
+        </div>
+        <button class="notif-btn" onclick="toggleNotifications()" title="Notifications">&#128276;<span class="notif-dot" id="notif-badge" style="display:none"></span></button>
+        <div id="notif-panel" style="display:none;position:absolute;top:56px;right:24px;width:360px;max-height:400px;overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div>
+        <div class="health-wrap"><div class="health-dot" id="health-dot"></div><span id="health-text">Checking...</span></div>
+      </div>
+    </div>
+    <div id="breadcrumb"></div>
+    <div class="content-scroll">
+      <div class="main" id="app"></div>
+    </div>
   </div>
 </div>
-<div id="breadcrumb" style="padding:6px 24px;font-size:12px;color:var(--dim);border-bottom:1px solid var(--border);display:none"><span id="bc-text"></span></div>
-<div class="nav" id="nav">
-  <button class="active" data-tab="week">Week Planner</button>
-  <button data-tab="generate">Generate</button>
-  <button data-tab="packages">Packages</button>
-  <button data-tab="corpus">Corpus</button>
-  <button data-tab="voice">Voice Profile</button>
-  <button data-tab="creators">Creators</button>
-  <button data-tab="agents">Agents</button>
-  <button data-tab="costs">Costs</button>
-  <button data-tab="analytics">Analytics</button>
-  <button data-tab="templates">Templates</button>
-  <button data-tab="prompts">Prompts</button>
-  <button data-tab="settings">Settings</button>
-  <button data-tab="chat">Chat</button>
-</div>
-<div class="main" id="app"></div>
 <script>
 const API = '/api/v1';
 let currentTab = 'week';
@@ -177,12 +359,34 @@ const AGENT_LABELS = {
   copy_analyzer: 'Analyzing Copy', copy_polisher: 'Polishing Copy',
 };
 
-// Nav
-document.getElementById('nav').addEventListener('click', e => {
-  if (e.target.tagName !== 'BUTTON') return;
-  currentTab = e.target.dataset.tab;
-  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
-  render();
+// Tab labels for header
+const TAB_LABELS = {
+  week: 'Week Planner', guides: 'Guides', topic: 'Start from Topic', generate: 'Generate', packages: 'Packages',
+  corpus: 'Corpus', voice: 'Voice Profile', creators: 'Creators',
+  agents: 'Agents', costs: 'Costs', analytics: 'Analytics',
+  templates: 'Templates', prompts: 'Prompts', settings: 'Settings',
+  chat: 'Chat', trends: 'Trends', help: 'Help'
+};
+
+// Sidebar toggle
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  sb.classList.toggle('collapsed');
+  localStorage.setItem('tce_sidebar_collapsed', sb.classList.contains('collapsed'));
+}
+// Restore sidebar state
+if (localStorage.getItem('tce_sidebar_collapsed') === 'true') {
+  document.getElementById('sidebar').classList.add('collapsed');
+}
+
+// Nav - sidebar items + footer items
+document.querySelectorAll('.sidebar-item[data-tab]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    currentTab = btn.dataset.tab;
+    document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
+    document.getElementById('page-title').textContent = TAB_LABELS[currentTab] || currentTab;
+    render();
+  });
 });
 
 // Health check
@@ -193,16 +397,16 @@ async function checkHealth() {
     const dot = document.getElementById('health-dot');
     const text = document.getElementById('health-text');
     if (d.status === 'ok') {
-      dot.className = 'dot';
-      text.textContent = 'System healthy';
+      dot.className = 'health-dot';
+      text.textContent = 'Healthy';
       text.title = 'DB: ' + (d.database || 'ok') + ', Version: ' + (d.version || '?');
     } else {
-      dot.className = 'dot off';
-      text.textContent = 'System error';
+      dot.className = 'health-dot off';
+      text.textContent = 'Error';
     }
   } catch {
-    document.getElementById('health-dot').className = 'dot off';
-    document.getElementById('health-text').textContent = 'Offline - check VPS';
+    document.getElementById('health-dot').className = 'health-dot off';
+    document.getElementById('health-text').textContent = 'Offline';
   }
 }
 checkHealth(); setInterval(checkHealth, 30000);
@@ -214,6 +418,10 @@ function toast(msg, ok = true) {
   t.textContent = msg;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 3000);
+}
+function copyPrev(btn) {
+  const div = btn.previousElementSibling;
+  if (div) { navigator.clipboard.writeText(div.textContent); toast('Copied!'); }
 }
 
 // API helpers
@@ -322,18 +530,37 @@ async function renderWeek() {
 
     // Show persistent weekly plan summary if any entry has _weekly metadata
     const weeklyMeta = entries.find(e => e.plan_context?._weekly)?.plan_context?._weekly;
-    if (weeklyMeta && weeklyMeta.weekly_theme) {
-      const gift = weeklyMeta.gift_theme || {};
+    // Also check if a weekly guide exists for this week
+    let weekGuide = null;
+    try {
+      const guides = await api('/content/guides');
+      const mon = new Date(fmtDate(monday) + 'T00:00:00');
+      const sun = new Date(mon); sun.setDate(sun.getDate() + 6);
+      weekGuide = guides.find(g => { const gd = new Date(g.week_start_date + 'T00:00:00'); return gd >= mon && gd <= sun; });
+    } catch(e) { /* guides endpoint may not exist yet */ }
+
+    const hasWeeklyTheme = weeklyMeta && weeklyMeta.weekly_theme;
+    if (hasWeeklyTheme || weekGuide) {
+      const gift = weeklyMeta?.gift_theme || {};
       const giftTitle = typeof gift === 'string' ? gift : (gift.title || '');
       const giftSubtitle = typeof gift === 'string' ? '' : (gift.subtitle || '');
-      const sections = weeklyMeta.gift_sections || [];
-      const cta = weeklyMeta.cta_keyword || '';
+      const sections = weeklyMeta?.gift_sections || [];
+      const cta = weeklyMeta?.cta_keyword || '';
       let summaryHtml = '<div style="background:linear-gradient(135deg,#1a1d27,#1e2235);border:1px solid var(--accent);border-radius:10px;padding:16px 20px;margin-bottom:16px;display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">';
-      summaryHtml += '<div style="flex:1;min-width:200px">';
-      summaryHtml += '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent2);margin-bottom:4px">Weekly Direction</div>';
-      summaryHtml += '<div style="font-size:15px;font-weight:600;line-height:1.4">' + escHtml(weeklyMeta.weekly_theme) + '</div>';
-      summaryHtml += '</div>';
-      if (giftTitle) {
+      if (hasWeeklyTheme) {
+        summaryHtml += '<div style="flex:1;min-width:200px">';
+        summaryHtml += '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent2);margin-bottom:4px">Weekly Direction</div>';
+        summaryHtml += '<div style="font-size:15px;font-weight:600;line-height:1.4">' + escHtml(weeklyMeta.weekly_theme) + '</div>';
+        summaryHtml += '</div>';
+      }
+      if (weekGuide) {
+        summaryHtml += '<div style="flex:0 0 auto;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:10px 14px;min-width:180px">';
+        summaryHtml += '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--green);margin-bottom:4px">Weekly Guide</div>';
+        summaryHtml += '<div style="font-size:14px;font-weight:600">' + escHtml(weekGuide.guide_title) + '</div>';
+        if (weekGuide.downloads_count) summaryHtml += '<div style="font-size:11px;color:var(--dim);margin-top:2px">' + weekGuide.downloads_count + ' downloads</div>';
+        summaryHtml += '<button class="btn btn-green" style="margin-top:8px;font-size:11px;padding:4px 12px" onclick="showWeekGuide(\\'' + fmtDate(monday) + '\\')">View Guide</button>';
+        summaryHtml += '</div>';
+      } else if (giftTitle) {
         summaryHtml += '<div style="flex:0 0 auto;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:10px 14px;min-width:180px">';
         summaryHtml += '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--green);margin-bottom:4px">Gift of the Week</div>';
         summaryHtml += '<div style="font-size:14px;font-weight:600">' + escHtml(giftTitle) + '</div>';
@@ -673,10 +900,7 @@ async function useHook(packageId, hookIdx) {
     const ci = _pkgCache.findIndex(p => p.id === packageId);
     if (ci !== -1) { Object.assign(_pkgCache[ci], result); }
     _renderPkgFromCache();
-    toast('Hook applied - regenerating hooks to match...');
-    api('/content/packages/' + packageId + '/regenerate-hooks', { method: 'POST' })
-      .then(updated => { const ci2 = _pkgCache.findIndex(p => p.id === packageId); if (ci2 !== -1) { Object.assign(_pkgCache[ci2], updated); } _renderPkgFromCache(); toast('Hooks refreshed (' + (updated.hook_variants?.length || 0) + ' hooks)'); })
-      .catch(() => {});
+    toast('Hook applied! Other hooks are still available if you change your mind.');
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = 'Use this'; }
     toast('Failed: ' + e.message, false);
@@ -1003,7 +1227,7 @@ async function runDayPipeline(dayOfWeek, entryId) {
     toast('Pipeline started for ' + DAY_NAMES[dayOfWeek] + ': ' + r.run_id.substring(0, 8));
     // Switch to generate tab to show progress
     currentTab = 'generate';
-    document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'generate'));
+    document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === 'generate'));
     render();
     if (pollInterval) clearInterval(pollInterval);
     pollInterval = setInterval(pollPipeline, 3000);
@@ -1047,7 +1271,10 @@ function renderGenAllProgress() {
     html += '<div style="font-size:13px;font-weight:600;color:var(--accent2)">' + esc(s.weeklyTheme) + '</div>';
     if (s.giftTheme) {
       html += '<div style="font-size:11px;color:var(--dim);margin-top:6px">GIFT/GUIDE</div>';
-      html += '<div style="font-size:12px;color:var(--green)">' + esc(s.giftTheme) + '</div>';
+      let giftStr = '';
+      if (typeof s.giftTheme === 'string') giftStr = s.giftTheme;
+      else if (typeof s.giftTheme === 'object') giftStr = s.giftTheme.title || s.giftTheme.guide_title || s.giftTheme.name || JSON.stringify(s.giftTheme).slice(0, 100);
+      if (giftStr) html += '<div style="font-size:12px;color:var(--green)">' + esc(giftStr) + '</div>';
     }
     if (s.weeklyKeyword) {
       html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">CTA KEYWORD: <span style="color:var(--yellow);font-weight:600">' + esc(s.weeklyKeyword) + '</span></div>';
@@ -1445,7 +1672,7 @@ function viewPackage(pkgId, dayNum) {
   }
   // Switch to packages tab
   currentTab = 'packages';
-  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'packages'));
+  document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === 'packages'));
   render();
   // After render, scroll to the specific package card by its id attribute
   setTimeout(() => {
@@ -1468,7 +1695,7 @@ async function runWeeklyPlanning() {
     localStorage.setItem('tce_active_run', r.run_id);
     toast('Weekly planning started: ' + r.run_id.substring(0, 8));
     currentTab = 'generate';
-    document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'generate'));
+    document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === 'generate'));
     render();
     if (pollInterval) clearInterval(pollInterval);
     pollInterval = setInterval(pollPipeline, 3000);
@@ -1476,6 +1703,248 @@ async function runWeeklyPlanning() {
 }
 
 // GENERATE TAB
+// === START FROM TOPIC ===
+let topicRunId = null;
+let topicPollInterval = null;
+let topicStartTime = null;
+
+async function renderTopic() {
+  const app = document.getElementById('app');
+  // Load creators and posts for dropdowns
+  let creators = [], posts = [];
+  try { creators = await api('/pipeline/inspiration/creators'); } catch {}
+  try { posts = await api('/pipeline/inspiration/posts?limit=30'); } catch {}
+
+  const creatorOpts = creators.map(c => `<option value="${c.id}">${esc(c.creator_name)} (${c.post_count} posts, ${c.total_engagement} engagement)</option>`).join('');
+  const postOpts = posts.map(p => `<option value="${p.id}">[${p.visible_comments || 0} comments] ${esc((p.hook_preview || '').substring(0, 80))}... - ${esc(p.creator_name || '')}</option>`).join('');
+
+  app.innerHTML = `
+    <div class="section">
+      <h2>Start from Topic</h2>
+      <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Describe your topic. Choose what to generate below.</p>
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex;gap:0;margin-bottom:16px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          <button id="topic-mode-post" onclick="setTopicMode('post')" style="flex:1;padding:10px 16px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:var(--blue);color:#fff;transition:all 0.2s">Daily Post</button>
+          <button id="topic-mode-guide" onclick="setTopicMode('guide')" style="flex:1;padding:10px 16px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:var(--card);color:var(--dim);transition:all 0.2s">Guide</button>
+        </div>
+        <div id="topic-mode-desc" style="font-size:12px;color:var(--dim);margin-bottom:12px;padding:8px 12px;background:#0d1117;border-radius:6px">The full agent pipeline (TrendScout, StoryStrategist, Research, Writers, CTA, Creative Director, QA) will generate FB + LI posts around your topic.</div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Topic / Brief *</label>
+          <textarea id="topic-text" rows="5" style="width:100%;resize:vertical;min-height:100px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark" placeholder="Describe your topic in detail. The more specific you are, the better the output. E.g.: Does it really matter what model you use for your agents? Practical tips on Claude Opus vs Sonnet vs Haiku..."></textarea>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+          <div style="flex:1;min-width:250px">
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Inspire by Creator (optional)</label>
+            <select id="topic-creator" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+              <option value="" style="background:var(--card);color:var(--text)">-- No creator inspiration --</option>
+              ${creatorOpts}
+            </select>
+          </div>
+          <div style="flex:1;min-width:250px">
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Inspire by Post (sorted by engagement)</label>
+            <select id="topic-post" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+              <option value="" style="background:var(--card);color:var(--text)">-- No post inspiration --</option>
+              ${postOpts}
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+          <div>
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">CTA Keyword (optional)</label>
+            <input type="text" id="topic-cta" placeholder="e.g. stack" style="width:180px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Template Hint (optional)</label>
+            <input type="text" id="topic-template" placeholder="e.g. tactical_workflow_guide" style="width:220px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+          </div>
+          <div style="flex:1;min-width:200px">
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Notes (optional)</label>
+            <input type="text" id="topic-notes" placeholder="Any extra instructions..." style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="btn btn-primary" id="topic-run-btn" onclick="runTopicOrGuide()">Generate Daily Post</button>
+          <span id="topic-elapsed" style="font-size:12px;color:var(--dim)"></span>
+        </div>
+      </div>
+      <div id="topic-status"></div>
+      <div id="topic-result" style="margin-top:16px"></div>
+    </div>`;
+  // Restore active run if any
+  const savedRun = localStorage.getItem('tce_topic_run');
+  if (savedRun) { topicRunId = savedRun; topicStartTime = parseInt(localStorage.getItem('tce_topic_start') || Date.now()); pollTopicStatus(); if (!topicPollInterval) topicPollInterval = setInterval(pollTopicStatus, 3000); }
+}
+
+let _topicMode = 'post';
+function setTopicMode(mode) {
+  _topicMode = mode;
+  const postBtn = document.getElementById('topic-mode-post');
+  const guideBtn = document.getElementById('topic-mode-guide');
+  const desc = document.getElementById('topic-mode-desc');
+  const runBtn = document.getElementById('topic-run-btn');
+  if (mode === 'guide') {
+    guideBtn.style.background = 'var(--green)'; guideBtn.style.color = '#fff';
+    postBtn.style.background = 'var(--card)'; postBtn.style.color = 'var(--dim)';
+    desc.textContent = 'Research the topic and generate a free guide (PDF/DOCX) with quality gate assessment. The guide will go through up to 3 iterations to meet quality standards.';
+    runBtn.textContent = 'Generate Guide';
+    runBtn.className = 'btn btn-green';
+  } else {
+    postBtn.style.background = 'var(--blue)'; postBtn.style.color = '#fff';
+    guideBtn.style.background = 'var(--card)'; guideBtn.style.color = 'var(--dim)';
+    desc.textContent = 'The full agent pipeline (TrendScout, StoryStrategist, Research, Writers, CTA, Creative Director, QA) will generate FB + LI posts around your topic.';
+    runBtn.textContent = 'Generate Daily Post';
+    runBtn.className = 'btn btn-primary';
+  }
+}
+
+function runTopicOrGuide() {
+  if (_topicMode === 'guide') {
+    runTopicGuide();
+  } else {
+    runTopicPipeline();
+  }
+}
+
+async function runTopicGuide() {
+  const topicText = document.getElementById('topic-text')?.value?.trim();
+  if (!topicText) { toast('Please describe your topic first', false); return; }
+  const ctaKw = document.getElementById('topic-cta')?.value?.trim() || 'guide';
+  const notes = document.getElementById('topic-notes')?.value?.trim() || null;
+  const btn = document.getElementById('topic-run-btn');
+  btn.disabled = true; btn.textContent = 'Starting guide generation...';
+  try {
+    const body = { post_text: topicText, cta_keyword: ctaKw };
+    if (notes) body.operator_feedback = notes;
+    const r = await api('/content/guides/generate-from-post', { method: 'POST', body: JSON.stringify(body) });
+    _regenState = { guideId: r.tracking_id, startTime: Date.now(), feedback: notes, fromPost: true };
+    toast('Guide generation started');
+    pollRegenStatus(r.tracking_id);
+    btn.disabled = false; btn.textContent = 'Generate Guide';
+  } catch(e) {
+    toast('Failed: ' + e.message, false);
+    btn.disabled = false; btn.textContent = 'Generate Guide';
+  }
+}
+
+async function runTopicPipeline() {
+  const topicText = document.getElementById('topic-text')?.value?.trim();
+  if (!topicText) { toast('Please describe your topic first', false); return; }
+  const creatorId = document.getElementById('topic-creator')?.value || null;
+  const postId = document.getElementById('topic-post')?.value || null;
+  const ctaKw = document.getElementById('topic-cta')?.value?.trim() || null;
+  const templateHint = document.getElementById('topic-template')?.value?.trim() || null;
+  const notes = document.getElementById('topic-notes')?.value?.trim() || null;
+
+  const body = { topic: topicText };
+  if (creatorId) body.inspire_by_creator_ids = [creatorId];
+  if (postId) body.inspire_by_post_id = postId;
+  if (ctaKw) body.cta_keyword = ctaKw;
+  if (templateHint) body.template_hint = templateHint;
+  if (notes) body.notes = notes;
+  body.language = 'english';
+
+  const btn = document.getElementById('topic-run-btn');
+  btn.disabled = true; btn.textContent = 'Starting...';
+  topicStartTime = Date.now();
+  localStorage.setItem('tce_topic_start', topicStartTime);
+
+  try {
+    const r = await api('/pipeline/start-from-topic', { method: 'POST', body: JSON.stringify(body) });
+    topicRunId = r.run_id;
+    localStorage.setItem('tce_topic_run', r.run_id);
+    toast('Pipeline started: ' + r.run_id.substring(0, 8));
+    pollTopicStatus();
+    if (topicPollInterval) clearInterval(topicPollInterval);
+    topicPollInterval = setInterval(pollTopicStatus, 3000);
+  } catch (e) {
+    toast('Failed: ' + e.message, false);
+    btn.disabled = false; btn.textContent = 'Generate from Topic';
+  }
+}
+
+async function pollTopicStatus() {
+  if (!topicRunId) return;
+  const statusEl = document.getElementById('topic-status');
+  const resultEl = document.getElementById('topic-result');
+  const elapsedEl = document.getElementById('topic-elapsed');
+  const btn = document.getElementById('topic-run-btn');
+  if (!statusEl) return;
+
+  // Update elapsed
+  if (elapsedEl && topicStartTime) {
+    const secs = Math.floor((Date.now() - topicStartTime) / 1000);
+    const m = Math.floor(secs / 60); const s = secs % 60;
+    elapsedEl.textContent = m > 0 ? m + 'm ' + s + 's' : s + 's';
+  }
+
+  try {
+    const d = await api('/pipeline/start-from-topic/' + topicRunId + '/status');
+    // Build step progress
+    const steps = d.step_status || {};
+    const stepNames = ['trend_scout','story_strategist','research_agent','facebook_writer','linkedin_writer','cta_agent','creative_director','qa_agent'];
+    const stepLabels = { trend_scout:'Trend Scout', story_strategist:'Story Strategist', research_agent:'Research', facebook_writer:'FB Writer', linkedin_writer:'LI Writer', cta_agent:'CTA Agent', creative_director:'Creative Director', qa_agent:'QA Agent' };
+    let html = '<div class="card" style="padding:12px 16px"><div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--primary)">Pipeline Progress</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+    for (const sn of stepNames) {
+      const st = steps[sn] || 'pending';
+      let bg = 'var(--muted)'; let fg = 'var(--dim)';
+      if (st === 'completed') { bg = 'var(--success-dim)'; fg = 'var(--success)'; }
+      else if (st === 'running') { bg = 'var(--primary-dim)'; fg = 'var(--primary)'; }
+      else if (st === 'error') { bg = 'var(--destructive-dim)'; fg = 'var(--destructive)'; }
+      html += '<span style="display:inline-block;padding:4px 10px;border-radius:4px;font-size:11px;background:' + bg + ';color:' + fg + '">' + (stepLabels[sn]||sn) + (st==='running'?' ...':'') + (st==='completed'?' &#10003;':'') + (st==='error'?' &#10007;':'') + '</span>';
+    }
+    html += '</div>';
+    if (d.error) html += '<div style="color:var(--destructive);margin-top:8px;font-size:12px">Error: ' + esc(d.error) + '</div>';
+    html += '</div>';
+    statusEl.innerHTML = html;
+
+    if (d.status === 'completed' || d.status === 'error' || d.status === 'failed') {
+      if (topicPollInterval) { clearInterval(topicPollInterval); topicPollInterval = null; }
+      localStorage.removeItem('tce_topic_run');
+      localStorage.removeItem('tce_topic_start');
+      if (btn) { btn.disabled = false; btn.textContent = 'Generate from Topic'; }
+
+      if (d.status === 'completed') {
+        toast('Topic pipeline completed!');
+        // Fetch the latest package
+        try {
+          const pkgs = await api('/content/packages?limit=1');
+          if (pkgs && pkgs.length > 0) {
+            const pkg = pkgs[0];
+            let rhtml = '<div class="card" style="margin-bottom:16px"><div style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--primary)">Generated Content</div>';
+            if (pkg.facebook_post) {
+              rhtml += '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--accent);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">Facebook Post</div>';
+              rhtml += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.7;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border);max-height:400px;overflow-y:auto">' + esc(pkg.facebook_post) + '</div>';
+              rhtml += '<button class="btn" style="margin-top:6px;font-size:11px" onclick="copyPrev(this)">Copy FB</button></div>';
+            }
+            if (pkg.linkedin_post) {
+              rhtml += '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--info);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">LinkedIn Post</div>';
+              rhtml += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.7;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border);max-height:400px;overflow-y:auto">' + esc(pkg.linkedin_post) + '</div>';
+              rhtml += '<button class="btn" style="margin-top:6px;font-size:11px" onclick="copyPrev(this)">Copy LI</button></div>';
+            }
+            if (pkg.hook_variants && pkg.hook_variants.length) {
+              rhtml += '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--success);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">Hook Variants</div>';
+              rhtml += '<div style="font-size:13px;line-height:1.7;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">';
+              pkg.hook_variants.forEach(function(h, i) { rhtml += '<div style="margin-bottom:6px"><span style="color:var(--dim);font-size:11px">' + (i+1) + '.</span> ' + esc(typeof h === 'string' ? h : JSON.stringify(h)) + '</div>'; });
+              rhtml += '</div></div>';
+            }
+            if (pkg.visual_prompt) {
+              rhtml += '<div><div style="font-size:12px;font-weight:600;color:var(--warning);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">Visual Prompt</div>';
+              rhtml += '<div style="font-size:12px;color:var(--dim);padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">' + esc(typeof pkg.visual_prompt === 'string' ? pkg.visual_prompt : JSON.stringify(pkg.visual_prompt)) + '</div></div>';
+            }
+            rhtml += '</div>';
+            if (resultEl) resultEl.innerHTML = rhtml;
+          }
+        } catch {}
+      } else {
+        toast('Pipeline failed: ' + (d.error || 'unknown error'), false);
+      }
+    }
+  } catch (e) {
+    statusEl.innerHTML = '<div class="card" style="color:var(--dim)">Checking status...</div>';
+  }
+}
+
 async function renderGenerate() {
   const app = document.getElementById('app');
   app.innerHTML = `
@@ -1756,7 +2225,7 @@ async function pollPipeline() {
         fh += '<button class="btn btn-green" style="font-size:14px;padding:10px 20px" onclick="downloadLatestGuide()">Download Guide</button>';
       }
       if (hasCompleted) {
-        fh += '<button class="btn btn-dim" style="font-size:13px;padding:8px 16px" onclick="currentTab=\\'packages\\';document.querySelectorAll(\\'.nav button\\').forEach(b=>b.classList.toggle(\\'active\\',b.dataset.tab===\\'packages\\'));render()">View Packages</button>';
+        fh += '<button class="btn btn-dim" style="font-size:13px;padding:8px 16px" onclick="currentTab=\\'packages\\';switchTab(\\'packages\\');render()">View Packages</button>';
       }
       fh += '</div>';
       footerEl.innerHTML = fh;
@@ -1884,9 +2353,18 @@ function _renderPkgCard(p) {
       if (fbWc) html += '<span style="color:var(--accent2);font-weight:600">FB: ' + fbWc + ' words</span>';
       if (liWc) html += '<span style="color:var(--accent2);font-weight:600">LI: ' + liWc + ' words</span>';
       if (p.pipeline_run_id) html += '<span>Run: ' + p.pipeline_run_id.substring(0, 8) + '</span>';
-      const tplName = p.quality_scores?.matched_template?.template_name;
-      if (tplName) html += '<span style="color:var(--yellow)">Template: <strong>' + esc(tplName) + '</strong></span>';
+      const _tpl = p.quality_scores?.matched_template;
+      if (_tpl?.template_name) {
+        html += '<span style="color:var(--yellow)">Template: <strong>' + esc(_tpl.template_name) + '</strong>';
+        if (_tpl.template_family) html += ' <span style="font-weight:400;opacity:.7">(' + esc(_tpl.template_family) + ')</span>';
+        html += '</span>';
+      }
       html += '</div>';
+      if (_tpl?.hook_formula) {
+        html += '<div style="font-size:11px;color:var(--dim);padding:2px 16px 0">';
+        html += '<span style="color:var(--yellow);opacity:.6">Hook:</span> ' + esc(_tpl.hook_formula.substring(0, 120)) + (_tpl.hook_formula.length > 120 ? '...' : '');
+        html += '</div>';
+      }
       // Tabs
       html += '<div class="tabs">';
       html += '<button class="active" onclick="showPostTab(this,\\'fb-' + pid + '\\')">Facebook</button>';
@@ -2339,6 +2817,10 @@ async function loadVideos(packageId, pid) {
   if (!grid) return;
   try {
     const resp = await fetch('/api/v1/videos?package_id=' + packageId);
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error('Server error (' + resp.status + '): ' + errText.substring(0, 100));
+    }
     const videos = await resp.json();
     if (!videos.length) {
       status.textContent = 'No videos yet - click Generate to create them';
@@ -2461,10 +2943,10 @@ async function loadScripts(packageId, pid) {
   statusEl.style.color = 'var(--dim)';
   try {
     // Auto endpoint: returns existing script or generates one on the fly
-    statusEl.textContent = 'Generating script with Sonnet... (may take 10-20s)';
+    statusEl.textContent = 'Loading script...';
     const detail = await api('/narration/scripts/auto/' + packageId);
     _scriptCache[pid] = detail;
-    const label = detail.auto_generated ? ' (auto-generated)' : '';
+    const label = detail.auto_generated ? ' (just generated)' : '';
     statusEl.textContent = 'Script: ' + detail.template_style + ' - ' + detail.status + label;
     statusEl.style.color = detail.status === 'aligned' ? 'var(--green)' : detail.status === 'rendered' ? 'var(--accent2)' : 'var(--accent)';
     renderScriptSegments(detail, pid, packageId);
@@ -3292,7 +3774,11 @@ async function renderCreators() {
         }
         html += '</div>';
       } else {
-        html += '<div style="margin-top:12px;padding:12px;border:1px dashed #2a2d3a;border-radius:6px;text-align:center;color:#71717a;font-size:12px">No voice axes data yet.<br><button class="btn btn-primary" style="margin-top:8px;padding:6px 14px;font-size:12px" onclick="analyzeVoice(\\'' + c.id + '\\')">Analyze Voice from Posts</button></div>';
+        if (c.post_count > 0) {
+          html += '<div style="margin-top:12px;padding:12px;border:1px dashed #2a2d3a;border-radius:6px;text-align:center;color:#71717a;font-size:12px">No voice axes data yet.<br><button class="btn btn-primary" style="margin-top:8px;padding:6px 14px;font-size:12px" onclick="analyzeVoice(\\'' + c.id + '\\')">\u2728 Analyze Voice from ' + c.post_count + ' Posts</button></div>';
+        } else {
+          html += '<div style="margin-top:12px;padding:12px;border:1px dashed #2a2d3a;border-radius:6px;text-align:center;color:#71717a;font-size:12px">No posts uploaded yet - add corpus documents first</div>';
+        }
       }
       // GAP-43: Creator management controls
       html += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px">';
@@ -3581,7 +4067,7 @@ async function renderCosts() {
 // FEEDBACK FORM for packages
 const FEEDBACK_TAGS = [
   'hook_too_aggressive', 'hook_too_weak', 'thesis_unclear', 'thesis_off_brand',
-  'cta_unfulfillable', 'cta_too_pushy', 'tone_mismatch', 'too_long', 'too_short',
+  'cta_unfulfillable', 'cta_too_pushy', 'tone_mismatch', 'brand_voice_mismatch', 'too_long', 'too_short',
   'factual_error', 'formatting_issue', 'image_mismatch', 'dm_flow_weak',
   'great_hook', 'strong_thesis', 'perfect_tone', 'good_images'
 ];
@@ -3624,7 +4110,7 @@ async function submitFeedback(packageId) {
         action_taken: action,
       }),
     });
-    toast('Feedback submitted');
+    toast('Feedback saved (' + action + ')');
     form.remove();
     renderPackages();
   } catch (e) { toast('Feedback failed: ' + e.message, false); }
@@ -3963,6 +4449,57 @@ async function renderAnalytics() {
       html += '<div class="empty" style="padding:16px">No packages with DM flows yet. DM flows are generated by the CTA Agent during pipeline runs.</div>';
     }
     html += '</div></div>';
+    // Learning Loop Insights
+    try {
+      const insights = await api('/feedback/insights');
+      html += '<div class="card" style="margin-bottom:16px"><h3 style="color:var(--primary)">Learning Loop Insights</h3>';
+      html += '<div style="margin-top:12px">';
+      if (insights.learning_runs?.length) {
+        for (const run of insights.learning_runs.slice(0, 3)) {
+          const recs = run.recommendations || {};
+          const stColor = run.status === 'completed' ? 'var(--green)' : run.status === 'failed' ? 'var(--red)' : 'var(--yellow)';
+          html += '<div style="background:#111318;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:8px">';
+          html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+          html += '<span style="font-size:12px;color:var(--dim)">' + (run.started_at ? new Date(run.started_at).toLocaleDateString() : '-') + '</span>';
+          html += '<span style="font-size:11px;padding:2px 8px;border-radius:4px;background:' + stColor + '22;color:' + stColor + '">' + run.status + '</span></div>';
+          if (recs.week_summary) html += '<div style="font-size:13px;margin-top:8px">' + esc(recs.week_summary) + '</div>';
+          if (recs.voice_drift_analysis) {
+            const vd = recs.voice_drift_analysis;
+            if (vd.patterns_found?.length) {
+              html += '<div style="margin-top:8px"><div style="font-size:11px;font-weight:600;color:var(--accent2);text-transform:uppercase;margin-bottom:4px">Voice Drift Patterns</div>';
+              vd.patterns_found.forEach(p => html += '<div style="font-size:12px;color:var(--dim);margin-bottom:2px">- ' + esc(typeof p === 'string' ? p : JSON.stringify(p)) + '</div>');
+              html += '</div>';
+            }
+            if (vd.suggested_voice_adjustments?.length) {
+              html += '<div style="margin-top:6px"><div style="font-size:11px;font-weight:600;color:var(--accent);text-transform:uppercase;margin-bottom:4px">Suggested Adjustments</div>';
+              vd.suggested_voice_adjustments.forEach(a => html += '<div style="font-size:12px;color:var(--dim);margin-bottom:2px">- ' + esc(typeof a === 'string' ? a : JSON.stringify(a)) + '</div>');
+              html += '</div>';
+            }
+          }
+          if (recs.action_items?.length) {
+            html += '<div style="margin-top:8px"><div style="font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;margin-bottom:4px">Action Items</div>';
+            recs.action_items.slice(0, 5).forEach(a => html += '<div style="font-size:12px;color:var(--dim);margin-bottom:2px">- ' + esc(typeof a === 'string' ? a : (a.action || a.description || JSON.stringify(a))) + '</div>');
+            html += '</div>';
+          }
+          html += '</div>';
+        }
+      } else {
+        html += '<div style="font-size:13px;color:var(--dim);padding:8px">No learning loop runs yet. The loop runs every Friday at 5 PM to analyze your feedback and update voice profile.</div>';
+      }
+      // System version history
+      if (insights.system_versions?.length) {
+        html += '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px"><div style="font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;margin-bottom:8px">System Version History</div>';
+        for (const v of insights.system_versions.slice(0, 5)) {
+          html += '<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid #1a1d27">';
+          html += '<span style="color:var(--dim)">' + (v.created_at ? new Date(v.created_at).toLocaleDateString() : '-') + '</span>';
+          html += '<span style="color:var(--primary)">' + esc(v.change_type || '-') + '</span>';
+          html += '<span>' + esc((v.change_description || '-').slice(0, 60)) + '</span>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+      html += '</div></div>';
+    } catch {}
     document.getElementById('analytics-content').innerHTML = html;
   } catch (e) {
     document.getElementById('analytics-content').innerHTML = '<div class="empty">Error loading analytics: ' + e.message + '</div>';
@@ -4035,8 +4572,8 @@ function searchNavigate(type, id) {
   document.getElementById('search-results').style.display = 'none';
   document.getElementById('global-search').value = '';
   if (type === 'package') { viewPackage(id); }
-  else if (type === 'template') { currentTab = 'templates'; document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'templates')); render(); }
-  else if (type === 'brief') { currentTab = 'week'; document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'week')); render(); }
+  else if (type === 'template') { currentTab = 'templates'; document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === 'templates')); render(); }
+  else if (type === 'brief') { currentTab = 'week'; document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === 'week')); render(); }
 }
 document.addEventListener('click', e => { if (!e.target.closest('#global-search') && !e.target.closest('#search-results')) document.getElementById('search-results').style.display = 'none'; });
 
@@ -4132,7 +4669,27 @@ async function loadPackageContext(pkgId, el) {
       }
       h += '</div>';
     }
-    if (!ctx.story_brief && !ctx.research_brief) {
+    if (ctx.plan_context) {
+      const pc = ctx.plan_context;
+      const borderTop = (ctx.story_brief || ctx.research_brief) ? 'border-top:1px solid var(--border);padding-top:12px;' : '';
+      h += '<div style="margin-bottom:12px;' + borderTop + '"><div style="font-size:11px;font-weight:600;color:var(--primary);text-transform:uppercase;margin-bottom:6px">Plan Context</div>';
+      if (pc.topic) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Topic:</strong> ' + esc(pc.topic) + '</div>';
+      if (pc.thesis) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Thesis:</strong> ' + esc(pc.thesis) + '</div>';
+      if (pc.angle_type) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Angle:</strong> ' + esc(pc.angle_type.replace(/_/g, ' ')) + '</div>';
+      if (pc.audience) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Audience:</strong> ' + esc(pc.audience) + '</div>';
+      if (pc.desired_belief_shift) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Belief Shift:</strong> ' + esc(pc.desired_belief_shift) + '</div>';
+      if (pc.platform_notes) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Platform Notes:</strong> ' + esc(pc.platform_notes) + '</div>';
+      if (pc.connection_to_gift) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Gift Connection:</strong> ' + esc(pc.connection_to_gift) + '</div>';
+      if (pc.visual_job) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Visual Job:</strong> ' + esc(pc.visual_job.replace(/_/g, ' ')) + '</div>';
+      if (pc.evidence_requirements?.length) {
+        h += '<div style="font-size:12px;margin-top:6px"><strong>Evidence Needed:</strong></div>';
+        h += '<ul style="font-size:12px;color:var(--dim);margin:2px 0 6px 16px;padding:0">';
+        pc.evidence_requirements.forEach(e => h += '<li style="margin-bottom:2px">' + esc(e) + '</li>');
+        h += '</ul>';
+      }
+      h += '</div>';
+    }
+    if (!ctx.story_brief && !ctx.research_brief && !ctx.plan_context) {
       h += '<div style="font-size:13px;color:var(--dim)">No context available for this package. May have been generated before context tracking was added.</div>';
     }
     h += '</div>';
@@ -4420,7 +4977,7 @@ document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
   if (e.key === '/') { e.preventDefault(); document.getElementById('global-search')?.focus(); return; }
   const tabKeys = {'1':'week','2':'generate','3':'packages','4':'corpus','5':'costs','6':'analytics'};
-  if (e.altKey && tabKeys[e.key]) { e.preventDefault(); currentTab = tabKeys[e.key]; document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab)); render(); return; }
+  if (e.altKey && tabKeys[e.key]) { e.preventDefault(); currentTab = tabKeys[e.key]; document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab)); render(); return; }
   if (e.key === '?' && !e.shiftKey) {
     toast('Shortcuts: / = Search, Alt+1-6 = Switch tabs');
   }
@@ -4510,38 +5067,205 @@ async function triggerRelearn() { try { const r = await api('/relearning/evaluat
 async function approveProposal(id) { try { await api('/relearning/proposals/' + id + '/approve', {method:'POST'}); toast('Proposal approved'); renderCorpus(); } catch(e) { toast('Failed: ' + e.message, false); } }
 async function rejectProposal(id) { try { await api('/relearning/proposals/' + id + '/reject', {method:'POST'}); toast('Proposal rejected'); renderCorpus(); } catch(e) { toast('Failed: ' + e.message, false); } }
 
+// --- Guides Tab ---
+let _guidesFromPostExpanded = false;
+async function renderGuides() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="section"><div class="empty">Loading guides...</div></div>';
+  try {
+    const guides = await api('/content/guides');
+    let html = '<div class="section">';
+    // Hero: Generate Guide from Post
+    html += '<div style="background:linear-gradient(135deg,#0a2e1a 0%,#0d1117 60%);border:1px solid var(--green);border-radius:12px;padding:20px;margin-bottom:20px">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+    html += '<div><div style="font-size:16px;font-weight:700;color:var(--green);margin-bottom:4px">Generate Guide from Post</div>';
+    html += '<div style="font-size:12px;color:var(--dim)">Paste a social media post and the AI will research the topic and create a guide that delivers on the CTA promise.</div></div>';
+    html += '<button class="btn btn-green" style="font-size:13px;padding:8px 20px;white-space:nowrap" onclick="toggleGuidesFromPost()">New Guide from Post</button>';
+    html += '</div>';
+    // Expandable form
+    html += '<div id="guides-from-post-form" style="display:' + (_guidesFromPostExpanded ? 'block' : 'none') + ';margin-top:16px;border-top:1px solid var(--border);padding-top:16px">';
+    html += '<textarea id="guides-post-input" rows="5" placeholder="Paste your social media post here..." style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:12px;color:var(--text);color-scheme:dark;resize:vertical;font-family:inherit;box-sizing:border-box"></textarea>';
+    html += '<div style="display:flex;gap:8px;margin-top:8px;align-items:center">';
+    html += '<input id="guides-post-keyword" type="text" placeholder="CTA keyword (default: guide)" style="width:140px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:12px;color:var(--text);color-scheme:dark" />';
+    html += '<input id="guides-post-instructions" type="text" placeholder="Optional instructions (e.g. focus on accuracy)" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:12px;color:var(--text);color-scheme:dark" />';
+    html += '<button class="btn btn-green" style="font-size:12px;white-space:nowrap" onclick="guidesGenerateFromPost()">Generate</button>';
+    html += '</div></div>';
+    html += '</div>';
+    // Guide cards grid
+    if (!guides || guides.length === 0) {
+      html += '<div class="empty">No guides yet. Generate your first guide from a post above, or run the weekly pipeline.</div>';
+    } else {
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px">';
+      for (const g of guides) {
+        const md = g.markdown_content || '';
+        const words = md.split(/\\s+/).filter(w => w.length > 0).length;
+        const sections = (md.match(/^##\\s/gm) || []).length;
+        const qs = g.quality_scores;
+        const composite = qs ? (qs.composite || 0) : null;
+        const passed = g.quality_gate_passed;
+        const borderColor = passed === true ? 'var(--green)' : passed === false ? 'var(--yellow)' : 'var(--border)';
+        html += '<div class="card" style="padding:16px;border:1px solid ' + borderColor + ';cursor:pointer" onclick="showWeekGuide(\\'' + g.id + '\\')">';
+        html += '<div style="font-size:14px;font-weight:700;margin-bottom:6px;color:var(--text)">' + esc(g.guide_title || 'Untitled Guide') + '</div>';
+        html += '<div style="font-size:11px;color:var(--dim);margin-bottom:10px">Week of ' + (g.week_start_date || 'unknown') + (g.weekly_theme ? ' - ' + esc(g.weekly_theme) : '') + '</div>';
+        html += '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px">';
+        html += '<span style="color:var(--dim)">' + words + ' words</span>';
+        html += '<span style="color:var(--dim)">' + sections + ' sections</span>';
+        if (composite !== null) {
+          const scoreColor = composite >= 8 ? 'var(--green)' : composite >= 6 ? 'var(--yellow)' : 'var(--red)';
+          html += '<span style="font-weight:700;color:' + scoreColor + '">' + composite.toFixed(1) + '/10</span>';
+        }
+        if (passed === true) html += '<span style="color:var(--green);font-weight:600">Passed</span>';
+        else if (passed === false) html += '<span style="color:var(--yellow);font-weight:600">Below Target</span>';
+        else html += '<span style="color:var(--dim)">Not Assessed</span>';
+        html += '</div>';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    app.innerHTML = html;
+  } catch(e) {
+    app.innerHTML = '<div class="section"><div class="empty" style="color:var(--red)">Error loading guides: ' + esc(e.message) + '</div></div>';
+  }
+}
+
+function toggleGuidesFromPost() {
+  _guidesFromPostExpanded = !_guidesFromPostExpanded;
+  const form = document.getElementById('guides-from-post-form');
+  if (form) form.style.display = _guidesFromPostExpanded ? 'block' : 'none';
+}
+
+async function guidesGenerateFromPost() {
+  const postText = document.getElementById('guides-post-input')?.value?.trim();
+  if (!postText) { toast('Paste your post text first', false); return; }
+  const keyword = document.getElementById('guides-post-keyword')?.value?.trim() || 'guide';
+  const instructions = document.getElementById('guides-post-instructions')?.value?.trim() || null;
+  try {
+    const body = { post_text: postText, cta_keyword: keyword };
+    if (instructions) body.operator_feedback = instructions;
+    const r = await api('/content/guides/generate-from-post', { method: 'POST', body: JSON.stringify(body) });
+    _regenState = { guideId: r.tracking_id, startTime: Date.now(), feedback: instructions, fromPost: true };
+    toast('Guide generation started');
+    pollRegenStatus(r.tracking_id);
+  } catch(e) { toast('Failed: ' + e.message, false); }
+}
+
 // Helper to switch tab from inline onclick
 function switchTab(tabName) {
   currentTab = tabName;
-  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
+  document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
+  const pt = document.getElementById('page-title');
+  if (pt) pt.textContent = TAB_LABELS[tabName] || tabName;
   render();
 }
 
-async function showWeekGuide(mondayStr) {
+async function showWeekGuide(mondayStrOrGuideId) {
   const app = document.getElementById('app');
   app.innerHTML = '<div class="section"><div class="empty">Loading guide...</div></div>';
   try {
-    const guides = await api('/content/guides');
-    // Match guide to week: guide.week_start_date falls within Mon-Sun of the viewed week
-    const mon = new Date(mondayStr + 'T00:00:00');
-    const sun = new Date(mon); sun.setDate(sun.getDate() + 6);
-    const guide = guides.find(g => {
-      const gd = new Date(g.week_start_date + 'T00:00:00');
-      return gd >= mon && gd <= sun;
-    });
+    let guide;
+    // If it looks like a UUID, load that specific guide
+    const isUuid = mondayStrOrGuideId && /^[0-9a-f]{8}-/.test(mondayStrOrGuideId);
+    if (isUuid) {
+      guide = await api('/content/guides/' + mondayStrOrGuideId);
+    } else {
+      const guides = await api('/content/guides');
+      const mondayStr = mondayStrOrGuideId;
+      const mon = new Date(mondayStr + 'T00:00:00');
+      const sun = new Date(mon); sun.setDate(sun.getDate() + 6);
+      guide = guides.find(g => {
+        const gd = new Date(g.week_start_date + 'T00:00:00');
+        return gd >= mon && gd <= sun;
+      });
+    }
     if (!guide) {
       app.innerHTML = '<div class="section"><button class="btn btn-dim" onclick="switchTab(\\'week\\')" style="margin-bottom:16px">Back to Week Planner</button><div class="empty">No guide found for this week yet. Run the full pipeline first - the guide is built in the final phase.</div></div>';
       return;
     }
+    // Quality scores - LLM-assessed or pending
+    const md = guide.markdown_content || '';
+    const words = md.split(/\\s+/).filter(w => w.length > 0).length;
+    const sections = (md.match(/^##\\s/gm) || []).length;
+    const qs = guide.quality_scores || null;
+    function scoreColor(s) { return s >= 8 ? 'var(--green)' : s >= 6 ? 'var(--yellow)' : 'var(--red)'; }
+    function scoreBar(label, score, reason) {
+      const tip = reason ? ' title="' + esc(reason).replace(/"/g, '&quot;') + '"' : '';
+      return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:' + (reason ? 'help' : 'default') + '"' + tip + '><span style="width:110px;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:0.5px">' + label + '</span><div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="width:' + (score * 10) + '%;height:100%;background:' + scoreColor(score) + ';border-radius:3px;transition:width 0.5s ease"></div></div><span style="font-size:13px;font-weight:700;color:' + scoreColor(score) + ';width:28px;text-align:right">' + score + '</span></div>';
+    }
+
     let html = '<div class="section">';
-    html += '<button class="btn btn-dim" onclick="switchTab(\\'week\\')" style="margin-bottom:16px">Back to Week Planner</button>';
+    html += '<div style="display:flex;gap:8px;margin-bottom:16px"><button class="btn btn-dim" onclick="switchTab(\\'guides\\')">Back to Guides</button><button class="btn btn-dim" onclick="switchTab(\\'week\\')">Back to Week Planner</button></div>';
     html += '<div style="background:linear-gradient(135deg,#1a1d27,#1e2235);border:1px solid var(--green);border-radius:12px;padding:24px">';
     html += '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--green);margin-bottom:8px">Weekly Free Guide</div>';
     html += '<h2 style="margin-bottom:4px">' + esc(guide.guide_title) + '</h2>';
-    html += '<div style="font-size:13px;color:var(--dim);margin-bottom:16px">Week of ' + guide.week_start_date + ' - Theme: ' + esc(guide.weekly_theme) + '</div>';
+    html += '<div style="font-size:13px;color:var(--dim);margin-bottom:16px">Week of ' + guide.week_start_date + (guide.weekly_theme ? ' - Theme: ' + esc(guide.weekly_theme) : '') + '</div>';
+
+    // Stats row
+    html += '<div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap">';
+    html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 16px;text-align:center;min-width:100px"><div style="font-size:24px;font-weight:800;color:var(--text)">' + words.toLocaleString() + '</div><div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-top:2px">Words</div></div>';
+    html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 16px;text-align:center;min-width:100px"><div style="font-size:24px;font-weight:800;color:var(--text)">' + sections + '</div><div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-top:2px">Sections</div></div>';
+    if (qs) {
+      const comp = qs.composite || 0;
+      html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 16px;text-align:center;min-width:100px"><div style="font-size:24px;font-weight:800;color:' + scoreColor(comp) + '">' + comp.toFixed(1) + '</div><div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-top:2px">Quality Score</div></div>';
+    }
+    // Quality gate badge
+    const gp = guide.quality_gate_passed;
+    const iters = guide.iteration_count || 0;
+    if (gp === true || gp === false || iters > 0) {
+      const gateColor = gp === true ? 'var(--green)' : gp === false ? 'var(--red)' : 'var(--dim)';
+      const gateLabel = gp === true ? 'Passed' + (iters > 1 ? ' (' + iters + ' attempts)' : '') : gp === false ? 'Failed (' + iters + ' attempts)' : 'Pending';
+      html += '<div style="background:var(--bg);border:1px solid ' + gateColor + ';border-radius:8px;padding:12px 16px;text-align:center;min-width:120px"><div style="font-size:13px;font-weight:800;color:' + gateColor + '">' + gateLabel + '</div><div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-top:2px">Quality Gate</div></div>';
+    }
+    html += '</div>';
+
+    // Score bars or assess button
+    if (qs) {
+      html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:16px 20px;margin-bottom:16px">';
+      html += '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:10px">LLM Quality Assessment</div>';
+      const dims = [['practical','Practical'],['valuable','Valuable'],['generous','Generous'],['accurate','Accurate'],['quick_win','Quick Win'],['transformation','Transformation']];
+      for (const [key, label] of dims) {
+        const d = qs[key] || {};
+        html += scoreBar(label, d.score || 0, d.reason || '');
+      }
+      if (qs.summary) {
+        html += '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--dim);line-height:1.5">' + esc(qs.summary) + '</div>';
+      }
+      html += '</div>';
+      // Feedback input + Re-assess/Regenerate buttons
+      html += '<div style="margin-top:12px;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">';
+      html += '<div style="font-size:11px;color:var(--dim);margin-bottom:6px">Regenerate with specific instructions:</div>';
+      html += '<div style="display:flex;gap:6px;margin-bottom:8px">';
+      html += '<input id="guide-feedback-input" type="text" placeholder="e.g. accuracy is too low, need more cited sources" style="flex:1;background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:12px;color:var(--text);color-scheme:dark" />';
+      html += '<button class="btn btn-primary" style="font-size:11px;white-space:nowrap" onclick="const fb=document.getElementById(\\'guide-feedback-input\\').value.trim();regenerateGuide(\\'' + guide.id + '\\',fb||undefined)">Regenerate</button>';
+      html += '</div>';
+      html += '<div style="display:flex;gap:8px;justify-content:flex-end">';
+      html += '<button class="btn btn-dim" style="font-size:12px" onclick="assessGuide(\\'' + guide.id + '\\')">Re-assess</button>';
+      html += '</div>';
+      html += '</div>';
+      html += '</div>';
+      // Assessment history accordion
+      if (guide.assessment_history && guide.assessment_history.length > 1) {
+        html += '<details style="margin-bottom:16px"><summary style="cursor:pointer;font-size:12px;color:var(--dim);margin-bottom:8px">Iteration history (' + guide.assessment_history.length + ' attempts)</summary><div style="font-size:12px">';
+        for (const entry of guide.assessment_history) {
+          const pc = entry.composite >= 8 ? 'var(--green)' : 'var(--red)';
+          html += '<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)"><span style="color:var(--dim)">Attempt ' + entry.iteration + '</span><span style="font-weight:700;color:' + pc + '">' + (entry.composite || 0).toFixed(1) + '/10</span>';
+          if (entry.summary) html += '<span style="color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(entry.summary) + '</span>';
+          html += '</div>';
+        }
+        html += '</div></details>';
+      }
+    } else {
+      html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:16px 20px;margin-bottom:16px;text-align:center">';
+      html += '<div style="color:var(--dim);font-size:13px;margin-bottom:10px">No quality assessment yet</div>';
+      html += '<div style="display:flex;gap:8px;justify-content:center">';
+      html += '<button class="btn btn-primary" onclick="assessGuide(\\'' + guide.id + '\\')">Assess Quality</button>';
+      html += '<button class="btn btn-green" onclick="regenerateGuide(\\'' + guide.id + '\\')">Regenerate Guide</button>';
+      html += '</div></div>';
+    }
+
     // Action buttons
     html += '<div class="btn-group" style="margin-bottom:20px">';
-    if (guide.docx_path) html += '<button class="btn btn-green" onclick="downloadGuide(\\'' + guide.id + '\\',\\'' + esc(guide.guide_title).replace(/'/g, '') + '\\')">Download DOCX</button>';
+    html += '<button class="btn btn-green" onclick="downloadGuide(\\'' + guide.id + '\\',\\'' + esc(guide.guide_title).replace(/'/g, '') + '\\')">Download DOCX</button>';
     if (guide.fulfillment_link) html += '<a class="btn btn-dim" style="border-color:var(--blue);color:var(--blue)" href="' + esc(guide.fulfillment_link) + '" target="_blank">Fulfillment Link</a>';
     if (guide.cta_keyword) html += '<span style="padding:6px 14px;background:rgba(234,179,8,0.1);border:1px solid rgba(234,179,8,0.3);border-radius:6px;font-weight:700;color:var(--yellow);font-size:13px">CTA: ' + esc(guide.cta_keyword) + '</span>';
     html += '</div>';
@@ -4551,7 +5275,53 @@ async function showWeekGuide(mondayStr) {
     } else {
       html += '<div class="empty">Guide content not yet generated.</div>';
     }
-    // Stats
+    // Posts using this guide
+    html += '<div id="guide-posts-section" style="margin-top:20px;padding:16px;background:#0d1117;border:1px solid var(--border);border-radius:8px">';
+    html += '<div style="font-size:13px;font-weight:700;color:var(--accent2);margin-bottom:8px">Posts Using This Guide</div>';
+    html += '<div id="guide-posts-list" style="color:var(--dim);font-size:12px">Loading linked posts...</div>';
+    html += '</div>';
+    // Load posts async
+    (async function() {
+      try {
+        const pkgs = await api('/content/packages?guide_id=' + guide.id);
+        const el = document.getElementById('guide-posts-list');
+        if (!el) return;
+        if (!pkgs || pkgs.length === 0) {
+          el.innerHTML = '<span style="color:var(--dim);font-size:12px">No posts linked to this guide yet.</span>';
+          return;
+        }
+        let ph = '';
+        for (const p of pkgs) {
+          const hook = (p.facebook_post || p.linkedin_post || '').split('\\n')[0].substring(0, 80);
+          const kw = p.cta_keyword || '-';
+          const platforms = [];
+          if (p.facebook_post) platforms.push('FB');
+          if (p.linkedin_post) platforms.push('LI');
+          ph += '<div style="display:flex;align-items:center;gap:10px;padding:8px;border-bottom:1px solid var(--border)">';
+          ph += '<span style="font-size:11px;color:var(--yellow);font-weight:600;min-width:80px">CTA: ' + esc(kw) + '</span>';
+          ph += '<span style="font-size:11px;color:var(--dim)">' + platforms.join(', ') + '</span>';
+          ph += '<span style="flex:1;font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(hook || 'No content') + '</span>';
+          ph += '<button class="btn btn-dim" style="font-size:10px;padding:2px 8px" onclick="switchTab(\\'packages\\')">View</button>';
+          ph += '</div>';
+        }
+        el.innerHTML = ph;
+      } catch(e) {
+        const el = document.getElementById('guide-posts-list');
+        if (el) el.innerHTML = '<span style="color:var(--dim);font-size:12px">Could not load linked posts.</span>';
+      }
+    })();
+
+    // Generate from Post section
+    html += '<div style="margin-top:20px;padding:16px;background:#0d1117;border:1px solid var(--border);border-radius:8px">';
+    html += '<div style="font-size:13px;font-weight:700;color:var(--accent2);margin-bottom:8px">Generate Guide from Post</div>';
+    html += '<div style="font-size:11px;color:var(--dim);margin-bottom:8px">Paste a social media post below. The AI will research the topic and generate a guide that delivers on the post\\\'s promise.</div>';
+    html += '<textarea id="from-post-input" rows="5" placeholder="Paste your post text here..." style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:12px;color:var(--text);color-scheme:dark;resize:vertical;font-family:inherit;box-sizing:border-box"></textarea>';
+    html += '<div style="display:flex;gap:8px;margin-top:8px;align-items:center">';
+    html += '<input id="from-post-keyword" type="text" placeholder="CTA keyword (default: guide)" style="width:140px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:12px;color:var(--text);color-scheme:dark" />';
+    html += '<button class="btn btn-green" style="font-size:12px" onclick="generateFromPost()">Generate Guide from Post</button>';
+    html += '</div></div>';
+
+    // Footer stats
     html += '<div style="display:flex;gap:16px;margin-top:16px;font-size:12px;color:var(--dim)">';
     html += '<span>Downloads: ' + (guide.downloads_count || 0) + '</span>';
     if (guide.conversion_rate != null) html += '<span>Conversion: ' + (guide.conversion_rate * 100).toFixed(1) + '%</span>';
@@ -4562,6 +5332,305 @@ async function showWeekGuide(mondayStr) {
   } catch(e) {
     app.innerHTML = '<div class="section"><button class="btn btn-dim" onclick="switchTab(\\'week\\')" style="margin-bottom:16px">Back to Week Planner</button><div class="empty">Error loading guide: ' + e.message + '</div></div>';
   }
+}
+
+// Assess all guides (backfill)
+async function assessAllGuides() {
+  try {
+    toast('Assessing all guides with Sonnet (this may take a minute)...');
+    const r = await api('/content/guides/backfill-assess', { method: 'POST' });
+    if (r) { toast('Assessed ' + r.assessed + ' guides: ' + r.passed + ' passed, ' + r.failed + ' failed'); showWeekGuide(); }
+    else { toast('Backfill failed', false); }
+  } catch(e) { toast('Backfill error: ' + e.message, false); }
+}
+
+// Assess guide quality via LLM
+async function assessGuide(guideId) {
+  try {
+    toast('Assessing guide quality (this takes ~10s)...');
+    const r = await api('/content/guides/' + guideId + '/assess', { method: 'POST' });
+    if (r && r.composite) { toast('Quality assessment complete!'); showWeekGuide(); }
+    else { toast('Assessment failed', false); }
+  } catch(e) { toast('Assessment error: ' + e.message, false); }
+}
+
+// Regenerate guide with quality gate loop (background task) + live polling
+let _regenState = null;
+let _regenTimerInterval = null;
+let _regenPollInterval = null;
+
+async function regenerateGuide(guideId, operatorFeedback) {
+  if (!operatorFeedback && !confirm('Regenerate this guide? It will run the full research pipeline + up to 3 quality iterations. This may take 2-3 minutes.')) return;
+  try {
+    let url = '/content/guides/' + guideId + '/regenerate';
+    if (operatorFeedback) url += '?operator_feedback=' + encodeURIComponent(operatorFeedback);
+    const r = await api(url, { method: 'POST' });
+    if (r && r.status === 'already_running') { toast('Regeneration already in progress'); return; }
+    if (!r || r.status !== 'started') { toast('Regeneration failed to start', false); return; }
+    _regenState = { guideId, startTime: Date.now(), feedback: operatorFeedback || null };
+    pollRegenStatus(guideId);
+  } catch(e) { toast('Regeneration error: ' + e.message, false); }
+}
+
+async function generateFromPost() {
+  const postText = document.getElementById('from-post-input')?.value?.trim();
+  if (!postText || postText.length < 50) { toast('Please paste a substantial post (at least 50 characters)', false); return; }
+  const keyword = document.getElementById('from-post-keyword')?.value?.trim() || 'guide';
+  try {
+    const r = await api('/content/guides/generate-from-post', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ post_text: postText, cta_keyword: keyword }),
+    });
+    if (!r || r.status !== 'started') { toast('Failed to start guide generation', false); return; }
+    _regenState = { guideId: r.tracking_id, startTime: Date.now(), fromPost: true };
+    pollRegenStatus(r.tracking_id);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+function pollRegenStatus(guideId) {
+  // Clear any existing intervals
+  if (_regenPollInterval) clearInterval(_regenPollInterval);
+  if (_regenTimerInterval) clearInterval(_regenTimerInterval);
+
+  // Ensure spin + pulse animations exist
+  if (!document.getElementById('regen-anim-style')) {
+    const st = document.createElement('style');
+    st.id = 'regen-anim-style';
+    st.textContent = '@keyframes spin{to{transform:rotate(360deg)}} @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}';
+    document.head.appendChild(st);
+  }
+
+  // Render initial card
+  renderRegenProgress(null);
+
+  // Elapsed timer updates every second
+  _regenTimerInterval = setInterval(() => {
+    const el = document.getElementById('regen-elapsed');
+    if (el && _regenState) el.textContent = formatElapsed(Date.now() - _regenState.startTime);
+  }, 1000);
+
+  // Poll API every 3 seconds
+  _regenPollInterval = setInterval(async () => {
+    try {
+      const pollUrl = _regenState?.fromPost ? '/content/generation-status/' + guideId : '/content/guides/' + guideId + '/regen-status';
+      const s = await api(pollUrl);
+      if (!s || s.status === 'idle') return;
+      renderRegenProgress(s);
+      if (s.status === 'done' || s.status === 'error') {
+        clearInterval(_regenPollInterval);
+        clearInterval(_regenTimerInterval);
+        _regenPollInterval = null;
+        _regenTimerInterval = null;
+      }
+    } catch(e) { /* ignore poll errors */ }
+  }, 3000);
+}
+
+function renderRegenProgress(s) {
+  let container = document.getElementById('regen-progress-card');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'regen-progress-card';
+    container.style.cssText = 'position:fixed;top:12px;right:12px;z-index:9999;width:420px;max-height:90vh;overflow-y:auto;animation:fadeIn 0.3s';
+    document.body.appendChild(container);
+  }
+
+  const elapsed = _regenState ? formatElapsed(Date.now() - _regenState.startTime) : '0s';
+  const phase = s?.phase || 0;
+  const totalPhases = s?.total_phases || 4;
+  const isDone = s?.status === 'done';
+  const isError = s?.status === 'error';
+  const isRunning = !isDone && !isError;
+
+  // Completion banner - big unmissable background
+  let cardBorder = 'var(--blue)';
+  let cardBg = '';
+  if (isDone && s.passed) { cardBorder = 'var(--green)'; cardBg = 'background:linear-gradient(135deg,#0a2e1a 0%,#0d1117 60%);'; }
+  else if (isDone) { cardBorder = 'var(--yellow)'; cardBg = 'background:linear-gradient(135deg,#2e2a0a 0%,#0d1117 60%);'; }
+  else if (isError) { cardBorder = 'var(--red)'; cardBg = 'background:linear-gradient(135deg,#2e0a0a 0%,#0d1117 60%);'; }
+  let html = '<div class="card" style="padding:16px;border:2px solid ' + cardBorder + ';' + cardBg + '">';
+
+  // Browser notification on completion (fires once)
+  if ((isDone || isError) && !window._regenNotified) {
+    window._regenNotified = true;
+    try {
+      if (Notification.permission === 'granted') {
+        new Notification(isDone ? (s.passed ? 'Guide Ready!' : 'Guide Updated (below target)') : 'Regeneration Failed', { body: elapsed + ' elapsed', icon: '/favicon.ico' });
+      } else if (Notification.permission !== 'denied') {
+        Notification.requestPermission();
+      }
+    } catch(e) {}
+    // Also flash the page title
+    let _origTitle = document.title;
+    document.title = isDone ? (s.passed ? 'DONE - Guide Ready!' : 'DONE - Below Target') : 'FAILED - Regeneration';
+    setTimeout(() => { document.title = _origTitle; }, 5000);
+  }
+  // Reset notification flag when starting a new regen
+  if (isRunning) { window._regenNotified = false; }
+
+  // === Header row ===
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+  html += '<div style="display:flex;align-items:center;gap:8px">';
+  if (isRunning) html += '<div style="width:14px;height:14px;border:2px solid var(--blue);border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite"></div>';
+  else if (isDone && s.passed) html += '<span style="font-size:22px">\\u2705</span>';
+  else if (isDone) html += '<span style="font-size:22px">\\u26A0\\uFE0F</span>';
+  else html += '<span style="font-size:22px">\\u274C</span>';
+  if (isDone) html += '<span style="font-size:18px;font-weight:800;color:' + (s.passed ? 'var(--green)' : 'var(--yellow)') + '">' + (s.passed ? 'Guide Ready!' : 'Guide Updated (below target)') + '</span>';
+  else if (isError) html += '<span style="font-size:16px;font-weight:700;color:var(--red)">Regeneration Failed</span>';
+  else html += '<span style="font-size:14px;font-weight:700">Regenerating Guide</span>';
+  html += '</div>';
+  html += '<span id="regen-elapsed" style="font-size:12px;color:var(--dim);font-family:monospace">' + elapsed + '</span>';
+  html += '</div>';
+
+  // === Phase pipeline dots ===
+  const phaseLabels = ['Research', 'Write v1', 'Write v2', 'Write v3'];
+  html += '<div style="display:flex;align-items:center;gap:0;margin-bottom:14px">';
+  for (let i = 0; i < 4; i++) {
+    const phaseNum = i + 1;
+    const done = phase > phaseNum || isDone;
+    const active = phase === phaseNum && isRunning;
+    const dotColor = done ? 'var(--green)' : (active ? 'var(--blue)' : 'var(--border)');
+    const dotAnim = active ? ';animation:pulse 1.5s ease-in-out infinite' : '';
+    html += '<div style="text-align:center;flex:0 0 auto">';
+    html += '<div style="width:12px;height:12px;border-radius:50%;background:' + dotColor + dotAnim + ';margin:0 auto"></div>';
+    html += '<div style="font-size:9px;color:' + (active ? 'var(--text)' : (done ? 'var(--green)' : 'var(--dim)')) + ';margin-top:3px;font-weight:' + (active ? '700' : '400') + ';white-space:nowrap">' + phaseLabels[i] + '</div>';
+    html += '</div>';
+    if (i < 3) html += '<div style="flex:1;height:2px;background:' + (done ? 'var(--green)' : 'var(--border)') + ';margin:0 4px;margin-bottom:14px"></div>';
+  }
+  html += '</div>';
+
+  // === Current phase detail ===
+  if (s?.detail && isRunning) {
+    html += '<div style="font-size:12px;color:var(--accent2);margin-bottom:10px;font-weight:600">' + esc(s.phase_label || s.detail) + '</div>';
+  }
+
+  // === Agent step breakdown ===
+  const stepStatus = s?.step_status || {};
+  const stepEntries = Object.entries(stepStatus);
+  if (stepEntries.length > 0) {
+    const completed = stepEntries.filter(([,v]) => v === 'completed').length;
+    html += '<div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">';
+    // Progress bar
+    html += '<div style="height:3px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:8px">';
+    html += '<div style="height:100%;background:var(--green);width:' + Math.round((completed / stepEntries.length) * 100) + '%;transition:width 0.3s"></div>';
+    html += '</div>';
+    for (const [agent, st] of stepEntries) {
+      const label = AGENT_LABELS[agent] || agent.replace(/_/g, ' ');
+      let icon, stColor;
+      if (st === 'completed') { icon = 'Done'; stColor = 'var(--green)'; }
+      else if (st === 'running') { icon = 'Running...'; stColor = 'var(--blue)'; }
+      else if (st === 'failed') { icon = 'Failed'; stColor = 'var(--red)'; }
+      else { icon = 'Waiting'; stColor = 'var(--dim)'; }
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;font-size:11px">';
+      html += '<span style="color:' + (st === 'running' ? 'var(--text)' : 'var(--dim)') + ';font-weight:' + (st === 'running' ? '600' : '400') + '">';
+      if (st === 'running') html += '<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--blue);margin-right:5px"></span>';
+      html += label + '</span>';
+      html += '<span style="color:' + stColor + ';font-weight:600;font-size:10px">' + icon + '</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  // === Live activity feed (last 8 log entries across all agents) ===
+  const stepLogs = s?.step_logs || {};
+  const allLogs = [];
+  for (const [agent, logs] of Object.entries(stepLogs)) {
+    if (Array.isArray(logs)) {
+      for (const line of logs) allLogs.push(line);
+    }
+  }
+  // Sort by timestamp prefix [HH:MM:SS]
+  allLogs.sort();
+  const recentLogs = allLogs.slice(-8);
+  if (recentLogs.length > 0 && isRunning) {
+    html += '<div style="background:#0a0e14;border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:10px;max-height:120px;overflow-y:auto;font-family:monospace;font-size:10px;line-height:1.6;color:var(--dim)">';
+    for (const line of recentLogs) {
+      html += '<div>' + esc(line) + '</div>';
+    }
+    html += '</div>';
+  }
+
+  // === Research summary ===
+  const rs = s?.research_summary;
+  if (rs) {
+    html += '<div style="display:flex;gap:12px;margin-bottom:10px;padding:6px 10px;background:#0d1117;border:1px solid var(--border);border-radius:6px">';
+    html += '<span style="font-size:11px;color:var(--green);font-weight:600">' + (rs.trends || 0) + ' trends</span>';
+    html += '<span style="font-size:11px;color:var(--accent2);font-weight:600">' + (rs.claims || 0) + ' claims</span>';
+    html += '<span style="font-size:11px;color:var(--blue);font-weight:600">' + (rs.sources || 0) + ' sources</span>';
+    html += '</div>';
+  }
+
+  // === Score breakdown (after assessment) ===
+  const scores = s?.scores;
+  const scoreHistory = s?.score_history || [];
+  if (scores || scoreHistory.length > 0) {
+    const dims = ['practical', 'valuable', 'generous', 'accurate', 'quick_win', 'transformation'];
+    const dimLabels = { practical: 'Practical', valuable: 'Valuable', generous: 'Generous', accurate: 'Accurate', quick_win: 'Quick Win', transformation: 'Transform' };
+
+    // Show previous attempts dimmed
+    for (let hi = 0; hi < scoreHistory.length - (isDone ? 0 : 1); hi++) {
+      const h = scoreHistory[hi];
+      html += '<div style="font-size:10px;color:var(--dim);margin-bottom:4px;opacity:0.5">Attempt ' + h.attempt + ': ' + (h.composite || 0).toFixed(1) + '/10</div>';
+    }
+
+    // Current/latest scores
+    const latest = scores || (scoreHistory.length > 0 ? scoreHistory[scoreHistory.length - 1] : null);
+    if (latest) {
+      html += '<div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">';
+      const comp = s?.composite || latest.composite || 0;
+      const compColor = comp >= 8 ? 'var(--green)' : (comp >= 5 ? 'var(--yellow)' : 'var(--red)');
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+      html += '<span style="font-size:11px;color:var(--dim)">Quality Score</span>';
+      html += '<span style="font-size:18px;font-weight:700;color:' + compColor + '">' + comp.toFixed(1) + '<span style="font-size:12px;color:var(--dim)">/10</span></span>';
+      html += '</div>';
+      for (const d of dims) {
+        const val = latest[d] || 0;
+        const barColor = val >= 8 ? 'var(--green)' : (val >= 5 ? 'var(--yellow)' : 'var(--red)');
+        html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;font-size:10px">';
+        html += '<span style="width:60px;color:var(--dim);text-align:right">' + (dimLabels[d] || d) + '</span>';
+        html += '<div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="height:100%;background:' + barColor + ';width:' + (val * 10) + '%;transition:width 0.3s"></div></div>';
+        html += '<span style="width:16px;color:' + barColor + ';font-weight:700;font-family:monospace">' + val + '</span>';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+  }
+
+  // === Completion / Error actions ===
+  if (isDone) {
+    // Feedback input for targeted reiteration
+    const guideId = _regenState?.guideId || '';
+    html += '<div style="margin-top:10px;padding:8px 10px;background:#0d1117;border:1px solid var(--border);border-radius:6px">';
+    html += '<div style="font-size:10px;color:var(--dim);margin-bottom:4px">Not satisfied? Tell the AI what to fix:</div>';
+    html += '<div style="display:flex;gap:6px">';
+    html += '<input id="regen-feedback-input" type="text" placeholder="e.g. accuracy is too low, cite more named sources" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:12px;color:var(--text);color-scheme:dark" />';
+    html += '<button class="btn btn-primary" style="font-size:11px;white-space:nowrap;padding:4px 10px" onclick="const fb=document.getElementById(\\'regen-feedback-input\\').value.trim();if(!fb){toast(\\'Type your feedback first\\',false);return;}document.getElementById(\\'regen-progress-card\\').remove();regenerateGuide(\\'' + guideId + '\\',fb)">Regen with Focus</button>';
+    html += '</div>';
+    html += '</div>';
+    // If from-post, the guide_id comes from the status response
+    const viewGuideId = s?.guide_id || guideId;
+    html += '<div style="display:flex;gap:8px;margin-top:8px">';
+    if (viewGuideId && viewGuideId !== guideId) {
+      // New guide created from post - navigate to it specifically
+      html += '<button class="btn btn-primary" style="flex:1;font-size:12px" onclick="document.getElementById(\\'regen-progress-card\\').remove();showWeekGuide(\\''+viewGuideId+'\\')">View New Guide</button>';
+    } else {
+      html += '<button class="btn btn-primary" style="flex:1;font-size:12px" onclick="document.getElementById(\\'regen-progress-card\\').remove();showWeekGuide()">View Updated Guide</button>';
+    }
+    html += '<button class="btn btn-dim" style="font-size:12px" onclick="document.getElementById(\\'regen-progress-card\\').remove()">Dismiss</button>';
+    html += '</div>';
+    // Show what operator feedback was used (if any)
+    const usedFeedback = s?.operator_feedback || _regenState?.feedback;
+    if (usedFeedback) {
+      html += '<div style="margin-top:6px;font-size:10px;color:var(--dim)">Focus used: <span style="color:var(--accent2)">' + esc(usedFeedback) + '</span></div>';
+    }
+  } else if (isError) {
+    html += '<div style="color:var(--red);font-size:12px;margin-bottom:8px">' + esc(s?.detail || 'Unknown error') + '</div>';
+    html += '<button class="btn btn-dim" style="font-size:12px" onclick="document.getElementById(\\'regen-progress-card\\').remove()">Dismiss</button>';
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
 }
 
 // Download guide via fetch+blob (bypasses browser insecure-download block on HTTP)
@@ -4575,9 +5644,103 @@ async function downloadGuide(guideId, title) {
   } catch(e) { toast('Download failed: ' + e.message, false); }
 }
 
+// --- TRENDS TAB ---
+async function renderTrends() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="page-content"><div class="section"><div class="section-label">Trend Scanner</div><p style="color:var(--dim);margin-bottom:16px">Scan current trends relevant to your content strategy. Results come from live web search + analysis.</p><div class="btn-group"><button class="btn btn-primary" onclick="scanTrends()">Scan Now</button></div></div><div id="trend-results" style="margin-top:24px"><div class="empty">No recent trend scans. Click "Scan Now" to start.</div></div></div>';
+  try {
+    const briefs = await api('/briefs/trends');
+    if (briefs && briefs.length > 0) {
+      let html = '<div class="section-label">Recent Trend Briefs</div><div class="grid stagger-children">';
+      for (const b of briefs.slice(0, 12)) {
+        html += '<div class="card hover-lift" style="cursor:pointer" onclick="showTrendDetail(\\'' + b.id + '\\')">';
+        html += '<h3>' + esc(b.focus_area || 'Trend') + '</h3>';
+        html += '<div style="font-size:13px;margin-top:8px;color:var(--text)">' + esc((b.summary || '').slice(0, 120)) + (b.summary && b.summary.length > 120 ? '...' : '') + '</div>';
+        html += '<div style="margin-top:8px;font-size:11px;color:var(--dim);font-family:\\'JetBrains Mono\\',monospace">' + (b.created_at ? new Date(b.created_at).toLocaleDateString() : '') + '</div>';
+        html += '</div>';
+      }
+      html += '</div>';
+      document.getElementById('trend-results').innerHTML = html;
+    }
+  } catch(e) { /* ok, just show empty */ }
+}
+async function scanTrends() {
+  try {
+    toast('Trend scan started...');
+    const r = await api('/trends/scan', { method: 'POST', body: '{}' });
+    if (r.scan_id) {
+      const poll = setInterval(async () => {
+        try {
+          const s = await api('/trends/scan/' + r.scan_id);
+          if (s.status === 'completed') { clearInterval(poll); renderTrends(); toast('Trend scan complete!'); }
+          else if (s.status === 'failed') { clearInterval(poll); toast('Scan failed', false); }
+        } catch { clearInterval(poll); }
+      }, 3000);
+    }
+  } catch(e) { toast('Scan failed: ' + e.message, false); }
+}
+async function showTrendDetail(id) {
+  try {
+    const b = await api('/briefs/trends/' + id);
+    const app = document.getElementById('app');
+    let html = '<div class="page-content"><button class="btn btn-dim" onclick="renderTrends()" style="margin-bottom:16px">Back to Trends</button>';
+    html += '<div class="card-hero"><h2 style="font-family:\\'JetBrains Mono\\',monospace;font-size:18px;margin-bottom:12px">' + esc(b.focus_area || 'Trend Brief') + '</h2>';
+    html += '<div style="color:var(--text);line-height:1.7;white-space:pre-wrap">' + esc(b.summary || 'No summary available') + '</div>';
+    if (b.sources && b.sources.length) {
+      html += '<div style="margin-top:16px"><div class="section-label">Sources</div><div style="display:flex;flex-direction:column;gap:4px">';
+      for (const s of b.sources) html += '<div style="font-size:12px;color:var(--dim)">' + esc(typeof s === 'string' ? s : JSON.stringify(s)) + '</div>';
+      html += '</div></div>';
+    }
+    html += '</div></div>';
+    app.innerHTML = html;
+    updateBreadcrumb('Trends > ' + (b.focus_area || 'Detail'));
+  } catch(e) { toast('Failed to load trend: ' + e.message, false); }
+}
+
+// --- HELP TAB ---
+async function renderHelp() {
+  const app = document.getElementById('app');
+  let html = '<div class="page-content"><div class="section"><div class="section-label">Quick Start Guide</div><div id="help-quickstart"><div class="empty">Loading...</div></div></div>';
+  html += '<div class="section"><div class="section-label">Keyboard Shortcuts</div><div class="card" style="font-size:13px;line-height:2"><div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px">';
+  const shortcuts = [['J / K', 'Navigate between items'], ['Enter', 'Approve selected package'], ['Esc', 'Close modal or panel'], ['/', 'Focus search bar'], ['G then W', 'Go to Week Planner'], ['G then P', 'Go to Packages'], ['G then G', 'Go to Generate']];
+  for (const [k, v] of shortcuts) {
+    html += '<div><span class="tag" style="background:var(--card-hover);color:var(--text);letter-spacing:0">' + k + '</span></div><div style="color:var(--dim)">' + v + '</div>';
+  }
+  html += '</div></div></div>';
+  html += '<div class="section"><div class="section-label">Glossary</div><div id="help-glossary"><div class="empty">Loading...</div></div></div></div>';
+  app.innerHTML = html;
+
+  try {
+    const qs = await api('/onboarding/quickstart');
+    const qsEl = document.getElementById('help-quickstart');
+    if (qs && qs.steps) {
+      let qh = '<div class="stagger-children" style="display:flex;flex-direction:column;gap:8px">';
+      for (let i = 0; i < qs.steps.length; i++) {
+        const s = qs.steps[i];
+        qh += '<div class="card hover-lift"><div style="display:flex;gap:12px;align-items:start"><div style="font-size:20px;font-weight:700;color:var(--primary);font-family:\\'JetBrains Mono\\',monospace">' + (i+1) + '</div><div><div style="font-weight:600;margin-bottom:4px">' + esc(s.title || '') + '</div><div style="color:var(--dim);font-size:13px">' + esc(s.description || '') + '</div></div></div></div>';
+      }
+      qh += '</div>';
+      qsEl.innerHTML = qh;
+    } else { qsEl.innerHTML = '<div class="card"><div style="color:var(--dim)">No quickstart guide available yet.</div></div>'; }
+  } catch { document.getElementById('help-quickstart').innerHTML = '<div class="card"><div style="color:var(--dim)">Quickstart guide not available.</div></div>'; }
+
+  try {
+    const gl = await api('/onboarding/glossary');
+    const glEl = document.getElementById('help-glossary');
+    if (gl && gl.terms && gl.terms.length) {
+      let gh = '<div class="stagger-children" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px">';
+      for (const t of gl.terms) {
+        gh += '<div class="card"><div style="font-weight:600;color:var(--primary);font-family:\\'JetBrains Mono\\',monospace;font-size:13px;margin-bottom:4px">' + esc(t.term || '') + '</div><div style="color:var(--dim);font-size:12px">' + esc(t.definition || '') + '</div></div>';
+      }
+      gh += '</div>';
+      glEl.innerHTML = gh;
+    } else { glEl.innerHTML = '<div class="card"><div style="color:var(--dim)">No glossary available yet.</div></div>'; }
+  } catch { document.getElementById('help-glossary').innerHTML = '<div class="card"><div style="color:var(--dim)">Glossary not available.</div></div>'; }
+}
+
 // Router
 function render() {
-  const map = { week: renderWeek, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat };
+  const map = { week: renderWeek, guides: renderGuides, topic: renderTopic, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp };
   updateBreadcrumb(null);
   (map[currentTab] || renderGenerate)();
 }
@@ -4679,11 +5842,11 @@ function openBrainstorm(packageId) {
   panel.style.display = 'flex';
   panel.innerHTML = `
     <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
-      <div style="font-weight:600;font-size:14px">Brainstorm</div>
+      <div style="font-weight:600;font-size:14px">Senior Strategist</div>
       <button onclick="closeBrainstorm()" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:18px">x</button>
     </div>
     <div id="brainstorm-messages" style="flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px">
-      <div style="color:var(--dim);font-size:13px;text-align:center;padding:20px">Ask anything about this package - ideas, angles, improvements, alternatives...</div>
+      <div style="color:var(--dim);font-size:13px;text-align:center;padding:20px">Senior Strategist - can search the web, access briefs, research, templates, and all team resources. Ask anything.</div>
     </div>
     <div style="padding:12px;border-top:1px solid var(--border);display:flex;gap:8px">
       <input type="text" id="brainstorm-input" placeholder="Type your message..." style="flex:1" onkeydown="if(event.key==='Enter')sendBrainstorm()">
@@ -4717,7 +5880,16 @@ async function sendBrainstorm() {
     brainstormHistory.push({ role: 'assistant', content: r.reply });
     const typing = document.getElementById('brainstorm-typing');
     if (typing) typing.remove();
-    messagesDiv.innerHTML += '<div style="align-self:flex-start;background:#111318;border:1px solid var(--border);padding:8px 12px;border-radius:12px 12px 12px 2px;max-width:85%;font-size:13px;line-height:1.5;white-space:pre-wrap">' + esc(r.reply) + '</div>';
+    let toolBadges = '';
+    if (r.tool_calls_made && r.tool_calls_made.length > 0) {
+      toolBadges = '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px">';
+      r.tool_calls_made.forEach(tc => {
+        const label = tc.tool === 'web_search' ? 'Searched: ' + esc(tc.query) : 'Looked up ' + (tc.days_back || 7) + 'd of packages';
+        toolBadges += '<span style="font-size:10px;background:var(--accent);color:#fff;padding:2px 6px;border-radius:4px;opacity:0.8">' + label + '</span>';
+      });
+      toolBadges += '</div>';
+    }
+    messagesDiv.innerHTML += '<div style="align-self:flex-start;max-width:85%">' + toolBadges + '<div style="background:#111318;border:1px solid var(--border);padding:8px 12px;border-radius:12px 12px 12px 2px;font-size:13px;line-height:1.5;white-space:pre-wrap">' + esc(r.reply) + '</div></div>';
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
   } catch (e) {
     const typing = document.getElementById('brainstorm-typing');
