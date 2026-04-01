@@ -2,6 +2,7 @@
 
 Uses LLM to write natural spoken narration adapted to a template style,
 with segment-level visual type annotations for Remotion rendering.
+Integrates founder voice profile for authentic tone.
 """
 
 from __future__ import annotations
@@ -63,16 +64,43 @@ def _select_style(context: dict[str, Any]) -> str:
     return "hook_cta"
 
 
-SCRIPT_SYSTEM_PROMPT = """You are a narration script writer for short-form video.
-You write conversational, spoken narration that sounds natural when read aloud.
+SCRIPT_SYSTEM_PROMPT = """\
+You are a narration script writer for short-form video (Reels/Shorts/TikTok).
 
-Rules:
-- Write how a person SPEAKS, not how they write posts
-- Each segment is 5-15 seconds of narration
-- Total script: 30-90 seconds
+YOUR JOB: Write a script that TEACHES something valuable in 30-90 seconds. \
+The viewer should learn a specific insight, framework, or mental model they \
+can use immediately. NOT a news recap. NOT a summary of events. TEACH.
+
+VOICE RULES:
+- Write how the creator SPEAKS, not how they write posts
 - Use contractions, rhetorical questions, natural pauses
+- Sound like a knowledgeable friend explaining something over coffee
+- Be opinionated - take a clear stance, don't hedge with "it depends"
+- Use the creator's signature phrases and metaphor style if provided
+- NEVER sound like a news anchor or a corporate explainer
+
+CONTENT RULES:
+- Open with a hook that creates curiosity (not "breaking news" or "just announced")
+- The hook should promise a LESSON, not just information
+- Each step/segment must give the viewer something they can USE
+- End with a clear takeaway - what should they DO or THINK differently?
+- The CTA should feel natural, not forced - "comment [keyword] if you want my..."
+
+VISUAL RULES:
 - Each segment must specify a visualType for the Remotion component
-- Available visualTypes: animated_text, number_counter, crossed_text, reveal_text, step_card, brand_footer, image_overlay, typing_text
+- Choose visualTypes that reinforce the teaching (step_card for frameworks, \
+number_counter for stats, crossed_text for myth-busting)
+- Available visualTypes: animated_text, number_counter, crossed_text, \
+reveal_text, step_card, brand_footer, image_overlay, typing_text
+- Use step_card ONLY when teaching sequential steps (must include num + text)
+- Use number_counter ONLY when there's a real number to animate
+- Use crossed_text for "what people think" vs "what's actually true"
+
+QUALITY CHECK - before outputting, verify:
+1. Does this TEACH something, or just INFORM? (teach = the viewer can DO something new)
+2. Would the creator actually say this out loud? (read it aloud in your head)
+3. Does every segment add value, or is any segment just filler?
+4. Is the CTA earned - have you given enough value that asking feels natural?
 
 Return ONLY a JSON array of segments:
 [
@@ -100,11 +128,35 @@ class ScriptAgent(AgentBase):
     """Generates voiceover narration scripts from pipeline context."""
 
     name: str = "script_agent"
-    default_model: str = "claude-haiku-4-5-20251001"
+    default_model: str = "claude-sonnet-4-20250514"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         # Override model from settings if configured
         self.default_model = getattr(self.settings, "script_model", self.default_model)
+
+        # Auto-load founder voice from DB if not already in context (pipeline mode)
+        if "founder_voice" not in context:
+            try:
+                from sqlalchemy import select
+                from tce.models.founder_voice_profile import FounderVoiceProfile
+
+                fv_result = await self.db.execute(
+                    select(FounderVoiceProfile)
+                    .order_by(FounderVoiceProfile.created_at.desc())
+                    .limit(1)
+                )
+                fv = fv_result.scalar_one_or_none()
+                if fv:
+                    context["founder_voice"] = {
+                        "recurring_themes": fv.recurring_themes or [],
+                        "values_and_beliefs": fv.values_and_beliefs or [],
+                        "taboos": fv.taboos or [],
+                        "tone_range": fv.tone_range or {},
+                        "humor_type": fv.humor_type,
+                        "metaphor_families": fv.metaphor_families or [],
+                    }
+            except Exception:
+                logger.warning("script_agent.founder_voice_load_failed")
 
         style = _select_style(context)
         self._report(f"Selected template style: {style}")
@@ -115,7 +167,35 @@ class ScriptAgent(AgentBase):
         cta = context.get("cta_keyword") or context.get("weekly_keyword") or "zivraviv.com"
         creator = context.get("creator_name", "Ziv Raviv")
 
-        user_prompt = f"""Generate a narration script for a {style} video.
+        prompt_parts = []
+
+        # Inject founder voice profile if available
+        founder_voice = context.get("founder_voice")
+        if founder_voice:
+            voice_block = f"""CREATOR VOICE PROFILE for {creator}:
+- Recurring themes: {', '.join(founder_voice.get('recurring_themes', [])[:5])}
+- Values: {', '.join(founder_voice.get('values_and_beliefs', [])[:5])}
+- Taboos (NEVER say these): {', '.join(founder_voice.get('taboos', [])[:5])}
+- Humor style: {founder_voice.get('humor_type', 'dry, observational')}
+- Metaphor families: {', '.join(founder_voice.get('metaphor_families', [])[:5])}
+- Tone range: {json.dumps(founder_voice.get('tone_range', {}))}
+
+Write the narration AS this creator - use their tone, values, and style."""
+            prompt_parts.append(voice_block)
+
+        # Also include the FB/LI posts as reference for voice matching
+        fb_draft = context.get("facebook_draft", {})
+        li_draft = context.get("linkedin_draft", {})
+        if fb_draft.get("facebook_post"):
+            prompt_parts.append(
+                f"REFERENCE POST (match this voice/tone):\n{fb_draft['facebook_post'][:500]}"
+            )
+        elif li_draft.get("linkedin_post"):
+            prompt_parts.append(
+                f"REFERENCE POST (match this voice/tone):\n{li_draft['linkedin_post'][:500]}"
+            )
+
+        prompt_parts.append(f"""Generate a narration script for a {style} video.
 
 Available content:
 - Thesis: {story_brief.get('thesis', 'N/A')}
@@ -133,13 +213,16 @@ Template style: {style}
 - step_framework: INTRO -> STEP1 -> STEP2 -> STEP3 -> CTA (how-to)
 - mixed: INTRO -> STAT -> BEFORE -> AFTER -> CTA (comprehensive)
 
-Write the narration script as a JSON array of segments. Each segment should be conversational spoken language."""
+IMPORTANT: The script must TEACH something the viewer can use, not just \
+report news. What's the lesson? What should they think or do differently?
+
+Write the narration script as a JSON array of segments.""")
 
         response = await self._call_llm(
-            messages=[{"role": "user", "content": user_prompt}],
+            messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
             system=SCRIPT_SYSTEM_PROMPT,
             max_tokens=2048,
-            temperature=0.7,
+            temperature=0.6,
         )
 
         text = self._extract_text(response)

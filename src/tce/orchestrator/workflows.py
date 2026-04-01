@@ -28,6 +28,12 @@ DAILY_CONTENT_WORKFLOW = [
         depends_on=["facebook_writer", "linkedin_writer", "cta_agent", "creative_director"],
         timeout_seconds=120,
     ),
+    PipelineStep(
+        agent_name="script_agent",
+        depends_on=["qa_agent"],
+        timeout_seconds=120,
+        optional=True,
+    ),
 ]
 
 # Corpus ingestion workflow (PRD Section 15.1)
@@ -108,6 +114,12 @@ DAILY_FROM_PLAN_WORKFLOW = [
         agent_name="qa_agent",
         depends_on=["facebook_writer", "linkedin_writer", "cta_agent", "creative_director"],
         timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="script_agent",
+        depends_on=["qa_agent"],
+        timeout_seconds=120,
+        optional=True,
     ),
 ]
 
