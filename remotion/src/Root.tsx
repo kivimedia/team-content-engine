@@ -5,10 +5,11 @@ import { BeforeAfter } from "./compositions/BeforeAfter";
 import { HookReel } from "./compositions/HookReel";
 import { NarratedVideo } from "./compositions/NarratedVideo";
 import { PostTeaser } from "./compositions/PostTeaser";
+import { ProductDemo } from "./compositions/ProductDemo";
 import { StatReveal } from "./compositions/StatReveal";
 import { StepFramework } from "./compositions/StepFramework";
 import { BRAND, RESOLUTIONS } from "./styles/brand";
-import type { NarratedVideoProps } from "./types";
+import type { NarratedVideoProps, ProductDemoProps } from "./types";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Remotion 4.x Composition expects 2 type args (Schema, Props).
@@ -274,6 +275,75 @@ export const Root: React.FC = () => {
             const estDuration = lastSeg ? lastSeg.endSec + 2 : 30;
             return { durationInFrames: Math.ceil(estDuration * BRAND.fps) };
           }
+        }}
+      />
+
+      {/* ---- Product Demo ---- */}
+      <C
+        id="ProductDemo"
+        component={ProductDemo}
+        fps={BRAND.fps}
+        width={RESOLUTIONS.reel.width}
+        height={RESOLUTIONS.reel.height}
+        durationInFrames={30 * BRAND.fps}
+        defaultProps={{
+          productName: "KMBoards",
+          tagline: "AI-powered content engine for agencies",
+          scenes: [
+            { type: "title", durationSec: 4, content: {} },
+            { type: "problem", durationSec: 4, content: { text: "Agencies waste hours writing social posts from scratch" } },
+            { type: "features", durationSec: 6, content: { title: "What You Get", features: ["AI-generated social posts", "Brand-consistent video content", "Weekly lead magnets"] } },
+            { type: "cta", durationSec: 4, content: {} },
+          ],
+          ctaText: "kmboards.co",
+        }}
+        calculateMetadata={async ({ props }: { props: ProductDemoProps }) => {
+          const totalSec = props.scenes.reduce((sum: number, s: { durationSec: number }) => sum + s.durationSec, 0);
+          return { durationInFrames: Math.ceil(totalSec * BRAND.fps) };
+        }}
+      />
+      <C
+        id="ProductDemoSquare"
+        component={ProductDemo}
+        fps={BRAND.fps}
+        width={RESOLUTIONS.square.width}
+        height={RESOLUTIONS.square.height}
+        durationInFrames={30 * BRAND.fps}
+        defaultProps={{
+          productName: "KMBoards",
+          tagline: "AI-powered content engine for agencies",
+          scenes: [
+            { type: "title", durationSec: 4, content: {} },
+            { type: "features", durationSec: 6, content: { title: "Key Features", features: ["AI content generation", "Brand-consistent videos"] } },
+            { type: "cta", durationSec: 4, content: {} },
+          ],
+          ctaText: "kmboards.co",
+        }}
+        calculateMetadata={async ({ props }: { props: ProductDemoProps }) => {
+          const totalSec = props.scenes.reduce((sum: number, s: { durationSec: number }) => sum + s.durationSec, 0);
+          return { durationInFrames: Math.ceil(totalSec * BRAND.fps) };
+        }}
+      />
+      <C
+        id="ProductDemoLandscape"
+        component={ProductDemo}
+        fps={BRAND.fps}
+        width={RESOLUTIONS.landscape.width}
+        height={RESOLUTIONS.landscape.height}
+        durationInFrames={30 * BRAND.fps}
+        defaultProps={{
+          productName: "KMBoards",
+          tagline: "AI-powered content engine for agencies",
+          scenes: [
+            { type: "title", durationSec: 4, content: {} },
+            { type: "demo", durationSec: 8, content: { src: "", urlText: "kmboards.co" } },
+            { type: "cta", durationSec: 4, content: {} },
+          ],
+          ctaText: "kmboards.co",
+        }}
+        calculateMetadata={async ({ props }: { props: ProductDemoProps }) => {
+          const totalSec = props.scenes.reduce((sum: number, s: { durationSec: number }) => sum + s.durationSec, 0);
+          return { durationInFrames: Math.ceil(totalSec * BRAND.fps) };
         }}
       />
     </>

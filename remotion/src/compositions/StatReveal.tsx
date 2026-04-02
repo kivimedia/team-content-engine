@@ -14,20 +14,17 @@ import { AnimatedText } from "../components/AnimatedText";
 import { BrandBackground } from "../components/BrandBackground";
 import { BrandFooter } from "../components/BrandFooter";
 import { NumberCounter } from "../components/NumberCounter";
-import { BRAND } from "../styles/brand";
+import { resolveBrand, BrandContext } from "../styles/brand";
 import type { StatRevealProps } from "../types";
 
-export const StatReveal: React.FC<StatRevealProps> = ({
-  statValue,
-  statSuffix = "",
-  claimText,
-  sourceText,
-  ctaText = "zivraviv.com",
-}) => {
+export const StatReveal: React.FC<StatRevealProps> = (props) => {
+  const { statValue, statSuffix = "", claimText, sourceText, ctaText = "zivraviv.com" } = props;
+  const resolvedBrand = resolveBrand(props.brand);
   const { durationInFrames } = useVideoConfig();
-  const ctaDelay = durationInFrames - BRAND.fps * 2;
+  const ctaDelay = durationInFrames - resolvedBrand.fps * 2;
 
   return (
+    <BrandContext.Provider value={resolvedBrand}>
     <AbsoluteFill>
       <BrandBackground variant="gradient" />
 
@@ -64,7 +61,7 @@ export const StatReveal: React.FC<StatRevealProps> = ({
             text={claimText}
             fontSize={40}
             fontWeight={500}
-            color={BRAND.white}
+            color={resolvedBrand.white}
             style={{
               maxWidth: 800,
               padding: "0 40px",
@@ -80,7 +77,7 @@ export const StatReveal: React.FC<StatRevealProps> = ({
               text={sourceText}
               fontSize={20}
               fontWeight={400}
-              color={BRAND.textMuted}
+              color={resolvedBrand.textMuted}
               style={{ letterSpacing: "0.02em" }}
             />
           </Sequence>
@@ -92,5 +89,6 @@ export const StatReveal: React.FC<StatRevealProps> = ({
         <BrandFooter ctaText={ctaText} />
       </Sequence>
     </AbsoluteFill>
+    </BrandContext.Provider>
   );
 };

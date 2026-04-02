@@ -1,6 +1,6 @@
 import React from "react";
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
-import { BRAND } from "../styles/brand";
+import { useBrand } from "../styles/brand";
 
 interface Props {
   width?: number;
@@ -12,9 +12,11 @@ interface Props {
 export const AccentLine: React.FC<Props> = ({
   width = 80,
   height = 4,
-  color = BRAND.accent,
+  color,
   delay = 0,
 }) => {
+  const brand = useBrand();
+  const resolvedColor = color ?? brand.accent;
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
@@ -31,7 +33,7 @@ export const AccentLine: React.FC<Props> = ({
       style={{
         width,
         height,
-        backgroundColor: color,
+        backgroundColor: resolvedColor,
         borderRadius: height / 2,
         transform: `scaleX(${scaleX})`,
         transformOrigin: "left center",

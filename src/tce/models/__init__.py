@@ -1,6 +1,7 @@
 """SQLAlchemy ORM models — import all to ensure Alembic discovers them."""
 
 from tce.models.audit_log import AuditLog
+from tce.models.brand_profile import BrandProfile
 from tce.models.content_calendar import ContentCalendarEntry
 from tce.models.cost_event import CostEvent
 from tce.models.creator_profile import CreatorProfile
@@ -27,6 +28,7 @@ from tce.models.weekly_guide import WeeklyGuide
 
 __all__ = [
     "AuditLog",
+    "BrandProfile",
     "ContentCalendarEntry",
     "CostEvent",
     "CreatorProfile",

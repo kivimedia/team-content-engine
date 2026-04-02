@@ -4,7 +4,7 @@
  */
 import React from "react";
 import { useCurrentFrame } from "remotion";
-import { BRAND } from "../styles/brand";
+import { useBrand } from "../styles/brand";
 
 interface Props {
   text: string;
@@ -19,6 +19,7 @@ export const TypingText: React.FC<Props> = ({
   delay = 0,
   charsPerFrame = 0.8,
 }) => {
+  const brand = useBrand();
   const frame = useCurrentFrame();
 
   const adjustedFrame = Math.max(0, frame - delay);
@@ -35,17 +36,17 @@ export const TypingText: React.FC<Props> = ({
   return (
     <div
       style={{
-        fontFamily: BRAND.headingFont,
+        fontFamily: brand.headingFont,
         fontSize,
         fontWeight: 700,
-        color: BRAND.white,
+        color: brand.white,
         lineHeight: 1.4,
         textAlign: "left",
       }}
     >
       {displayText}
       {showCursor && (
-        <span style={{ color: BRAND.accent, fontWeight: 300 }}>|</span>
+        <span style={{ color: brand.accent, fontWeight: 300 }}>|</span>
       )}
     </div>
   );

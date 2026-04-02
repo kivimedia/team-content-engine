@@ -30,6 +30,9 @@ TEMPLATE_COMPOSITIONS: dict[str, str] = {
     "narrated_video": "NarratedVideo",
     "narrated_video_square": "NarratedVideoSquare",
     "narrated_video_landscape": "NarratedVideoLandscape",
+    "product_demo": "ProductDemo",
+    "product_demo_square": "ProductDemoSquare",
+    "product_demo_landscape": "ProductDemoLandscape",
 }
 
 

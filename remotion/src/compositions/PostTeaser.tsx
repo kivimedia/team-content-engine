@@ -21,15 +21,12 @@ import { AnimatedText } from "../components/AnimatedText";
 import { BrandBackground } from "../components/BrandBackground";
 import { BrandFooter } from "../components/BrandFooter";
 import { TypingText } from "../components/TypingText";
-import { BRAND } from "../styles/brand";
+import { resolveBrand, BrandContext } from "../styles/brand";
 import type { PostTeaserProps } from "../types";
 
-export const PostTeaser: React.FC<PostTeaserProps> = ({
-  hookText,
-  platform = "linkedin",
-  imageUrl,
-  ctaKeyword,
-}) => {
+export const PostTeaser: React.FC<PostTeaserProps> = (props) => {
+  const { hookText, platform = "linkedin", imageUrl, ctaKeyword } = props;
+  const resolvedBrand = resolveBrand(props.brand);
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
   const ctaDelay = durationInFrames - fps * 3;
@@ -47,6 +44,7 @@ export const PostTeaser: React.FC<PostTeaserProps> = ({
   const platformLabel = platform === "linkedin" ? "LinkedIn" : "Facebook";
 
   return (
+    <BrandContext.Provider value={resolvedBrand}>
     <AbsoluteFill>
       <BrandBackground variant="dark" />
 
@@ -87,14 +85,14 @@ export const PostTeaser: React.FC<PostTeaserProps> = ({
                 width: 48,
                 height: 48,
                 borderRadius: 24,
-                backgroundColor: BRAND.accent,
+                backgroundColor: resolvedBrand.accent,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                fontFamily: BRAND.headingFont,
+                fontFamily: resolvedBrand.headingFont,
                 fontSize: 20,
                 fontWeight: 700,
-                color: BRAND.white,
+                color: resolvedBrand.white,
               }}
             >
               ZR
@@ -102,19 +100,19 @@ export const PostTeaser: React.FC<PostTeaserProps> = ({
             <div>
               <div
                 style={{
-                  fontFamily: BRAND.headingFont,
+                  fontFamily: resolvedBrand.headingFont,
                   fontSize: 18,
                   fontWeight: 700,
-                  color: BRAND.dark,
+                  color: resolvedBrand.dark,
                 }}
               >
                 Ziv Raviv
               </div>
               <div
                 style={{
-                  fontFamily: BRAND.bodyFont,
+                  fontFamily: resolvedBrand.bodyFont,
                   fontSize: 14,
-                  color: BRAND.textMuted,
+                  color: resolvedBrand.textMuted,
                   display: "flex",
                   alignItems: "center",
                   gap: 6,
@@ -165,9 +163,9 @@ export const PostTeaser: React.FC<PostTeaserProps> = ({
                 borderTop: "1px solid #eee",
                 display: "flex",
                 gap: 30,
-                fontFamily: BRAND.bodyFont,
+                fontFamily: resolvedBrand.bodyFont,
                 fontSize: 14,
-                color: BRAND.textMuted,
+                color: resolvedBrand.textMuted,
               }}
             >
               <span>Like</span>
@@ -190,7 +188,7 @@ export const PostTeaser: React.FC<PostTeaserProps> = ({
                 text={`Comment "${ctaKeyword}" to get the full guide`}
                 fontSize={32}
                 fontWeight={700}
-                color={BRAND.accent}
+                color={resolvedBrand.accent}
               />
             </div>
           </Sequence>
@@ -202,5 +200,6 @@ export const PostTeaser: React.FC<PostTeaserProps> = ({
         <BrandFooter ctaText="zivraviv.com" />
       </Sequence>
     </AbsoluteFill>
+    </BrandContext.Provider>
   );
 };

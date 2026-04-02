@@ -18,23 +18,21 @@ import { AnimatedText } from "../components/AnimatedText";
 import { BrandBackground } from "../components/BrandBackground";
 import { BrandFooter } from "../components/BrandFooter";
 import { StepCard } from "../components/StepCard";
-import { BRAND } from "../styles/brand";
+import { resolveBrand, BrandContext } from "../styles/brand";
 import type { StepFrameworkProps } from "../types";
 
-export const StepFramework: React.FC<StepFrameworkProps> = ({
-  title,
-  steps,
-  ctaText = "zivraviv.com",
-  ctaKeyword,
-}) => {
+export const StepFramework: React.FC<StepFrameworkProps> = (props) => {
+  const { title, steps, ctaText = "zivraviv.com", ctaKeyword } = props;
+  const resolvedBrand = resolveBrand(props.brand);
   const { durationInFrames } = useVideoConfig();
-  const ctaDelay = durationInFrames - BRAND.fps * 2;
+  const ctaDelay = durationInFrames - resolvedBrand.fps * 2;
 
   // Space steps evenly across the available time (before CTA)
   const availableFrames = ctaDelay - 60; // 60 frames for title + accent line
   const stepInterval = Math.floor(availableFrames / Math.max(steps.length, 1));
 
   return (
+    <BrandContext.Provider value={resolvedBrand}>
     <AbsoluteFill>
       <BrandBackground variant="gradient" />
 
@@ -53,7 +51,7 @@ export const StepFramework: React.FC<StepFrameworkProps> = ({
             text={title}
             fontSize={44}
             fontWeight={700}
-            color={BRAND.white}
+            color={resolvedBrand.white}
             style={{ textAlign: "left", marginBottom: 8 }}
           />
         </Sequence>
@@ -92,7 +90,7 @@ export const StepFramework: React.FC<StepFrameworkProps> = ({
                 marginTop: 30,
                 padding: "16px 32px",
                 backgroundColor: "rgba(46, 163, 242, 0.15)",
-                borderLeft: `4px solid ${BRAND.accent}`,
+                borderLeft: `4px solid ${resolvedBrand.accent}`,
                 borderRadius: 4,
               }}
             >
@@ -100,7 +98,7 @@ export const StepFramework: React.FC<StepFrameworkProps> = ({
                 text={`Comment "${ctaKeyword}" for the full guide`}
                 fontSize={26}
                 fontWeight={600}
-                color={BRAND.accent}
+                color={resolvedBrand.accent}
                 style={{ textAlign: "left" }}
               />
             </div>
@@ -113,5 +111,6 @@ export const StepFramework: React.FC<StepFrameworkProps> = ({
         <BrandFooter ctaText={ctaText} />
       </Sequence>
     </AbsoluteFill>
+    </BrandContext.Provider>
   );
 };

@@ -9,7 +9,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { BRAND } from "../styles/brand";
+import { useBrand } from "../styles/brand";
 
 interface Props {
   src: string;
@@ -23,6 +23,7 @@ export const ImageOverlay: React.FC<Props> = ({
   caption,
   zoomIntensity = 1.08,
 }) => {
+  const brand = useBrand();
   const frame = useCurrentFrame();
   const { durationInFrames } = useVideoConfig();
 
@@ -74,10 +75,10 @@ export const ImageOverlay: React.FC<Props> = ({
         <div
           style={{
             marginTop: 20,
-            fontFamily: BRAND.bodyFont,
+            fontFamily: brand.bodyFont,
             fontSize: 22,
             fontWeight: 600,
-            color: BRAND.textMuted,
+            color: brand.textMuted,
             textAlign: "center",
           }}
         >

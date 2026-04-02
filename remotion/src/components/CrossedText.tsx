@@ -4,7 +4,7 @@
  */
 import React from "react";
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
-import { BRAND } from "../styles/brand";
+import { useBrand } from "../styles/brand";
 
 interface Props {
   text: string;
@@ -17,6 +17,7 @@ export const CrossedText: React.FC<Props> = ({
   fontSize = 42,
   delay = 0,
 }) => {
+  const brand = useBrand();
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
@@ -49,10 +50,10 @@ export const CrossedText: React.FC<Props> = ({
     >
       <div
         style={{
-          fontFamily: BRAND.headingFont,
+          fontFamily: brand.headingFont,
           fontSize,
           fontWeight: 600,
-          color: BRAND.error,
+          color: brand.error,
           textAlign: "center",
           lineHeight: 1.4,
           opacity: textOpacity,
@@ -68,7 +69,7 @@ export const CrossedText: React.FC<Props> = ({
           left: "5%",
           height: 4,
           width: `${strikeWidth * 0.9}%`,
-          backgroundColor: BRAND.error,
+          backgroundColor: brand.error,
           borderRadius: 2,
           transform: "translateY(-50%)",
         }}

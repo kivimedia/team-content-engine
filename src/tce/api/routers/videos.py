@@ -342,6 +342,68 @@ async def stream_job_progress(
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
+# --- Product Demo ---
+
+
+class ProductDemoRequest(BaseModel):
+    product_name: str
+    product_tagline: str
+    product_features: list[str] = []
+    product_problem: str | None = None
+    demo_video_url: str | None = None
+    screenshot_urls: list[str] = []
+    cta_text: str = "zivraviv.com"
+
+
+@router.post("/product-demo")
+async def create_product_demo(
+    request: ProductDemoRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Generate a product demo video from product info.
+
+    Accepts product details and optional screen recordings/screenshots,
+    triggers the ProductDemo Remotion template via the pipeline.
+    """
+    context: dict[str, Any] = {
+        "product_name": request.product_name,
+        "product_tagline": request.product_tagline,
+        "product_features": request.product_features,
+        "product_problem": request.product_problem or "",
+        "demo_video_url": request.demo_video_url or "",
+        "screenshot_urls": request.screenshot_urls,
+        "cta_keyword": request.cta_text,
+        "story_brief": {
+            "thesis": request.product_tagline,
+            "topic": request.product_name,
+        },
+    }
+
+    steps = WORKFLOWS.get("product_demo") or WORKFLOWS["video_generation"]
+    run_id = uuid.uuid4()
+
+    async def _run() -> None:
+        from tce.db.session import async_session
+
+        async with async_session() as pipe_db:
+            orch = PipelineOrchestrator(
+                steps=steps,
+                db=pipe_db,
+                settings=settings,
+                run_id=run_id,
+            )
+            await orch.run(context)
+
+    asyncio.create_task(_run())
+
+    return {
+        "run_id": str(run_id),
+        "status": "started",
+        "product_name": request.product_name,
+        "status_url": f"/api/v1/pipeline/{run_id}/status",
+    }
+
+
 # --- Batch rendering ---
 
 

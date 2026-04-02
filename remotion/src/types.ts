@@ -3,11 +3,14 @@
  * These map 1:1 to the JSON payload the Python agent writes.
  */
 
+import type { BrandOverride } from "./styles/brand";
+
 /** Template 1: Hook Reel - animated thesis statement */
 export interface HookReelProps {
   thesis: string;
   attribution?: string;
   ctaText?: string;
+  brand?: BrandOverride;
 }
 
 /** Template 2: Stat Reveal - number count-up with claim */
@@ -17,6 +20,7 @@ export interface StatRevealProps {
   claimText: string;
   sourceText?: string;
   ctaText?: string;
+  brand?: BrandOverride;
 }
 
 /** Template 3: Before/After Split */
@@ -25,6 +29,7 @@ export interface BeforeAfterProps {
   before: string;
   after: string;
   ctaText?: string;
+  brand?: BrandOverride;
 }
 
 /** Template 4: Framework Steps */
@@ -33,6 +38,7 @@ export interface StepFrameworkProps {
   steps: Array<{ num: number; text: string }>;
   ctaText?: string;
   ctaKeyword?: string;
+  brand?: BrandOverride;
 }
 
 /** Template 5: Post Teaser */
@@ -41,6 +47,7 @@ export interface PostTeaserProps {
   platform: "linkedin" | "facebook";
   imageUrl?: string;
   ctaKeyword?: string;
+  brand?: BrandOverride;
 }
 
 /** Visual type for a narration segment */
@@ -68,4 +75,21 @@ export interface NarratedVideoProps {
   audioUrl: string;
   segments: NarrationSegment[];
   ctaText?: string;
+  brand?: BrandOverride;
+}
+
+/** Template 7: Product Demo - product showcase with screen recordings */
+export interface ProductDemoProps {
+  productName: string;
+  tagline: string;
+  scenes: Array<{
+    type: "title" | "problem" | "demo" | "features" | "stats" | "cta";
+    durationSec: number;
+    content: Record<string, unknown>;
+  }>;
+  demoVideoUrl?: string;
+  screenshotUrls?: string[];
+  audioUrl?: string;
+  ctaText: string;
+  brand?: BrandOverride;
 }

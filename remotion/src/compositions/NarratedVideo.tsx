@@ -13,16 +13,15 @@ import {
   staticFile,
   useVideoConfig,
 } from "remotion";
+import { resolveBrand, BrandContext } from "../styles/brand";
 import { BrandBackground } from "../components/BrandBackground";
 import { BrandFooter } from "../components/BrandFooter";
 import { SegmentRenderer } from "../components/SegmentRenderer";
 import type { NarratedVideoProps } from "../types";
 
-export const NarratedVideo: React.FC<NarratedVideoProps> = ({
-  audioUrl,
-  segments,
-  ctaText,
-}) => {
+export const NarratedVideo: React.FC<NarratedVideoProps> = (props) => {
+  const { audioUrl, segments, ctaText } = props;
+  const resolvedBrand = resolveBrand(props.brand);
   const { fps, durationInFrames } = useVideoConfig();
 
   // Resolve audio: if it looks like a URL, use directly; otherwise staticFile()
@@ -38,6 +37,7 @@ export const NarratedVideo: React.FC<NarratedVideoProps> = ({
   const showCta = ctaText && durationInFrames - lastSegEndFrame > fps; // at least 1s gap
 
   return (
+    <BrandContext.Provider value={resolvedBrand}>
     <AbsoluteFill>
       <BrandBackground variant="gradient" />
 
@@ -81,5 +81,6 @@ export const NarratedVideo: React.FC<NarratedVideoProps> = ({
         </Sequence>
       )}
     </AbsoluteFill>
+    </BrandContext.Provider>
   );
 };

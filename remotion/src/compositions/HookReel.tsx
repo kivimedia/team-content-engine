@@ -13,18 +13,17 @@ import { AccentLine } from "../components/AccentLine";
 import { AnimatedText } from "../components/AnimatedText";
 import { BrandBackground } from "../components/BrandBackground";
 import { BrandFooter } from "../components/BrandFooter";
-import { BRAND } from "../styles/brand";
+import { resolveBrand, BrandContext } from "../styles/brand";
 import type { HookReelProps } from "../types";
 
-export const HookReel: React.FC<HookReelProps> = ({
-  thesis,
-  attribution,
-  ctaText = "zivraviv.com",
-}) => {
+export const HookReel: React.FC<HookReelProps> = (props) => {
+  const { thesis, attribution, ctaText = "zivraviv.com" } = props;
+  const resolvedBrand = resolveBrand(props.brand);
   const { durationInFrames } = useVideoConfig();
-  const ctaDelay = durationInFrames - BRAND.fps * 2; // Show CTA 2s before end
+  const ctaDelay = durationInFrames - resolvedBrand.fps * 2; // Show CTA 2s before end
 
   return (
+    <BrandContext.Provider value={resolvedBrand}>
     <AbsoluteFill>
       <BrandBackground variant="gradient" />
 
@@ -51,7 +50,7 @@ export const HookReel: React.FC<HookReelProps> = ({
             text={thesis}
             fontSize={56}
             fontWeight={700}
-            color={BRAND.white}
+            color={resolvedBrand.white}
             wordByWord
             style={{
               maxWidth: 900,
@@ -67,7 +66,7 @@ export const HookReel: React.FC<HookReelProps> = ({
               text={attribution}
               fontSize={24}
               fontWeight={400}
-              color={BRAND.textMuted}
+              color={resolvedBrand.textMuted}
               style={{ letterSpacing: "0.03em" }}
             />
           </Sequence>
@@ -79,5 +78,6 @@ export const HookReel: React.FC<HookReelProps> = ({
         <BrandFooter ctaText={ctaText} />
       </Sequence>
     </AbsoluteFill>
+    </BrandContext.Provider>
   );
 };

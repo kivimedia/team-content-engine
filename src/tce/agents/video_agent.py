@@ -2,11 +2,14 @@
 
 Phase 2: Rule-based smart template selection. Picks the best templates
 based on which context keys have data, renders via subprocess bridge.
+Includes optional TTS voiceover via ElevenLabs and per-client brand injection.
 """
 
 from __future__ import annotations
 
 import re
+import shutil
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -131,6 +134,73 @@ def _extract_hook(context: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _build_product_demo_props(
+    context: dict[str, Any], cta: str
+) -> dict[str, Any] | None:
+    """Build ProductDemo props from context.
+
+    Expects: product_name, product_tagline, and optionally
+    product_features, demo_video_url, screenshot_urls.
+    """
+    product_name = context.get("product_name", "")
+    tagline = context.get("product_tagline", "")
+    if not product_name or not tagline:
+        return None
+
+    features = context.get("product_features") or []
+    demo_url = context.get("demo_video_url", "")
+    screenshots = context.get("screenshot_urls") or []
+    problem_text = context.get("product_problem", "")
+
+    scenes: list[dict[str, Any]] = []
+
+    # Title scene (always)
+    scenes.append({"type": "title", "durationSec": 4, "content": {}})
+
+    # Problem scene (if provided)
+    if problem_text:
+        scenes.append({
+            "type": "problem",
+            "durationSec": 4,
+            "content": {"text": problem_text},
+        })
+
+    # Demo scene (if video or screenshots provided)
+    if demo_url:
+        scenes.append({
+            "type": "demo",
+            "durationSec": 8,
+            "content": {"src": demo_url, "isVideo": True, "urlText": product_name.lower() + ".com"},
+        })
+    elif screenshots:
+        for i, ss_url in enumerate(screenshots[:3]):
+            scenes.append({
+                "type": "demo",
+                "durationSec": 5,
+                "content": {"src": ss_url, "urlText": product_name.lower() + ".com"},
+            })
+
+    # Features scene
+    if features:
+        scenes.append({
+            "type": "features",
+            "durationSec": 6,
+            "content": {"title": "Key Features", "features": features[:5]},
+        })
+
+    # CTA scene (always)
+    scenes.append({"type": "cta", "durationSec": 4, "content": {}})
+
+    return {
+        "productName": product_name,
+        "tagline": tagline,
+        "scenes": scenes,
+        "demoVideoUrl": demo_url or None,
+        "screenshotUrls": screenshots or None,
+        "ctaText": cta,
+    }
+
+
 @register_agent
 class VideoAgent(AgentBase):
     """Renders video assets from pipeline context using smart template selection."""
@@ -210,6 +280,15 @@ class VideoAgent(AgentBase):
             renders.append(("post_teaser", teaser_props))
             renders.append(("post_teaser_square", teaser_props))
 
+        # Product demo: if context has product info
+        product_name = context.get("product_name")
+        product_tagline = context.get("product_tagline")
+        if product_name and product_tagline:
+            demo_props = _build_product_demo_props(context, cta)
+            if demo_props:
+                renders.append(("product_demo", demo_props))
+                renders.append(("product_demo_landscape", demo_props))
+
         return renders
 
     def _build_props_for_template(
@@ -286,6 +365,109 @@ class VideoAgent(AgentBase):
 
         return None
 
+    async def _generate_voiceover(
+        self, context: dict[str, Any]
+    ) -> tuple[str, list[dict[str, Any]]] | None:
+        """Generate TTS voiceover if narration_script exists and ElevenLabs is configured.
+
+        Returns (audio_url_for_remotion, timed_segments) or None if TTS unavailable.
+        """
+        narration = context.get("narration_script")
+        if not narration or not isinstance(narration, dict):
+            return None
+
+        segments = narration.get("segments", [])
+        if not segments:
+            return None
+
+        api_key = self.settings.elevenlabs_api_key
+        if not api_key:
+            self._report("ElevenLabs not configured - skipping voiceover")
+            return None
+
+        from tce.services.tts import TTSService
+
+        # Check for per-client voice config from brand profile
+        voice_config = context.get("_brand_voice_config")
+        voice_id = (
+            (voice_config or {}).get("elevenlabs_voice_id")
+            or self.settings.elevenlabs_voice_id
+        )
+
+        tts = TTSService(
+            api_key=api_key,
+            voice_id=voice_id,
+            model=self.settings.elevenlabs_model,
+            output_dir=self.settings.audio_upload_dir,
+        )
+
+        self._report("Generating voiceover via ElevenLabs...")
+        result, timed_segments = await tts.generate_with_timestamps(
+            segments,
+            voice_config=voice_config,
+            run_id=self.run_id,
+        )
+        self._report(
+            f"Voiceover generated: {result.duration_seconds:.1f}s, "
+            f"${result.cost_estimate_usd:.3f}"
+        )
+
+        # Copy MP3 to Remotion's public/audio/ for staticFile() serving
+        remotion_path = Path(
+            self.settings.remotion_project_path
+            or (Path(__file__).resolve().parents[3] / "remotion")
+        )
+        audio_dest = remotion_path / "public" / "audio"
+        audio_dest.mkdir(parents=True, exist_ok=True)
+        dest_file = audio_dest / f"{self.run_id or 'voiceover'}.mp3"
+        await __import__("asyncio").to_thread(
+            shutil.copy2, result.file_path, str(dest_file)
+        )
+
+        # Return the Remotion-relative audio URL
+        audio_url = f"audio/{dest_file.name}"
+        return audio_url, timed_segments
+
+    async def _load_brand(self, context: dict[str, Any]) -> dict[str, Any] | None:
+        """Load brand profile for the current creator from DB.
+
+        Returns brand override dict for Remotion props, or None.
+        """
+        if not self.db:
+            return None
+
+        try:
+            from sqlalchemy import select
+            from tce.models.brand_profile import BrandProfile
+
+            # Try creator-specific brand first
+            creator_name = context.get("creator_name", "")
+            stmt = select(BrandProfile).order_by(BrandProfile.created_at.desc()).limit(1)
+            result = await self.db.execute(stmt)
+            brand = result.scalar_one_or_none()
+
+            if not brand:
+                return None
+
+            brand_override = {}
+            if brand.colors:
+                brand_override.update(brand.colors)
+            if brand.fonts:
+                brand_override["headingFont"] = brand.fonts.get("heading", "")
+                brand_override["bodyFont"] = brand.fonts.get("body", "")
+            if brand.logo_url:
+                brand_override["logoUrl"] = brand.logo_url
+
+            # Store voice config in context for TTS
+            if brand.voice_config:
+                context["_brand_voice_config"] = brand.voice_config
+
+            return brand_override if brand_override else None
+        except Exception:
+            # BrandProfile table might not exist yet
+            logger.debug("video_agent.brand_load_skipped")
+            return None
+
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         svc = VideoRenderService(
             remotion_path=self.settings.remotion_project_path or "",
@@ -294,7 +476,31 @@ class VideoAgent(AgentBase):
             max_render_seconds=self.settings.video_max_render_seconds,
         )
 
+        # Load per-client brand (if available)
+        brand_override = await self._load_brand(context)
+
+        # Generate voiceover (if narration_script exists and ElevenLabs configured)
+        voiceover_result = await self._generate_voiceover(context)
+
         renders = self._select_templates(context)
+
+        # If we have voiceover, add NarratedVideo renders
+        if voiceover_result:
+            audio_url, timed_segments = voiceover_result
+            cta = context.get("cta_keyword") or context.get("weekly_keyword") or "zivraviv.com"
+            narrated_props: dict[str, Any] = {
+                "audioUrl": audio_url,
+                "segments": timed_segments,
+                "ctaText": cta,
+            }
+            renders.append(("narrated_video", narrated_props))
+            renders.append(("narrated_video_square", narrated_props))
+
+        # Inject brand override into all render props
+        if brand_override:
+            for i, (tpl_name, props) in enumerate(renders):
+                props["brand"] = brand_override
+                renders[i] = (tpl_name, props)
 
         # Log what was selected
         for tpl_name, _ in renders:

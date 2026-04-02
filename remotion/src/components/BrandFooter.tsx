@@ -1,6 +1,6 @@
 import React from "react";
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
-import { BRAND } from "../styles/brand";
+import { useBrand } from "../styles/brand";
 
 interface Props {
   ctaText?: string;
@@ -11,6 +11,7 @@ export const BrandFooter: React.FC<Props> = ({
   ctaText = "zivraviv.com",
   delay = 0,
 }) => {
+  const brand = useBrand();
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
@@ -42,16 +43,16 @@ export const BrandFooter: React.FC<Props> = ({
         style={{
           width: 60,
           height: 3,
-          backgroundColor: BRAND.accent,
+          backgroundColor: brand.accent,
           borderRadius: 2,
         }}
       />
       <div
         style={{
-          fontFamily: BRAND.bodyFont,
+          fontFamily: brand.bodyFont,
           fontSize: 28,
           fontWeight: 600,
-          color: BRAND.accent,
+          color: brand.accent,
           letterSpacing: "0.05em",
         }}
       >

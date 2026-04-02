@@ -4,7 +4,7 @@
  */
 import React from "react";
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
-import { BRAND } from "../styles/brand";
+import { useBrand } from "../styles/brand";
 
 interface Props {
   num: number;
@@ -19,6 +19,7 @@ export const StepCard: React.FC<Props> = ({
   delay = 0,
   isLast = false,
 }) => {
+  const brand = useBrand();
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
@@ -46,15 +47,15 @@ export const StepCard: React.FC<Props> = ({
           minWidth: 56,
           height: 56,
           borderRadius: 28,
-          backgroundColor: isLast ? BRAND.accent : "rgba(46, 163, 242, 0.2)",
-          border: `2px solid ${BRAND.accent}`,
+          backgroundColor: isLast ? brand.accent : "rgba(46, 163, 242, 0.2)",
+          border: `2px solid ${brand.accent}`,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          fontFamily: BRAND.headingFont,
+          fontFamily: brand.headingFont,
           fontSize: 26,
           fontWeight: 800,
-          color: isLast ? BRAND.white : BRAND.accent,
+          color: isLast ? brand.white : brand.accent,
         }}
       >
         {num}
@@ -63,10 +64,10 @@ export const StepCard: React.FC<Props> = ({
       {/* Step text */}
       <div
         style={{
-          fontFamily: BRAND.headingFont,
+          fontFamily: brand.headingFont,
           fontSize: 34,
           fontWeight: 500,
-          color: BRAND.white,
+          color: brand.white,
           lineHeight: 1.4,
           flex: 1,
           paddingTop: 8,

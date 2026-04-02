@@ -34,6 +34,12 @@ DAILY_CONTENT_WORKFLOW = [
         timeout_seconds=120,
         optional=True,
     ),
+    PipelineStep(
+        agent_name="video_agent",
+        depends_on=["script_agent", "creative_director"],
+        timeout_seconds=600,
+        optional=True,
+    ),
 ]
 
 # Corpus ingestion workflow (PRD Section 15.1)
@@ -121,6 +127,12 @@ DAILY_FROM_PLAN_WORKFLOW = [
         timeout_seconds=120,
         optional=True,
     ),
+    PipelineStep(
+        agent_name="video_agent",
+        depends_on=["script_agent", "creative_director"],
+        timeout_seconds=600,
+        optional=True,
+    ),
 ]
 
 # Guide-only workflow (after all 5 days are generated)
@@ -159,6 +171,21 @@ VIDEO_GENERATION_WORKFLOW = [
     ),
 ]
 
+# Product demo workflow - script + render for product showcase videos
+PRODUCT_DEMO_WORKFLOW = [
+    PipelineStep(
+        agent_name="script_agent",
+        depends_on=[],
+        timeout_seconds=120,
+        optional=True,
+    ),
+    PipelineStep(
+        agent_name="video_agent",
+        depends_on=["script_agent"],
+        timeout_seconds=600,
+    ),
+]
+
 # Workflow registry
 WORKFLOWS: dict[str, list[PipelineStep]] = {
     "daily_content": DAILY_CONTENT_WORKFLOW,
@@ -172,4 +199,5 @@ WORKFLOWS: dict[str, list[PipelineStep]] = {
     "guide_only": GUIDE_ONLY_WORKFLOW,
     "polish_from_copy": POLISH_FROM_COPY_WORKFLOW,
     "video_generation": VIDEO_GENERATION_WORKFLOW,
+    "product_demo": PRODUCT_DEMO_WORKFLOW,
 }

@@ -1,6 +1,6 @@
 import React from "react";
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
-import { BRAND } from "../styles/brand";
+import { useBrand } from "../styles/brand";
 
 interface Props {
   text: string;
@@ -16,12 +16,14 @@ interface Props {
 export const AnimatedText: React.FC<Props> = ({
   text,
   fontSize = 64,
-  color = BRAND.white,
+  color,
   fontWeight = 700,
   delay = 0,
   style,
   wordByWord = false,
 }) => {
+  const brand = useBrand();
+  const resolvedColor = color ?? brand.white;
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
@@ -51,10 +53,10 @@ export const AnimatedText: React.FC<Props> = ({
             <span
               key={i}
               style={{
-                fontFamily: BRAND.headingFont,
+                fontFamily: brand.headingFont,
                 fontSize,
                 fontWeight,
-                color,
+                color: resolvedColor,
                 opacity,
                 transform: `translateY(${y}px)`,
                 display: "inline-block",
@@ -80,10 +82,10 @@ export const AnimatedText: React.FC<Props> = ({
   return (
     <div
       style={{
-        fontFamily: BRAND.headingFont,
+        fontFamily: brand.headingFont,
         fontSize,
         fontWeight,
-        color,
+        color: resolvedColor,
         opacity,
         transform: `translateY(${y}px)`,
         textAlign: "center",

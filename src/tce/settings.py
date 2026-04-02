@@ -74,5 +74,10 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     audio_upload_dir: str = str(_TMPDIR / "tce-audio")
 
+    # ElevenLabs TTS (voiceover generation)
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = ""  # Default voice ID for narrations
+    elevenlabs_model: str = "eleven_multilingual_v2"
+
 
 settings = Settings()

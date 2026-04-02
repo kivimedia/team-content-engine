@@ -18,19 +18,17 @@ import { BrandBackground } from "../components/BrandBackground";
 import { BrandFooter } from "../components/BrandFooter";
 import { CrossedText } from "../components/CrossedText";
 import { RevealText } from "../components/RevealText";
-import { BRAND } from "../styles/brand";
+import { resolveBrand, BrandContext } from "../styles/brand";
 import type { BeforeAfterProps } from "../types";
 
-export const BeforeAfter: React.FC<BeforeAfterProps> = ({
-  title,
-  before,
-  after,
-  ctaText = "zivraviv.com",
-}) => {
+export const BeforeAfter: React.FC<BeforeAfterProps> = (props) => {
+  const { title, before, after, ctaText = "zivraviv.com" } = props;
+  const resolvedBrand = resolveBrand(props.brand);
   const { durationInFrames } = useVideoConfig();
-  const ctaDelay = durationInFrames - BRAND.fps * 2;
+  const ctaDelay = durationInFrames - resolvedBrand.fps * 2;
 
   return (
+    <BrandContext.Provider value={resolvedBrand}>
     <AbsoluteFill>
       <BrandBackground variant="gradient" />
 
@@ -49,10 +47,10 @@ export const BeforeAfter: React.FC<BeforeAfterProps> = ({
           <Sequence from={5}>
             <div
               style={{
-                fontFamily: BRAND.bodyFont,
+                fontFamily: resolvedBrand.bodyFont,
                 fontSize: 22,
                 fontWeight: 600,
-                color: BRAND.textMuted,
+                color: resolvedBrand.textMuted,
                 textTransform: "uppercase",
                 letterSpacing: "0.15em",
               }}
@@ -66,10 +64,10 @@ export const BeforeAfter: React.FC<BeforeAfterProps> = ({
         <Sequence from={15}>
           <div
             style={{
-              fontFamily: BRAND.bodyFont,
+              fontFamily: resolvedBrand.bodyFont,
               fontSize: 18,
               fontWeight: 700,
-              color: BRAND.error,
+              color: resolvedBrand.error,
               textTransform: "uppercase",
               letterSpacing: "0.2em",
             }}
@@ -96,10 +94,10 @@ export const BeforeAfter: React.FC<BeforeAfterProps> = ({
         <Sequence from={95}>
           <div
             style={{
-              fontFamily: BRAND.bodyFont,
+              fontFamily: resolvedBrand.bodyFont,
               fontSize: 18,
               fontWeight: 700,
-              color: BRAND.accent,
+              color: resolvedBrand.accent,
               textTransform: "uppercase",
               letterSpacing: "0.2em",
             }}
@@ -121,5 +119,6 @@ export const BeforeAfter: React.FC<BeforeAfterProps> = ({
         <BrandFooter ctaText={ctaText} />
       </Sequence>
     </AbsoluteFill>
+    </BrandContext.Provider>
   );
 };

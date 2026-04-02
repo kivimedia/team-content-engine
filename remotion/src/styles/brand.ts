@@ -1,7 +1,12 @@
 /**
  * Brand constants - single source of truth for all video templates.
  * Derived from zivraviv.com live CSS.
+ *
+ * Per-client overrides: Pass a `brand` prop to any composition.
+ * Components read from BrandContext (falls back to these defaults).
  */
+import React from "react";
+
 export const BRAND = {
   // Colors
   accent: "#2ea3f2",
@@ -47,3 +52,47 @@ export const ANIM = {
   /** CTA hold duration at end (seconds) */
   ctaHoldSeconds: 2,
 } as const;
+
+/** Shape of per-client brand override (all fields optional). */
+export interface BrandOverride {
+  accent?: string;
+  accentDark?: string;
+  dark?: string;
+  overlay?: string;
+  text?: string;
+  textMuted?: string;
+  white?: string;
+  offWhite?: string;
+  error?: string;
+  success?: string;
+  gradientDark?: string;
+  gradientAccent?: string;
+  headingFont?: string;
+  bodyFont?: string;
+  logoUrl?: string;
+}
+
+/** Resolved brand values (BRAND defaults + overrides). */
+export type ResolvedBrand = typeof BRAND & { logoUrl?: string };
+
+/**
+ * React Context that carries the active brand.
+ * Default = the hardcoded BRAND constants.
+ */
+export const BrandContext = React.createContext<ResolvedBrand>({ ...BRAND });
+
+/** Merge overrides on top of BRAND defaults. */
+export function resolveBrand(overrides?: BrandOverride): ResolvedBrand {
+  if (!overrides) return { ...BRAND };
+  return {
+    ...BRAND,
+    ...Object.fromEntries(
+      Object.entries(overrides).filter(([, v]) => v !== undefined && v !== "")
+    ),
+  } as ResolvedBrand;
+}
+
+/** Hook to read the active brand from context. */
+export function useBrand(): ResolvedBrand {
+  return React.useContext(BrandContext);
+}

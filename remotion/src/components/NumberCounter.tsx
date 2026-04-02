@@ -1,6 +1,6 @@
 import React from "react";
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
-import { BRAND } from "../styles/brand";
+import { useBrand } from "../styles/brand";
 
 interface Props {
   value: number;
@@ -16,10 +16,12 @@ export const NumberCounter: React.FC<Props> = ({
   value,
   suffix = "",
   fontSize = 120,
-  color = BRAND.accent,
+  color,
   delay = 0,
   countFrames = 45,
 }) => {
+  const brand = useBrand();
+  const resolvedColor = color ?? brand.accent;
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
@@ -45,10 +47,10 @@ export const NumberCounter: React.FC<Props> = ({
   return (
     <div
       style={{
-        fontFamily: BRAND.headingFont,
+        fontFamily: brand.headingFont,
         fontSize,
         fontWeight: 800,
-        color,
+        color: resolvedColor,
         opacity,
         transform: `scale(${scale})`,
         textAlign: "center",

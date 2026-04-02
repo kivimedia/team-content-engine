@@ -4,7 +4,7 @@
  */
 import React from "react";
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
-import { BRAND } from "../styles/brand";
+import { useBrand } from "../styles/brand";
 
 interface Props {
   text: string;
@@ -17,6 +17,7 @@ export const RevealText: React.FC<Props> = ({
   fontSize = 46,
   delay = 0,
 }) => {
+  const brand = useBrand();
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
@@ -32,10 +33,10 @@ export const RevealText: React.FC<Props> = ({
   return (
     <div
       style={{
-        fontFamily: BRAND.headingFont,
+        fontFamily: brand.headingFont,
         fontSize,
         fontWeight: 700,
-        color: BRAND.accent,
+        color: brand.accent,
         textAlign: "center",
         lineHeight: 1.4,
         opacity,
