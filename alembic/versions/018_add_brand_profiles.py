@@ -1,7 +1,7 @@
 """Add brand_profiles table.
 
-Revision ID: 018_add_brand_profiles
-Revises: 017_add_4week_planner_tables
+Revision ID: 018
+Revises: 017
 Create Date: 2026-04-02
 """
 
@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = "018_add_brand_profiles"
-down_revision = "017_add_4week_planner_tables"
+revision = "018"
+down_revision = "017"
 branch_labels = None
 depends_on = None
 
