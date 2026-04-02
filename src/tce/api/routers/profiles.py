@@ -1,4 +1,4 @@
-"""Creator and founder voice profile endpoints."""
+"""Creator, founder voice, and brand profile endpoints."""
 
 import asyncio
 import json
@@ -6,10 +6,11 @@ import uuid
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import get_db
+from tce.models.brand_profile import BrandProfile
 from tce.models.creator_profile import CreatorProfile
 from tce.models.founder_voice_profile import FounderVoiceProfile
 from tce.models.post_example import PostExample
@@ -40,10 +41,22 @@ async def create_creator(
     return profile
 
 
-@router.get("/creators", response_model=list[CreatorProfileRead])
-async def list_creators(db: AsyncSession = Depends(get_db)) -> list[CreatorProfile]:
+@router.get("/creators")
+async def list_creators(db: AsyncSession = Depends(get_db)) -> list[dict]:
     result = await db.execute(select(CreatorProfile).order_by(CreatorProfile.creator_name))
-    return list(result.scalars().all())
+    creators = list(result.scalars().all())
+    # Get post counts per creator in one query
+    count_result = await db.execute(
+        select(PostExample.creator_id, func.count(PostExample.id))
+        .group_by(PostExample.creator_id)
+    )
+    post_counts = dict(count_result.all())
+    out = []
+    for c in creators:
+        d = CreatorProfileRead.model_validate(c).model_dump(mode="json")
+        d["post_count"] = post_counts.get(c.id, 0)
+        out.append(d)
+    return out
 
 
 @router.get("/creators/{creator_id}", response_model=CreatorProfileRead)
@@ -163,6 +176,12 @@ async def analyze_creator_voice(
             status_code=500,
             detail="Failed to parse voice analysis",
         )
+
+    # Handle list-wrapped response from LLM
+    if isinstance(analysis, list) and len(analysis) > 0:
+        analysis = analysis[0]
+    if not isinstance(analysis, dict):
+        raise HTTPException(status_code=500, detail="Unexpected analysis format")
 
     profile.voice_axes = analysis.get("voice_axes")
     profile.top_patterns = analysis.get("top_patterns")
@@ -297,3 +316,78 @@ async def update_founder_voice(
     await db.flush()
     await db.refresh(profile)
     return {"id": str(profile.id), "updated": list(body.keys())}
+
+
+# --- Brand Profiles ---
+
+
+def _brand_to_dict(b: BrandProfile) -> dict:
+    return {
+        "id": str(b.id),
+        "creator_profile_id": str(b.creator_profile_id) if b.creator_profile_id else None,
+        "name": b.name,
+        "colors": b.colors,
+        "fonts": b.fonts,
+        "logo_url": b.logo_url,
+        "voice_config": b.voice_config,
+        "description": b.description,
+        "created_at": b.created_at.isoformat() if b.created_at else None,
+        "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+    }
+
+
+@router.get("/brands")
+async def list_brands(db: AsyncSession = Depends(get_db)) -> list[dict]:
+    result = await db.execute(select(BrandProfile).order_by(BrandProfile.name))
+    return [_brand_to_dict(b) for b in result.scalars().all()]
+
+
+@router.post("/brands")
+async def create_brand(body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    brand = BrandProfile(
+        name=body.get("name", "Untitled Brand"),
+        colors=body.get("colors"),
+        fonts=body.get("fonts"),
+        logo_url=body.get("logo_url"),
+        voice_config=body.get("voice_config"),
+        description=body.get("description"),
+        creator_profile_id=uuid.UUID(body["creator_profile_id"]) if body.get("creator_profile_id") else None,
+    )
+    db.add(brand)
+    await db.flush()
+    await db.refresh(brand)
+    return _brand_to_dict(brand)
+
+
+@router.get("/brands/{brand_id}")
+async def get_brand(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    brand = await db.get(BrandProfile, brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    return _brand_to_dict(brand)
+
+
+@router.patch("/brands/{brand_id}")
+async def update_brand(brand_id: uuid.UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    brand = await db.get(BrandProfile, brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    allowed = {"name", "colors", "fonts", "logo_url", "voice_config", "description", "creator_profile_id"}
+    for key, val in body.items():
+        if key in allowed:
+            if key == "creator_profile_id" and val:
+                val = uuid.UUID(val)
+            setattr(brand, key, val)
+    await db.flush()
+    await db.refresh(brand)
+    return _brand_to_dict(brand)
+
+
+@router.delete("/brands/{brand_id}")
+async def delete_brand(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    brand = await db.get(BrandProfile, brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    await db.delete(brand)
+    await db.flush()
+    return {"deleted": str(brand_id)}

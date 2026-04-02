@@ -258,6 +258,7 @@ img{background:var(--card);border-radius:4px}
 @keyframes bounce-dot{0%,100%{transform:scale(1)}50%{transform:scale(1.4)}}
 @keyframes pulse-slow{0%,100%{opacity:1}50%{opacity:0.5}}
 @keyframes shimmer{from{background-position:-200px 0}to{background-position:200px 0}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
 .shimmer{background:linear-gradient(90deg,transparent 0%,hsl(174 72% 52% / 0.08) 50%,transparent 100%);background-size:200px 100%;animation:shimmer 2s infinite}
 @keyframes scale-in{from{transform:scaleY(0)}to{transform:scaleY(1)}}
 
@@ -267,11 +268,56 @@ img{background:var(--card);border-radius:4px}
 ::-webkit-scrollbar-thumb{background:hsl(220 14% 22%);border-radius:4px}
 ::-webkit-scrollbar-thumb:hover{background:hsl(220 14% 28%)}
 
+/* === OPTION CARDS (Plan Review) === */
+.option-cards{display:flex;gap:8px;margin-top:8px}
+.option-card{flex:1;padding:12px;border:2px solid var(--border);border-radius:8px;cursor:pointer;transition:all 0.15s;background:var(--bg);position:relative}
+.option-card:hover{border-color:var(--primary);background:hsl(174 72% 52% / 0.03)}
+.option-card.selected{border-color:var(--primary);background:var(--primary-dim);box-shadow:0 0 8px hsl(174 72% 52% / 0.15)}
+.option-card .opt-rank{position:absolute;top:8px;right:8px;font-size:10px;color:var(--dim);font-family:'JetBrains Mono',monospace}
+.option-card.selected .opt-rank{color:var(--primary);font-weight:700}
+.option-card .opt-topic{font-size:13px;font-weight:600;line-height:1.4;margin-bottom:6px}
+.option-card .opt-thesis{font-size:12px;color:var(--dim);line-height:1.4;margin-bottom:6px}
+.option-card .opt-meta{font-size:11px;color:var(--muted)}
+.guide-opt-cards{display:flex;gap:10px;margin-top:10px}
+.guide-opt-card{flex:1;padding:14px;border:2px solid var(--border);border-radius:8px;cursor:pointer;transition:all 0.15s;background:var(--bg)}
+.guide-opt-card:hover{border-color:var(--green)}
+.guide-opt-card.selected{border-color:var(--green);background:rgba(34,197,94,0.06);box-shadow:0 0 8px rgba(34,197,94,0.15)}
+.guide-opt-card .go-title{font-size:14px;font-weight:600;margin-bottom:4px}
+.guide-opt-card .go-sub{font-size:12px;color:var(--dim);margin-bottom:6px}
+.guide-opt-card .go-sections{font-size:11px;color:var(--muted)}
+
+/* === WEEK BUILDER === */
+.wb-layout{display:flex;gap:20px;margin:16px 0;min-height:600px}
+.wb-slots{flex:0 0 340px;display:flex;flex-direction:column;gap:8px;position:sticky;top:16px;align-self:flex-start}
+.wb-slot{background:var(--gradient-card);border:2px dashed var(--border);border-radius:8px;padding:14px;min-height:80px;transition:all 0.15s}
+.wb-slot.filled{border-style:solid;border-color:var(--primary)}
+.wb-slot.drag-over{border-color:var(--success);background:hsl(150 60% 45% / 0.05)}
+.wb-slot .ws-label{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px}
+.wb-slot .ws-topic{font-size:13px;font-weight:600;line-height:1.4}
+.wb-slot .ws-angle{font-size:10px;padding:2px 6px;border-radius:4px;display:inline-block;font-weight:600;font-family:'JetBrains Mono',monospace;margin-top:4px}
+.wb-slot .ws-empty{color:var(--muted);font-size:12px;font-style:italic}
+.wb-slot .ws-remove{background:none;border:none;color:var(--destructive);cursor:pointer;font-size:11px;float:right;padding:2px 6px;opacity:0.6}
+.wb-slot .ws-remove:hover{opacity:1}
+.wb-pool{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding-right:4px}
+.wb-pool-card{background:var(--gradient-card);border:1px solid var(--border);border-radius:8px;padding:14px;cursor:grab;transition:all 0.15s;user-select:none}
+.wb-pool-card:hover{border-color:var(--border-hover);transform:translateX(2px)}
+.wb-pool-card.dragging{opacity:0.3}
+.wb-pool-card.used{opacity:0.35;pointer-events:none;border-style:dashed}
+.wb-pool-card .pc-topic{font-size:14px;font-weight:600;line-height:1.4;margin-bottom:4px}
+.wb-pool-card .pc-thesis{font-size:12px;color:var(--dim);line-height:1.4;margin-bottom:6px}
+.wb-pool-card .pc-meta{font-size:11px;color:var(--muted);display:flex;gap:12px;flex-wrap:wrap}
+.wb-pool-card .pc-angle{font-size:10px;padding:2px 8px;border-radius:4px;display:inline-block;font-weight:600;font-family:'JetBrains Mono',monospace}
+
+/* === ELEMENT FEEDBACK === */
+.el-fb-btn{background:none;border:none;color:var(--dim);cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px;transition:all 0.15s;opacity:0.6}
+.el-fb-btn:hover{opacity:1;color:var(--primary);background:var(--primary-dim)}
+.el-fb-popover{position:absolute;z-index:200;background:var(--card);border:1px solid var(--primary);border-radius:8px;padding:12px;width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
+
 /* === RESPONSIVE === */
 @media(max-width:1024px){.sidebar{width:var(--sidebar-collapsed)}.sidebar .label{opacity:0;width:0}.sidebar-group-label{opacity:0;height:8px;padding:4px 0}}
-@media(max-width:900px){.week-grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:900px){.week-grid{grid-template-columns:repeat(3,1fr)}.month-grid{grid-template-columns:60px repeat(3,1fr)}}
 @media(max-width:768px){.sidebar{display:none}.search-input{width:150px}.search-input:focus{width:250px}}
-@media(max-width:600px){.week-grid{grid-template-columns:1fr}}
+@media(max-width:600px){.week-grid{grid-template-columns:1fr}.option-cards{flex-direction:column}.guide-opt-cards{flex-direction:column}}
 </style>
 </head>
 <body>
@@ -285,6 +331,7 @@ img{background:var(--card);border-radius:4px}
       <div class="sidebar-group">
         <div class="sidebar-group-label">Plan</div>
         <button class="sidebar-item active" data-tab="week"><span class="icon">&#128197;</span><span class="label">Week Planner</span></button>
+        <button class="sidebar-item" data-tab="builder"><span class="icon">&#128296;</span><span class="label">Week Builder</span></button>
         <button class="sidebar-item" data-tab="guides"><span class="icon">&#128214;</span><span class="label">Guides</span></button>
         <button class="sidebar-item" data-tab="trends"><span class="icon">&#128200;</span><span class="label">Trends</span></button>
       </div>
@@ -294,12 +341,14 @@ img{background:var(--card);border-radius:4px}
         <button class="sidebar-item" data-tab="generate"><span class="icon">&#9889;</span><span class="label">Generate</span></button>
         <button class="sidebar-item" data-tab="packages"><span class="icon">&#128230;</span><span class="label">Packages</span></button>
         <button class="sidebar-item" data-tab="templates"><span class="icon">&#128196;</span><span class="label">Templates</span></button>
+        <button class="sidebar-item" data-tab="product-demo"><span class="icon">&#127916;</span><span class="label">Product Demo</span></button>
       </div>
       <div class="sidebar-group">
         <div class="sidebar-group-label">Knowledge</div>
         <button class="sidebar-item" data-tab="corpus"><span class="icon">&#128218;</span><span class="label">Corpus</span></button>
         <button class="sidebar-item" data-tab="voice"><span class="icon">&#127908;</span><span class="label">Voice Profile</span></button>
         <button class="sidebar-item" data-tab="creators"><span class="icon">&#128101;</span><span class="label">Creators</span></button>
+        <button class="sidebar-item" data-tab="brands"><span class="icon">&#127912;</span><span class="label">Brands</span></button>
         <button class="sidebar-item" data-tab="chat"><span class="icon">&#128172;</span><span class="label">Chat</span></button>
       </div>
       <div class="sidebar-group">
@@ -361,11 +410,12 @@ const AGENT_LABELS = {
 
 // Tab labels for header
 const TAB_LABELS = {
-  week: 'Week Planner', guides: 'Guides', topic: 'Start from Topic', generate: 'Generate', packages: 'Packages',
+  week: 'Week Planner', builder: 'Week Builder', guides: 'Guides', topic: 'Start from Topic', generate: 'Generate', packages: 'Packages',
   corpus: 'Corpus', voice: 'Voice Profile', creators: 'Creators',
   agents: 'Agents', costs: 'Costs', analytics: 'Analytics',
   templates: 'Templates', prompts: 'Prompts', settings: 'Settings',
-  chat: 'Chat', trends: 'Trends', help: 'Help'
+  chat: 'Chat', trends: 'Trends', help: 'Help',
+  'product-demo': 'Product Demo', brands: 'Brands'
 };
 
 // Sidebar toggle
@@ -473,6 +523,7 @@ function fmtDate(d) {
 }
 
 let weekOffset = 0;
+let _weekEntries = {}; // calendar entries by day index, cached during renderWeek
 
 async function renderWeek() {
   const app = document.getElementById('app');
@@ -527,6 +578,13 @@ async function renderWeek() {
     const entries = await api('/calendar/?start=' + fmtDate(monday) + '&end=' + fmtDate(friday));
     const byDate = {};
     entries.forEach(e => byDate[e.date] = e);
+    // Cache entries by day index for runDayPipeline to use plan_context
+    _weekEntries = {};
+    for (let i = 0; i < 5; i++) {
+      const d = new Date(monday); d.setDate(d.getDate() + i);
+      const e = byDate[fmtDate(d)];
+      if (e) _weekEntries[i] = e;
+    }
 
     // Show persistent weekly plan summary if any entry has _weekly metadata
     const weeklyMeta = entries.find(e => e.plan_context?._weekly)?.plan_context?._weekly;
@@ -640,6 +698,20 @@ async function renderWeek() {
   } catch (e) {
     document.getElementById('week-grid').innerHTML = '<div class="empty" style="grid-column:1/-1">Error loading calendar: ' + e.message + '</div>';
   }
+
+  // Resume day regen polling if active (survives page refresh)
+  try {
+    const savedRegen = localStorage.getItem('tce_day_regen');
+    if (savedRegen) {
+      const regenState = JSON.parse(savedRegen);
+      // Only resume if started less than 10 minutes ago
+      if (regenState.runId && (Date.now() - regenState.startTime) < 600000) {
+        _startDayRegenPoll(regenState);
+      } else {
+        localStorage.removeItem('tce_day_regen');
+      }
+    }
+  } catch {}
 
   // Render generate-all progress bar if active
   renderGenAllProgress();
@@ -935,15 +1007,31 @@ async function backfillHooks(btn) {
   }
 }
 
+// Track selected options per day and selected guide
+let _selectedOptions = {}; // { dayIdx: optionIdx }
+let _selectedGuide = 0;
+let _planDaysData = []; // raw days data from planner
+let _planGuideOptions = []; // raw guide options
+
 function showPlanReview(planData, mondayStr) {
   const wp = planData.weekly_plan || {};
   const days = wp.days || [];
   const trends = planData.trend_summary || [];
+  const guideOptions = wp.guide_options || [];
+  // Backward compat: old format has gift_theme instead of guide_options
   const giftTheme = wp.gift_theme || {};
   const giftTitle = typeof giftTheme === 'string' ? giftTheme : (giftTheme.title || '');
   const giftSubtitle = typeof giftTheme === 'string' ? '' : (giftTheme.subtitle || '');
   const giftSections = wp.gift_sections || [];
-  approvedPlan = { weekly_theme: wp.weekly_theme || '', gift_theme: giftTheme, cta_keyword: wp.cta_keyword || '', days: days };
+
+  _planDaysData = days;
+  _planGuideOptions = guideOptions;
+  _selectedOptions = {};
+  _selectedGuide = 0;
+  // Pre-select option 0 for each day
+  for (let i = 0; i < days.length; i++) _selectedOptions[i] = 0;
+
+  approvedPlan = { weekly_theme: wp.weekly_theme || '', gift_theme: giftTheme, cta_keyword: wp.cta_keyword || '', days: days, guide_options: guideOptions };
 
   let html = '<div style="margin-bottom:24px">';
 
@@ -951,62 +1039,91 @@ function showPlanReview(planData, mondayStr) {
   html += '<div class="card" style="padding:24px;margin-bottom:16px;border:2px solid var(--accent);border-radius:12px">';
   html += '<div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:20px">';
   html += '<div><h2 style="margin:0 0 4px 0;color:var(--accent);font-size:20px">Weekly Plan Review</h2>';
-  html += '<p style="margin:0;color:var(--dim);font-size:13px">Edit anything below, then approve to start content generation.</p></div>';
+  html += '<p style="margin:0;color:var(--dim);font-size:13px">Pick the best option for each day, then approve to generate.</p></div>';
   html += '<div style="text-align:right;font-size:12px;color:var(--dim)">Plan ID: ' + (deepPlanId || '').substring(0, 8) + '</div>';
   html += '</div>';
 
-  // Weekly Theme - big and prominent
+  // Weekly Theme
   html += '<div style="margin-bottom:16px">';
-  html += '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px;font-weight:600">OVERARCHING DIRECTION - What ties the whole week together?' + makeFbBtn('pr-weekly-theme', 'Weekly Theme') + '</label>';
+  html += '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px;font-weight:600">OVERARCHING DIRECTION' + makeFbBtn('pr-weekly-theme', 'Weekly Theme') + '</label>';
   html += '<textarea id="pr-weekly-theme" rows="2" style="width:100%;padding:10px;border:1px solid var(--accent);border-radius:6px;background:var(--bg);color:var(--text);font-size:15px;resize:vertical">' + escHtml(wp.weekly_theme || '') + '</textarea>';
   html += '</div>';
 
-  // Gift Theme - prominent box
-  html += '<div style="background:rgba(34,197,94,0.08);border:1px solid var(--green);border-radius:8px;padding:16px;margin-bottom:16px">';
-  html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">&#127873;</span><label style="font-size:12px;color:var(--green);font-weight:700;text-transform:uppercase">Weekly Gift / Lead Magnet' + makeFbBtn('pr-gift-theme', 'Gift Theme') + '</label></div>';
-  html += '<textarea id="pr-gift-theme" rows="2" style="width:100%;padding:10px;border:1px solid var(--green);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;resize:vertical">' + escHtml(giftTitle + (giftSubtitle ? ' - ' + giftSubtitle : '')) + '</textarea>';
-  if (giftSections.length > 0) {
-    html += '<div style="margin-top:8px;font-size:12px;color:var(--dim)"><b>Guide sections:</b> ' + giftSections.map(s => escHtml(s)).join(' / ') + '</div>';
-  }
-  html += '<div style="display:flex;gap:16px;margin-top:12px">';
-  html += '<div style="flex:1"><label style="font-size:11px;color:var(--dim);display:block;margin-bottom:4px">CTA Keyword (what readers comment to get the gift)</label>';
-  html += '<input id="pr-cta-keyword" type="text" value="' + escHtml(wp.cta_keyword || '') + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);text-transform:uppercase;font-weight:700;font-size:16px;letter-spacing:2px"></div>';
-  html += '</div>';
-  html += '</div>';
+  // CTA Keyword
+  html += '<div style="margin-bottom:16px"><label style="font-size:11px;color:var(--dim);display:block;margin-bottom:4px">CTA Keyword</label>';
+  html += '<input id="pr-cta-keyword" type="text" value="' + escHtml(wp.cta_keyword || '') + '" style="width:180px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);text-transform:uppercase;font-weight:700;font-size:16px;letter-spacing:2px"></div>';
   html += '</div>';
 
-  // === DAY CARDS ===
+  // === GUIDE OPTIONS (3 cards) ===
+  if (guideOptions.length > 0) {
+    html += '<div style="background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.3);border-radius:10px;padding:16px;margin-bottom:16px">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">&#127873;</span><span style="font-size:12px;color:var(--green);font-weight:700;text-transform:uppercase">Weekly Gift - Pick one</span></div>';
+    html += '<div class="guide-opt-cards">';
+    for (let gi = 0; gi < guideOptions.length; gi++) {
+      const go = guideOptions[gi];
+      const sel = gi === 0 ? ' selected' : '';
+      html += '<div class="guide-opt-card' + sel + '" data-guide-idx="' + gi + '" onclick="selectGuideOption(' + gi + ')">';
+      html += '<div class="go-title">' + escHtml(go.title || 'Option ' + (gi + 1)) + '</div>';
+      if (go.subtitle) html += '<div class="go-sub">' + escHtml(go.subtitle) + '</div>';
+      if (go.sections && go.sections.length) {
+        html += '<div class="go-sections">' + go.sections.map(s => escHtml(s)).join(' / ') + '</div>';
+      }
+      if (go.rationale) html += '<div style="font-size:10px;color:var(--muted);margin-top:4px;font-style:italic">' + escHtml(go.rationale) + '</div>';
+      html += '</div>';
+    }
+    html += '</div></div>';
+  } else if (giftTitle) {
+    // Old format fallback
+    html += '<div style="background:rgba(34,197,94,0.08);border:1px solid var(--green);border-radius:8px;padding:16px;margin-bottom:16px">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">&#127873;</span><label style="font-size:12px;color:var(--green);font-weight:700;text-transform:uppercase">Weekly Gift</label></div>';
+    html += '<textarea id="pr-gift-theme" rows="2" style="width:100%;padding:10px;border:1px solid var(--green);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;resize:vertical">' + escHtml(giftTitle + (giftSubtitle ? ' - ' + giftSubtitle : '')) + '</textarea>';
+    if (giftSections.length > 0) {
+      html += '<div style="margin-top:8px;font-size:12px;color:var(--dim)"><b>Sections:</b> ' + giftSections.map(s => escHtml(s)).join(' / ') + '</div>';
+    }
+    html += '</div>';
+  }
+
+  // === DAY CARDS with 3 options each ===
   const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
   const angleLabels = { big_shift_explainer: 'Big Shift', tactical_workflow_guide: 'Tactical How-To', contrarian_diagnosis: 'Contrarian Take', case_study_build_story: 'Case Study', second_order_implication: 'Big Picture' };
   const angleColors = { big_shift_explainer: '#6366f1', tactical_workflow_guide: '#22c55e', contrarian_diagnosis: '#ef4444', case_study_build_story: '#eab308', second_order_implication: '#3b82f6' };
 
-  html += '<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px">';
+  html += '<div style="display:flex;flex-direction:column;gap:16px;margin-bottom:16px">';
   for (let i = 0; i < days.length; i++) {
-    const d = days[i].story_brief || days[i];
-    const dayNum = days[i].day_of_week !== undefined ? days[i].day_of_week : i;
-    const angle = d.angle_type || '';
+    const dayPlan = days[i];
+    const dayNum = dayPlan.day_of_week !== undefined ? dayPlan.day_of_week : i;
+    const options = dayPlan.options || [dayPlan]; // backward compat
+    const angle = dayPlan.angle_type || (options[0] && options[0].angle_type) || '';
     const angleLabel = angleLabels[angle] || angle;
     const angleColor = angleColors[angle] || 'var(--accent)';
+
     html += '<div class="card" style="padding:16px 20px;border-left:4px solid ' + angleColor + '">';
-    html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">';
+    html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">';
     html += '<span style="font-size:16px;font-weight:700">' + dayNames[dayNum] + '</span>';
     html += '<span style="font-size:12px;padding:3px 10px;border-radius:8px;background:' + angleColor + '22;color:' + angleColor + ';font-weight:600">' + escHtml(angleLabel) + '</span>';
+    if (options.length > 1) html += '<span style="font-size:11px;color:var(--dim)">' + options.length + ' options - click to pick</span>';
     html += '</div>';
-    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
-    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Topic' + makeFbBtn('pr-day-' + i + '-topic', 'Topic') + '</label>';
-    html += '<textarea id="pr-day-' + i + '-topic" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;resize:vertical;line-height:1.4" placeholder="Write like you would describe it to a friend...">' + escHtml(d.topic || '') + '</textarea></div>';
-    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Core Argument' + makeFbBtn('pr-day-' + i + '-thesis', 'Thesis') + '</label>';
-    html += '<textarea id="pr-day-' + i + '-thesis" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;resize:vertical;line-height:1.4" placeholder="The main takeaway...">' + escHtml(d.thesis || '') + '</textarea></div>';
+
+    // Option cards
+    html += '<div class="option-cards" id="pr-day-' + i + '-options">';
+    for (let oi = 0; oi < options.length; oi++) {
+      const opt = options[oi];
+      const sel = oi === 0 ? ' selected' : '';
+      const rankLabel = oi === 0 ? 'BEST' : '#' + (oi + 1);
+      html += '<div class="option-card' + sel + '" data-day="' + i + '" data-opt="' + oi + '" onclick="selectDayOption(' + i + ',' + oi + ')">';
+      html += '<span class="opt-rank">' + rankLabel + '</span>';
+      html += '<div class="opt-topic">' + escHtml(opt.topic || '') + '</div>';
+      html += '<div class="opt-thesis">' + escHtml(opt.thesis || '') + '</div>';
+      html += '<div class="opt-meta">' + escHtml(opt.audience || '') + '</div>';
+      html += '</div>';
+    }
     html += '</div>';
-    html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px">';
-    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Audience' + makeFbBtn('pr-day-' + i + '-audience', 'Audience') + '</label>';
-    html += '<input id="pr-day-' + i + '-audience" type="text" value="' + escHtml(d.audience || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px" placeholder="Who is this for?"></div>';
-    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Belief Shift' + makeFbBtn('pr-day-' + i + '-belief', 'Belief Shift') + '</label>';
-    html += '<input id="pr-day-' + i + '-belief" type="text" value="' + escHtml(d.desired_belief_shift || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px" placeholder="FROM x TO y"></div>';
-    html += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Gift Connection' + makeFbBtn('pr-day-' + i + '-gift', 'Gift Connection') + '</label>';
-    html += '<input id="pr-day-' + i + '-gift" type="text" value="' + escHtml(days[i].connection_to_gift || d.connection_to_gift || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px" placeholder="How does this tie to the gift?"></div>';
+
+    // Editable detail for selected option (shown below cards)
+    const sel = options[0] || {};
+    html += '<div id="pr-day-' + i + '-detail" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">';
+    html += _renderOptionDetail(i, sel);
     html += '</div>';
-    html += '<input id="pr-day-' + i + '-visual" type="hidden" value="' + escHtml(d.visual_job || 'cinematic_symbolic') + '">';
     html += '</div>';
   }
   html += '</div>';
@@ -1025,7 +1142,7 @@ function showPlanReview(planData, mondayStr) {
     html += '</div></details>';
   }
 
-  // Action buttons - big and clear
+  // Action buttons
   html += '<div style="display:flex;gap:12px;padding:16px 0;border-top:1px solid var(--border)">';
   html += '<button class="btn btn-green" style="padding:12px 24px;font-size:15px;font-weight:600" onclick="approveAndGenerate(\\'' + mondayStr + '\\')">Approve & Generate All 5 Days</button>';
   html += '<button class="btn btn-primary" style="padding:12px 24px" onclick="savePlanOnly(\\'' + mondayStr + '\\')">Save Plan Only</button>';
@@ -1036,23 +1153,63 @@ function showPlanReview(planData, mondayStr) {
 
   const panel = document.getElementById('plan-review-panel');
   if (panel) panel.innerHTML = html;
-  // Scroll to the plan review
   panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+function _renderOptionDetail(dayIdx, opt) {
+  let h = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+  h += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Topic' + makeFbBtn('pr-day-' + dayIdx + '-topic', 'Topic') + '</label>';
+  h += '<textarea id="pr-day-' + dayIdx + '-topic" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;resize:vertical;line-height:1.4">' + escHtml(opt.topic || '') + '</textarea></div>';
+  h += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Core Argument' + makeFbBtn('pr-day-' + dayIdx + '-thesis', 'Thesis') + '</label>';
+  h += '<textarea id="pr-day-' + dayIdx + '-thesis" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;resize:vertical;line-height:1.4">' + escHtml(opt.thesis || '') + '</textarea></div>';
+  h += '</div>';
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px">';
+  h += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Audience</label>';
+  h += '<input id="pr-day-' + dayIdx + '-audience" type="text" value="' + escHtml(opt.audience || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px"></div>';
+  h += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Belief Shift</label>';
+  h += '<input id="pr-day-' + dayIdx + '-belief" type="text" value="' + escHtml(opt.desired_belief_shift || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px"></div>';
+  h += '<div><label style="font-size:11px;color:var(--dim);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Gift Connection</label>';
+  h += '<input id="pr-day-' + dayIdx + '-gift" type="text" value="' + escHtml(opt.connection_to_gift || '') + '" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px"></div>';
+  h += '</div>';
+  h += '<input id="pr-day-' + dayIdx + '-visual" type="hidden" value="' + escHtml(opt.visual_job || 'cinematic_symbolic') + '">';
+  return h;
+}
+
+function selectDayOption(dayIdx, optIdx) {
+  _selectedOptions[dayIdx] = optIdx;
+  // Update card selection UI
+  const cards = document.querySelectorAll('#pr-day-' + dayIdx + '-options .option-card');
+  cards.forEach((c, i) => c.classList.toggle('selected', i === optIdx));
+  // Update detail form with selected option data
+  const dayPlan = _planDaysData[dayIdx];
+  const options = dayPlan?.options || [dayPlan];
+  const opt = options[optIdx] || {};
+  const detailEl = document.getElementById('pr-day-' + dayIdx + '-detail');
+  if (detailEl) detailEl.innerHTML = _renderOptionDetail(dayIdx, opt);
+}
+
+function selectGuideOption(guideIdx) {
+  _selectedGuide = guideIdx;
+  document.querySelectorAll('.guide-opt-card').forEach((c, i) => c.classList.toggle('selected', i === guideIdx));
+}
+
 function collectEditedPlan() {
-  const days = approvedPlan?.days || [];
+  const days = _planDaysData.length ? _planDaysData : (approvedPlan?.days || []);
   const edited = {
     weekly_theme: document.getElementById('pr-weekly-theme')?.value || '',
     gift_theme: document.getElementById('pr-gift-theme')?.value || '',
     cta_keyword: document.getElementById('pr-cta-keyword')?.value || '',
+    selected_guide_index: _selectedGuide,
     days: [],
   };
   for (let i = 0; i < days.length; i++) {
-    const orig = days[i].story_brief || days[i];
+    const selIdx = _selectedOptions[i] || 0;
+    const dayPlan = days[i];
+    const options = dayPlan.options || [dayPlan];
+    const orig = options[selIdx] || options[0] || dayPlan;
     edited.days.push({
-      day_of_week: days[i].day_of_week !== undefined ? days[i].day_of_week : i,
-      angle_type: orig.angle_type || '',
+      day_of_week: dayPlan.day_of_week !== undefined ? dayPlan.day_of_week : i,
+      angle_type: orig.angle_type || dayPlan.angle_type || '',
       topic: document.getElementById('pr-day-' + i + '-topic')?.value || '',
       thesis: document.getElementById('pr-day-' + i + '-thesis')?.value || '',
       audience: document.getElementById('pr-day-' + i + '-audience')?.value || '',
@@ -1062,7 +1219,13 @@ function collectEditedPlan() {
       evidence_requirements: orig.evidence_requirements || [],
       template_id: orig.template_id || '',
       platform_notes: orig.platform_notes || '',
+      selected_option_index: selIdx,
     });
+  }
+  // Include selected guide info
+  if (_planGuideOptions.length > 0) {
+    edited.guide_options = _planGuideOptions;
+    edited.gift_theme = _planGuideOptions[_selectedGuide]?.title || '';
   }
   return edited;
 }
@@ -1100,6 +1263,9 @@ async function savePlanOnly(mondayStr) {
 async function generateFromApprovedPlan(plan) {
   genAllState = { running: true, current: -1, total: 5, startTime: Date.now(), results: [], totalCost: 0, unified: true, weekId: null, phase: 'starting', phaseDetail: 'Starting generation from approved plan...', weeklyTheme: plan.weekly_theme, giftTheme: plan.gift_theme, weeklyKeyword: plan.cta_keyword };
   saveGenAllState();
+  // Hide plan review to avoid text-on-text overlap with progress card
+  const prp = document.getElementById('plan-review-panel');
+  if (prp) prp.style.display = 'none';
   renderGenAllProgress();
   try {
     const r = await api('/pipeline/generate-week', {
@@ -1119,22 +1285,23 @@ async function generateFromApprovedPlan(plan) {
         genAllState.phase = st.phase || 'unknown';
         genAllState.phaseDetail = st.phase_detail || '';
         genAllState.current = st.current_day >= 0 ? st.current_day : genAllState.current;
+        genAllState.startedAt = st.started_at || genAllState.startedAt || null;
+        genAllState.currentAgents = st.current_agents || [];
+        genAllState.dayStepLogs = st.day_step_logs || {};
+        genAllState.plannerStepStatus = st.planner_step_status || genAllState.plannerStepStatus || {};
+        genAllState.plannerStepLogs = st.planner_step_logs || {};
+        genAllState.guideStepStatus = st.guide_step_status || {};
+        genAllState.guideStepLogs = st.guide_step_logs || {};
         if (st.day_run_ids) {
           for (let idx = 0; idx < st.day_run_ids.length; idx++) {
             if (!genAllState.results[idx]) genAllState.results[idx] = { day: DAY_NAMES[idx], status: 'done', runId: st.day_run_ids[idx] };
           }
         }
-        if (st.phase === 'generating_days' && st.current_day >= 0 && st.day_run_ids) {
-          const dayRunId = st.day_run_ids[st.current_day];
-          if (dayRunId) {
-            try {
-              const dayStatus = await api('/pipeline/' + dayRunId + '/status');
-              if (!genAllState.results[st.current_day]) genAllState.results[st.current_day] = { day: DAY_NAMES[st.current_day], status: 'running' };
-              genAllState.results[st.current_day].stepStatus = dayStatus.step_status || {};
-            } catch {}
-          }
+        if (st.phase === 'generating_days' && st.current_day >= 0) {
           if (!genAllState.results[st.current_day]) genAllState.results[st.current_day] = { day: DAY_NAMES[st.current_day], status: 'running', stepStatus: {} };
           else genAllState.results[st.current_day].status = 'running';
+          // Use enriched step status from the backend (no separate sub-poll needed)
+          if (st.day_step_status) genAllState.results[st.current_day].stepStatus = st.day_step_status;
         }
         done = st.status === 'completed' || st.status === 'failed' || st.status === 'interrupted';
         if (st.status === 'failed') genAllState.errorMsg = st.error || 'Unknown error';
@@ -1154,6 +1321,8 @@ async function generateFromApprovedPlan(plan) {
   genAllState.running = false;
   saveGenAllState();
   renderGenAllProgress();
+  const prpDone = document.getElementById('plan-review-panel');
+  if (prpDone) prpDone.style.display = '';
   renderWeek();
 }
 
@@ -1217,21 +1386,116 @@ function getMondayOfWeek() {
 }
 
 async function runDayPipeline(dayOfWeek, entryId) {
+  // Find the button and day card for inline progress
+  const dayCard = document.querySelector('[data-day-idx="' + dayOfWeek + '"]');
+  const regenBtn = dayCard?.querySelector('button.btn-dim');
+  if (regenBtn) { regenBtn.disabled = true; regenBtn.textContent = 'Starting...'; }
+
   try {
+    // Check if this day has a planned topic via plan_context
+    const entry = _weekEntries[dayOfWeek];
+    const pc = entry?.plan_context;
+    let workflow = 'daily_content';
+    const context = { day_of_week: dayOfWeek };
+
+    if (pc && (pc.topic || pc.thesis)) {
+      // Use daily_from_plan so we skip trend_scout and respect the planned topic
+      workflow = 'daily_from_plan';
+      const briefKeys = ['topic','thesis','audience','angle_type','day_label','visual_job','platform_notes','desired_belief_shift','evidence_requirements','template_id'];
+      const storyBrief = {};
+      const src = pc.story_brief || pc;
+      briefKeys.forEach(k => { if (src[k]) storyBrief[k] = src[k]; });
+      context.story_brief = storyBrief;
+      if (pc._weekly) {
+        if (pc._weekly.weekly_theme) context.weekly_theme = pc._weekly.weekly_theme;
+        if (pc._weekly.cta_keyword) context.weekly_keyword = pc._weekly.cta_keyword;
+        if (pc._weekly.gift_theme) { context.gift_theme = pc._weekly.gift_theme; context.guide_title = pc._weekly.gift_theme; }
+      }
+      if (pc.connection_to_gift) context.connection_to_gift = pc.connection_to_gift;
+    }
+
     const r = await api('/pipeline/run', {
       method: 'POST',
-      body: JSON.stringify({ workflow: 'daily_content', context: { day_of_week: dayOfWeek } }),
+      body: JSON.stringify({ workflow, context }),
     });
+    // Persist regen state so it survives page refresh
+    const regenState = { runId: r.run_id, dayOfWeek, startTime: Date.now() };
+    localStorage.setItem('tce_day_regen', JSON.stringify(regenState));
     activePipelineRun = r.run_id;
     localStorage.setItem('tce_active_run', r.run_id);
-    toast('Pipeline started for ' + DAY_NAMES[dayOfWeek] + ': ' + r.run_id.substring(0, 8));
-    // Switch to generate tab to show progress
-    currentTab = 'generate';
-    document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === 'generate'));
-    render();
-    if (pollInterval) clearInterval(pollInterval);
-    pollInterval = setInterval(pollPipeline, 3000);
-  } catch (e) { toast('Failed: ' + e.message, false); }
+    toast('Regenerating ' + DAY_NAMES[dayOfWeek] + ' package (using planned topic)...');
+
+    _startDayRegenPoll(regenState);
+  } catch (e) {
+    if (regenBtn) { regenBtn.disabled = false; regenBtn.textContent = 'Regenerate'; }
+    toast('Failed: ' + e.message, false);
+  }
+}
+
+function _startDayRegenPoll(regenState) {
+  const { runId, dayOfWeek, startTime } = regenState;
+  const dayCard = document.querySelector('[data-day-idx="' + dayOfWeek + '"]');
+  const regenBtn = dayCard?.querySelector('button.btn-dim');
+  if (regenBtn) { regenBtn.disabled = true; regenBtn.textContent = 'Regenerating...'; }
+
+  // Show inline progress on the day card
+  let progressEl = document.getElementById('day-regen-progress-' + dayOfWeek);
+  if (!progressEl && dayCard) {
+    progressEl = document.createElement('div');
+    progressEl.id = 'day-regen-progress-' + dayOfWeek;
+    progressEl.style.cssText = 'margin-top:8px;padding:6px 8px;background:#0d1117;border:1px solid var(--blue);border-radius:6px;font-size:11px;color:var(--blue);line-height:1.4';
+    dayCard.appendChild(progressEl);
+  }
+  const spinnerHtml = '<span style="display:inline-block;width:10px;height:10px;border:2px solid var(--blue);border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:6px;vertical-align:middle"></span>';
+  if (progressEl) progressEl.innerHTML = spinnerHtml + 'Starting pipeline...';
+
+  const inlinePoll = setInterval(async () => {
+    try {
+      const s = await api('/pipeline/' + runId + '/status');
+      const statuses = s.step_status || {};
+      const logs = s.step_logs || {};
+      const allDone = !Object.values(statuses).some(v => v === 'pending' || v === 'running');
+      const running = Object.entries(statuses).find(([k,v]) => v === 'running');
+      const completed = Object.entries(statuses).filter(([k,v]) => v === 'completed').length;
+      const total = Object.keys(statuses).length;
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      const elapsedStr = elapsed < 60 ? elapsed + 's' : Math.floor(elapsed/60) + 'm ' + (elapsed%60) + 's';
+
+      if (progressEl) {
+        let detail = '';
+        if (running) {
+          const agentName = running[0].replace(/_/g, ' ');
+          // Get latest log line for this agent
+          const agentLogs = logs[running[0]] || [];
+          const lastLog = agentLogs.length ? agentLogs[agentLogs.length - 1].replace(/^\\[\\d{2}:\\d{2}:\\d{2}\\]\\s*/, '').substring(0, 60) : '';
+          detail = spinnerHtml + '<strong>' + agentName + '</strong> (' + completed + '/' + total + ' - ' + elapsedStr + ')';
+          if (lastLog) detail += '<div style="color:var(--dim);font-size:10px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(lastLog) + '</div>';
+        } else if (!allDone) {
+          detail = spinnerHtml + 'Waiting... (' + completed + '/' + total + ' - ' + elapsedStr + ')';
+        }
+        progressEl.innerHTML = detail;
+      }
+
+      if (allDone) {
+        clearInterval(inlinePoll);
+        localStorage.removeItem('tce_day_regen');
+        localStorage.removeItem('tce_active_run');
+        activePipelineRun = null;
+        if (progressEl) progressEl.remove();
+        const hasFailed = Object.values(statuses).some(v => v === 'failed');
+        if (hasFailed) {
+          const errors = s.step_errors || {};
+          const errMsg = Object.entries(errors).filter(([k,v]) => v).map(([k,v]) => k + ': ' + v).join('; ').substring(0, 100);
+          toast(DAY_NAMES[dayOfWeek] + ' regeneration failed: ' + (errMsg || 'unknown error'), false);
+        } else {
+          toast(DAY_NAMES[dayOfWeek] + ' package regenerated!');
+        }
+        await renderWeek();
+      }
+    } catch (e) {
+      // Polling error - keep trying
+    }
+  }, 2000);
 }
 
 function formatElapsed(ms) {
@@ -1239,12 +1503,34 @@ function formatElapsed(ms) {
   if (s < 60) return s + 's';
   return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
 }
+function getIsraelTime() {
+  try { return new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit' }) + ' IST'; }
+  catch { const d = new Date(Date.now() + 3 * 3600000); return d.getUTCHours().toString().padStart(2,'0') + ':' + d.getUTCMinutes().toString().padStart(2,'0') + ' IST'; }
+}
+function _renderLogFeed(logs) {
+  // logs = { agent_name: ["[HH:MM:SS] msg", ...], ... } - show last entries from running agents
+  if (!logs || !Object.keys(logs).length) return '';
+  const lines = [];
+  for (const [agent, entries] of Object.entries(logs)) {
+    if (!entries?.length) continue;
+    const last = entries[entries.length - 1];
+    if (last) lines.push({ agent, msg: last });
+  }
+  if (!lines.length) return '';
+  let h = '<div style="background:#0a0e14;border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-top:8px;font-family:monospace;font-size:11px;line-height:1.6;max-height:80px;overflow-y:auto">';
+  for (const l of lines.slice(-3)) {
+    h += '<div style="color:var(--dim)"><span style="color:var(--accent2)">' + esc(l.agent.replace(/_/g, ' ')) + '</span> ' + esc(l.msg) + '</div>';
+  }
+  h += '</div>';
+  return h;
+}
 function renderGenAllProgress() {
   const el = document.getElementById('gen-all-progress');
   if (!el) return;
   if (!genAllState) { el.innerHTML = ''; return; }
   const s = genAllState;
   const elapsed = s.startTime ? formatElapsed(Date.now() - s.startTime) : '';
+  const israelTime = getIsraelTime();
   let html = '<div class="card" style="margin-bottom:16px;padding:16px">';
 
   // Phase-aware header
@@ -1252,17 +1538,44 @@ function renderGenAllProgress() {
   if (s.running) {
     if (s.unified) {
       if (s.phase === 'planning') headerText = 'Planning the week (trend scout + strategy)...';
-      else if (s.phase === 'generating_days') headerText = 'Generating day ' + ((s.current >= 0 ? s.current : 0) + 1) + '/5...';
+      else if (s.phase === 'generating_days') headerText = 'Generating day ' + ((s.current >= 0 ? s.current : 0) + 1) + '/5 - ' + DAY_NAMES[s.current >= 0 ? s.current : 0];
       else if (s.phase === 'building_guide') headerText = 'Building weekly guide...';
-      else headerText = s.phaseDetail || 'Starting unified weekly generation...';
+      else if (s.phase === 'scripts') headerText = 'Generating scripts...';
+      else headerText = s.phaseDetail || 'Starting generation...';
     } else {
       headerText = 'Generating content for all 5 days...';
     }
   }
-  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">';
   html += '<div style="font-size:13px;font-weight:600">' + headerText + '</div>';
-  if (elapsed) html += '<div style="font-size:12px;color:var(--dim);font-family:monospace">' + elapsed + '</div>';
+  html += '<div style="font-size:11px;color:var(--dim);font-family:monospace;text-align:right">';
+  if (elapsed) html += elapsed;
+  if (s.running) html += ' <span style="color:var(--accent2)">' + israelTime + '</span>';
   html += '</div>';
+  html += '</div>';
+
+  // Agent spotlight - show what's happening RIGHT NOW
+  if (s.running) {
+    let spotlightText = '';
+    const agents = s.currentAgents || [];
+    if (agents.length > 0) {
+      spotlightText = agents.map(a => AGENT_LABELS[a] || a.replace(/_/g, ' ')).join(' + ');
+    } else if (s.phase === 'planning') {
+      spotlightText = AGENT_LABELS['weekly_planner'] || 'Planning Week';
+    } else if (s.phase === 'building_guide') {
+      spotlightText = AGENT_LABELS['docx_guide_builder'] || 'Building Guide';
+    } else if (s.phase === 'scripts') {
+      spotlightText = s.phaseDetail || 'Generating scripts...';
+    } else if (s.phaseDetail) {
+      spotlightText = s.phaseDetail;
+    }
+    if (spotlightText) {
+      html += '<div style="font-size:12px;color:var(--blue);margin-bottom:10px;display:flex;align-items:center;gap:6px">';
+      html += '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--blue);animation:pulse 1.5s infinite"></span>';
+      html += esc(spotlightText);
+      html += '</div>';
+    }
+  }
 
   // Show weekly theme + gift theme once available (unified mode)
   if (s.unified && s.weeklyTheme) {
@@ -1300,7 +1613,7 @@ function renderGenAllProgress() {
   }
 
   // Planner agent detail (during planning phase)
-  if (s.unified && s.running && s.phase === 'planning' && s.plannerStepStatus) {
+  if (s.unified && s.running && s.phase === 'planning' && s.plannerStepStatus && Object.keys(s.plannerStepStatus).length) {
     html += '<div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">';
     html += '<div style="font-size:12px;font-weight:600;color:var(--accent2);margin-bottom:8px">Weekly Planner - Agent Steps</div>';
     for (const [agent, st] of Object.entries(s.plannerStepStatus)) {
@@ -1314,6 +1627,8 @@ function renderGenAllProgress() {
       html += '<span style="color:' + stColor + ';font-weight:600;font-size:11px">' + icon + '</span>';
       html += '</div>';
     }
+    // Live log feed for planner
+    html += _renderLogFeed(s.plannerStepLogs);
     html += '</div>';
   }
 
@@ -1354,11 +1669,32 @@ function renderGenAllProgress() {
       else { icon = 'Waiting'; stColor = 'var(--dim)'; }
       html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:12px">';
       html += '<span style="color:' + (st === 'running' ? 'var(--text)' : 'var(--dim)') + ';font-weight:' + (st === 'running' ? '600' : '400') + '">';
-      if (st === 'running') html += '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--blue);margin-right:6px"></span>';
+      if (st === 'running') html += '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--blue);margin-right:6px;animation:pulse 1.5s infinite"></span>';
       html += label + '</span>';
       html += '<span style="color:' + stColor + ';font-weight:600;font-size:11px">' + icon + '</span>';
       html += '</div>';
     }
+    // Live log feed for current day agents
+    html += _renderLogFeed(s.dayStepLogs);
+    html += '</div>';
+  }
+
+  // Guide building detail
+  if (s.running && s.phase === 'building_guide' && s.guideStepStatus && Object.keys(s.guideStepStatus).length) {
+    html += '<div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">';
+    html += '<div style="font-size:12px;font-weight:600;color:var(--accent2);margin-bottom:8px">Guide Builder</div>';
+    for (const [agent, st] of Object.entries(s.guideStepStatus)) {
+      const label = AGENT_LABELS[agent] || agent.replace(/_/g, ' ');
+      let icon, stColor;
+      if (st === 'completed') { icon = 'Done'; stColor = 'var(--green)'; }
+      else if (st === 'running') { icon = 'Running...'; stColor = 'var(--blue)'; }
+      else { icon = 'Waiting'; stColor = 'var(--dim)'; }
+      html += '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px">';
+      html += '<span style="color:' + (st === 'running' ? 'var(--text)' : 'var(--dim)') + '">' + label + '</span>';
+      html += '<span style="color:' + stColor + ';font-weight:600;font-size:11px">' + icon + '</span>';
+      html += '</div>';
+    }
+    html += _renderLogFeed(s.guideStepLogs);
     html += '</div>';
   }
 
@@ -1368,7 +1704,7 @@ function renderGenAllProgress() {
     html += '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
     if (s.phase === 'failed' || s.phase === 'completed' || s.phase === 'interrupted') {
       const phaseColor = s.phase === 'completed' ? 'var(--green)' : (s.phase === 'interrupted' ? 'var(--yellow)' : 'var(--red)');
-      const phaseMsg = s.phase === 'completed' ? done + '/5 completed + guide built' : (s.phase === 'interrupted' ? 'Interrupted: ' + (s.phaseDetail || 'Server restarted during generation') : 'Failed: ' + (s.errorMsg || s.phaseDetail || 'Unknown error'));
+      const phaseMsg = s.phase === 'completed' ? done + '/5 completed + guide built (' + elapsed + ')' : (s.phase === 'interrupted' ? 'Interrupted: ' + (s.phaseDetail || 'Server restarted during generation') : 'Failed: ' + (s.errorMsg || s.phaseDetail || 'Unknown error'));
       html += '<span style="font-size:13px;color:' + phaseColor + ';font-weight:600">' + phaseMsg + '</span>';
     } else {
       html += '<span style="font-size:13px;color:var(--green);font-weight:600">' + done + '/5 completed</span>';
@@ -1398,9 +1734,14 @@ function renderGenAllProgress() {
   if (btn) {
     btn.disabled = s.running;
     if (s.unified && s.running) {
-      if (s.phase === 'planning') btn.textContent = 'Planning week...';
+      const agents = s.currentAgents || [];
+      if (agents.length > 0) {
+        const agentLabel = AGENT_LABELS[agents[0]] || agents[0].replace(/_/g, ' ');
+        btn.textContent = agentLabel + '... (' + ((s.current >= 0 ? s.current : 0) + 1) + '/5)';
+      } else if (s.phase === 'planning') btn.textContent = 'Planning week...';
       else if (s.phase === 'generating_days') btn.textContent = 'Day ' + ((s.current >= 0 ? s.current : 0) + 1) + '/5...';
       else if (s.phase === 'building_guide') btn.textContent = 'Building guide...';
+      else if (s.phase === 'scripts') btn.textContent = 'Generating scripts...';
       else btn.textContent = 'Starting...';
     } else if (s.running) {
       const curAgent = cur?.stepStatus ? Object.entries(cur.stepStatus).find(([,v]) => v === 'running') : null;
@@ -1471,6 +1812,13 @@ async function resumeUnifiedGenAll() {
       genAllState.phase = st.phase || 'unknown';
       genAllState.phaseDetail = st.phase_detail || '';
       genAllState.current = st.current_day >= 0 ? st.current_day : genAllState.current;
+      genAllState.startedAt = st.started_at || genAllState.startedAt || null;
+      genAllState.currentAgents = st.current_agents || [];
+      genAllState.dayStepLogs = st.day_step_logs || {};
+      genAllState.plannerStepStatus = st.planner_step_status || genAllState.plannerStepStatus || {};
+      genAllState.plannerStepLogs = st.planner_step_logs || {};
+      genAllState.guideStepStatus = st.guide_step_status || {};
+      genAllState.guideStepLogs = st.guide_step_logs || {};
       if (st.weekly_theme) genAllState.weeklyTheme = st.weekly_theme;
       if (st.gift_theme) genAllState.giftTheme = st.gift_theme;
       if (st.weekly_keyword) genAllState.weeklyKeyword = st.weekly_keyword;
@@ -1478,6 +1826,12 @@ async function resumeUnifiedGenAll() {
         for (let i = 0; i < st.day_run_ids.length; i++) {
           if (!genAllState.results[i]) genAllState.results[i] = { day: DAY_NAMES[i], status: 'done', runId: st.day_run_ids[i] };
         }
+      }
+      // Enrich current day's step status from inline data
+      if (st.phase === 'generating_days' && st.current_day >= 0 && st.day_step_status) {
+        if (!genAllState.results[st.current_day]) genAllState.results[st.current_day] = { day: DAY_NAMES[st.current_day], status: 'running', stepStatus: {} };
+        else genAllState.results[st.current_day].status = 'running';
+        genAllState.results[st.current_day].stepStatus = st.day_step_status;
       }
       done = st.status === 'completed' || st.status === 'failed' || st.status === 'interrupted';
       if (st.status === 'failed') genAllState.errorMsg = st.error || 'Unknown error';
@@ -1593,6 +1947,13 @@ async function generateAllDays() {
         genAllState.phase = st.phase || 'unknown';
         genAllState.phaseDetail = st.phase_detail || '';
         genAllState.current = st.current_day >= 0 ? st.current_day : genAllState.current;
+        genAllState.startedAt = st.started_at || genAllState.startedAt || null;
+        genAllState.currentAgents = st.current_agents || [];
+        genAllState.dayStepLogs = st.day_step_logs || {};
+        genAllState.plannerStepStatus = st.planner_step_status || genAllState.plannerStepStatus || {};
+        genAllState.plannerStepLogs = st.planner_step_logs || {};
+        genAllState.guideStepStatus = st.guide_step_status || {};
+        genAllState.guideStepLogs = st.guide_step_logs || {};
         if (st.weekly_theme) genAllState.weeklyTheme = st.weekly_theme;
         if (st.gift_theme) genAllState.giftTheme = st.gift_theme;
         if (st.weekly_keyword) genAllState.weeklyKeyword = st.weekly_keyword;
@@ -1602,26 +1963,11 @@ async function generateAllDays() {
             if (!genAllState.results[i]) genAllState.results[i] = { day: DAY_NAMES[i], status: 'done', runId: st.day_run_ids[i] };
           }
         }
-        // Check active day - try to get agent-level detail
-        if (st.phase === 'generating_days' && st.current_day >= 0 && st.day_run_ids) {
-          const dayRunId = st.day_run_ids[st.current_day];
-          if (dayRunId) {
-            try {
-              const dayStatus = await api('/pipeline/' + dayRunId + '/status');
-              if (!genAllState.results[st.current_day]) genAllState.results[st.current_day] = { day: DAY_NAMES[st.current_day], status: 'running' };
-              genAllState.results[st.current_day].stepStatus = dayStatus.step_status || {};
-            } catch {}
-          }
-          // Mark current day as running
+        // Use enriched inline step data (no separate sub-poll needed)
+        if (st.phase === 'generating_days' && st.current_day >= 0) {
           if (!genAllState.results[st.current_day]) genAllState.results[st.current_day] = { day: DAY_NAMES[st.current_day], status: 'running', stepStatus: {} };
           else genAllState.results[st.current_day].status = 'running';
-        }
-        // Also poll planner run for agent detail during planning phase
-        if (st.phase === 'planning' && st.planner_run_id) {
-          try {
-            const plannerStatus = await api('/pipeline/' + st.planner_run_id + '/status');
-            genAllState.plannerStepStatus = plannerStatus.step_status || {};
-          } catch {}
+          if (st.day_step_status) genAllState.results[st.current_day].stepStatus = st.day_step_status;
         }
         done = st.status === 'completed' || st.status === 'failed';
         if (st.status === 'failed') {
@@ -2597,6 +2943,14 @@ function _renderPkgCard(p) {
       html += '<input type="file" accept=".wav,.mp3,.m4a,.ogg" id="scr-file-' + pid + '" style="font-size:12px" onchange="uploadAudio(\\'' + p.id + '\\', \\'' + pid + '\\', this.files[0])">';
       html += '<span id="scr-audio-status-' + pid + '" style="font-size:12px;color:var(--dim)"></span>';
       html += '</div>';
+      html += '<div style="margin-top:12px;display:flex;align-items:center;gap:8px">';
+      html += '<span style="font-size:13px;font-weight:600;color:var(--accent2)">or</span>';
+      html += '<button class="btn btn-dim" style="border-color:var(--green);color:var(--green)" onclick="ttsGenerateForScript(\\'' + p.id + '\\', \\'' + pid + '\\', this)">Generate Voiceover (AI)</button>';
+      html += '<select id="scr-voice-' + pid + '" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:6px;font-size:12px"><option value="">Default voice</option></select>';
+      html += '<button class="btn btn-dim" style="font-size:11px" onclick="ttsPreviewVoice(\\'' + p.id + '\\', \\'' + pid + '\\')">Preview</button>';
+      html += '<span id="scr-tts-status-' + pid + '" style="font-size:11px;color:var(--dim)"></span>';
+      html += '</div>';
+      html += '<audio id="scr-tts-audio-' + pid + '" controls style="display:none;margin-top:8px;width:100%"></audio>';
       html += '</div>';
       html += '<div id="scr-actions-' + pid + '" style="display:none;margin-top:12px;gap:8px"></div>';
       html += '<div id="scr-render-progress-' + pid + '"></div>';
@@ -2622,6 +2976,10 @@ function _renderPkgCard(p) {
       html += '<button class="btn btn-dim" style="border-color:#a78bfa;color:#a78bfa" onclick="openBrainstorm(\\'' + p.id + '\\')">Brainstorm</button>';
       html += '<button class="btn btn-dim" style="border-color:var(--yellow);color:var(--yellow)" onclick="aiRevisePost(\\'' + p.id + '\\', \\'fb\\')">AI Revise FB</button>';
       html += '<button class="btn btn-dim" style="border-color:var(--yellow);color:var(--yellow)" onclick="aiRevisePost(\\'' + p.id + '\\', \\'li\\')">AI Revise LI</button>';
+      html += '<button class="el-fb-btn" title="Regenerate FB post with feedback" onclick="elementFeedback(\\'' + p.id + '\\',\\'facebook_post\\',this)">FB Feedback</button>';
+      html += '<button class="el-fb-btn" title="Regenerate LI post with feedback" onclick="elementFeedback(\\'' + p.id + '\\',\\'linkedin_post\\',this)">LI Feedback</button>';
+      html += '<button class="el-fb-btn" title="Regenerate hooks with feedback" onclick="elementFeedback(\\'' + p.id + '\\',\\'hooks\\',this)">Hook Feedback</button>';
+      html += '<button class="btn btn-dim" style="border-color:var(--primary);color:var(--primary)" onclick="addToStack(\\'' + p.id + '\\')">Add to Stack</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'' + pid + '\\', this, \\'Facebook post\\')">Copy FB Post</button>';
       html += '<button class="btn btn-dim" onclick="copyPost(\\'li-' + pid + '\\', this, \\'LinkedIn post\\')">Copy LI Post</button>';
       if (p.is_archived) {
@@ -2950,6 +3308,8 @@ async function loadScripts(packageId, pid) {
     statusEl.textContent = 'Script: ' + detail.template_style + ' - ' + detail.status + label;
     statusEl.style.color = detail.status === 'aligned' ? 'var(--green)' : detail.status === 'rendered' ? 'var(--accent2)' : 'var(--accent)';
     renderScriptSegments(detail, pid, packageId);
+    // Load TTS voices dropdown
+    _ensureTtsVoicesLoaded(pid);
     // Show Regenerate button
     const regenBtn = document.getElementById('scr-regen-' + pid);
     if (regenBtn) regenBtn.style.display = '';
@@ -3079,6 +3439,81 @@ async function uploadAudio(packageId, pid, file) {
     toast('Upload failed: ' + e.message, false);
   }
   if (fileInput) { fileInput.disabled = false; fileInput.value = ''; }
+}
+
+// --- TTS (ElevenLabs) functions ---
+
+let _ttsVoicesLoaded = false;
+async function _ensureTtsVoicesLoaded(pid) {
+  if (_ttsVoicesLoaded) return;
+  try {
+    const data = await api('/narration/tts-voices');
+    if (!data.configured) return;
+    _ttsVoicesLoaded = true;
+    // Populate all voice dropdowns on the page
+    document.querySelectorAll('[id^="scr-voice-"]').forEach(sel => {
+      sel.innerHTML = '<option value="">Default voice</option>';
+      for (const v of data.voices) {
+        const opt = document.createElement('option');
+        opt.value = v.voice_id;
+        opt.textContent = v.name + (v.category ? ' (' + v.category + ')' : '');
+        if (v.voice_id === data.default_voice_id) opt.selected = true;
+        sel.appendChild(opt);
+      }
+    });
+  } catch (e) {}
+}
+
+async function ttsPreviewVoice(packageId, pid) {
+  await _ensureTtsVoicesLoaded(pid);
+  const script = _scriptCache[pid];
+  if (!script || !script.segments || !script.segments.length) { toast('No script segments to preview', false); return; }
+  const voiceId = document.getElementById('scr-voice-' + pid)?.value || '';
+  const statusEl = document.getElementById('scr-tts-status-' + pid);
+  const audioEl = document.getElementById('scr-tts-audio-' + pid);
+  const text = script.segments[0].narratorText || 'This is a voice preview.';
+  if (statusEl) { statusEl.textContent = 'Generating preview...'; statusEl.style.color = 'var(--accent2)'; }
+  try {
+    const data = await api('/narration/tts-preview', {
+      method: 'POST',
+      body: JSON.stringify({ text: text.substring(0, 150), voice_id: voiceId || null, script_id: script.id }),
+    });
+    audioEl.src = data.audio_url;
+    audioEl.style.display = '';
+    audioEl.play();
+    if (statusEl) { statusEl.textContent = 'Preview: ' + data.duration_seconds.toFixed(1) + 's (~$' + data.cost_estimate_usd.toFixed(4) + ')'; statusEl.style.color = 'var(--green)'; }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = 'Preview failed: ' + e.message; statusEl.style.color = 'var(--red)'; }
+  }
+}
+
+async function ttsGenerateForScript(packageId, pid, btn) {
+  await _ensureTtsVoicesLoaded(pid);
+  const script = _scriptCache[pid];
+  if (!script || !script.id) { toast('No script found - generate one first', false); return; }
+  const voiceId = document.getElementById('scr-voice-' + pid)?.value || '';
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Generating voiceover...';
+  const statusEl = document.getElementById('scr-tts-status-' + pid);
+  if (statusEl) { statusEl.textContent = 'Generating full voiceover...'; statusEl.style.color = 'var(--accent2)'; }
+  try {
+    const url = '/api/v1/narration/scripts/' + script.id + '/tts-generate' + (voiceId ? '?voice_id=' + voiceId : '');
+    const resp = await fetch(url, { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'TTS generation failed');
+    toast('Voiceover generated! ' + data.duration_seconds.toFixed(1) + 's');
+    if (statusEl) { statusEl.textContent = 'Voiceover ready: ' + data.duration_seconds.toFixed(1) + 's (~$' + data.cost_estimate_usd.toFixed(4) + ')'; statusEl.style.color = 'var(--green)'; }
+    const audioEl = document.getElementById('scr-tts-audio-' + pid);
+    if (audioEl) { audioEl.src = data.audio_url; audioEl.style.display = ''; }
+    _scrLoading[pid] = false;
+    await loadScripts(packageId, pid);
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = 'TTS failed: ' + e.message; statusEl.style.color = 'var(--red)'; }
+    toast('TTS failed: ' + e.message, false);
+  }
+  btn.disabled = false;
+  btn.textContent = origText;
 }
 
 async function alignScript(scriptId, pid, packageId, btn) {
@@ -5738,9 +6173,599 @@ async function renderHelp() {
   } catch { document.getElementById('help-glossary').innerHTML = '<div class="card"><div style="color:var(--dim)">Glossary not available.</div></div>'; }
 }
 
+// === WEEK BUILDER ===
+// Pool of AI-generated options on the right, 7 day slots on the left.
+// Drag from pool into slots to compose the ideal week.
+let _wbPool = []; // all topic options from planning
+let _wbSlots = [null, null, null, null, null, null, null]; // 7 day slots (Mon-Sun)
+let _wbHidden = new Set(); // indices of hidden pool items
+
+function wbSave() {
+  try {
+    localStorage.setItem('wb_pool', JSON.stringify(_wbPool));
+    localStorage.setItem('wb_slots', JSON.stringify(_wbSlots));
+    localStorage.setItem('wb_hidden', JSON.stringify([..._wbHidden]));
+  } catch {}
+}
+function wbRestore() {
+  try {
+    const p = localStorage.getItem('wb_pool');
+    const s = localStorage.getItem('wb_slots');
+    const h = localStorage.getItem('wb_hidden');
+    if (p) _wbPool = JSON.parse(p);
+    if (s) _wbSlots = JSON.parse(s);
+    if (h) _wbHidden = new Set(JSON.parse(h));
+  } catch {}
+}
+const WB_DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const WB_ANGLE_COLORS = { big_shift_explainer: '#6366f1', tactical_workflow_guide: '#22c55e', contrarian_diagnosis: '#ef4444', case_study_build_story: '#eab308', second_order_implication: '#3b82f6' };
+
+async function renderWeekBuilder() {
+  wbRestore();
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><h2>Week Builder</h2><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary" id="wb-generate-btn" onclick="wbGeneratePool()">Generate 20 Ideas (~$0.45)</button><button class="btn btn-green" id="wb-approve-btn" onclick="wbApproveWeek()" style="display:none">Approve Week</button></div></div><p style="color:var(--dim);font-size:13px;margin-bottom:16px">Generate a pool of topic ideas, then drag the best ones into your 7-day slots.</p><div class="wb-layout"><div class="wb-slots" id="wb-slots"></div><div class="wb-pool" id="wb-pool"><div style="text-align:center;padding:40px 20px;color:var(--muted)"><div style="font-size:28px;margin-bottom:8px">&#127919;</div>Click "Generate 20 Ideas" to fill this pool with AI-generated topics from current trends.</div></div></div></div>';
+  if (_wbPool.length) {
+    // Restored from localStorage - render immediately
+    wbRenderSlots();
+    wbRenderPool();
+  } else {
+    // Try loading from API
+    await wbLoadExistingPool();
+    wbSave();
+    wbRenderSlots();
+    wbRenderPool();
+  }
+}
+
+async function wbLoadExistingPool() {
+  try {
+    const monday = getMonday(new Date());
+    const endDate = new Date(monday);
+    endDate.setDate(endDate.getDate() + 27); // 4 weeks
+    const entries = await api('/calendar/?start=' + fmtDate(monday) + '&end=' + fmtDate(endDate));
+    _wbPool = [];
+    for (const entry of entries) {
+      try {
+        const options = await api('/calendar/' + entry.id + '/options');
+        for (const opt of options) {
+          _wbPool.push({
+            id: 'opt-' + entry.id + '-' + opt.option_index,
+            entry_id: entry.id,
+            option_index: opt.option_index,
+            topic: opt.topic,
+            angle_type: opt.angle_type,
+            thesis: opt.plan_context?.thesis || '',
+            audience: opt.plan_context?.audience || '',
+            belief_shift: opt.plan_context?.desired_belief_shift || '',
+            connection_to_gift: opt.plan_context?.connection_to_gift || '',
+            visual_job: opt.plan_context?.visual_job || 'cinematic_symbolic',
+            evidence_requirements: opt.plan_context?.evidence_requirements || [],
+            is_selected: opt.is_selected,
+            date: entry.date,
+          });
+        }
+      } catch { /* no options for this entry */ }
+      // Also add the entry itself as an option if it has a topic
+      if (entry.topic && !_wbPool.some(p => p.topic === entry.topic)) {
+        _wbPool.push({
+          id: 'entry-' + entry.id,
+          entry_id: entry.id,
+          option_index: -1,
+          topic: entry.topic,
+          angle_type: entry.angle_type || '',
+          thesis: entry.plan_context?.thesis || '',
+          audience: entry.plan_context?.audience || '',
+          belief_shift: entry.plan_context?.desired_belief_shift || '',
+          connection_to_gift: entry.plan_context?.connection_to_gift || '',
+          visual_job: entry.plan_context?.visual_job || 'cinematic_symbolic',
+          evidence_requirements: entry.plan_context?.evidence_requirements || [],
+          is_selected: false,
+          date: entry.date,
+        });
+      }
+    }
+  } catch { _wbPool = []; }
+}
+
+function wbRenderSlots() {
+  const container = document.getElementById('wb-slots');
+  if (!container) return;
+  let html = '<div style="font-family:\\'JetBrains Mono\\',monospace;font-size:12px;color:var(--primary);font-weight:600;margin-bottom:8px">YOUR WEEK (' + _wbSlots.filter(Boolean).length + '/7 filled)</div>';
+  for (let i = 0; i < 7; i++) {
+    const slot = _wbSlots[i];
+    const filled = slot ? ' filled' : '';
+    html += '<div class="wb-slot' + filled + '" data-slot="' + i + '" ondragover="event.preventDefault();this.classList.add(\\'drag-over\\')" ondragleave="this.classList.remove(\\'drag-over\\')" ondrop="this.classList.remove(\\'drag-over\\');wbDropInSlot(event,' + i + ')">';
+    html += '<div class="ws-label">' + WB_DAY_NAMES[i];
+    if (slot) html += '<button class="ws-remove" onclick="wbRemoveFromSlot(' + i + ')">remove</button>';
+    html += '</div>';
+    if (slot) {
+      const ac = WB_ANGLE_COLORS[slot.angle_type] || 'var(--dim)';
+      html += '<div class="ws-topic">' + esc(slot.topic) + '</div>';
+      html += '<span class="ws-angle" style="background:' + ac + '22;color:' + ac + '">' + (slot.angle_type || '').replace(/_/g, ' ') + '</span>';
+    } else {
+      html += '<div class="ws-empty">Drag a topic here</div>';
+    }
+    html += '</div>';
+  }
+  container.innerHTML = html;
+  // Show approve button if any slots filled
+  const approveBtn = document.getElementById('wb-approve-btn');
+  if (approveBtn) approveBtn.style.display = _wbSlots.some(Boolean) ? '' : 'none';
+}
+
+function wbRenderPool() {
+  const container = document.getElementById('wb-pool');
+  if (!container) return;
+  if (!_wbPool.length) return; // keep the placeholder
+  const usedTopics = new Set(_wbSlots.filter(Boolean).map(s => s.topic));
+  let availCount = 0;
+  for (let pi = 0; pi < _wbPool.length; pi++) { if (!_wbHidden.has(pi) && !usedTopics.has(_wbPool[pi].topic)) availCount++; }
+  let html = '<div style="font-family:\\'JetBrains Mono\\',monospace;font-size:12px;color:var(--accent);font-weight:600;margin-bottom:8px">' + availCount + ' TOPIC IDEAS</div>';
+  for (let pi = 0; pi < _wbPool.length; pi++) {
+    if (_wbHidden.has(pi)) continue;
+    const p = _wbPool[pi];
+    if (usedTopics.has(p.topic)) continue; // hide items already in a slot
+    const ac = WB_ANGLE_COLORS[p.angle_type] || 'var(--dim)';
+    html += '<div class="wb-pool-card" draggable="true" data-pool-idx="' + pi + '" ondragstart="wbPoolDragStart(event,' + pi + ')">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:start;gap:8px">';
+    html += '<div class="pc-topic">' + esc(p.topic) + '</div>';
+    html += '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0">';
+    html += '<span class="pc-angle" style="background:' + ac + '22;color:' + ac + '">' + (p.angle_type || '').replace(/_/g, ' ') + '</span>';
+    html += '<button onclick="wbHideIdea(' + pi + ')" title="Hide this idea" style="background:none;border:none;cursor:pointer;padding:2px 4px;font-size:14px;color:var(--dim);line-height:1">&times;</button>';
+    html += '</div>';
+    html += '</div>';
+    if (p.thesis) html += '<div class="pc-thesis">' + esc(p.thesis) + '</div>';
+    html += '<div class="pc-meta">';
+    if (p.audience) html += '<span>' + esc(p.audience) + '</span>';
+    if (p.date) html += '<span>from ' + p.date + '</span>';
+    html += '</div>';
+    html += '</div>';
+  }
+  if (_wbHidden.size > 0) {
+    html += '<button onclick="wbShowHidden()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--dim);cursor:pointer;width:100%;margin-top:4px;font-size:13px">' + _wbHidden.size + ' hidden idea' + (_wbHidden.size > 1 ? 's' : '') + ' - click to show</button>';
+  }
+  container.innerHTML = html;
+}
+
+function wbHideIdea(poolIdx) {
+  _wbHidden.add(poolIdx);
+  wbSave();
+  wbRenderPool();
+}
+
+function wbShowHidden() {
+  _wbHidden.clear();
+  wbSave();
+  wbRenderPool();
+}
+
+function wbPoolDragStart(ev, poolIdx) {
+  ev.dataTransfer.setData('text/plain', String(poolIdx));
+  ev.dataTransfer.effectAllowed = 'copy';
+  ev.target.classList.add('dragging');
+  setTimeout(() => ev.target.classList.remove('dragging'), 100);
+}
+
+function wbDropInSlot(ev, slotIdx) {
+  ev.preventDefault();
+  const poolIdx = parseInt(ev.dataTransfer.getData('text/plain'), 10);
+  if (isNaN(poolIdx) || !_wbPool[poolIdx]) return;
+  _wbSlots[slotIdx] = { ..._wbPool[poolIdx] };
+  wbSave();
+  wbRenderSlots();
+  wbRenderPool();
+}
+
+function wbRemoveFromSlot(slotIdx) {
+  _wbSlots[slotIdx] = null;
+  wbSave();
+  wbRenderSlots();
+  wbRenderPool();
+}
+
+async function wbGeneratePool() {
+  const btn = document.getElementById('wb-generate-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating ideas...'; }
+  const monday = getMonday(new Date());
+  try {
+    const r = await api('/monthly/plan', { method: 'POST', body: JSON.stringify({ month_start: fmtDate(monday) }) });
+    // Poll for completion
+    let done = false;
+    while (!done) {
+      await new Promise(ok => setTimeout(ok, 4000));
+      try {
+        const st = await api('/monthly/' + r.plan_id + '/status');
+        if (btn) btn.textContent = st.phase_detail || 'Planning...';
+        if (st.status === 'completed') {
+          done = true;
+          toast('Ideas generated! Drag your favorites into the slots.');
+          await wbLoadExistingPool();
+          wbSave();
+          wbRenderPool();
+        } else if (st.status === 'failed') {
+          done = true;
+          toast('Failed: ' + (st.error || 'Unknown'), false);
+        }
+      } catch { /* keep polling */ }
+    }
+  } catch (e) {
+    toast('Failed: ' + e.message, false);
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Generate 20 Ideas (~$0.45)'; }
+}
+
+async function wbApproveWeek() {
+  const filled = _wbSlots.filter(Boolean);
+  if (!filled.length) { toast('No topics in your week yet', false); return; }
+  // Save each slot to the post stack
+  let saved = 0;
+  for (let i = 0; i < 7; i++) {
+    const slot = _wbSlots[i];
+    if (!slot || !slot.entry_id) continue;
+    // Select this option in the calendar
+    if (slot.option_index >= 0) {
+      try {
+        await api('/calendar/' + slot.entry_id + '/options/' + slot.option_index + '/select', { method: 'POST' });
+        saved++;
+      } catch { /* already selected or no options */ }
+    }
+  }
+  toast(saved + ' topics approved for the week!');
+}
+
+async function addToStack(packageId) {
+  try {
+    await api('/stack/add', { method: 'POST', body: JSON.stringify({ post_package_id: packageId }) });
+    toast('Added to post stack!');
+  } catch (e) { toast('Failed: ' + e.message, false); }
+}
+
+// === ELEMENT FEEDBACK (regenerate individual elements) ===
+async function elementFeedback(packageId, element, btn) {
+  const feedback = prompt('What should change about this ' + element.replace(/_/g, ' ') + '?');
+  if (!feedback || !feedback.trim()) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Regenerating...'; }
+  try {
+    const result = await api('/content/packages/' + packageId + '/element-feedback', {
+      method: 'POST',
+      body: JSON.stringify({ element: element, feedback: feedback.trim() }),
+    });
+    toast(element.replace(/_/g, ' ') + ' regenerated!');
+    // Refresh package cache
+    const ci = _pkgCache?.findIndex(p => p.id === packageId);
+    if (ci !== undefined && ci !== -1 && result.updated_package) {
+      Object.assign(_pkgCache[ci], result.updated_package);
+    }
+    _renderPkgFromCache();
+  } catch (e) {
+    toast('Regeneration failed: ' + e.message, false);
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Feedback'; }
+}
+
+// ========== BRAND PROFILES ==========
+
+let _brandsCache = null;
+let _brandFormVisible = false;
+let _editingBrandId = null;
+
+async function renderBrands() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px"><h2 style="margin:0">Brand Profiles</h2><button class="btn btn-primary" onclick="showBrandForm()">+ New Brand</button></div><div id="brand-form-area"></div><div id="brands-list"><div class="empty">Loading...</div></div></div>';
+  try {
+    const brands = await api('/profiles/brands');
+    _brandsCache = brands;
+    const creators = await api('/profiles/creators');
+    const creatorMap = {};
+    for (const c of creators) creatorMap[c.id] = c.creator_name;
+    let html = '';
+    if (brands.length === 0) {
+      html = '<div class="empty">No brand profiles yet. Click "+ New Brand" to create one.</div>';
+    } else {
+      html = '<div class="grid">';
+      for (const b of brands) {
+        const colors = b.colors || {};
+        const fonts = b.fonts || {};
+        const swatches = ['primary','accent','dark','text','gradientDark','gradientAccent']
+          .map(k => colors[k] ? '<div style="width:20px;height:20px;border-radius:4px;background:' + esc(colors[k]) + ';border:1px solid var(--border);display:inline-block;margin-right:4px" title="' + k + ': ' + esc(colors[k]) + '"></div>' : '')
+          .join('');
+        html += '<div class="card" style="cursor:pointer" onclick="editBrand(\'' + b.id + '\')">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
+        html += '<div><h3 style="text-transform:none;margin:0 0 8px 0">' + esc(b.name) + '</h3>';
+        if (b.description) html += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + esc(b.description) + '</div>';
+        html += '</div>';
+        if (b.logo_url) html += '<img src="' + esc(b.logo_url) + '" style="width:40px;height:40px;border-radius:6px;object-fit:contain;background:var(--bg)" />';
+        html += '</div>';
+        html += '<div style="margin-bottom:8px">' + swatches + '</div>';
+        if (fonts.heading || fonts.body) html += '<div style="font-size:11px;color:var(--muted)">Fonts: ' + esc(fonts.heading || '-') + ' / ' + esc(fonts.body || '-') + '</div>';
+        if (b.creator_profile_id && creatorMap[b.creator_profile_id]) html += '<div style="font-size:11px;color:var(--accent2);margin-top:4px">Creator: ' + esc(creatorMap[b.creator_profile_id]) + '</div>';
+        if (b.voice_config && b.voice_config.elevenlabs_voice_id) html += '<div style="font-size:11px;color:var(--green);margin-top:4px">TTS Voice: ' + esc(b.voice_config.elevenlabs_voice_id) + '</div>';
+        html += '<div style="margin-top:12px;display:flex;gap:8px">';
+        html += '<button class="btn btn-dim" onclick="event.stopPropagation();editBrand(\'' + b.id + '\')">Edit</button>';
+        html += '<button class="btn" style="color:var(--red)" onclick="event.stopPropagation();deleteBrand(\'' + b.id + '\',\'' + esc(b.name) + '\')">Delete</button>';
+        html += '</div></div>';
+      }
+      html += '</div>';
+    }
+    document.getElementById('brands-list').innerHTML = html;
+  } catch (e) {
+    document.getElementById('brands-list').innerHTML = '<div class="empty">Error: ' + e.message + '</div>';
+  }
+}
+
+function showBrandForm(brand) {
+  _editingBrandId = brand ? brand.id : null;
+  const c = brand?.colors || {};
+  const f = brand?.fonts || {};
+  const vc = brand?.voice_config || {};
+  const formEl = document.getElementById('brand-form-area');
+  formEl.innerHTML = '<div class="card" style="margin-bottom:20px">'
+    + '<h3 style="margin:0 0 16px 0">' + (brand ? 'Edit Brand' : 'New Brand') + '</h3>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+    + '<div><label style="font-size:11px;color:var(--muted)">Name *</label><input id="bf-name" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" value="' + esc(brand?.name || '') + '"></div>'
+    + '<div><label style="font-size:11px;color:var(--muted)">Description</label><input id="bf-desc" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" value="' + esc(brand?.description || '') + '"></div>'
+    + '<div><label style="font-size:11px;color:var(--muted)">Logo URL</label><input id="bf-logo" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" value="' + esc(brand?.logo_url || '') + '"></div>'
+    + '<div><label style="font-size:11px;color:var(--muted)">Creator Profile</label><select id="bf-creator" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px"><option value="">None</option></select></div>'
+    + '</div>'
+    + '<div style="margin-top:16px"><label style="font-size:12px;font-weight:600;color:var(--accent2)">Colors</label>'
+    + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px">'
+    + _colorInput('bf-c-primary', 'Primary', c.primary || '#2ea3f2')
+    + _colorInput('bf-c-accent', 'Accent', c.accent || '#00d4ff')
+    + _colorInput('bf-c-dark', 'Dark', c.dark || '#0f172a')
+    + _colorInput('bf-c-text', 'Text', c.text || '#e2e8f0')
+    + _colorInput('bf-c-textMuted', 'Text Muted', c.textMuted || '#94a3b8')
+    + _colorInput('bf-c-white', 'White', c.white || '#ffffff')
+    + _colorInput('bf-c-gradientDark', 'Gradient Dark', c.gradientDark || '#020617')
+    + _colorInput('bf-c-gradientAccent', 'Gradient Accent', c.gradientAccent || '#1e3a5f')
+    + '</div></div>'
+    + '<div style="margin-top:16px"><label style="font-size:12px;font-weight:600;color:var(--accent2)">Fonts</label>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">'
+    + '<div><label style="font-size:11px;color:var(--muted)">Heading</label><input id="bf-f-heading" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" value="' + esc(f.heading || 'Poppins') + '"></div>'
+    + '<div><label style="font-size:11px;color:var(--muted)">Body</label><input id="bf-f-body" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" value="' + esc(f.body || 'Open Sans') + '"></div>'
+    + '</div></div>'
+    + '<div style="margin-top:16px"><label style="font-size:12px;font-weight:600;color:var(--accent2)">Voice Config (ElevenLabs)</label>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">'
+    + '<div><label style="font-size:11px;color:var(--muted)">Voice ID</label><input id="bf-vc-voiceid" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" value="' + esc(vc.elevenlabs_voice_id || '') + '"></div>'
+    + '<div><label style="font-size:11px;color:var(--muted)">Stability</label><input id="bf-vc-stability" type="number" step="0.1" min="0" max="1" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" value="' + (vc.stability ?? 0.5) + '"></div>'
+    + '<div><label style="font-size:11px;color:var(--muted)">Similarity</label><input id="bf-vc-similarity" type="number" step="0.1" min="0" max="1" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" value="' + (vc.similarityBoost ?? 0.75) + '"></div>'
+    + '</div></div>'
+    + '<div style="margin-top:20px;display:flex;gap:8px">'
+    + '<button class="btn btn-primary" onclick="saveBrand()">Save</button>'
+    + '<button class="btn btn-dim" onclick="hideBrandForm()">Cancel</button>'
+    + '</div></div>';
+  // Populate creator dropdown
+  _loadCreatorDropdown(brand?.creator_profile_id);
+}
+
+function _colorInput(id, label, value) {
+  return '<div><label style="font-size:11px;color:var(--muted)">' + label + '</label><div style="display:flex;gap:6px;align-items:center"><input type="color" id="' + id + '" value="' + value + '" style="width:36px;height:30px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:transparent"><input type="text" id="' + id + '-hex" value="' + value + '" style="width:80px;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:4px 6px;border-radius:4px;font-size:11px" oninput="document.getElementById(\'' + id + '\').value=this.value" onchange="document.getElementById(\'' + id + '\').value=this.value"></div></div>';
+}
+
+async function _loadCreatorDropdown(selectedId) {
+  try {
+    const creators = await api('/profiles/creators');
+    const sel = document.getElementById('bf-creator');
+    if (!sel) return;
+    for (const c of creators) {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.creator_name;
+      if (c.id === selectedId) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  } catch (e) {}
+}
+
+function hideBrandForm() {
+  _editingBrandId = null;
+  const formEl = document.getElementById('brand-form-area');
+  if (formEl) formEl.innerHTML = '';
+}
+
+async function saveBrand() {
+  const name = document.getElementById('bf-name').value.trim();
+  if (!name) { toast('Name is required', false); return; }
+  const body = {
+    name,
+    description: document.getElementById('bf-desc').value.trim() || null,
+    logo_url: document.getElementById('bf-logo').value.trim() || null,
+    creator_profile_id: document.getElementById('bf-creator').value || null,
+    colors: {
+      primary: document.getElementById('bf-c-primary').value,
+      accent: document.getElementById('bf-c-accent').value,
+      dark: document.getElementById('bf-c-dark').value,
+      text: document.getElementById('bf-c-text').value,
+      textMuted: document.getElementById('bf-c-textMuted').value,
+      white: document.getElementById('bf-c-white').value,
+      gradientDark: document.getElementById('bf-c-gradientDark').value,
+      gradientAccent: document.getElementById('bf-c-gradientAccent').value,
+    },
+    fonts: {
+      heading: document.getElementById('bf-f-heading').value.trim(),
+      body: document.getElementById('bf-f-body').value.trim(),
+    },
+    voice_config: {
+      elevenlabs_voice_id: document.getElementById('bf-vc-voiceid').value.trim() || null,
+      stability: parseFloat(document.getElementById('bf-vc-stability').value) || 0.5,
+      similarityBoost: parseFloat(document.getElementById('bf-vc-similarity').value) || 0.75,
+    },
+  };
+  try {
+    if (_editingBrandId) {
+      await api('/profiles/brands/' + _editingBrandId, { method: 'PATCH', body: JSON.stringify(body) });
+      toast('Brand updated');
+    } else {
+      await api('/profiles/brands', { method: 'POST', body: JSON.stringify(body) });
+      toast('Brand created');
+    }
+    hideBrandForm();
+    renderBrands();
+  } catch (e) {
+    toast('Failed: ' + e.message, false);
+  }
+}
+
+async function editBrand(brandId) {
+  try {
+    const brand = await api('/profiles/brands/' + brandId);
+    showBrandForm(brand);
+    document.getElementById('brand-form-area').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    toast('Failed to load brand: ' + e.message, false);
+  }
+}
+
+async function deleteBrand(brandId, name) {
+  if (!confirm('Delete brand "' + name + '"? This cannot be undone.')) return;
+  try {
+    await api('/profiles/brands/' + brandId, { method: 'DELETE' });
+    toast('Brand deleted');
+    renderBrands();
+  } catch (e) {
+    toast('Failed: ' + e.message, false);
+  }
+}
+
+// ========== PRODUCT DEMO ==========
+
+let _demoRunId = null;
+let _demoPollInterval = null;
+
+async function renderProductDemo() {
+  const app = document.getElementById('app');
+  // Load brands for dropdown
+  let brandsOpts = '<option value="">None (use defaults)</option>';
+  try {
+    const brands = await api('/profiles/brands');
+    for (const b of brands) brandsOpts += '<option value="' + b.id + '">' + esc(b.name) + '</option>';
+  } catch (e) {}
+
+  app.innerHTML = '<div class="section">'
+    + '<h2>Product Demo Video</h2>'
+    + '<p style="color:var(--muted);margin-bottom:20px">Generate a product demo video from product info. Uses the ProductDemo Remotion template with TTS voiceover.</p>'
+    + '<div class="card" style="max-width:700px">'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+    + '<div><label style="font-size:11px;color:var(--muted)">Product Name *</label><input id="pd-name" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" placeholder="KMBoards"></div>'
+    + '<div><label style="font-size:11px;color:var(--muted)">Tagline *</label><input id="pd-tagline" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" placeholder="AI-powered agency boards"></div>'
+    + '</div>'
+    + '<div style="margin-top:12px"><label style="font-size:11px;color:var(--muted)">Problem Statement</label><textarea id="pd-problem" rows="2" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px;resize:vertical" placeholder="Agencies waste hours on manual content planning..."></textarea></div>'
+    + '<div style="margin-top:12px"><label style="font-size:11px;color:var(--muted)">Features (one per line)</label><textarea id="pd-features" rows="4" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px;resize:vertical" placeholder="AI content generation\nSmart scheduling\nBrand consistency"></textarea></div>'
+    + '<div style="margin-top:12px"><label style="font-size:11px;color:var(--muted)">Screenshot URLs (one per line)</label><textarea id="pd-screenshots" rows="3" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px;resize:vertical" placeholder="https://example.com/screenshot1.png"></textarea></div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">'
+    + '<div><label style="font-size:11px;color:var(--muted)">Demo Video URL</label><input id="pd-video" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" placeholder="https://..."></div>'
+    + '<div><label style="font-size:11px;color:var(--muted)">CTA Text</label><input id="pd-cta" class="search-input" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px" value="zivraviv.com"></div>'
+    + '</div>'
+    + '<div style="margin-top:12px"><label style="font-size:11px;color:var(--muted)">Brand Profile</label><select id="pd-brand" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:6px">' + brandsOpts + '</select></div>'
+    + '<div style="margin-top:20px;display:flex;gap:12px;align-items:center">'
+    + '<button class="btn btn-primary" id="pd-generate-btn" onclick="generateProductDemo(this)">Generate Demo Video</button>'
+    + '<span id="pd-status" style="font-size:12px;color:var(--muted)"></span>'
+    + '</div>'
+    + '<div id="pd-progress" style="margin-top:12px"></div>'
+    + '<div id="pd-results" style="margin-top:20px"></div>'
+    + '</div></div>';
+}
+
+async function generateProductDemo(btn) {
+  const name = document.getElementById('pd-name').value.trim();
+  const tagline = document.getElementById('pd-tagline').value.trim();
+  if (!name || !tagline) { toast('Product name and tagline are required', false); return; }
+
+  const features = document.getElementById('pd-features').value.trim().split('\\n').filter(Boolean);
+  const screenshots = document.getElementById('pd-screenshots').value.trim().split('\\n').filter(Boolean);
+
+  const body = {
+    product_name: name,
+    product_tagline: tagline,
+    product_problem: document.getElementById('pd-problem').value.trim() || null,
+    product_features: features,
+    screenshot_urls: screenshots,
+    demo_video_url: document.getElementById('pd-video').value.trim() || null,
+    cta_text: document.getElementById('pd-cta').value.trim() || 'zivraviv.com',
+  };
+  const brandId = document.getElementById('pd-brand').value;
+  if (brandId) body.brand_profile_id = brandId;
+
+  btn.disabled = true;
+  btn.textContent = 'Generating...';
+  const statusEl = document.getElementById('pd-status');
+  const progressEl = document.getElementById('pd-progress');
+  statusEl.textContent = 'Starting product demo pipeline...';
+  statusEl.style.color = 'var(--accent2)';
+  progressEl.innerHTML = '<div style="width:100%;height:6px;background:var(--border);border-radius:3px"><div id="pd-bar" style="height:100%;background:var(--accent2);width:10%;border-radius:3px;transition:width 0.5s ease"></div></div>';
+
+  try {
+    const resp = await fetch('/api/v1/videos/product-demo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Failed to start demo generation');
+
+    _demoRunId = data.run_id;
+    statusEl.textContent = 'Pipeline running (run: ' + data.run_id.substring(0, 8) + ')...';
+
+    const bar = document.getElementById('pd-bar');
+    let pct = 15;
+    _demoPollInterval = setInterval(() => {
+      pct = Math.min(pct + 3, 90);
+      if (bar) bar.style.width = pct + '%';
+    }, 3000);
+
+    // Poll for completion
+    let attempts = 0;
+    while (attempts < 120) {
+      await new Promise(r => setTimeout(r, 5000));
+      attempts++;
+      try {
+        const checkResp = await fetch('/api/v1/pipeline/' + data.run_id + '/status');
+        const status = await checkResp.json();
+        if (status.status === 'completed' || status.status === 'failed') {
+          clearInterval(_demoPollInterval);
+          if (bar) bar.style.width = '100%';
+          if (status.status === 'completed') {
+            statusEl.textContent = 'Demo video generated!';
+            statusEl.style.color = 'var(--green)';
+            // Show results
+            const resultsEl = document.getElementById('pd-results');
+            const ctx = status.context || {};
+            const videos = ctx.video_assets || [];
+            if (videos.length > 0) {
+              let rhtml = '<h3 style="margin-bottom:12px">Generated Videos</h3><div class="grid">';
+              for (const v of videos) {
+                rhtml += '<div class="card"><video src="' + esc(v.url || v.video_url || '') + '" controls style="width:100%;border-radius:6px;margin-bottom:8px"></video>';
+                rhtml += '<div style="font-size:11px;color:var(--muted)">' + esc(v.template_name || v.resolution || '') + '</div></div>';
+              }
+              rhtml += '</div>';
+              resultsEl.innerHTML = rhtml;
+            } else {
+              resultsEl.innerHTML = '<div class="empty">Pipeline completed but no video assets found. Check pipeline logs.</div>';
+            }
+          } else {
+            statusEl.textContent = 'Generation failed: ' + (status.error || 'Unknown error');
+            statusEl.style.color = 'var(--red)';
+          }
+          break;
+        }
+        // Update status text with agent info if available
+        if (status.current_agent) {
+          statusEl.textContent = 'Running ' + status.current_agent + '...';
+        }
+      } catch (e) {}
+    }
+  } catch (e) {
+    if (_demoPollInterval) clearInterval(_demoPollInterval);
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.style.color = 'var(--red)';
+    progressEl.innerHTML = '';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Generate Demo Video';
+}
+
 // Router
 function render() {
-  const map = { week: renderWeek, guides: renderGuides, topic: renderTopic, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp };
+  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, topic: renderTopic, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, brands: renderBrands };
   updateBreadcrumb(null);
   (map[currentTab] || renderGenerate)();
 }

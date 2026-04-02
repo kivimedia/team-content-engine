@@ -28,6 +28,134 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/narration", tags=["narration"])
 
 
+# --- TTS (ElevenLabs) ---
+
+
+@router.get("/tts-voices")
+async def list_tts_voices() -> dict:
+    """List available ElevenLabs voices."""
+    if not settings.elevenlabs_api_key:
+        return {"configured": False, "voices": [], "message": "ElevenLabs API key not configured"}
+    from tce.services.tts import TTSService
+    svc = TTSService(api_key=settings.elevenlabs_api_key, model=settings.elevenlabs_model)
+    voices = await svc.list_voices()
+    return {"configured": True, "voices": voices, "default_voice_id": settings.elevenlabs_voice_id}
+
+
+class TTSPreviewRequest(BaseModel):
+    text: str
+    voice_id: str | None = None
+    script_id: str | None = None
+
+
+@router.post("/tts-preview")
+async def tts_preview(request: TTSPreviewRequest, db: AsyncSession = Depends(get_db)) -> dict:
+    """Generate a short TTS audio clip for preview."""
+    if not settings.elevenlabs_api_key:
+        raise HTTPException(status_code=400, detail="ElevenLabs API key not configured in settings")
+    from tce.services.tts import TTSService
+    svc = TTSService(api_key=settings.elevenlabs_api_key, model=settings.elevenlabs_model)
+    voice_id = request.voice_id or settings.elevenlabs_voice_id
+    if not voice_id:
+        raise HTTPException(status_code=400, detail="No voice_id provided and no default configured")
+
+    # Truncate preview to first 200 chars
+    preview_text = request.text[:200]
+    run_id = uuid.uuid4()
+    result = await svc.generate(
+        segments=[{"narratorText": preview_text}],
+        voice_id=voice_id,
+        run_id=run_id,
+    )
+
+    # Copy to remotion public dir for serving
+    remotion_path = settings.remotion_project_path
+    if not remotion_path:
+        remotion_path = str(Path(__file__).resolve().parents[4] / "remotion")
+    audio_dest_dir = Path(remotion_path) / "public" / "audio"
+    audio_dest_dir.mkdir(parents=True, exist_ok=True)
+    audio_filename = f"tts_preview_{run_id}.mp3"
+    audio_dest = audio_dest_dir / audio_filename
+    shutil.copy2(result.file_path, str(audio_dest))
+
+    return {
+        "audio_url": f"/api/v1/narration/audio/{audio_filename}",
+        "duration_seconds": result.duration_seconds,
+        "voice_id": voice_id,
+        "cost_estimate_usd": result.cost_estimate_usd,
+    }
+
+
+@router.post("/scripts/{script_id}/tts-generate")
+async def generate_tts_for_script(
+    script_id: str,
+    voice_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Generate full voiceover for all segments in a script using ElevenLabs."""
+    if not settings.elevenlabs_api_key:
+        raise HTTPException(status_code=400, detail="ElevenLabs API key not configured")
+    ns = await db.get(NarrationScript, uuid.UUID(script_id))
+    if not ns:
+        raise HTTPException(status_code=404, detail="NarrationScript not found")
+    if not ns.segments:
+        raise HTTPException(status_code=400, detail="Script has no segments")
+
+    from tce.services.tts import TTSService
+    svc = TTSService(api_key=settings.elevenlabs_api_key, model=settings.elevenlabs_model)
+    vid = voice_id or settings.elevenlabs_voice_id
+    if not vid:
+        raise HTTPException(status_code=400, detail="No voice_id provided and no default configured")
+
+    run_id = ns.pipeline_run_id or uuid.uuid4()
+    result, timed_segments = await svc.generate_with_timestamps(
+        segments=ns.segments,
+        voice_id=vid,
+        run_id=run_id,
+    )
+
+    # Copy audio to remotion public
+    remotion_path = settings.remotion_project_path
+    if not remotion_path:
+        remotion_path = str(Path(__file__).resolve().parents[4] / "remotion")
+    audio_dest_dir = Path(remotion_path) / "public" / "audio"
+    audio_dest_dir.mkdir(parents=True, exist_ok=True)
+    audio_filename = f"{script_id}.mp3"
+    audio_dest = audio_dest_dir / audio_filename
+    shutil.copy2(result.file_path, str(audio_dest))
+
+    # Update script
+    ns.audio_file_path = str(audio_dest)
+    ns.audio_format = "mp3"
+    ns.audio_duration_sec = result.duration_seconds
+    ns.segments = timed_segments
+    ns.alignment_method = "tts_auto"
+    ns.status = "aligned"
+    await db.commit()
+
+    return {
+        "status": "aligned",
+        "audio_url": f"/api/v1/narration/audio/{audio_filename}",
+        "duration_seconds": result.duration_seconds,
+        "segments": timed_segments,
+        "cost_estimate_usd": result.cost_estimate_usd,
+        "voice_id": vid,
+    }
+
+
+@router.get("/audio/{filename}")
+async def serve_audio(filename: str):
+    """Serve audio files from remotion public/audio/."""
+    from fastapi.responses import FileResponse
+    remotion_path = settings.remotion_project_path
+    if not remotion_path:
+        remotion_path = str(Path(__file__).resolve().parents[4] / "remotion")
+    audio_path = Path(remotion_path) / "public" / "audio" / filename
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    return FileResponse(str(audio_path), media_type="audio/mpeg")
+
+
 def _get_alignment_service():
     from tce.services.audio_alignment import AudioAlignmentService
     return AudioAlignmentService(
@@ -157,6 +285,24 @@ async def generate_script(
 
     if request.style_override:
         context["style_override"] = request.style_override
+
+    # Load founder voice profile for script voice matching
+    from tce.models.founder_voice_profile import FounderVoiceProfile
+    fv_result = await db.execute(
+        select(FounderVoiceProfile).order_by(
+            FounderVoiceProfile.created_at.desc()
+        ).limit(1)
+    )
+    founder_voice = fv_result.scalar_one_or_none()
+    if founder_voice:
+        context["founder_voice"] = {
+            "recurring_themes": founder_voice.recurring_themes or [],
+            "values_and_beliefs": founder_voice.values_and_beliefs or [],
+            "taboos": founder_voice.taboos or [],
+            "tone_range": founder_voice.tone_range or {},
+            "humor_type": founder_voice.humor_type,
+            "metaphor_families": founder_voice.metaphor_families or [],
+        }
 
     # Run ScriptAgent
     from tce.agents.script_agent import ScriptAgent
