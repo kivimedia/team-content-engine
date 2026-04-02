@@ -38,7 +38,11 @@ async def list_tts_voices() -> dict:
         return {"configured": False, "voices": [], "message": "ElevenLabs API key not configured"}
     from tce.services.tts import TTSService
     svc = TTSService(api_key=settings.elevenlabs_api_key, model=settings.elevenlabs_model)
-    voices = await svc.list_voices()
+    try:
+        voices = await svc.list_voices()
+    except Exception as exc:
+        logger.warning("tts.list_voices_failed", error=str(exc)[:200])
+        return {"configured": True, "voices": [], "default_voice_id": settings.elevenlabs_voice_id, "message": "Voice listing unavailable - API key may lack voices_read permission. TTS generation still works."}
     return {"configured": True, "voices": voices, "default_voice_id": settings.elevenlabs_voice_id}
 
 
