@@ -6538,7 +6538,7 @@ function showBrandForm(brand) {
 }
 
 function _colorInput(id, label, value) {
-  return '<div><label style="font-size:11px;color:var(--muted)">' + label + '</label><div style="display:flex;gap:6px;align-items:center"><input type="color" id="' + id + '" value="' + value + '" style="width:36px;height:30px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:transparent"><input type="text" id="' + id + '-hex" value="' + value + '" style="width:80px;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:4px 6px;border-radius:4px;font-size:11px" oninput="document.getElementById(\'' + id + '\').value=this.value" onchange="document.getElementById(\'' + id + '\').value=this.value"></div></div>';
+  return '<div><label style="font-size:11px;color:var(--muted)">' + label + '</label><div style="display:flex;gap:6px;align-items:center"><input type="color" id="' + id + '" value="' + value + '" style="width:36px;height:30px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:transparent"><input type="text" id="' + id + '-hex" value="' + value + '" style="width:80px;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:4px 6px;border-radius:4px;font-size:11px" oninput="document.getElementById(\\'' + id + '\\').value=this.value" onchange="document.getElementById(\\'' + id + '\\').value=this.value"></div></div>';
 }
 
 async function _loadCreatorDropdown(selectedId) {
