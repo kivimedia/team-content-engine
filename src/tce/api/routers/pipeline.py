@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import structlog
@@ -14,7 +14,8 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tce.db.session import get_db
+from tce.db.session import async_session, get_db
+from tce.models.pattern_template import PatternTemplate
 from tce.models.pipeline_run import PipelineRun
 from tce.orchestrator.engine import PipelineOrchestrator
 from tce.orchestrator.workflows import WORKFLOWS
@@ -326,7 +327,7 @@ async def generate_week(
                 # Ensure days have story_brief structure
                 for day in weekly_plan.get("days", []):
                     if "story_brief" not in day:
-                        day["story_brief"] = day
+                        day["story_brief"] = {k: v for k, v in day.items()}
 
             else:
                 status["phase"] = "planning"
@@ -418,7 +419,10 @@ async def generate_week(
                 for i, day_plan in enumerate(days_list):
                     day_num = day_plan.get("day_of_week", i)
                     entry_date = week_start + timedelta(days=day_num)
+                    # Extract story fields without circular refs
                     story = day_plan.get("story_brief") or day_plan
+                    # Build a flat dict - exclude story_brief to avoid circular reference
+                    story_flat = {k: v for k, v in story.items() if k != "story_brief"}
 
                     result = await cal_db.execute(
                         select(ContentCalendarEntry).where(
@@ -428,7 +432,7 @@ async def generate_week(
                     entry = result.scalar_one_or_none()
 
                     enriched_context = {
-                        **story,
+                        **story_flat,
                         "_weekly": {
                             "weekly_theme": weekly_theme,
                             "gift_theme": gift_theme,
@@ -471,7 +475,26 @@ async def generate_week(
             daily_steps = WORKFLOWS["daily_from_plan"]
             days = weekly_plan.get("days", [])
             day_run_ids: list[str] = []
+            day_package_ids: list[str] = []
             await _save()
+
+            # Pre-fetch active templates for resolving template_id in daily briefs
+            async with async_session() as tpl_db:
+                tpl_result = await tpl_db.execute(
+                    select(PatternTemplate).where(
+                        PatternTemplate.status.in_(["active", "provisional"])
+                    )
+                )
+                _templates_cache = [
+                    {
+                        "template_name": t.template_name,
+                        "template_family": t.template_family,
+                        "hook_formula": t.hook_formula,
+                        "body_formula": t.body_formula,
+                        "anti_patterns": t.anti_patterns,
+                    }
+                    for t in tpl_result.scalars().all()
+                ]
 
             for i, day_plan in enumerate(days):
                 day_num = day_plan.get("day_of_week", i)
@@ -500,7 +523,7 @@ async def generate_week(
                     _brief_keys = (
                         "topic", "thesis", "audience", "angle_type", "day_label",
                         "visual_job", "platform_notes", "desired_belief_shift",
-                        "evidence_requirements",
+                        "evidence_requirements", "template_id",
                     )
                     story_brief = {
                         k: _raw[k] for k in _brief_keys if k in _raw
@@ -516,6 +539,16 @@ async def generate_week(
                         "guide_title": gift_theme,
                         "connection_to_gift": day_plan.get("connection_to_gift", ""),
                     }
+
+                    # Resolve template name to full formulas for writers
+                    _tpl_name = story_brief.get("template_id")
+                    if _tpl_name and _templates_cache:
+                        _tpl_match = next(
+                            (t for t in _templates_cache if t["template_name"] == _tpl_name),
+                            None,
+                        )
+                        if _tpl_match:
+                            day_context["_resolved_template"] = _tpl_match
 
                     day_orch = PipelineOrchestrator(
                         steps=daily_steps,
@@ -542,68 +575,193 @@ async def generate_week(
 
                 _active_runs.pop(str(day_run_id), None)
                 day_run_ids.append(str(day_run_id))
+                # Collect PostPackage ID for script pre-generation
+                pkg_id = day_result.get("context", {}).get("_post_package_id")
+                if pkg_id:
+                    day_package_ids.append(str(pkg_id))
 
             status["day_run_ids"] = day_run_ids
             await _save()
 
-            # --- Phase 3: Build the weekly guide ---
-            status["phase"] = "building_guide"
-            status["phase_detail"] = "Building weekly guide from all 5 days..."
-            await _save()
+            # --- Phase 3: Build the weekly guide with quality gate ---
+            from tce.models.weekly_guide import WeeklyGuide
+            from tce.services.guide_assessor import (
+                MAX_ITERATIONS,
+                QUALITY_THRESHOLD,
+                assess_guide_content,
+                build_feedback_prompt,
+            )
 
-            guide_steps = WORKFLOWS["guide_only"]
-            guide_run_id = uuid.uuid4()
+            all_story_briefs = [d.get("story_brief", {}) for d in days]
+            guide_context = {
+                **request.context,
+                "weekly_theme": weekly_theme,
+                "gift_theme": gift_theme,
+                "weekly_keyword": weekly_keyword,
+                "story_briefs": all_story_briefs,
+                "weekly_plan": weekly_plan,
+            }
 
-            async with async_session() as guide_db:
-                guide_record = PipelineRun(
-                    run_id=guide_run_id,
-                    workflow="guide_only",
-                    status="running",
-                    started_at=datetime.utcnow(),
-                )
-                guide_db.add(guide_record)
-                await guide_db.commit()
-                guide_record_id = guide_record.id
+            best_composite = 0.0
+            guide_id_str = None
 
-                # Collect all story briefs for the guide
-                all_story_briefs = [d.get("story_brief", {}) for d in days]
-
-                guide_context = {
-                    **request.context,
-                    "weekly_theme": weekly_theme,
-                    "gift_theme": gift_theme,
-                    "weekly_keyword": weekly_keyword,
-                    "story_briefs": all_story_briefs,
-                    "weekly_plan": weekly_plan,
-                }
-
-                guide_orch = PipelineOrchestrator(
-                    steps=guide_steps,
-                    db=guide_db,
-                    settings=settings,
-                    run_id=guide_run_id,
-                )
-                _active_runs[str(guide_run_id)] = guide_orch
-
-                guide_result = await guide_orch.run(guide_context)
-
-            async with async_session() as bk_db:
-                guide_record = await bk_db.get(PipelineRun, guide_record_id)
-                if guide_record:
-                    has_failures = any(
-                        v == "failed" for v in guide_result.get("step_status", {}).values()
+            for attempt in range(1, MAX_ITERATIONS + 1):
+                status["phase"] = "building_guide"
+                if attempt == 1:
+                    status["phase_detail"] = f"Building weekly guide (attempt {attempt}/{MAX_ITERATIONS})..."
+                else:
+                    status["phase_detail"] = (
+                        f"Reiterating guide (attempt {attempt}/{MAX_ITERATIONS}, "
+                        f"previous score: {best_composite:.1f}/10)..."
                     )
-                    guide_record.status = "failed" if has_failures else "completed"
-                    guide_record.completed_at = datetime.utcnow()
-                    guide_record.step_results = guide_result.get("step_status", {})
-                    await bk_db.commit()
+                await _save()
 
-            _active_runs.pop(str(guide_run_id), None)
+                guide_steps = WORKFLOWS["guide_only"]
+                guide_run_id = uuid.uuid4()
+
+                async with async_session() as guide_db:
+                    guide_record = PipelineRun(
+                        run_id=guide_run_id,
+                        workflow="guide_only",
+                        status="running",
+                        started_at=datetime.utcnow(),
+                    )
+                    guide_db.add(guide_record)
+                    await guide_db.commit()
+                    guide_record_id = guide_record.id
+
+                    guide_orch = PipelineOrchestrator(
+                        steps=guide_steps,
+                        db=guide_db,
+                        settings=settings,
+                        run_id=guide_run_id,
+                    )
+                    _active_runs[str(guide_run_id)] = guide_orch
+                    guide_result = await guide_orch.run(guide_context)
+
+                async with async_session() as bk_db:
+                    guide_record = await bk_db.get(PipelineRun, guide_record_id)
+                    if guide_record:
+                        has_failures = any(
+                            v == "failed" for v in guide_result.get("step_status", {}).values()
+                        )
+                        guide_record.status = "failed" if has_failures else "completed"
+                        guide_record.completed_at = datetime.utcnow()
+                        guide_record.step_results = guide_result.get("step_status", {})
+                        await bk_db.commit()
+
+                _active_runs.pop(str(guide_run_id), None)
+
+                # Get the saved guide ID
+                guide_id_str = guide_result.get("context", {}).get("_weekly_guide_id")
+                if not guide_id_str:
+                    logger.warning("generate_week.no_guide_id", attempt=attempt)
+                    break
+
+                # Assess quality
+                status["phase_detail"] = f"Assessing guide quality (attempt {attempt})..."
+                await _save()
+
+                async with async_session() as assess_db:
+                    guide_obj = await assess_db.get(
+                        WeeklyGuide, uuid.UUID(str(guide_id_str))
+                    )
+                    if not guide_obj or not guide_obj.markdown_content:
+                        logger.warning("generate_week.guide_not_found", attempt=attempt)
+                        break
+
+                    try:
+                        scores = await assess_guide_content(
+                            markdown_content=guide_obj.markdown_content,
+                            guide_title=guide_obj.guide_title,
+                            settings=settings,
+                            db=assess_db,
+                        )
+                    except Exception as ae:
+                        logger.exception("generate_week.assess_failed", attempt=attempt)
+                        scores = {"error": str(ae), "composite": 0}
+
+                    composite = scores.get("composite", 0.0)
+                    best_composite = composite
+
+                    # Update guide with assessment
+                    history = guide_obj.assessment_history or []
+                    history.append({"iteration": attempt, **scores})
+                    guide_obj.assessment_history = history
+                    guide_obj.iteration_count = attempt
+                    guide_obj.quality_scores = scores
+
+                    if composite >= QUALITY_THRESHOLD:
+                        guide_obj.quality_gate_passed = True
+                        await assess_db.commit()
+                        status["phase_detail"] = (
+                            f"Guide passed quality gate! Score: {composite:.1f}/10 "
+                            f"(attempt {attempt})"
+                        )
+                        await _save()
+                        break
+                    elif attempt == MAX_ITERATIONS:
+                        guide_obj.quality_gate_passed = False
+                        await assess_db.commit()
+                        status["phase_detail"] = (
+                            f"Guide capped at {MAX_ITERATIONS} iterations. "
+                            f"Best score: {composite:.1f}/10."
+                        )
+                        await _save()
+                    else:
+                        guide_obj.quality_gate_passed = None
+                        await assess_db.commit()
+                        # Build feedback for next iteration
+                        feedback = build_feedback_prompt(scores, attempt)
+                        guide_context["_quality_feedback"] = feedback
+                        guide_context["_existing_guide_id"] = str(guide_id_str)
+                        status["phase_detail"] = (
+                            f"Guide scored {composite:.1f}/10 (below {QUALITY_THRESHOLD}). "
+                            f"Reiterating..."
+                        )
+                        await _save()
+
             status["guide_run_id"] = str(guide_run_id)
+
+            # --- Phase 4: Pre-generate scripts for all days ---
+            if day_package_ids:
+                status["phase"] = "scripts"
+                status["phase_detail"] = (
+                    f"Pre-generating narration scripts for {len(day_package_ids)} days..."
+                )
+                await _save()
+
+                from tce.api.routers.narration import GenerateScriptRequest, generate_script
+
+                for si, pkg_id in enumerate(day_package_ids):
+                    status["phase_detail"] = (
+                        f"Generating script {si + 1}/{len(day_package_ids)}..."
+                    )
+                    await _save()
+                    try:
+                        async with async_session() as script_db:
+                            req = GenerateScriptRequest(package_id=pkg_id)
+                            await generate_script(req, script_db)
+                        logger.info(
+                            "script_pregeneration.done",
+                            day=si,
+                            package_id=pkg_id,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "script_pregeneration.failed",
+                            day=si,
+                            package_id=pkg_id,
+                            error=str(e),
+                        )
+                        # Non-fatal - script can still be generated on-demand
 
             # --- Done ---
             status["phase"] = "completed"
-            status["phase_detail"] = "All 5 days + guide generated successfully"
+            status["phase_detail"] = (
+                f"All {len(day_package_ids) or 5} days + guide + scripts generated. "
+                f"Guide score: {best_composite:.1f}/10"
+            )
             status["status"] = "completed"
             await _save()
 
@@ -628,6 +786,7 @@ async def generate_week(
         "gift_theme": None,
         "weekly_keyword": None,
         "error": None,
+        "started_at": datetime.now(timezone.utc).isoformat(),
     }
 
     # Persist initial state to DB immediately
@@ -680,7 +839,10 @@ async def get_week_generation_status(
     Checks in-memory cache first, falls back to DB for cross-restart recovery.
     """
     if week_id in _week_generation:
-        return _week_generation[week_id]
+        status = dict(_week_generation[week_id])  # shallow copy for enrichment
+        # Enrich with live agent-level detail from active orchestrators
+        status = _enrich_week_status(status)
+        return status
 
     # Fall back to DB
     db_status = await _load_week_status(week_id, db)
@@ -694,6 +856,50 @@ async def get_week_generation_status(
         return db_status
 
     raise HTTPException(status_code=404, detail="Week generation not found")
+
+
+def _enrich_week_status(status: dict[str, Any]) -> dict[str, Any]:
+    """Enrich week generation status with live agent step data.
+
+    Inlines step_status, step_logs, and current_agents from the active
+    orchestrator so the frontend doesn't need a separate sub-poll.
+    """
+    phase = status.get("phase", "")
+    current_day = status.get("current_day", -1)
+    day_run_ids = status.get("day_run_ids", [])
+
+    # During day generation - inline the current day's orchestrator status
+    if phase == "generating_days" and current_day >= 0:
+        run_id = None
+        if current_day < len(day_run_ids) and day_run_ids[current_day]:
+            run_id = day_run_ids[current_day]
+        if run_id and run_id in _active_runs:
+            inner = _active_runs[run_id].get_status()
+            step_status = inner.get("step_status", {})
+            step_logs = inner.get("step_logs", {})
+            status["day_step_status"] = step_status
+            # Last 3 log entries per agent (keeps payload small)
+            status["day_step_logs"] = {k: v[-3:] for k, v in step_logs.items()}
+            running = [k for k, v in step_status.items() if v == "running"]
+            status["current_agents"] = running
+
+    # During planning - inline the planner orchestrator status
+    elif phase == "planning":
+        planner_id = status.get("planner_run_id")
+        if planner_id and planner_id in _active_runs:
+            inner = _active_runs[planner_id].get_status()
+            status["planner_step_status"] = inner.get("step_status", {})
+            status["planner_step_logs"] = {k: v[-3:] for k, v in inner.get("step_logs", {}).items()}
+
+    # During guide building - inline the guide orchestrator status
+    elif phase == "building_guide":
+        guide_id = status.get("guide_run_id")
+        if guide_id and guide_id in _active_runs:
+            inner = _active_runs[guide_id].get_status()
+            status["guide_step_status"] = inner.get("step_status", {})
+            status["guide_step_logs"] = {k: v[-3:] for k, v in inner.get("step_logs", {}).items()}
+
+    return status
 
 
 # ---------------------------------------------------------------------------
@@ -1275,48 +1481,137 @@ async def brainstorm(
     request: BrainstormRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Conversational brainstorm about a content package.
+    """Senior Strategist brainstorm - rich context + web search + tool use.
 
-    If package_id is provided, loads the package and injects it as context.
-    Uses Haiku for fast, cheap responses. Stateless - frontend maintains history.
+    Loads full package context (brief, research, guide, template, posts).
+    Uses Sonnet with Claude tool_use for web search and package lookup.
     """
     from tce.models.post_package import PostPackage
+    from tce.models.research_brief import ResearchBrief
+    from tce.models.story_brief import StoryBrief
+    from tce.models.weekly_guide import WeeklyGuide
+    from tce.services.web_search import WebSearchService
 
-    system_parts = [
-        "You are a creative content strategist for Team Content Engine. "
-        "You help brainstorm ideas, refine copy, suggest angles, and improve content packages. "
-        "Be concise, creative, and actionable. No fluff."
-    ]
+    # --- Build rich context ---
+    context_parts: list[str] = []
 
+    pkg = None
     if request.package_id:
         try:
             pkg = await db.get(PostPackage, request.package_id)
-            if pkg:
-                pkg_context = []
-                if pkg.facebook_post:
-                    pkg_context.append(f"Facebook post:\n{pkg.facebook_post}")
-                if pkg.linkedin_post:
-                    pkg_context.append(f"LinkedIn post:\n{pkg.linkedin_post}")
-                if pkg.hook_variants:
-                    pkg_context.append(f"Hook variants: {', '.join(pkg.hook_variants[:5])}")
-                if pkg.cta_keyword:
-                    pkg_context.append(f"CTA keyword: {pkg.cta_keyword}")
-                if pkg.image_prompts:
-                    prompts = pkg.image_prompts if isinstance(pkg.image_prompts, list) else []
-                    names = [p.get("prompt_name", "unnamed") for p in prompts[:3]]
-                    pkg_context.append(f"Image concepts: {', '.join(names)}")
-
-                system_parts.append(
-                    "\n\nYou are discussing this content package:\n" + "\n\n".join(pkg_context)
-                )
         except Exception:
             logger.warning("brainstorm.package_load_failed", package_id=request.package_id)
 
-    system_prompt = "\n".join(system_parts)
+    if pkg:
+        # Posts
+        if pkg.facebook_post:
+            context_parts.append(f"FACEBOOK POST:\n{pkg.facebook_post}")
+        if pkg.linkedin_post:
+            context_parts.append(f"LINKEDIN POST:\n{pkg.linkedin_post}")
+        if pkg.hook_variants:
+            context_parts.append(f"HOOK VARIANTS:\n" + "\n".join(f"- {h}" for h in pkg.hook_variants))
+        if pkg.cta_keyword:
+            context_parts.append(f"CTA KEYWORD: {pkg.cta_keyword}")
+        if pkg.image_prompts:
+            prompts = pkg.image_prompts if isinstance(pkg.image_prompts, list) else []
+            names = [p.get("prompt_name", "unnamed") for p in prompts[:5]]
+            context_parts.append(f"IMAGE CONCEPTS: {', '.join(names)}")
 
-    # Build messages from history
-    messages = []
-    for msg in request.history[-20:]:  # Cap at 20 messages
+        # Story brief
+        if pkg.brief_id:
+            brief = await db.get(StoryBrief, pkg.brief_id)
+            if brief:
+                brief_lines = [f"STORY BRIEF:"]
+                for field in ("topic", "audience", "angle_type", "thesis", "desired_belief_shift", "evidence_requirements", "cta_goal", "visual_job"):
+                    val = getattr(brief, field, None)
+                    if val:
+                        brief_lines.append(f"  {field}: {val}")
+                if brief.house_voice_weights:
+                    brief_lines.append(f"  voice_weights: {json.dumps(brief.house_voice_weights)}")
+                context_parts.append("\n".join(brief_lines))
+
+        # Research brief
+        if pkg.research_brief_id:
+            research = await db.get(ResearchBrief, pkg.research_brief_id)
+            if research:
+                res_lines = ["RESEARCH BRIEF:"]
+                if research.verified_claims:
+                    res_lines.append(f"  Verified claims: {json.dumps(research.verified_claims)}")
+                if research.uncertain_claims:
+                    res_lines.append(f"  Uncertain claims: {json.dumps(research.uncertain_claims)}")
+                if research.source_refs:
+                    res_lines.append(f"  Sources: {json.dumps(research.source_refs)}")
+                if research.risk_flags:
+                    res_lines.append(f"  Risk flags: {json.dumps(research.risk_flags)}")
+                context_parts.append("\n".join(res_lines))
+
+        # Weekly guide
+        if pkg.weekly_guide_id:
+            guide = await db.get(WeeklyGuide, pkg.weekly_guide_id)
+            if guide:
+                guide_lines = [f"WEEKLY GUIDE: {guide.guide_title}"]
+                guide_lines.append(f"  Theme: {guide.weekly_theme}")
+                if guide.cta_keyword:
+                    guide_lines.append(f"  Guide CTA: {guide.cta_keyword}")
+                context_parts.append("\n".join(guide_lines))
+
+        # Template from quality_scores
+        qs = pkg.quality_scores or {}
+        tpl = qs.get("matched_template")
+        if tpl:
+            tpl_lines = [f"MATCHED TEMPLATE: {tpl.get('template_name', '?')} ({tpl.get('template_family', '?')})"]
+            if tpl.get("hook_formula"):
+                tpl_lines.append(f"  Hook formula: {tpl['hook_formula']}")
+            if tpl.get("body_formula"):
+                tpl_lines.append(f"  Body formula: {tpl['body_formula']}")
+            context_parts.append("\n".join(tpl_lines))
+
+        # Quality scores summary
+        if qs.get("overall_score"):
+            context_parts.append(f"QUALITY SCORE: {qs['overall_score']}")
+
+    context_block = "\n\n".join(context_parts) if context_parts else "(No package loaded)"
+
+    system_prompt = (
+        "You are the Senior Content Strategist for Team Content Engine - the highest-ranking "
+        "advisor on the team. You have full authority to:\n"
+        "- Search the web for facts, dates, statistics, and competitor analysis\n"
+        "- Access all content packages, briefs, research, templates, and guides\n"
+        "- Fact-check any claim before it goes into a post\n"
+        "- Suggest alternative angles backed by real data\n\n"
+        "Be concise, creative, and actionable. No fluff. When the operator asks about dates, "
+        "facts, statistics, or competitors - USE your web_search tool. Don't say 'I don't have access.' You DO.\n\n"
+        f"CURRENT PACKAGE CONTEXT:\n{context_block}"
+    )
+
+    # --- Define tools ---
+    tools = [
+        {
+            "name": "web_search",
+            "description": "Search the web for facts, dates, news, statistics, competitor analysis, or any external information. Use this whenever the user asks about something you need to verify or look up.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query"},
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "lookup_packages",
+            "description": "Look up recent content packages to see what else was generated. Useful for checking what topics were already covered or finding patterns.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "days_back": {"type": "integer", "description": "How many days back to look (default 7)", "default": 7},
+                },
+            },
+        },
+    ]
+
+    # --- Build messages from history ---
+    messages: list[dict[str, Any]] = []
+    for msg in request.history[-20:]:
         role = msg.get("role", "user")
         content = msg.get("content", "")
         if role in ("user", "assistant") and content:
@@ -1324,20 +1619,85 @@ async def brainstorm(
 
     messages.append({"role": "user", "content": request.message})
 
-    # Use Haiku for fast, cheap conversational responses
+    # --- Call Sonnet with tool_use ---
     import anthropic
 
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
     response = await client.messages.create(
-        model=settings.haiku_model,
-        max_tokens=1024,
+        model=settings.default_model,
+        max_tokens=2048,
         system=system_prompt,
         messages=messages,
+        tools=tools,
     )
 
-    reply = response.content[0].text if response.content else "I couldn't generate a response."
+    tool_calls_made: list[dict[str, Any]] = []
+    max_tool_rounds = 5
+
+    while response.stop_reason == "tool_use" and max_tool_rounds > 0:
+        max_tool_rounds -= 1
+        tool_results = []
+
+        for block in response.content:
+            if block.type == "tool_use":
+                if block.name == "web_search":
+                    query = block.input.get("query", "")
+                    logger.info("brainstorm.web_search", query=query)
+                    search_svc = WebSearchService()
+                    results = await search_svc.search(query, count=5)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(results[:5]),
+                    })
+                    tool_calls_made.append({"tool": "web_search", "query": query})
+
+                elif block.name == "lookup_packages":
+                    days = block.input.get("days_back", 7)
+                    logger.info("brainstorm.lookup_packages", days_back=days)
+                    cutoff = datetime.utcnow() - timedelta(days=days)
+                    pkg_result = await db.execute(
+                        select(PostPackage)
+                        .where(PostPackage.created_at >= cutoff)
+                        .order_by(PostPackage.created_at.desc())
+                        .limit(20)
+                    )
+                    recent_pkgs = pkg_result.scalars().all()
+                    summaries = []
+                    for rp in recent_pkgs:
+                        s = {"id": str(rp.id), "created": str(rp.created_at)}
+                        if rp.quality_scores and rp.quality_scores.get("matched_template"):
+                            s["template"] = rp.quality_scores["matched_template"].get("template_name")
+                        fb_preview = (rp.facebook_post or "")[:120]
+                        if fb_preview:
+                            s["fb_preview"] = fb_preview
+                        if rp.cta_keyword:
+                            s["cta"] = rp.cta_keyword
+                        summaries.append(s)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(summaries),
+                    })
+                    tool_calls_made.append({"tool": "lookup_packages", "days_back": days})
+
+        # Send tool results back for next round
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": tool_results})
+        response = await client.messages.create(
+            model=settings.default_model,
+            max_tokens=2048,
+            system=system_prompt,
+            messages=messages,
+            tools=tools,
+        )
+
+    reply = "".join(b.text for b in response.content if hasattr(b, "text"))
+    if not reply:
+        reply = "I couldn't generate a response."
 
     return {
         "reply": reply,
-        "model": settings.haiku_model,
+        "model": settings.default_model,
+        "tool_calls_made": tool_calls_made,
     }
