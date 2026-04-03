@@ -6469,7 +6469,7 @@ async function renderBrands() {
         const swatches = ['primary','accent','dark','text','gradientDark','gradientAccent']
           .map(k => colors[k] ? '<div style="width:20px;height:20px;border-radius:4px;background:' + esc(colors[k]) + ';border:1px solid var(--border);display:inline-block;margin-right:4px" title="' + k + ': ' + esc(colors[k]) + '"></div>' : '')
           .join('');
-        html += '<div class="card" style="cursor:pointer" onclick="editBrand(\'' + b.id + '\')">';
+        html += '<div class="card" style="cursor:pointer" onclick="editBrand(\\'' + b.id + '\\')">';
         html += '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
         html += '<div><h3 style="text-transform:none;margin:0 0 8px 0">' + esc(b.name) + '</h3>';
         if (b.description) html += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + esc(b.description) + '</div>';
@@ -6481,8 +6481,8 @@ async function renderBrands() {
         if (b.creator_profile_id && creatorMap[b.creator_profile_id]) html += '<div style="font-size:11px;color:var(--accent2);margin-top:4px">Creator: ' + esc(creatorMap[b.creator_profile_id]) + '</div>';
         if (b.voice_config && b.voice_config.elevenlabs_voice_id) html += '<div style="font-size:11px;color:var(--green);margin-top:4px">TTS Voice: ' + esc(b.voice_config.elevenlabs_voice_id) + '</div>';
         html += '<div style="margin-top:12px;display:flex;gap:8px">';
-        html += '<button class="btn btn-dim" onclick="event.stopPropagation();editBrand(\'' + b.id + '\')">Edit</button>';
-        html += '<button class="btn" style="color:var(--red)" onclick="event.stopPropagation();deleteBrand(\'' + b.id + '\',\'' + esc(b.name) + '\')">Delete</button>';
+        html += '<button class="btn btn-dim" onclick="event.stopPropagation();editBrand(\\'' + b.id + '\\')">Edit</button>';
+        html += '<button class="btn" style="color:var(--red)" onclick="event.stopPropagation();deleteBrand(\\'' + b.id + '\\',\\'' + esc(b.name) + '\\')">Delete</button>';
         html += '</div></div>';
       }
       html += '</div>';
