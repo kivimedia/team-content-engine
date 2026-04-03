@@ -173,6 +173,8 @@ img{background:var(--card);border-radius:4px}
 
 /* === CONTENT === */
 .post-preview{background:hsl(220 20% 8%);border:1px solid var(--border);border-radius:8px;padding:16px;margin:8px 0;white-space:pre-wrap;font-size:14px;line-height:1.7;max-height:300px;overflow-y:auto}
+.copy-icon-btn{position:absolute;top:8px;right:8px;background:none;border:1px solid transparent;border-radius:4px;cursor:pointer;font-size:16px;padding:4px 6px;opacity:0.4;transition:all 0.15s;z-index:2}
+.copy-icon-btn:hover{opacity:1;background:var(--card);border-color:var(--border)}
 .fb-btn{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border:1px solid var(--border);background:var(--primary-dim);color:var(--primary);cursor:pointer;border-radius:6px;font-size:11px;font-family:'JetBrains Mono',monospace;font-weight:500;vertical-align:middle;margin-left:6px;transition:all 0.15s}
 .fb-btn:hover{border-color:var(--primary);background:hsl(174 72% 52% / 0.2)}
 .fb-popover{position:absolute;z-index:100;background:var(--card);border:1px solid var(--primary);border-radius:8px;padding:12px;width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
@@ -2722,8 +2724,8 @@ function _renderPkgCard(p) {
       html += '<button onclick="showPostTab(this,\\'vid-' + pid + '\\');loadVideos(\\'' + p.id + '\\',\\'' + pid + '\\')">Videos</button>';
       html += '<button onclick="showPostTab(this,\\'scr-' + pid + '\\');loadScripts(\\'' + p.id + '\\',\\'' + pid + '\\')">Script</button>';
       html += '</div>';
-      html += '<div id="fb-' + pid + '" class="tab-pane"><div class="post-preview">' + esc(fbText || 'No Facebook post generated') + '</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-dim edit-toggle-fb" style="font-size:11px" onclick="toggleInlineEdit(\\'' + p.id + '\\',\\'fb\\',this)">Edit</button></div></div>';
-      html += '<div id="li-' + pid + '" class="tab-pane" style="display:none"><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-dim edit-toggle-li" style="font-size:11px" onclick="toggleInlineEdit(\\'' + p.id + '\\',\\'li\\',this)">Edit</button></div></div>';
+      html += '<div id="fb-' + pid + '" class="tab-pane" style="position:relative"><button class="copy-icon-btn" onclick="copyPaneText(this)" title="Copy to clipboard">&#128203;</button><div class="post-preview">' + esc(fbText || 'No Facebook post generated') + '</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-dim edit-toggle-fb" style="font-size:11px" onclick="toggleInlineEdit(\\'' + p.id + '\\',\\'fb\\',this)">Edit</button></div></div>';
+      html += '<div id="li-' + pid + '" class="tab-pane" style="display:none;position:relative"><button class="copy-icon-btn" onclick="copyPaneText(this)" title="Copy to clipboard">&#128203;</button><div class="post-preview">' + esc(liText || 'No LinkedIn post generated') + '</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-dim edit-toggle-li" style="font-size:11px" onclick="toggleInlineEdit(\\'' + p.id + '\\',\\'li\\',this)">Edit</button></div></div>';
       if (p.hook_variants?.length) {
         html += '<div id="hooks-' + pid + '" class="tab-pane" style="display:none">';
         const currentHook = (p.facebook_post || p.linkedin_post || '').split('\\n')[0];
@@ -2960,8 +2962,6 @@ function _renderPkgCard(p) {
       // Actions
       html += '<div class="btn-group" style="margin-top:12px">';
       if (p.approval_status === 'draft') {
-        html += '<button class="btn btn-green" onclick="approvePackage(\\'' + p.id + '\\')">Approve</button>';
-        html += '<button class="btn btn-red" onclick="rejectPackage(\\'' + p.id + '\\')">Reject</button>';
         html += '<button class="btn btn-dim" style="border-color:var(--blue);color:var(--blue)" onclick="schedulePublish(\\'' + p.id + '\\', \\'both\\')">Schedule</button>';
       } else if (p.approval_status === 'approved') {
         html += '<span style="color:var(--green);font-weight:600;font-size:13px;padding:8px 0">Approved</span>';
@@ -2971,17 +2971,8 @@ function _renderPkgCard(p) {
         html += '<button class="btn btn-dim" onclick="resetPackageStatus(\\'' + p.id + '\\')">Reset to Draft</button>';
       }
       html += '<button class="btn btn-dim" style="border-color:var(--accent2);color:var(--accent2)" onclick="loadPackageContext(\\'' + p.id + '\\', this)">Show Context</button>';
-      html += '<button class="btn btn-dim" onclick="showFeedbackForm(\\'' + p.id + '\\', this)">Feedback</button>';
-      html += '<button class="btn btn-dim" style="border-color:var(--accent)" onclick="showRevisedCopyForm(\\'' + p.id + '\\', this)">Edit & Submit Copy</button>';
       html += '<button class="btn btn-dim" style="border-color:#a78bfa;color:#a78bfa" onclick="openBrainstorm(\\'' + p.id + '\\')">Brainstorm</button>';
-      html += '<button class="btn btn-dim" style="border-color:var(--yellow);color:var(--yellow)" onclick="aiRevisePost(\\'' + p.id + '\\', \\'fb\\')">AI Revise FB</button>';
-      html += '<button class="btn btn-dim" style="border-color:var(--yellow);color:var(--yellow)" onclick="aiRevisePost(\\'' + p.id + '\\', \\'li\\')">AI Revise LI</button>';
-      html += '<button class="el-fb-btn" title="Regenerate FB post with feedback" onclick="elementFeedback(\\'' + p.id + '\\',\\'facebook_post\\',this)">FB Feedback</button>';
-      html += '<button class="el-fb-btn" title="Regenerate LI post with feedback" onclick="elementFeedback(\\'' + p.id + '\\',\\'linkedin_post\\',this)">LI Feedback</button>';
-      html += '<button class="el-fb-btn" title="Regenerate hooks with feedback" onclick="elementFeedback(\\'' + p.id + '\\',\\'hooks\\',this)">Hook Feedback</button>';
-      html += '<button class="btn btn-dim" style="border-color:var(--primary);color:var(--primary)" onclick="addToStack(\\'' + p.id + '\\')">Add to Stack</button>';
-      html += '<button class="btn btn-dim" onclick="copyPost(\\'' + pid + '\\', this, \\'Facebook post\\')">Copy FB Post</button>';
-      html += '<button class="btn btn-dim" onclick="copyPost(\\'li-' + pid + '\\', this, \\'LinkedIn post\\')">Copy LI Post</button>';
+      html += '<button class="btn btn-dim" style="border-color:var(--yellow);color:var(--yellow)" onclick="aiReviseActive(\\'' + p.id + '\\', this)">AI Revise</button>';
       if (p.is_archived) {
         html += '<button class="btn btn-dim" onclick="unarchivePackage(\\'' + p.id + '\\')">Unarchive</button>';
       } else {
@@ -3833,6 +3824,29 @@ function copyPost(pid, btn, label) {
     }
     toast((label || 'Post') + ' copied to clipboard');
   }
+}
+
+function copyPaneText(btn) {
+  const pane = btn.closest('.tab-pane');
+  if (!pane) return;
+  const preview = pane.querySelector('.post-preview');
+  clipCopy(preview ? preview.textContent : pane.textContent);
+  const orig = btn.innerHTML;
+  btn.innerHTML = '&#10003;';
+  btn.style.opacity = '1';
+  btn.style.color = 'var(--green)';
+  setTimeout(() => { btn.innerHTML = orig; btn.style.opacity = ''; btn.style.color = ''; }, 1500);
+  toast('Copied to clipboard');
+}
+
+function aiReviseActive(packageId, btn) {
+  const card = btn.closest('.pkg-card');
+  if (!card) return aiRevisePost(packageId, 'fb');
+  const activeTab = card.querySelector('.tabs button.active');
+  const label = activeTab?.textContent?.trim().toLowerCase() || '';
+  if (label.startsWith('linkedin')) return aiRevisePost(packageId, 'li');
+  if (label.startsWith('hook')) return elementFeedback(packageId, 'hooks', btn);
+  return aiRevisePost(packageId, 'fb');
 }
 
 // CORPUS TAB
