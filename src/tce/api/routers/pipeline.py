@@ -496,6 +496,30 @@ async def generate_week(
                     for t in tpl_result.scalars().all()
                 ]
 
+            # Load founder voice profile for daily writers
+            _founder_voice: dict = {}
+            try:
+                from tce.models.founder_voice_profile import FounderVoiceProfile
+
+                async with async_session() as fv_db:
+                    fv_result = await fv_db.execute(
+                        select(FounderVoiceProfile).order_by(
+                            FounderVoiceProfile.created_at.desc()
+                        ).limit(1)
+                    )
+                    fv = fv_result.scalar_one_or_none()
+                    if fv:
+                        _founder_voice = {
+                            "recurring_themes": fv.recurring_themes or [],
+                            "values_and_beliefs": fv.values_and_beliefs or [],
+                            "taboos": fv.taboos or [],
+                            "tone_range": fv.tone_range or {},
+                            "humor_type": fv.humor_type,
+                            "metaphor_families": fv.metaphor_families or [],
+                        }
+            except Exception:
+                pass  # Non-critical - proceed without voice profile
+
             for i, day_plan in enumerate(days):
                 day_num = day_plan.get("day_of_week", i)
                 status["phase_detail"] = f"Generating day {i + 1}/5 (day_of_week={day_num})..."
@@ -538,6 +562,7 @@ async def generate_week(
                         "gift_theme": gift_theme,
                         "guide_title": gift_theme,
                         "connection_to_gift": day_plan.get("connection_to_gift", ""),
+                        "founder_voice": _founder_voice,
                     }
 
                     # Resolve template name to full formulas for writers
