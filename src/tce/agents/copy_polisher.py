@@ -117,6 +117,7 @@ class CopyPolisher(AgentBase):
         response = await self._call_llm(
             messages=[{"role": "user", "content": prompt}],
             system=SYSTEM_PROMPT,
+            max_tokens=4096,
         )
 
         text = self._extract_text(response)
