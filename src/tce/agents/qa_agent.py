@@ -34,6 +34,7 @@ HARD RULES:
 - If cta_honesty < 9: CANNOT pass
 - Be specific in justifications
 - If unsure about a score, round DOWN
+- EVIDENCE CITATION: When scoring 'evidence_completeness' or providing 'revision_suggestions' related to evidence, you MUST include the actual URLs/links from the RESEARCH BRIEF that support the claim or provide the exact link the team should use to find the missing evidence. Do not just say "evidence is needed"; say "Evidence needed for [X], refer to [Link from Research Brief]".
 
 OUTPUT FORMAT: JSON with dimension_scores, composite_score, pass_status, \
 blocking_issues, revision_suggestions, humanitarian_flags
