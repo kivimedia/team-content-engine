@@ -3182,6 +3182,7 @@ async function loadVideos(packageId, pid) {
     videos.forEach(v => {
       const card = document.createElement('div');
       const selected = v.operator_selected ? 'var(--green)' : 'var(--border)';
+      card.className = 'vid-card';
       card.style.cssText = 'background:#111318;border:2px solid ' + selected + ';border-radius:8px;padding:16px';
       let inner = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
       inner += '<div style="font-weight:600;font-size:14px;color:var(--accent2)">' + esc(v.template_name.replace(/_/g, ' ')) + '</div>';
@@ -3220,9 +3221,10 @@ async function selectVideo(videoId, selected, btn) {
       body: JSON.stringify({ selected })
     });
     btn.textContent = selected ? '\\u2713 Selected' : '\\u2713 Select';
-    btn.closest('div[style*="background:#111318"]').style.borderColor = selected ? 'var(--green)' : 'var(--border)';
+    const card = btn.closest('.vid-card');
+    if (card) card.style.borderColor = selected ? 'var(--green)' : 'var(--border)';
     toast(selected ? 'Video selected' : 'Video deselected');
-  } catch(e) { toast('Error: ' + e.message); }
+  } catch(e) { toast('Error: ' + e.message, false); }
 }
 
 async function generateVideos(packageId, btn) {
