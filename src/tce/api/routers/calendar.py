@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import async_session, get_db
 from tce.models.content_calendar import ContentCalendarEntry
+from tce.models.guide_option import GuideOption
+from tce.models.slot_option import SlotOption
 from tce.models.weekly_plan import WeeklyPlan
 from tce.schemas.content_calendar import (
     ContentCalendarRead,
@@ -381,8 +383,14 @@ async def plan_week_deep(
                     await _save_plan_to_db(plan_id, status)
                     return
 
-                # Create/update calendar entries
+                # Create/update calendar entries + slot options
                 week_plan_uuid = uuid.uuid4()
+                guide_opts_raw = weekly_plan.get("guide_options", [])
+                # Backward compat: derive gift_theme from guide_options[0]
+                first_guide = guide_opts_raw[0] if guide_opts_raw else {}
+                gift_theme = first_guide.get("title", weekly_plan.get("gift_theme", ""))
+                gift_sections = first_guide.get("sections", weekly_plan.get("gift_sections", []))
+
                 for day_plan in weekly_plan.get("days", []):
                     day_num = day_plan.get("day_of_week", 0)
                     entry_date = request.week_start + timedelta(days=day_num)
@@ -394,13 +402,20 @@ async def plan_week_deep(
                     )
                     entry = existing.scalar_one_or_none()
 
-                    story_brief = day_plan.get("story_brief", day_plan)
+                    # Handle new multi-option format or old flat format
+                    options = day_plan.get("options", [])
+                    if not options and day_plan.get("topic"):
+                        options = [day_plan]  # Backward compat: single option
+
+                    # Primary option (index 0) is the default selection
+                    primary = options[0] if options else day_plan
+                    story_brief = primary
                     enriched_context = {
                         **story_brief,
                         "_weekly": {
                             "weekly_theme": weekly_plan.get("weekly_theme", ""),
-                            "gift_theme": weekly_plan.get("gift_theme", ""),
-                            "gift_sections": weekly_plan.get("gift_sections", []),
+                            "gift_theme": gift_theme,
+                            "gift_sections": gift_sections,
                             "cta_keyword": weekly_plan.get("cta_keyword", ""),
                         },
                     }
@@ -422,6 +437,41 @@ async def plan_week_deep(
                             weekly_plan_id=week_plan_uuid,
                         )
                         bg_db.add(entry)
+
+                    await bg_db.flush()  # Get entry.id for slot options
+
+                    # Save slot options for this day
+                    # First, delete any old options for this entry
+                    old_opts = await bg_db.execute(
+                        select(SlotOption).where(
+                            SlotOption.calendar_entry_id == entry.id
+                        )
+                    )
+                    for old in old_opts.scalars().all():
+                        await bg_db.delete(old)
+
+                    for idx, opt in enumerate(options):
+                        slot = SlotOption(
+                            calendar_entry_id=entry.id,
+                            option_index=idx,
+                            topic=opt.get("topic", ""),
+                            angle_type=opt.get("angle_type", day_plan.get("angle_type", "")),
+                            plan_context=opt,
+                            is_selected=(idx == 0),
+                        )
+                        bg_db.add(slot)
+
+                # Save guide options
+                for gidx, gopt in enumerate(guide_opts_raw):
+                    bg_db.add(GuideOption(
+                        weekly_plan_id=week_plan_uuid,
+                        option_index=gidx,
+                        title=gopt.get("title", ""),
+                        subtitle=gopt.get("subtitle"),
+                        sections=gopt.get("sections"),
+                        rationale=gopt.get("rationale"),
+                        is_selected=(gidx == 0),
+                    ))
 
                 await bg_db.commit()
 
@@ -560,11 +610,30 @@ async def ai_revise_field(
         api_key = api_key.get_secret_value()
     client = anthropic.AsyncAnthropic(api_key=api_key)
 
-    system_prompt = (
+    # Detect if this is a full post field (needs more tokens + humanization)
+    is_post_field = any(kw in field_name.lower() for kw in ("_post", "post_", "caption", "body", "content"))
+
+    base_rules = (
         "You are a content strategist for a B2B social media team. "
         "The operator wants you to revise a specific field in their weekly content plan. "
-        "Apply the feedback precisely. Return ONLY the revised text - no explanation, no quotes, no markdown."
+        "Apply the feedback precisely. Return ONLY the revised text - no explanation, no quotes, no markdown. "
+        "NEVER use emdashes or double dashes. Use a single dash (-) instead."
     )
+
+    if is_post_field:
+        system_prompt = (
+            base_rules + " "
+            "Write in a warm, conversational, human tone - not robotic or corporate. "
+            "Vary sentence length. Use contractions naturally. "
+            "The revised post MUST be at least as long as the original - do NOT truncate or shorten it. "
+            "Preserve the full structure and all key points from the original."
+        )
+        model = s.default_model  # Sonnet
+        max_tokens = 2048
+    else:
+        system_prompt = base_rules
+        model = s.haiku_model
+        max_tokens = 512
 
     context_str = ""
     if context.get("weekly_theme"):
@@ -581,8 +650,8 @@ async def ai_revise_field(
     )
 
     resp = await client.messages.create(
-        model=s.haiku_model,
-        max_tokens=512,
+        model=model,
+        max_tokens=max_tokens,
         temperature=0.5,
         system=system_prompt,
         messages=[{"role": "user", "content": user_msg}],
@@ -595,10 +664,187 @@ async def ai_revise_field(
     await tracker.record(
         run_id=uuid.uuid4(),
         agent_name="field_reviser",
-        model_used=s.haiku_model,
+        model_used=model,
         input_tokens=resp.usage.input_tokens,
         output_tokens=resp.usage.output_tokens,
     )
     await db.commit()
 
-    return {"revised": revised, "model": s.haiku_model}
+    return {"revised": revised, "model": model}
+
+
+# ---------------------------------------------------------------------------
+# Slot Options - multiple topic options per day slot (Phase 1)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{entry_id}/options")
+async def list_slot_options(
+    entry_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """List all options for a calendar day slot."""
+    result = await db.execute(
+        select(SlotOption)
+        .where(SlotOption.calendar_entry_id == entry_id)
+        .order_by(SlotOption.option_index)
+    )
+    options = result.scalars().all()
+    return [
+        {
+            "id": str(o.id),
+            "option_index": o.option_index,
+            "topic": o.topic,
+            "angle_type": o.angle_type,
+            "plan_context": o.plan_context,
+            "is_selected": o.is_selected,
+            "post_package_id": str(o.post_package_id) if o.post_package_id else None,
+        }
+        for o in options
+    ]
+
+
+@router.post("/{entry_id}/options/{option_idx}/select")
+async def select_slot_option(
+    entry_id: uuid.UUID,
+    option_idx: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Select an option for a day slot. Updates the parent calendar entry."""
+    # Deselect all options for this entry
+    result = await db.execute(
+        select(SlotOption).where(SlotOption.calendar_entry_id == entry_id)
+    )
+    options = result.scalars().all()
+
+    selected = None
+    for o in options:
+        o.is_selected = (o.option_index == option_idx)
+        if o.is_selected:
+            selected = o
+
+    if not selected:
+        raise HTTPException(status_code=404, detail=f"Option {option_idx} not found")
+
+    # Update the parent calendar entry with the selected option's data
+    entry = await db.get(ContentCalendarEntry, entry_id)
+    if entry:
+        entry.topic = selected.topic
+        entry.angle_type = selected.angle_type
+        # Merge selected option's plan_context into entry
+        if selected.plan_context:
+            enriched = {
+                **selected.plan_context,
+                "_weekly": entry.plan_context.get("_weekly", {}) if entry.plan_context else {},
+            }
+            entry.plan_context = enriched
+
+    await db.commit()
+    return {"status": "selected", "option_index": option_idx, "topic": selected.topic}
+
+
+@router.post("/{entry_id}/options/{option_idx}/move")
+async def move_slot_option(
+    entry_id: uuid.UUID,
+    option_idx: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Move a slot option to a different calendar entry (cross-day/cross-week drag)."""
+    target_entry_id = payload.get("target_entry_id")
+    if not target_entry_id:
+        raise HTTPException(status_code=400, detail="target_entry_id required")
+
+    target_entry_id = uuid.UUID(target_entry_id)
+
+    # Find the source option
+    result = await db.execute(
+        select(SlotOption).where(
+            SlotOption.calendar_entry_id == entry_id,
+            SlotOption.option_index == option_idx,
+        )
+    )
+    option = result.scalar_one_or_none()
+    if not option:
+        raise HTTPException(status_code=404, detail="Option not found")
+
+    # Verify target entry exists
+    target_entry = await db.get(ContentCalendarEntry, target_entry_id)
+    if not target_entry:
+        raise HTTPException(status_code=404, detail="Target entry not found")
+
+    # Get current max option_index on target
+    target_opts = await db.execute(
+        select(SlotOption)
+        .where(SlotOption.calendar_entry_id == target_entry_id)
+        .order_by(SlotOption.option_index.desc())
+    )
+    max_idx = 0
+    for to in target_opts.scalars().all():
+        max_idx = max(max_idx, to.option_index + 1)
+
+    # Move the option
+    option.calendar_entry_id = target_entry_id
+    option.option_index = max_idx
+    option.is_selected = False
+
+    await db.commit()
+    return {
+        "status": "moved",
+        "from_entry": str(entry_id),
+        "to_entry": str(target_entry_id),
+        "new_index": max_idx,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Guide Options - multiple freebie ideas per week (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/guide-options/{weekly_plan_id}")
+async def list_guide_options(
+    weekly_plan_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """List guide options for a weekly plan."""
+    plan_uuid = uuid.UUID(weekly_plan_id)
+    result = await db.execute(
+        select(GuideOption)
+        .where(GuideOption.weekly_plan_id == plan_uuid)
+        .order_by(GuideOption.option_index)
+    )
+    return [
+        {
+            "id": str(g.id),
+            "option_index": g.option_index,
+            "title": g.title,
+            "subtitle": g.subtitle,
+            "sections": g.sections,
+            "rationale": g.rationale,
+            "is_selected": g.is_selected,
+            "weekly_guide_id": str(g.weekly_guide_id) if g.weekly_guide_id else None,
+        }
+        for g in result.scalars().all()
+    ]
+
+
+@router.post("/guide-options/{option_id}/select")
+async def select_guide_option(
+    option_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Select a guide option. Deselects all others for the same weekly plan."""
+    option = await db.get(GuideOption, option_id)
+    if not option:
+        raise HTTPException(status_code=404, detail="Guide option not found")
+
+    # Deselect siblings
+    siblings = await db.execute(
+        select(GuideOption).where(GuideOption.weekly_plan_id == option.weekly_plan_id)
+    )
+    for sib in siblings.scalars().all():
+        sib.is_selected = (sib.id == option_id)
+
+    await db.commit()
+    return {"status": "selected", "title": option.title}
