@@ -39,6 +39,14 @@ OUTPUT FORMAT (JSON):
 - top_feedback_tags: array of {tag, count, recommendation}
 - cost_efficiency: notes on agent cost vs output quality
 - voice_drift_analysis: {patterns_found: [...], suggested_voice_adjustments: [...]}
+- voice_profile_updates: concrete changes to apply to the founder voice profile:
+  * add_taboos: phrases the operator consistently deletes from generated copy
+  * add_themes: new recurring themes emerging from operator edits
+  * add_values: new values/beliefs the operator reinforces through edits
+  * add_phrases: vocabulary phrases the operator consistently keeps or adds
+  * tone_adjustments: {axis_name: new_value} for tone range axes (1-10 scale)
+  Only include fields where you have STRONG evidence from multiple feedback items.
+  Be conservative - only add taboos/themes/values you see in 2+ revisions.
 - action_items: prioritized list of changes for next week
 """
 

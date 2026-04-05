@@ -48,6 +48,9 @@ class PostPackage(Base):
     experiment_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     variant: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
+    # Element-level feedback (Phase 3 - 4-week planner)
+    element_feedback: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Relationships
     image_assets: Mapped[list["ImageAsset"]] = relationship(  # noqa: F821
         back_populates="post_package", cascade="all, delete-orphan"

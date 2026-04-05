@@ -187,7 +187,7 @@ class Scheduler:
                 logger.exception("scheduler.linkedin_poll_failed")
             return
 
-        # GAP-12: For weekly learning, gather cost data first
+        # GAP-12: For weekly learning, gather cost data AND feedback data
         if job.workflow == "weekly_learning":
             try:
                 from tce.db.session import async_session
@@ -205,6 +205,39 @@ class Scheduler:
                     job.context["cost_summary"] = cost_report
             except Exception:
                 logger.exception("scheduler.cost_gathering_failed")
+
+            # Gather weekly feedback, QA, and learning events
+            try:
+                from sqlalchemy import select
+
+                from tce.db.session import async_session
+                from tce.models.post_package import PostPackage
+                from tce.services.learning import LearningService
+
+                async with async_session() as db:
+                    week_ago = datetime.now() - timedelta(days=7)
+                    result = await db.execute(
+                        select(PostPackage.id).where(
+                            PostPackage.created_at >= week_ago
+                        )
+                    )
+                    package_ids = [row[0] for row in result.all()]
+
+                    if package_ids:
+                        learning_svc = LearningService(db)
+                        weekly_data = await learning_svc.get_weekly_data(package_ids)
+                        job.context.update(weekly_data)
+                        logger.info(
+                            "scheduler.feedback_gathered",
+                            packages=len(package_ids),
+                            feedback=len(weekly_data.get("feedback_events", [])),
+                            learning=len(weekly_data.get("learning_events", [])),
+                            qa=len(weekly_data.get("qa_scorecards", [])),
+                        )
+                    else:
+                        logger.info("scheduler.no_packages_this_week")
+            except Exception:
+                logger.exception("scheduler.feedback_gathering_failed")
 
         # Run pipeline workflow
         try:
@@ -227,8 +260,66 @@ class Scheduler:
                     job=job.name,
                     run_id=str(result.get("run_id")),
                 )
+
+                # Apply learning loop recommendations to DB
+                if job.workflow == "weekly_learning":
+                    await self._apply_learning_results(db, result)
+
         except Exception:
             logger.exception("scheduler.job_failed", job=job.name)
+
+    async def _apply_learning_results(
+        self, db: Any, pipeline_result: dict[str, Any]
+    ) -> None:
+        """Apply learning loop recommendations to templates and voice weights."""
+        try:
+            from tce.services.learning_updater import LearningUpdater
+
+            recs = pipeline_result.get("weekly_recommendations", {})
+            if not recs:
+                logger.info("scheduler.no_learning_recommendations")
+                return
+
+            updater = LearningUpdater(db)
+
+            # Apply template score updates
+            template_recs = recs.get("template_recommendations", [])
+            score_updates = [
+                r for r in template_recs
+                if isinstance(r, dict) and r.get("new_median_score") is not None
+            ]
+            if score_updates:
+                applied = await updater.update_template_scores(score_updates)
+                logger.info("scheduler.templates_updated", count=len(applied))
+
+            # Apply voice weight adjustments
+            voice_adj = recs.get("voice_weight_adjustments", {})
+            if isinstance(voice_adj, dict) and voice_adj:
+                applied = await updater.apply_voice_weight_adjustments(voice_adj)
+                logger.info("scheduler.voice_weights_updated", count=len(applied))
+
+            # Apply template status changes (promote/demote)
+            for rec in template_recs:
+                if isinstance(rec, dict) and rec.get("action") in ("promote", "demote"):
+                    new_status = "recommended" if rec["action"] == "promote" else "provisional"
+                    await updater.update_template_status(
+                        rec.get("template_name", ""),
+                        new_status,
+                        rec.get("reason", ""),
+                    )
+
+            # Apply voice profile updates from drift analysis
+            voice_updates = recs.get("voice_profile_updates", {})
+            if isinstance(voice_updates, dict) and voice_updates:
+                result = await updater.apply_voice_profile_updates(voice_updates)
+                changes = result.get("changes", [])
+                if changes:
+                    logger.info("scheduler.voice_profile_updated", changes=changes)
+
+            await db.commit()
+            logger.info("scheduler.learning_applied", recommendations=recs.get("week_summary", ""))
+        except Exception:
+            logger.exception("scheduler.apply_learning_failed")
 
     async def trigger_job(self, job_name: str) -> dict[str, Any]:
         """Manually trigger a job."""

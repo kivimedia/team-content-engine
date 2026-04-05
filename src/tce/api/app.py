@@ -23,6 +23,7 @@ from tce.api.routers import (
     experiments,
     feedback,
     health,
+    monthly,
     narration,
     notifications,
     onboarding,
@@ -33,6 +34,7 @@ from tce.api.routers import (
     prompts,
     qa,
     relearning,
+    stack,
     trends,
     videos,
 )
@@ -105,6 +107,8 @@ def create_app() -> FastAPI:
     app.include_router(relearning.router, prefix=prefix)
     app.include_router(videos.router, prefix=prefix)
     app.include_router(narration.router, prefix=prefix)
+    app.include_router(monthly.router, prefix=prefix)
+    app.include_router(stack.router, prefix=prefix)
 
     # Dashboard - no API prefix, served at root /dashboard
     app.include_router(dashboard.router)

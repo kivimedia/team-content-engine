@@ -34,10 +34,14 @@ def _to_str(val: Any) -> str | None:
 
 
 def _clean_text(text: str | None) -> str | None:
-    """Clean up LLM output - replace emdashes/en dashes with single hyphen."""
+    """Clean up LLM output - replace all dash-like Unicode chars with single hyphen."""
     if not text:
         return text
-    return text.replace("\u2014", " - ").replace("\u2013", " - ").replace("--", " - ")
+    # em dash, en dash, horizontal bar, figure dash, quotation dash, swung dash,
+    # two-em dash, three-em dash, small em dash, fullwidth hyphen-minus
+    for ch in "\u2014\u2013\u2015\u2012\u2015\u2053\u2E3A\u2E3B\uFE58\uFF0D":
+        text = text.replace(ch, " - ")
+    return text.replace("--", " - ")
 
 
 def _clean_list(items: list[str] | None) -> list[str] | None:
@@ -214,11 +218,45 @@ class PipelineResultSaver:
         logger.info("saver.trend_brief", id=str(record.id))
         return record.id
 
-    async def save_story_brief(self, context: dict[str, Any]) -> uuid.UUID | None:
-        """Save StoryStrategist output as a StoryBrief record."""
+    async def save_story_brief(
+        self, context: dict[str, Any]
+    ) -> tuple[uuid.UUID | None, dict | None]:
+        """Save StoryStrategist output as a StoryBrief record.
+
+        Returns (brief_id, resolved_template_dict) where resolved_template_dict
+        contains the full template formulas if the LLM chose a known template.
+        """
         brief = context.get("story_brief", {})
         if not brief:
-            return None
+            return None, None
+
+        # Resolve template name (string) to UUID FK
+        template_name = brief.get("template_id")
+        resolved_tpl_id = None
+        resolved_tpl_dict = None
+        if template_name:
+            result = await self.db.execute(
+                select(PatternTemplate).where(
+                    PatternTemplate.template_name == template_name
+                )
+            )
+            tpl = result.scalar_one_or_none()
+            if tpl:
+                resolved_tpl_id = tpl.id
+                resolved_tpl_dict = {
+                    "template_name": tpl.template_name,
+                    "template_family": tpl.template_family,
+                    "hook_formula": tpl.hook_formula,
+                    "body_formula": tpl.body_formula,
+                    "anti_patterns": tpl.anti_patterns,
+                }
+                logger.info(
+                    "saver.template_resolved",
+                    name=template_name,
+                    id=str(tpl.id),
+                )
+            else:
+                logger.warning("saver.template_not_found", name=template_name)
 
         record = StoryBrief(
             topic=_clean_text(brief.get("topic", "")),
@@ -231,11 +269,12 @@ class PipelineResultSaver:
             cta_goal=_clean_text(brief.get("cta_goal")),
             visual_job=_clean_text(brief.get("visual_job")),
             platform_notes=brief.get("platform_notes"),
+            template_id=resolved_tpl_id,
         )
         self.db.add(record)
         await self.db.flush()
-        logger.info("saver.story_brief", id=str(record.id))
-        return record.id
+        logger.info("saver.story_brief", id=str(record.id), template=template_name)
+        return record.id, resolved_tpl_dict
 
     async def save_research_brief(self, context: dict[str, Any]) -> uuid.UUID | None:
         """Save ResearchAgent output as a ResearchBrief record."""
@@ -274,7 +313,7 @@ class PipelineResultSaver:
 
         # Build quality_scores with QA results + copy analysis metadata
         qa_scores = context.get("qa_result", context.get("quality_scores"))
-        matched_template = context.get("matched_template")
+        matched_template = context.get("matched_template") or context.get("_resolved_template")
         copy_analysis = context.get("copy_analysis")
         quality_meta = {}
         if qa_scores:
@@ -412,6 +451,22 @@ class PipelineResultSaver:
                 if content:
                     markdown_parts.append(content)
         markdown_content = "\n".join(markdown_parts) if sections else None
+
+        # Support reiteration: update existing guide instead of creating new
+        existing_id = context.get("_existing_guide_id")
+        if existing_id:
+            record = await self.db.get(WeeklyGuide, uuid.UUID(str(existing_id)))
+            if record:
+                record.guide_title = guide.get("guide_title", record.guide_title)
+                record.docx_path = docx_path
+                record.markdown_content = markdown_content
+                record.cta_keyword = guide.get(
+                    "cta_keyword",
+                    context.get("weekly_keyword", record.cta_keyword),
+                )
+                await self.db.flush()
+                logger.info("saver.weekly_guide.updated", id=str(record.id))
+                return record.id
 
         record = WeeklyGuide(
             week_start_date=date.today(),

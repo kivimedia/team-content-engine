@@ -29,7 +29,8 @@ You are the Weekly Content Planner for Team Content Engine. This is the most \
 consequential decision of the week: you choose ALL 5 daily topics in one shot \
 so they form a coherent weekly narrative arc.
 
-INPUT: A Trend Brief with 10-20 candidate stories from this week's news.
+INPUT: A Trend Brief with 10-20 candidate stories from THIS WEEK's news (all verified \
+to be from the last 14 days).
 
 YOUR JOB:
 1. Select 5 topics (one per day) from the trend pool
@@ -38,6 +39,13 @@ YOUR JOB:
 4. Design a weekly gift/guide that ties all 5 posts together
 5. Choose ONE CTA keyword that all 5 posts will use
 
+RECENCY RULES (NON-NEGOTIABLE):
+- Every topic MUST be based on a trend from the provided brief (which contains only recent stories).
+- NEVER substitute with older stories from your own knowledge or training data.
+- If a trend mentions a specific event, product launch, or announcement, it must have happened \
+within the last 14 days. If you're unsure, pick a different trend.
+- Do NOT reference announcements, launches, or news from months or years ago.
+
 CONSTRAINTS:
 - Each day's topic MUST match its cadence angle
 - No two days should cover the same story - pick diverse angles from different trends
@@ -45,6 +53,19 @@ CONSTRAINTS:
 - The gift must deliver real value (not filler)
 - Topics should build on each other: Monday sets context, Tuesday gives tools, \
   Wednesday challenges assumptions, Thursday proves it works, Friday zooms out
+
+DIVERSITY RULES (CRITICAL - read carefully):
+- The 3 options for each day MUST come from 3 DIFFERENT trends/stories. Never give \
+  3 variations of the same news item. If Monday option 1 is about "Google Gemini", \
+  option 2 must be about a completely different story (e.g. "Shopify AI tools") and \
+  option 3 about yet another (e.g. "remote work productivity study").
+- Across all 5 days, aim for at least 10 distinct underlying stories/trends used. \
+  Do not reuse the same trend for multiple days unless you genuinely have no alternatives.
+- If the trend brief has fewer than 10 unique stories, say so in the weekly_theme \
+  and do your best - but NEVER pad by rephrasing the same story 3 ways.
+- Variety in topic TYPE matters too: mix product launches, research findings, \
+  case studies, cultural shifts, tool reviews, and opinion pieces. Do not make all \
+  5 days about product launches or all about research papers.
 
 HUMANITARIAN SENSITIVITY (non-negotiable):
 Before choosing any topic, consider:
@@ -88,21 +109,26 @@ Rules for topic/thesis writing:
 
 OUTPUT: A JSON object with:
 - weekly_theme: 1 sentence describing the week's narrative arc (conversational, not corporate)
-- gift_theme: object with "title" and "subtitle" of the weekly guide/gift
-- gift_sections: 4-6 section titles the guide should contain
+- guide_options: array of 3 objects, each a different freebie/guide idea for the week:
+  - title: guide title (max 12 words)
+  - subtitle: what the reader gets from it
+  - sections: array of 4-6 section titles
+  - rationale: 1 sentence explaining why this guide fits the week's theme
 - cta_keyword: ONE word in ALL CAPS (the comment keyword for all 5 posts)
 - days: array of 5 objects, each containing:
   - day_of_week: 0-4
   - day_label: "Monday" through "Friday"
   - angle_type: from the cadence
-  - topic: 1 sentence, scroll-stopping, specific (name tools/companies/numbers)
-  - thesis: the core argument in 1-2 plain sentences (what will the reader walk away believing?)
-  - audience: who this targets (be specific, e.g. "agency owners doing $10-50K/mo")
-  - desired_belief_shift: FROM -> TO (use plain language)
-  - evidence_requirements: array of claims to verify
-  - visual_job: cinematic_symbolic / proof_diagram / emotional_alternate
-  - connection_to_gift: how this day's post connects to the weekly gift
-  - platform_notes: any platform-specific adjustments
+  - options: array of 3 topic options for this day slot, each containing:
+    - topic: 1 sentence, scroll-stopping, specific (name tools/companies/numbers)
+    - thesis: the core argument in 1-2 plain sentences (what will the reader walk away believing?)
+    - audience: who this targets (be specific, e.g. "agency owners doing $10-50K/mo")
+    - desired_belief_shift: FROM -> TO (use plain language)
+    - evidence_requirements: array of claims to verify
+    - visual_job: cinematic_symbolic / proof_diagram / emotional_alternate
+    - connection_to_gift: how this day's post connects to the weekly gift
+    - platform_notes: any platform-specific adjustments
+  The first option (index 0) should be your BEST pick. Options 1-2 are solid alternatives.
 """
 
 
@@ -113,28 +139,33 @@ class WeeklyPlanner(AgentBase):
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Plan the entire week's content from a single trend scan."""
-        # Step 1: Run trend_scout internally to get the full landscape
-        self._report("Phase 1: Scanning trends for the week...")
+        # Step 1: Run trend_scout (or reuse shared brief from monthly planner)
+        if context.get("_skip_trend_scout") and context.get("trend_brief"):
+            self._report("Using shared trend brief from monthly planner")
+            trend_brief = context["trend_brief"]
+            trends = trend_brief.get("trends", [])
+            self._report(f"Shared brief has {len(trends)} trend candidates")
+        else:
+            self._report("Phase 1: Scanning trends for the week...")
 
-        trend_scout_cls = get_agent_class("trend_scout")
-        trend_scout = trend_scout_cls(
-            db=self.db,
-            settings=self.settings,
-            cost_tracker=self.cost_tracker,
-            prompt_manager=self.prompt_manager,
-            run_id=self.run_id,
-            progress_log=self._progress_log,
-        )
-        # Ask for a weekly scan with more results
-        scout_context = {
-            **context,
-            "scan_type": "weekly",
-            "focus_areas": context.get("focus_areas", ["AI", "technology", "business automation"]),
-        }
-        scout_result = await trend_scout._execute(scout_context)
-        trend_brief = scout_result.get("trend_brief", {})
-        trends = trend_brief.get("trends", [])
-        self._report(f"Found {len(trends)} trend candidates for the week")
+            trend_scout_cls = get_agent_class("trend_scout")
+            trend_scout = trend_scout_cls(
+                db=self.db,
+                settings=self.settings,
+                cost_tracker=self.cost_tracker,
+                prompt_manager=self.prompt_manager,
+                run_id=self.run_id,
+                progress_log=self._progress_log,
+            )
+            scout_context = {
+                **context,
+                "scan_type": "weekly",
+                "focus_areas": context.get("focus_areas", ["AI", "technology", "business automation"]),
+            }
+            scout_result = await trend_scout._execute(scout_context)
+            trend_brief = scout_result.get("trend_brief", {})
+            trends = trend_brief.get("trends", [])
+            self._report(f"Found {len(trends)} trend candidates for the week")
 
         # Step 2: Strategic 5-day planning
         self._report("Phase 2: Planning 5-day content arc...")
@@ -148,7 +179,7 @@ class WeeklyPlanner(AgentBase):
 
         prompt_parts = [
             "TREND BRIEF (this week's candidate stories):",
-            json.dumps(trends[:15], indent=2),
+            json.dumps(trends[:25], indent=2),
             f"\nTrend landscape: {trend_brief.get('summary', 'N/A')}",
             f"\n5-DAY CADENCE:\n{cadence_desc}",
         ]
@@ -226,7 +257,7 @@ class WeeklyPlanner(AgentBase):
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
             system=SYSTEM_PROMPT,
             max_tokens=8192,
-            temperature=0.6,
+            temperature=0.75,
         )
 
         text = self._extract_text(response)
@@ -243,7 +274,8 @@ class WeeklyPlanner(AgentBase):
                             "role": "user",
                             "content": (
                                 "Your response was not valid JSON. Output ONLY the JSON object "
-                                "with weekly_theme, gift_theme, cta_keyword, and days array. "
+                                "with weekly_theme, guide_options, cta_keyword, and days array "
+                                "(each day has an options array of 3). "
                                 "No markdown, no commentary."
                             ),
                         },
@@ -266,26 +298,36 @@ class WeeklyPlanner(AgentBase):
 
         # Report the plan
         theme = weekly_plan.get("weekly_theme", "N/A")
-        gift = weekly_plan.get("gift_theme", "N/A")
         keyword = weekly_plan.get("cta_keyword", "N/A")
         days = weekly_plan.get("days", [])
 
+        # Backward compat: extract gift_theme from guide_options[0] or old format
+        guide_options = weekly_plan.get("guide_options", [])
+        if guide_options and isinstance(guide_options, list):
+            gift = guide_options[0] if guide_options else {"title": "N/A", "subtitle": ""}
+        else:
+            gift = weekly_plan.get("gift_theme", "N/A")
+
         self._report("\nWeekly Plan:")
         self._report(f"  Theme: {theme}")
-        self._report(f"  Gift: {gift}")
         self._report(f"  CTA Keyword: {keyword}")
         self._report(f"  Days planned: {len(days)}")
+        if guide_options:
+            self._report(f"  Guide options: {len(guide_options)}")
+            for gi, go in enumerate(guide_options):
+                self._report(f"    [{gi}] {go.get('title', '?')}")
 
         for d in days:
             day_label = d.get("day_label", f"Day {d.get('day_of_week', '?')}")
-            topic = d.get("topic", "N/A")
             angle = d.get("angle_type", "N/A")
-            connection = d.get("connection_to_gift", "")
-            self._report(f"\n  {day_label} ({angle}):")
-            self._report(f"    Topic: {topic}")
-            self._report(f"    Thesis: {d.get('thesis', 'N/A')}")
-            if connection:
-                self._report(f"    Gift connection: {connection}")
+            options = d.get("options", [])
+            # Backward compat: if no options array, wrap the day itself as option 0
+            if not options and d.get("topic"):
+                options = [d]
+            self._report(f"\n  {day_label} ({angle}) - {len(options)} option(s):")
+            for oi, opt in enumerate(options):
+                marker = " *" if oi == 0 else ""
+                self._report(f"    [{oi}]{marker} {opt.get('topic', 'N/A')}")
 
         return {
             "weekly_plan": weekly_plan,
@@ -293,4 +335,5 @@ class WeeklyPlanner(AgentBase):
             "weekly_theme": theme,
             "gift_theme": gift,
             "weekly_keyword": keyword,
+            "guide_options": guide_options,
         }

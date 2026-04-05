@@ -30,6 +30,12 @@ class WeeklyGuide(Base):
     downloads_count: Mapped[int] = mapped_column(Integer, default=0)
     conversion_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # Quality scores (LLM-assessed)
+    quality_scores: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    iteration_count: Mapped[int] = mapped_column(Integer, default=0)
+    assessment_history: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    quality_gate_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
     # Archive
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
 

@@ -10,8 +10,26 @@ from tce.agents.registry import register_agent
 
 
 def _clean_dash(s: str) -> str:
-    """Replace emdashes, en dashes, and double dashes with single dash."""
-    return s.replace("\u2014", " - ").replace("\u2013", " - ").replace("--", " - ")
+    """Replace all dash-like Unicode chars and double dashes with single dash."""
+    for ch in "\u2014\u2013\u2015\u2012\u2015\u2053\u2E3A\u2E3B\uFE58\uFF0D":
+        s = s.replace(ch, " - ")
+    return s.replace("--", " - ")
+
+
+def _build_template_block(context: dict) -> str:
+    """Build an explicit template formula block for the writer prompt."""
+    tpl = context.get("_resolved_template")
+    if not tpl:
+        return ""
+    lines = ["ASSIGNED TEMPLATE FORMULA (follow this structure):"]
+    lines.append(f"Template: {tpl.get('template_name', '?')} ({tpl.get('template_family', '?')})")
+    if tpl.get("hook_formula"):
+        lines.append(f"Hook formula: {tpl['hook_formula']}")
+    if tpl.get("body_formula"):
+        lines.append(f"Body formula: {tpl['body_formula']}")
+    if tpl.get("anti_patterns"):
+        lines.append(f"Anti-patterns to AVOID: {tpl['anti_patterns']}")
+    return "\n".join(lines)
 
 
 def _clean_writer_output(result: dict) -> dict:
@@ -77,14 +95,20 @@ OUTPUT FORMAT (JSON):
 
 SHARED_PROMPT_SUFFIX = """\
 
-EVIDENCE RULES:
-- Every hard claim must come from the Research Brief's verified_claims
+EVIDENCE RULES (STRICT - ZERO TOLERANCE FOR FABRICATION):
+- Every hard claim must come from the Research Brief's verified_claims WITH a source
 - Uncertain claims must use signal words: "suggests," "points to," "early data shows"
 - Rejected claims must NOT be used
-- If the research brief has no verified claims or safe_to_publish is false, \
-write the post using only soft/opinion claims with appropriate signal words. \
-Use the story brief thesis as your foundation. Do NOT refuse to write - \
-frame everything as perspective and opinion instead.
+- NEVER invent specific details: no fake product names, feature descriptions, code behaviors, \
+company actions, statistics, quotes, or technical mechanisms that aren't in the Research Brief
+- If a claim sounds like a fact (X does Y, company Z launched W), it MUST be in verified_claims. \
+If it's not there, DO NOT WRITE IT - not even as opinion
+- If the research brief has no verified claims or safe_to_publish is false: \
+write the post as a THOUGHT PIECE using general observations and your thesis as a question, \
+NOT as an exposé with specific allegations. Frame as "here's a pattern worth examining" \
+not "here's what's secretly happening." Do NOT refuse to write - but keep claims general and honest.
+- When in doubt, be LESS specific. "AI tools have hidden behaviors" is fine. \
+"Claude removes Co-Authored-By lines" is fabrication unless verified_claims confirms it.
 
 PLAN ADHERENCE (NON-NEGOTIABLE):
 - Your topic and thesis come from STORY BRIEF - this is your assignment
@@ -170,6 +194,10 @@ class FacebookWriter(AgentBase):
             f'CTA line must end with: Comment "{weekly_keyword}" and I\'ll send it to you.',
         ]
 
+        template_block = _build_template_block(context)
+        if template_block:
+            prompt_parts.insert(1, template_block)
+
         if founder_voice:
             prompt_parts.insert(0, f"FOUNDER VOICE LAYER:\n{json.dumps(founder_voice, indent=2)}")
 
@@ -226,6 +254,10 @@ class LinkedInWriter(AgentBase):
             f"STORY BRIEF:\n{json.dumps(story_brief, indent=2)}",
             f"RESEARCH BRIEF:\n{json.dumps(research_brief, indent=2)}",
         ]
+
+        template_block = _build_template_block(context)
+        if template_block:
+            prompt_parts.insert(1, template_block)
 
         if founder_voice:
             prompt_parts.insert(0, f"FOUNDER VOICE LAYER:\n{json.dumps(founder_voice, indent=2)}")

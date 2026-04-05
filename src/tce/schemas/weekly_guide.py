@@ -27,6 +27,10 @@ class WeeklyGuideRead(BaseModel):
     fulfillment_link: str | None
     downloads_count: int
     conversion_rate: float | None
+    quality_scores: dict | None = None
+    iteration_count: int = 0
+    assessment_history: list | None = None
+    quality_gate_passed: bool | None = None
     is_archived: bool = False
     created_at: datetime
     updated_at: datetime

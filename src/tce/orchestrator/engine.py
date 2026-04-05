@@ -378,7 +378,7 @@ class PipelineOrchestrator:
                     select(ContentCalendarEntry)
                     .where(
                         ContentCalendarEntry.day_of_week == day_of_week,
-                        ContentCalendarEntry.status.in_(["planned", "generating"]),
+                        ContentCalendarEntry.status.in_(["planned", "generating", "ready"]),
                     )
                     .order_by(ContentCalendarEntry.date.desc())
                     .limit(1)

@@ -228,24 +228,33 @@ Write the narration script as a JSON array of segments.""")
         text = self._extract_text(response)
 
         # Parse segments from LLM response
+        segments = []
+        import re
+
+        # Strip markdown fences first (```json ... ``` or ``` ... ```)
+        cleaned = text.strip()
+        fence_match = re.search(r"```(?:json)?\s*\n?([\s\S]*?)```", cleaned)
+        if fence_match:
+            cleaned = fence_match.group(1).strip()
+
         try:
-            # Handle both raw array and wrapped object
-            parsed = json.loads(text.strip().strip("`").strip())
+            parsed = json.loads(cleaned)
             if isinstance(parsed, dict):
                 segments = parsed.get("segments", [])
             elif isinstance(parsed, list):
                 segments = parsed
-            else:
-                segments = []
         except json.JSONDecodeError:
-            # Try extracting JSON from markdown fences
-            import re
-            match = re.search(r"\[[\s\S]*?\](?=\s*$)", text, re.DOTALL)
-            if match:
-                segments = json.loads(match.group(0))
-            else:
-                self._report("Failed to parse script segments from LLM response")
-                segments = []
+            # Try extracting the outermost JSON array
+            arr_match = re.search(r"\[[\s\S]*\]", cleaned)
+            if arr_match:
+                try:
+                    segments = json.loads(arr_match.group(0))
+                except json.JSONDecodeError:
+                    pass
+
+        if not segments:
+            self._report("Failed to parse script segments from LLM response")
+            logger.warning("script_agent.parse_failed", text_preview=text[:200])
 
         # Calculate duration estimates
         total_words = 0

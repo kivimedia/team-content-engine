@@ -52,15 +52,24 @@ THE GUIDE MUST INCLUDE:
 7. A closing section with a bold headline, a "you_now_have" list of 3-4 concrete \
    things the reader produced by following the guide, and a soft CTA.
 
-EVIDENCE RULES:
-- Every claim must trace to a specific source from the research brief. If you \
-  can't cite it, don't say it.
-- The opening MUST use a real stat, study, or event from the research brief.
-- NO invented characters ("Sarah Chen stared at her dashboard..."). If a story \
-  isn't from the research brief's verified_claims, don't fabricate one.
-- Include at least 3 specific numbers/stats from the research brief in the body.
-- Ban empty credibility claims: never write "Studies show..." or "Research \
-  indicates..." without naming the actual study or source.
+EVIDENCE RULES (CRITICAL - low accuracy = instant fail):
+- EVERY factual claim MUST include the source name in parentheses. Example: \
+  "Resolution rates jumped to 73% (Intercom Fin Apex benchmarks, VentureBeat \
+  March 2026)" - NOT "resolution rates jumped to 73%."
+- The opening MUST use a real stat, study, or event from the research brief's \
+  verified_claims array. Copy the claim text and source directly. Do not \
+  paraphrase into something that loses the source attribution.
+- NO invented stories, companies, or characters. If "Buffer" isn't in the \
+  verified_claims, do NOT write about Buffer. ONLY use companies/orgs that \
+  appear in the research brief.
+- Include at least 5 specific numbers/stats from the research brief, each \
+  with named source in parentheses.
+- BANNED phrases that trigger accuracy failure: "Studies show", "Research \
+  indicates", "Experts say", "According to research", "Data suggests" - these \
+  are all ways of claiming evidence without naming it. Name the study or don't \
+  make the claim.
+- When the research brief gives you a claim with source and caveats, include \
+  the caveats too. Nuance builds trust.
 
 ANTI-SLOP RULES - these phrases are BANNED:
 - "In today's..." / "In an era of..." / "In the rapidly evolving..."
@@ -101,10 +110,10 @@ OUTPUT FORMAT (JSON):
     {
       "type": "quick_win",
       "title": "Your 15-Minute Quick Win",
-      "instruction": "Clear instruction for a concrete exercise the reader does RIGHT NOW. Must produce a visible result.",
+      "instruction": "MUST be a fill-in exercise with a TABLE the reader completes. Not 'think about X' - the reader physically fills in rows. Example: 'List your top 5 [items], score each 1-5 on [criteria], calculate total. If total < 15, you need [action].' The table_headers define the worksheet columns. The instruction tells them how to fill it and what the result means.",
       "table_headers": ["Column 1 Header", "Column 2 Header", "Column 3 Header"],
       "table_rows": 5,
-      "what_you_learn": "One sentence explaining what the completed exercise reveals."
+      "what_you_learn": "One sentence: 'If your score is above X, you [result]. Below X means [other result].' Must be a binary or scored outcome, NOT 'you will gain clarity.'"
     },
     {
       "type": "comparison",
@@ -123,8 +132,8 @@ OUTPUT FORMAT (JSON):
           "label": "Step name",
           "explanation": "What this step means and why it matters",
           "bullets": ["Specific point 1", "Specific point 2"],
-          "action": "Concrete thing the reader does in ONE SITTING - not 'evaluate your org'",
-          "deliverable": "After this step you'll have: [specific output]"
+          "action": "Concrete thing the reader does in ONE SITTING - not 'evaluate your org'. At least 2 of your steps MUST include a fill-in template like: 'Fill in: [My current X] uses [Y approach]. The gap is [Z]. My next move is [action].'",
+          "deliverable": "After this step you'll have: [specific tangible output - a list, a score, a completed template, a decision]"
         }
       ]
     },
@@ -148,6 +157,25 @@ OUTPUT FORMAT (JSON):
   ],
   "cta_keyword": "the weekly keyword"
 }
+
+QUALITY GATE: This guide is automatically scored on 6 dimensions after generation. \
+You must earn a composite score of 8.0/10 or above. The dimensions and what earns 8+:
+
+- practical (8+): At least 2 framework steps include a fill-in template, checklist, \
+or rubric. Quick Win produces something the reader physically fills in or scores.
+- valuable (8+): At least 3 insights the reader cannot find with a Google search. \
+Every number/stat is contextualized - not just cited, but explained why it matters.
+- generous (8+): Complete framework. Reader can implement without outside help. \
+No teasing, no "contact us for the full method."
+- accurate (8+): ZERO unsourced claims. "Studies show" without naming the study = 0 \
+points. Every claim traces to a named source.
+- quick_win (8+): 15-minute exercise with a concrete output: a score, a completed \
+worksheet, a binary decision. NOT "you'll gain clarity."
+- transformation (8+): The comparison table must show a genuine paradigm shift. \
+Not "bad habits vs good habits" - show a belief the reader holds that is WRONG.
+
+Low scores on any dimension will trigger a full rewrite. Write to pass on the \
+first attempt.
 
 SECTION ORDER: You must include sections in this order:
 1. narrative (opening - real stat/event, no fake stories)
@@ -233,6 +261,12 @@ class DocxGuideBuilder(AgentBase):
                 prompt_parts.append(
                     f"Related angles (for context only, do NOT list as posts): {', '.join(angles)}"
                 )
+
+        # Quality gate feedback from previous iteration (if re-running)
+        quality_feedback = context.get("_quality_feedback")
+        if quality_feedback:
+            self._report("Incorporating quality gate feedback for reiteration...")
+            prompt_parts.append(quality_feedback)
 
         prompt_parts.append(
             "\nCreate the complete reader-facing guide. Remember: this is a GIFT "

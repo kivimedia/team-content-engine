@@ -27,6 +27,16 @@ _platform_flags: dict[str, bool] = {
     "linkedin": True,
 }
 
+# Engagement scorer weights (PRD 9.2)
+_scorer_weights: dict[str, float] = {
+    "shares": 3.0,
+    "comments": 2.0,
+    "saves": 2.5,
+    "likes": 1.0,
+    "clicks": 1.5,
+    "dwell_time": 1.0,
+}
+
 
 class OperatorControlService:
     """Operator-level controls over the content engine."""
@@ -155,6 +165,29 @@ class OperatorControlService:
             "old_weight": old_weight,
             "new_weight": weight,
         }
+
+    # --- Engagement Scorer weight controls ---
+
+    @staticmethod
+    def get_scorer_weights() -> dict[str, Any]:
+        """Get current engagement scorer weights."""
+        return _scorer_weights.copy()
+
+    @staticmethod
+    def set_scorer_weights(weights: dict[str, float]) -> dict[str, Any]:
+        """Update engagement scorer weights. Only updates provided keys."""
+        updated = {}
+        for key, value in weights.items():
+            if key not in _scorer_weights:
+                continue
+            if not (0.0 <= value <= 10.0):
+                return {"error": f"Weight '{key}' must be between 0.0 and 10.0"}
+            old = _scorer_weights[key]
+            _scorer_weights[key] = value
+            updated[key] = {"old": old, "new": value}
+
+        logger.info("operator.scorer_weights_updated", updated=updated)
+        return {"updated": updated, "current": _scorer_weights.copy()}
 
     # --- Platform automation controls ---
 

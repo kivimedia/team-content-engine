@@ -288,7 +288,8 @@
 ### GAP-44: Engagement Scorer controls
 - **PRD:** 9.2
 - **Issue:** Change scoring weights (shares/comments multipliers), exclude low-confidence posts. No controls.
-- **Status:** [ ]
+- **Fix:** `GET/POST /controls/scorer-weights` endpoints + `OperatorControlService` scorer weight methods. Default weights: shares 3.0, comments 2.0, saves 2.5, likes 1.0, clicks 1.5, dwell_time 1.0.
+- **Status:** [x] Closed
 
 ### GAP-45: CTA Flow Editor (full)
 - **PRD:** 9.7
@@ -313,7 +314,8 @@
 ### GAP-49: Pipeline partial resume
 - **PRD:** 42.4
 - **Issue:** Resume from last successful step (step indicator showing where it stopped). Current: retry-all only.
-- **Status:** [ ]
+- **Fix:** `resume_from_step` param on `POST /pipeline/run` + `PipelineOrchestrator.run()`. Marks all predecessor steps as COMPLETED, starts execution from the named step.
+- **Status:** [x] Closed
 
 ### GAP-50: Per-creator influence weights per angle type
 - **PRD:** 14.2

@@ -27,6 +27,10 @@ class PlatformFlagRequest(BaseModel):
     enabled: bool
 
 
+class ScorerWeightsRequest(BaseModel):
+    weights: dict[str, float]
+
+
 class SourceActionRequest(BaseModel):
     document_id: str
     reason: str = ""
@@ -101,6 +105,21 @@ async def set_weight(
     result = await service.set_influence_weight(request.creator_name, request.weight)
     if not result:
         raise HTTPException(404, "Creator not found")
+    return result
+
+
+@router.get("/scorer-weights")
+async def get_scorer_weights() -> dict[str, float]:
+    return OperatorControlService.get_scorer_weights()
+
+
+@router.post("/scorer-weights")
+async def set_scorer_weights(
+    request: ScorerWeightsRequest,
+) -> dict[str, Any]:
+    result = OperatorControlService.set_scorer_weights(request.weights)
+    if "error" in result:
+        raise HTTPException(400, result["error"])
     return result
 
 

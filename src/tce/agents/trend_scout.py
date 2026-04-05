@@ -39,7 +39,7 @@ Rank stories by: freshness * 0.5 + relevance_score * 0.3 + evidence_available * 
 (Freshness is the DOMINANT factor - recent stories always beat older ones.)
 
 Output a JSON object with:
-- trends: array of trend objects (minimum 5, all from the last 14 days)
+- trends: array of trend objects (minimum 15, aim for 20-25, all from the last 14 days)
 - summary: 2-sentence overview of the trend landscape THIS WEEK
 """
 
@@ -138,22 +138,38 @@ class TrendScout(AgentBase):
         search = WebSearchService()
         search_results = []
         if search.api_key:
-            # Source diversity: query specific high-signal sources (PRD Section 49.4)
+            # Source diversity: wide-net queries across different domains
             source_queries = [
-                "site:techcrunch.com AI",
-                "site:theverge.com AI technology",
-                "site:reddit.com/r/artificial AI news",
-                "site:news.ycombinator.com AI",
-                "site:venturebeat.com AI business",
-                "site:arxiv.org AI machine learning",
+                "site:techcrunch.com AI startups funding",
+                "site:theverge.com technology product launch",
+                "site:reddit.com/r/artificial AI breakthrough",
+                "site:news.ycombinator.com Show HN",
+                "site:venturebeat.com enterprise AI automation",
+                "site:arxiv.org large language model",
+                "site:semafor.com technology business",
+                "site:platformer.news social media",
             ]
-            self._report(f"Searching {len(source_queries)} curated sources + {len(focus_areas)} focus areas")
+            # Topical diversity: different angles beyond just AI
+            topical_queries = [
+                "AI tools for small business this week",
+                "creator economy platform news",
+                "remote work productivity tools 2026",
+                "SaaS startup acquisition funding",
+                "marketing automation AI agency",
+                "no-code low-code platform launch",
+                "solo founder built product AI",
+                "business automation workflow case study",
+            ]
+            self._report(f"Searching {len(source_queries)} sources + {len(topical_queries)} topical + {len(focus_areas)} focus areas")
             for sq in source_queries:
-                results = await search.search_news(sq, count=3)
+                results = await search.search_news(sq, count=5)
+                search_results.extend(results)
+            for tq in topical_queries:
+                results = await search.search_news(tq, count=5)
                 search_results.extend(results)
             # General focus area searches
             for area in focus_areas[:3]:
-                results = await search.search_news(f"latest {area} news trends 2026", count=5)
+                results = await search.search_news(f"latest {area} news this week", count=5)
                 search_results.extend(results)
             if operator_topics:
                 self._report(f"Searching operator topics: {', '.join(operator_topics[:2])}")
@@ -179,7 +195,15 @@ class TrendScout(AgentBase):
 
         if search_results:
             prompt_parts.append("\n## Live Web Search Results\n")
-            for i, r in enumerate(search_results[:20], 1):
+            # Deduplicate by URL before passing to LLM
+            seen_urls: set[str] = set()
+            deduped: list[dict] = []
+            for r in search_results:
+                if r["url"] not in seen_urls:
+                    seen_urls.add(r["url"])
+                    deduped.append(r)
+            search_results = deduped
+            for i, r in enumerate(search_results[:40], 1):
                 prompt_parts.append(
                     f"{i}. **{r['title']}**\n"
                     f"   URL: {r['url']}\n"

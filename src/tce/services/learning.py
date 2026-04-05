@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.models.learning_event import LearningEvent
 from tce.models.operator_feedback import OperatorFeedback
+from tce.models.post_package import PostPackage
 from tce.models.qa_scorecard import QAScorecard
 
 
@@ -39,11 +40,37 @@ class LearningService:
         )
         feedback = feedback_result.scalars().all()
 
+        # Get original posts for copy comparison
+        pkg_result = await self.db.execute(
+            select(PostPackage).where(PostPackage.id.in_(package_ids))
+        )
+        packages = {str(p.id): p for p in pkg_result.scalars().all()}
+
         # Aggregate feedback tags
         tag_counts: dict[str, int] = {}
         for fb in feedback:
             for tag in fb.feedback_tags or []:
                 tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+        # Build feedback events with original vs revised copy for voice drift analysis
+        feedback_events = []
+        for f in feedback:
+            entry: dict[str, Any] = {
+                "package_id": str(f.package_id),
+                "feedback_tags": f.feedback_tags,
+                "feedback_notes": f.feedback_notes,
+                "action_taken": f.action_taken,
+                "revision_summary": f.revision_summary,
+            }
+            # Include original + revised copy when available for voice drift analysis
+            pkg = packages.get(str(f.package_id))
+            if f.revised_facebook_post:
+                entry["original_facebook_post"] = pkg.facebook_post if pkg else None
+                entry["revised_facebook_post"] = f.revised_facebook_post
+            if f.revised_linkedin_post:
+                entry["original_linkedin_post"] = pkg.linkedin_post if pkg else None
+                entry["revised_linkedin_post"] = f.revised_linkedin_post
+            feedback_events.append(entry)
 
         return {
             "learning_events": [
@@ -67,13 +94,6 @@ class LearningService:
                 }
                 for s in scorecards
             ],
-            "feedback_events": [
-                {
-                    "package_id": str(f.package_id),
-                    "feedback_tags": f.feedback_tags,
-                    "action_taken": f.action_taken,
-                }
-                for f in feedback
-            ],
+            "feedback_events": feedback_events,
             "tag_frequency": tag_counts,
         }
