@@ -473,7 +473,18 @@ function toast(msg, ok = true) {
 }
 function copyPrev(btn) {
   const div = btn.previousElementSibling;
-  if (div) { navigator.clipboard.writeText(div.textContent); toast('Copied!'); }
+  if (!div) return;
+  const text = div.textContent;
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => toast('Copied!')).catch(() => _fallbackCopy(text));
+  } else { _fallbackCopy(text); }
+}
+function _fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.cssText = 'position:fixed;left:-9999px';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); toast('Copied!'); } catch(e) { toast('Copy failed', false); }
+  ta.remove();
 }
 
 // API helpers
@@ -2259,7 +2270,10 @@ async function pollTopicStatus() {
           const pkgs = await api('/content/packages?limit=1');
           if (pkgs && pkgs.length > 0) {
             const pkg = pkgs[0];
-            let rhtml = '<div class="card" style="margin-bottom:16px"><div style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--primary)">Generated Content</div>';
+            const _fbWc = (pkg.facebook_post || '').split(/\s+/).filter(Boolean).length;
+            const _liWc = (pkg.linkedin_post || '').split(/\s+/).filter(Boolean).length;
+            const _wcLabel = [_fbWc ? 'FB: ' + _fbWc + 'w' : '', _liWc ? 'LI: ' + _liWc + 'w' : ''].filter(Boolean).join(' / ');
+            let rhtml = '<div class="card" style="margin-bottom:16px"><div style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--primary);display:flex;align-items:center;gap:12px">Generated Content' + (_wcLabel ? '<span style="font-size:11px;font-weight:400;color:var(--dim);background:var(--bg);padding:2px 8px;border-radius:4px;border:1px solid var(--border)">' + _wcLabel + '</span>' : '') + '</div>';
             if (pkg.facebook_post) {
               rhtml += '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--accent);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">Facebook Post</div>';
               rhtml += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.7;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border);max-height:400px;overflow-y:auto">' + esc(pkg.facebook_post) + '</div>';
@@ -2973,6 +2987,7 @@ function _renderPkgCard(p) {
       html += '<button class="btn btn-dim" style="border-color:var(--accent2);color:var(--accent2)" onclick="loadPackageContext(\\'' + p.id + '\\', this)">Show Context</button>';
       html += '<button class="btn btn-dim" style="border-color:#a78bfa;color:#a78bfa" onclick="openBrainstorm(\\'' + p.id + '\\')">Brainstorm</button>';
       html += '<button class="btn btn-dim" style="border-color:var(--yellow);color:var(--yellow)" onclick="aiReviseActive(\\'' + p.id + '\\', this)">AI Revise</button>';
+      html += '<button class="btn btn-dim" style="border-color:var(--green);color:var(--green)" onclick="showFeedbackForm(\\'' + p.id + '\\', this)">Feedback</button>';
       if (p.is_archived) {
         html += '<button class="btn btn-dim" onclick="unarchivePackage(\\'' + p.id + '\\')">Unarchive</button>';
       } else {
@@ -3030,6 +3045,7 @@ async function renderPackages() {
 }
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+function linkify(s) { return esc(s).replace(/(https?:\\/\\/[^\\s<]+)/g, '<a href="$1" target="_blank" style="color:var(--accent);text-decoration:underline">$1</a>'); }
 
 function showPostTab(btn, id) {
   const card = btn.closest('.pkg-card');
@@ -5124,18 +5140,18 @@ async function loadPackageContext(pkgId, el) {
       const pc = ctx.plan_context;
       const borderTop = (ctx.story_brief || ctx.research_brief) ? 'border-top:1px solid var(--border);padding-top:12px;' : '';
       h += '<div style="margin-bottom:12px;' + borderTop + '"><div style="font-size:11px;font-weight:600;color:var(--primary);text-transform:uppercase;margin-bottom:6px">Plan Context</div>';
-      if (pc.topic) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Topic:</strong> ' + esc(pc.topic) + '</div>';
-      if (pc.thesis) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Thesis:</strong> ' + esc(pc.thesis) + '</div>';
+      if (pc.topic) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Topic:</strong> ' + linkify(pc.topic) + '</div>';
+      if (pc.thesis) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Thesis:</strong> ' + linkify(pc.thesis) + '</div>';
       if (pc.angle_type) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Angle:</strong> ' + esc(pc.angle_type.replace(/_/g, ' ')) + '</div>';
-      if (pc.audience) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Audience:</strong> ' + esc(pc.audience) + '</div>';
-      if (pc.desired_belief_shift) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Belief Shift:</strong> ' + esc(pc.desired_belief_shift) + '</div>';
-      if (pc.platform_notes) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Platform Notes:</strong> ' + esc(pc.platform_notes) + '</div>';
-      if (pc.connection_to_gift) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Gift Connection:</strong> ' + esc(pc.connection_to_gift) + '</div>';
+      if (pc.audience) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Audience:</strong> ' + linkify(pc.audience) + '</div>';
+      if (pc.desired_belief_shift) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Belief Shift:</strong> ' + linkify(pc.desired_belief_shift) + '</div>';
+      if (pc.platform_notes) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Platform Notes:</strong> ' + linkify(pc.platform_notes) + '</div>';
+      if (pc.connection_to_gift) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Gift Connection:</strong> ' + linkify(pc.connection_to_gift) + '</div>';
       if (pc.visual_job) h += '<div style="font-size:13px;margin-bottom:4px"><strong>Visual Job:</strong> ' + esc(pc.visual_job.replace(/_/g, ' ')) + '</div>';
       if (pc.evidence_requirements?.length) {
         h += '<div style="font-size:12px;margin-top:6px"><strong>Evidence Needed:</strong></div>';
         h += '<ul style="font-size:12px;color:var(--dim);margin:2px 0 6px 16px;padding:0">';
-        pc.evidence_requirements.forEach(e => h += '<li style="margin-bottom:2px">' + esc(e) + '</li>');
+        pc.evidence_requirements.forEach(e => h += '<li style="margin-bottom:2px">' + linkify(e) + '</li>');
         h += '</ul>';
       }
       h += '</div>';
@@ -5862,11 +5878,23 @@ function pollRegenStatus(guideId) {
   }, 1000);
 
   // Poll API every 3 seconds
+  let _idleCount = 0;
   _regenPollInterval = setInterval(async () => {
     try {
       const pollUrl = _regenState?.fromPost ? '/content/generation-status/' + guideId : '/content/guides/' + guideId + '/regen-status';
       const s = await api(pollUrl);
-      if (!s || s.status === 'idle') return;
+      if (!s || s.status === 'idle') {
+        _idleCount++;
+        if (_idleCount > 20) {
+          clearInterval(_regenPollInterval);
+          clearInterval(_regenTimerInterval);
+          _regenPollInterval = null;
+          _regenTimerInterval = null;
+          renderRegenProgress({status:'error', error:'Generation lost - server may have restarted. Try again.'});
+        }
+        return;
+      }
+      _idleCount = 0;
       renderRegenProgress(s);
       if (s.status === 'done' || s.status === 'error') {
         clearInterval(_regenPollInterval);
