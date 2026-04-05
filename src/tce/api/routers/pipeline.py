@@ -1156,6 +1156,7 @@ async def get_start_from_topic_status(
         if pipe_id and pipe_id in _active_runs:
             live = _active_runs[pipe_id].get_status()
             status["step_status"] = live.get("step_status", status.get("step_status", {}))
+            status["step_logs"] = live.get("step_logs", {})
             for sname, sval in live.get("step_status", {}).items():
                 if sval == "running":
                     status["phase_detail"] = f"Running {sname}..."

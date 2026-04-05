@@ -2242,20 +2242,38 @@ async function pollTopicStatus() {
     const steps = d.step_status || {};
     const stepNames = ['trend_scout','story_strategist','research_agent','facebook_writer','linkedin_writer','cta_agent','creative_director','qa_agent'];
     const stepLabels = { trend_scout:'Trend Scout', story_strategist:'Story Strategist', research_agent:'Research', facebook_writer:'FB Writer', linkedin_writer:'LI Writer', cta_agent:'CTA Agent', creative_director:'Creative Director', qa_agent:'QA Agent' };
+    let activeStepLabel = '';
     let html = '<div class="card" style="padding:12px 16px"><div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--primary)">Pipeline Progress</div>';
     html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
     for (const sn of stepNames) {
       const st = steps[sn] || 'pending';
       let bg = 'var(--muted)'; let fg = 'var(--dim)';
       if (st === 'completed') { bg = 'var(--success-dim)'; fg = 'var(--success)'; }
-      else if (st === 'running') { bg = 'var(--primary-dim)'; fg = 'var(--primary)'; }
-      else if (st === 'error') { bg = 'var(--destructive-dim)'; fg = 'var(--destructive)'; }
-      html += '<span style="display:inline-block;padding:4px 10px;border-radius:4px;font-size:11px;background:' + bg + ';color:' + fg + '">' + (stepLabels[sn]||sn) + (st==='running'?' ...':'') + (st==='completed'?' &#10003;':'') + (st==='error'?' &#10007;':'') + '</span>';
+      else if (st === 'running') { bg = 'var(--primary-dim)'; fg = 'var(--primary)'; activeStepLabel = stepLabels[sn] || sn; }
+      else if (st === 'error' || st === 'failed') { bg = 'var(--destructive-dim)'; fg = 'var(--destructive)'; }
+      html += '<span style="display:inline-block;padding:4px 10px;border-radius:4px;font-size:11px;background:' + bg + ';color:' + fg + '">' + (stepLabels[sn]||sn) + (st==='running'?' ...':'') + (st==='completed'?' &#10003;':'') + (st==='error'||st==='failed'?' &#10007;':'') + '</span>';
     }
     html += '</div>';
+    var liveHtml = '';
+    if (d.phase_detail && d.status === 'running') {
+      liveHtml += '<div style="margin-top:8px;font-size:12px;color:var(--primary);display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--primary);animation:pulse 1.5s infinite"></span>' + esc(d.phase_detail) + '</div>';
+    }
+    var stepLogs = d.step_logs || {};
+    for (var si = 0; si < stepNames.length; si++) {
+      var sn2 = stepNames[si];
+      if (steps[sn2] === 'running' && stepLogs[sn2] && stepLogs[sn2].length > 0) {
+        liveHtml += '<div style="margin-top:4px;font-size:11px;color:var(--dim);font-style:italic;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(stepLogs[sn2][stepLogs[sn2].length - 1]) + '</div>';
+        break;
+      }
+    }
+    html += liveHtml;
     if (d.error) html += '<div style="color:var(--destructive);margin-top:8px;font-size:12px">Error: ' + esc(d.error) + '</div>';
     html += '</div>';
-    statusEl.innerHTML = html;
+    statusEl.textContent = '';
+    statusEl.insertAdjacentHTML('afterbegin', html);
+    if (btn && d.status === 'running' && activeStepLabel) {
+      btn.textContent = 'Running: ' + activeStepLabel + '...';
+    }
 
     if (d.status === 'completed' || d.status === 'error' || d.status === 'failed') {
       if (topicPollInterval) { clearInterval(topicPollInterval); topicPollInterval = null; }
