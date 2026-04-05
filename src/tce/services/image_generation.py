@@ -97,12 +97,20 @@ class ImageGenerationService:
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(
                 f"{self.base_url}/{model}",
                 json=payload,
                 headers=headers,
             )
+            if response.status_code != 200:
+                logger.error(
+                    "image_gen.http_error",
+                    status=response.status_code,
+                    body=response.text[:500],
+                    model=model,
+                    prompt=prompt_text[:100],
+                )
             response.raise_for_status()
             result = response.json()
 
