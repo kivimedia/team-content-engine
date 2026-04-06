@@ -516,11 +516,29 @@ class VideoAgent(AgentBase):
         results = await svc.render_batch(renders, run_id=self.run_id)
 
         video_assets = []
+        output_dir = Path(svc.output_dir)
         for r in results:
+            # Compute web-accessible URL relative to the /media mount
+            try:
+                rel_path = Path(r.output_path).relative_to(output_dir)
+                video_url = f"/media/{rel_path.as_posix()}"
+            except ValueError:
+                video_url = None
+
+            thumbnail_url = None
+            if r.thumbnail_path:
+                try:
+                    rel_thumb = Path(r.thumbnail_path).relative_to(output_dir)
+                    thumbnail_url = f"/media/{rel_thumb.as_posix()}"
+                except ValueError:
+                    pass
+
             video_assets.append({
                 "template_name": r.template_name,
                 "composition_id": r.composition_id,
                 "output_path": r.output_path,
+                "video_url": video_url,
+                "thumbnail_url": thumbnail_url,
                 "duration_seconds": r.duration_seconds,
                 "resolution": r.resolution,
                 "codec": r.codec,

@@ -300,6 +300,8 @@ class PipelineOrchestrator:
 
     async def _persist_video_assets(self) -> None:
         """Save rendered video assets to the database."""
+        from pathlib import Path
+
         from tce.models.video_asset import VideoAsset
 
         video_assets = self.context.get("video_assets", [])
@@ -308,9 +310,27 @@ class PipelineOrchestrator:
 
         pkg_id = self.context.get("_post_package_id")
         guide_id = self.context.get("_weekly_guide_id")
+        output_dir = Path(self.settings.video_output_dir)
         saved_ids = []
 
         for asset in video_assets:
+            # Derive video_url from output_path if not already set
+            video_url = asset.get("video_url")
+            if not video_url and asset.get("output_path"):
+                try:
+                    rel = Path(asset["output_path"]).relative_to(output_dir)
+                    video_url = f"/media/{rel.as_posix()}"
+                except ValueError:
+                    pass
+
+            thumbnail_url = asset.get("thumbnail_url")
+            if not thumbnail_url and asset.get("thumbnail_path"):
+                try:
+                    rel = Path(asset["thumbnail_path"]).relative_to(output_dir)
+                    thumbnail_url = f"/media/{rel.as_posix()}"
+                except ValueError:
+                    pass
+
             va = VideoAsset(
                 id=uuid.uuid4(),
                 package_id=pkg_id,
@@ -318,7 +338,8 @@ class PipelineOrchestrator:
                 template_name=asset["template_name"],
                 composition_id=asset.get("composition_id"),
                 composition_props=asset.get("props"),
-                video_url=asset.get("video_url"),
+                video_url=video_url,
+                thumbnail_url=thumbnail_url,
                 video_s3_path=asset.get("video_s3_path"),
                 duration_seconds=asset.get("duration_seconds"),
                 resolution=asset.get("resolution"),
