@@ -6884,6 +6884,8 @@ async function runVideoLead() {
   }
 }
 
+function esc(s) { return (s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
 async function pollVideoLead() {
   if (!activeVideoLeadRun) return;
   try {
@@ -6891,56 +6893,81 @@ async function pollVideoLead() {
     const statusEl = document.getElementById('vl-status');
     if (!statusEl) return;
 
-    let html = '<div class="card" style="margin-bottom:12px">'
-      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-      + '<span style="font-weight:600">' + (r.status || 'running') + '</span>';
-    if (r.elapsed_seconds) html += '<span style="font-size:12px;color:var(--dim)">' + Math.round(r.elapsed_seconds) + 's</span>';
-    html += '</div>';
+    const steps = r.step_status || {};
+    const logs = r.step_logs || {};
+    const errors = r.step_errors || {};
+    const agentOrder = ['trend_scout', 'story_strategist', 'research_agent', 'video_lead_writer'];
+    const agentLabels = { trend_scout: 'Trend Scout', story_strategist: 'Story Strategist', research_agent: 'Research Agent', video_lead_writer: 'Video Lead Writer' };
+    const statusIcons = { completed: '&#9989;', running: '&#9881;&#65039;', pending: '&#9203;', failed: '&#10060;' };
 
-    if (r.progress_log && r.progress_log.length > 0) {
-      html += '<div style="font-size:12px;color:var(--dim);max-height:200px;overflow-y:auto;font-family:monospace;line-height:1.8">';
-      r.progress_log.forEach(function(line) { html += '<div>' + line.replace(/</g,'&lt;') + '</div>'; });
+    let html = '';
+    agentOrder.forEach(function(agent) {
+      const st = steps[agent] || 'pending';
+      const icon = statusIcons[st] || '&#8226;';
+      const label = agentLabels[agent] || agent;
+      const agentLogs = logs[agent] || [];
+      const err = errors[agent];
+
+      html += '<div class="card" style="margin-bottom:8px;' + (st === 'running' ? 'border-left:3px solid var(--accent);' : '') + '">';
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:' + (agentLogs.length > 0 ? '8' : '0') + 'px">';
+      html += '<span>' + icon + '</span>';
+      html += '<span style="font-weight:600;font-size:13px">' + label + '</span>';
+      html += '<span style="font-size:11px;color:var(--dim);margin-left:auto">' + st + '</span>';
       html += '</div>';
-    }
-    html += '</div>';
+
+      if (agentLogs.length > 0) {
+        html += '<div style="font-size:11px;color:var(--dim);font-family:monospace;line-height:1.7;max-height:150px;overflow-y:auto;padding-left:28px">';
+        agentLogs.forEach(function(line) { html += '<div>' + esc(line) + '</div>'; });
+        html += '</div>';
+      }
+      if (err) {
+        html += '<div style="font-size:11px;color:var(--red);padding-left:28px;margin-top:4px">' + esc(err) + '</div>';
+      }
+      html += '</div>';
+    });
+
     statusEl.innerHTML = html;
 
-    if (r.status === 'completed' || r.status === 'failed') {
+    // Check if all done
+    const allDone = agentOrder.every(function(a) { return steps[a] === 'completed' || steps[a] === 'failed'; });
+    const anyFailed = agentOrder.some(function(a) { return steps[a] === 'failed'; });
+
+    if (allDone) {
       clearInterval(videoLeadPollInterval);
       videoLeadPollInterval = null;
       const btn = document.getElementById('vl-run-btn');
       if (btn) { btn.disabled = false; btn.textContent = 'Generate Script'; }
 
-      if (r.status === 'completed' && r.result && r.result.video_lead_script) {
+      if (!anyFailed && r.result && r.result.video_lead_script) {
         const script = r.result.video_lead_script;
         const resultEl = document.getElementById('vl-result');
         if (resultEl) {
           let rhtml = '<div class="section" style="margin-top:16px">'
-            + '<h2>' + (script.title || 'Video Script').replace(/</g,'&lt;') + '</h2>';
-          if (script.target_audience) rhtml += '<p style="font-size:12px;color:var(--dim);margin-bottom:12px">Audience: ' + script.target_audience.replace(/</g,'&lt;') + '</p>';
-          if (script.estimated_duration_minutes) rhtml += '<p style="font-size:12px;color:var(--dim);margin-bottom:16px">' + script.word_count + ' words - ~' + script.estimated_duration_minutes.toFixed(1) + ' min</p>';
+            + '<h2>' + esc(script.title || 'Video Script') + '</h2>';
+          if (script.target_audience) rhtml += '<p style="font-size:12px;color:var(--dim);margin-bottom:12px">Audience: ' + esc(script.target_audience) + '</p>';
+          if (script.estimated_duration_minutes) rhtml += '<p style="font-size:12px;color:var(--dim);margin-bottom:16px">' + (script.word_count||0) + ' words - ~' + (script.estimated_duration_minutes||0).toFixed(1) + ' min</p>';
 
           if (script.sections && script.sections.length > 0) {
             script.sections.forEach(function(s) {
               rhtml += '<div class="card" style="margin-bottom:8px">'
-                + '<div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:6px">' + (s.name || '').replace(/</g,'&lt;') + ' (~' + (s.estimated_seconds || '?') + 's)</div>'
-                + '<div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + (s.text || '').replace(/</g,'&lt;') + '</div>'
+                + '<div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:6px">' + esc(s.name) + ' (~' + (s.estimated_seconds || '?') + 's)</div>'
+                + '<div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + esc(s.text) + '</div>'
                 + '</div>';
             });
           } else if (script.full_script) {
-            rhtml += '<div class="card"><div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + script.full_script.replace(/</g,'&lt;') + '</div></div>';
+            rhtml += '<div class="card"><div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + esc(script.full_script) + '</div></div>';
           }
 
           if (script.seo_description) {
-            rhtml += '<div class="card" style="margin-top:12px"><div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">SEO DESCRIPTION</div><div style="font-size:13px">' + script.seo_description.replace(/</g,'&lt;') + '</div></div>';
+            rhtml += '<div class="card" style="margin-top:12px"><div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">SEO DESCRIPTION</div><div style="font-size:13px">' + esc(script.seo_description) + '</div></div>';
           }
           if (script.tags && script.tags.length) {
             rhtml += '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">';
-            script.tags.forEach(function(t) { rhtml += '<span style="font-size:11px;background:var(--border);padding:2px 8px;border-radius:4px">' + t.replace(/</g,'&lt;') + '</span>'; });
+            script.tags.forEach(function(t) { rhtml += '<span style="font-size:11px;background:var(--border);padding:2px 8px;border-radius:4px">' + esc(t) + '</span>'; });
             rhtml += '</div>';
           }
           if (script.blog_repurpose_outline) {
-            rhtml += '<div class="card" style="margin-top:12px"><div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">BLOG REPURPOSE OUTLINE</div><div style="font-size:13px;white-space:pre-wrap">' + script.blog_repurpose_outline.replace(/</g,'&lt;') + '</div></div>';
+            rhtml += '<div class="card" style="margin-top:12px"><div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">BLOG REPURPOSE OUTLINE</div><div style="font-size:13px;white-space:pre-wrap">' + esc(script.blog_repurpose_outline) + '</div></div>';
           }
           rhtml += '</div>';
           resultEl.innerHTML = rhtml;
