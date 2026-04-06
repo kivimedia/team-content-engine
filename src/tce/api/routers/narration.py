@@ -18,6 +18,7 @@ from tce.models.narration_script import NarrationScript
 from tce.models.post_package import PostPackage
 from tce.models.research_brief import ResearchBrief
 from tce.models.story_brief import StoryBrief
+from tce.models.video_lead_script import VideoLeadScript
 from tce.models.video_asset import VideoAsset
 from tce.services.render_queue import RenderQueueService
 from tce.services.video_render import VideoRenderService
@@ -348,6 +349,114 @@ async def generate_script(
         "status": ns.status,
         "estimated_duration_sec": ns.estimated_duration_sec,
         "word_count": ns.word_count,
+    }
+
+
+@router.post("/generate-video-lead")
+async def generate_video_lead_from_package(
+    request: GenerateScriptRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Generate a TJ-style video lead script from a PostPackage."""
+    pkg = await db.get(PostPackage, uuid.UUID(request.package_id))
+    if not pkg:
+        raise HTTPException(status_code=404, detail="PostPackage not found")
+
+    context: dict[str, Any] = {"niche": "coaching", "cta_url": "https://kivimedia.co/30"}
+
+    if pkg.brief_id:
+        brief = await db.get(StoryBrief, pkg.brief_id)
+        if brief:
+            context["story_brief"] = {
+                "topic": brief.topic,
+                "thesis": brief.thesis,
+                "desired_belief_shift": brief.desired_belief_shift,
+                "audience": brief.audience,
+                "angle_type": brief.angle_type,
+                "cta_goal": brief.cta_goal,
+            }
+
+    if pkg.research_brief_id:
+        rb = await db.get(ResearchBrief, pkg.research_brief_id)
+        if rb:
+            context["research_brief"] = {
+                "topic": rb.topic,
+                "verified_claims": rb.verified_claims or [],
+                "key_findings": rb.thesis_candidates or [],
+                "source_refs": rb.source_refs or [],
+            }
+
+    # Founder voice
+    from tce.models.founder_voice_profile import FounderVoiceProfile
+    fv_result = await db.execute(
+        select(FounderVoiceProfile).order_by(
+            FounderVoiceProfile.created_at.desc()
+        ).limit(1)
+    )
+    fv = fv_result.scalar_one_or_none()
+    if fv:
+        context["voice_profile"] = {
+            "recurring_themes": fv.recurring_themes or [],
+            "values_and_beliefs": fv.values_and_beliefs or [],
+            "taboos": fv.taboos or [],
+            "tone_range": fv.tone_range or {},
+            "metaphor_style": ", ".join(fv.metaphor_families or []),
+        }
+
+    from tce.agents.video_lead_writer import VideoLeadWriter
+    from tce.services.cost_tracker import CostTracker
+    from tce.services.prompt_manager import PromptManager
+
+    cost_tracker = CostTracker(db)
+    prompt_manager = PromptManager(db)
+    run_id = uuid.uuid4()
+
+    agent = VideoLeadWriter(
+        db=db,
+        settings=settings,
+        cost_tracker=cost_tracker,
+        prompt_manager=prompt_manager,
+        run_id=run_id,
+    )
+    result = await agent.run(context)
+    vls_data = result.get("video_lead_script") or {}
+
+    story = context.get("story_brief", {})
+    vls = VideoLeadScript(
+        title=vls_data.get("title", "Untitled"),
+        title_pattern=vls_data.get("title_pattern"),
+        hook=vls_data.get("hook"),
+        full_script=vls_data.get("full_script"),
+        sections=vls_data.get("sections"),
+        word_count=vls_data.get("word_count"),
+        estimated_duration_minutes=vls_data.get("estimated_duration_minutes"),
+        target_audience=vls_data.get("target_audience"),
+        key_takeaway=vls_data.get("key_takeaway"),
+        niche="coaching",
+        seo_description=vls_data.get("seo_description"),
+        tags=vls_data.get("tags"),
+        blog_repurpose_outline=vls_data.get("blog_repurpose_outline"),
+        pipeline_run_id=run_id,
+        topic=story.get("topic"),
+        thesis=story.get("thesis"),
+    )
+    db.add(vls)
+    await db.commit()
+    await db.refresh(vls)
+
+    return {
+        "id": str(vls.id),
+        "title": vls.title,
+        "full_script": vls.full_script,
+        "sections": vls.sections,
+        "word_count": vls.word_count,
+        "estimated_duration_minutes": vls.estimated_duration_minutes,
+        "target_audience": vls.target_audience,
+        "seo_description": vls.seo_description,
+        "tags": vls.tags,
+        "blog_repurpose_outline": vls.blog_repurpose_outline,
+        "hook": vls.hook,
+        "key_takeaway": vls.key_takeaway,
     }
 
 

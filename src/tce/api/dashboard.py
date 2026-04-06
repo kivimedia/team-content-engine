@@ -3003,6 +3003,16 @@ function _renderPkgCard(p) {
       html += '<div id="scr-actions-' + pid + '" style="display:none;margin-top:12px;gap:8px"></div>';
       html += '<div id="scr-render-progress-' + pid + '"></div>';
       html += '<div id="scr-video-player-' + pid + '"></div>';
+      // Video Lead Script section
+      html += '<div style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">';
+      html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">';
+      html += '<span style="font-size:14px;font-weight:700;color:var(--accent)">Video Lead Script (5-7 min)</span>';
+      html += '<button class="btn btn-primary" id="vl-pkg-btn-' + pid + '" onclick="generateVideoLeadFromPkg(&quot;' + p.id + '&quot;, &quot;' + pid + '&quot;, this)">Generate Video Lead</button>';
+      html += '<button class="btn btn-dim" id="vl-copy-btn-' + pid + '" style="display:none" onclick="copyVideoLeadScript(&quot;' + pid + '&quot;)">Copy Script</button>';
+      html += '<span id="vl-pkg-status-' + pid + '" style="font-size:12px;color:var(--dim)"></span>';
+      html += '</div>';
+      html += '<div id="vl-pkg-result-' + pid + '"></div>';
+      html += '</div>';
       html += '</div>';
 
       // Actions
@@ -3454,6 +3464,50 @@ async function generateScript(packageId, pid, btn) {
   }
   btn.disabled = false;
   btn.textContent = 'Regenerate Script';
+}
+
+let _vlScriptCache = {};
+async function generateVideoLeadFromPkg(packageId, pid, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Generating (30-60s)...';
+  const statusEl = document.getElementById('vl-pkg-status-' + pid);
+  if (statusEl) statusEl.textContent = 'Running VideoLeadWriter with coaching niche context...';
+  try {
+    const data = await api('/narration/generate-video-lead', {
+      method: 'POST',
+      body: JSON.stringify({ package_id: packageId })
+    });
+    _vlScriptCache[pid] = data;
+    const resultEl = document.getElementById('vl-pkg-result-' + pid);
+    if (resultEl) renderScriptResult(resultEl, data);
+    const copyBtn = document.getElementById('vl-copy-btn-' + pid);
+    if (copyBtn) copyBtn.style.display = '';
+    if (statusEl) statusEl.textContent = (data.word_count || 0) + ' words - ~' + ((data.estimated_duration_minutes || 0).toFixed(1)) + ' min';
+    toast('Video Lead script generated! ' + (data.word_count || 0) + ' words');
+  } catch(e) {
+    if (statusEl) { statusEl.textContent = 'Error: ' + e.message; statusEl.style.color = 'var(--red)'; }
+    toast('Video Lead generation failed: ' + e.message, false);
+  }
+  btn.disabled = false;
+  btn.textContent = 'Generate Video Lead';
+}
+
+function copyVideoLeadScript(pid) {
+  const data = _vlScriptCache[pid];
+  if (!data) return;
+  let text = '';
+  if (data.title) text += data.title + '\n\n';
+  if (data.sections && data.sections.length > 0) {
+    data.sections.forEach(function(s) {
+      text += '--- ' + (s.name || '').toUpperCase() + ' ---\n';
+      text += (s.text || '') + '\n\n';
+    });
+  } else if (data.full_script) {
+    text += data.full_script;
+  }
+  navigator.clipboard.writeText(text).then(function() {
+    toast('Script copied to clipboard!');
+  });
 }
 
 async function uploadAudio(packageId, pid, file) {
