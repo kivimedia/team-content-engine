@@ -459,9 +459,15 @@ class PipelineOrchestrator:
 
     def get_status(self) -> dict[str, Any]:
         """Get current pipeline status."""
-        return {
+        status = {
             "run_id": str(self.run_id),
             "step_status": {k: v.value for k, v in self.step_status.items()},
             "step_errors": self.step_errors,
             "step_logs": {k: v[-20:] for k, v in self.step_logs.items()},
         }
+        # Include key outputs if available (for result display while still active)
+        result_keys = ["video_lead_script", "story_brief", "narration_script"]
+        result = {k: self.context[k] for k in result_keys if k in self.context}
+        if result:
+            status["result"] = result
+        return status

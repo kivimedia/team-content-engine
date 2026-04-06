@@ -199,6 +199,15 @@ async def trigger_pipeline(
                     run_record.completed_at = datetime.utcnow()
                     run_record.step_results = result.get("step_status", {})
                     run_record.step_errors = result.get("step_errors", {})
+                    # Persist key outputs from pipeline context for result retrieval
+                    ctx = result.get("context", {})
+                    if ctx:
+                        snapshot_keys = [
+                            "video_lead_script", "story_brief", "narration_script",
+                        ]
+                        snapshot = {k: ctx[k] for k in snapshot_keys if k in ctx}
+                        if snapshot:
+                            run_record.context_snapshot = snapshot
                     if has_failures:
                         errors = result.get("step_errors", {})
                         run_record.error_message = "; ".join(f"{k}: {v}" for k, v in errors.items())
@@ -246,7 +255,9 @@ async def get_pipeline_status(
             "status": run_record.status,
             "step_status": run_record.step_results or {},
             "step_errors": run_record.step_errors or {},
+            "step_logs": {},
             "error_message": run_record.error_message,
+            "result": run_record.context_snapshot or {},
             "started_at": run_record.started_at.isoformat() if run_record.started_at else None,
             "completed_at": run_record.completed_at.isoformat()
             if run_record.completed_at
