@@ -116,6 +116,47 @@ class StoryStrategist(AgentBase):
         if operator_overrides:
             prompt_parts.append(f"Operator overrides: {json.dumps(operator_overrides)}")
 
+        # Niche-specific strategy context
+        niche = context.get("niche", "general")
+        if niche == "coaching":
+            # Load the Super Coaching strategy doc for full context
+            import os
+            strategy_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+                "docs", "super-coaching-strategy.md",
+            )
+            strategy_context = ""
+            try:
+                with open(strategy_path, "r", encoding="utf-8") as f:
+                    strategy_context = f.read()
+                self._report("Loaded Super Coaching strategy doc for niche context")
+            except FileNotFoundError:
+                self._report("Strategy doc not found, using inline context")
+
+            if strategy_context:
+                # Truncate to keep prompt manageable (first 4000 chars covers key sections)
+                if len(strategy_context) > 4000:
+                    strategy_context = strategy_context[:4000] + "\n\n[... truncated for prompt size]"
+                prompt_parts.append(
+                    "NICHE CONTEXT - SUPER COACHING STRATEGY:\n"
+                    "The following is the creator's growth strategy. Use it to inform "
+                    "topic selection, framing, audience targeting, and positioning.\n\n"
+                    f"{strategy_context}\n\n"
+                    "CONTENT GOAL: Build authority as THE person who helps coaches add AI agent "
+                    "teams. Every piece should leave the viewer thinking 'I need to talk to this guy.'"
+                )
+            else:
+                prompt_parts.append(
+                    "NICHE CONTEXT - SUPER COACHING:\n"
+                    "This content is for coaches who want to add AI agent teams to their "
+                    "coaching business. The creator (Ziv Raviv) runs Kivi Media, has served "
+                    "300+ clients over 6 years, and recently replaced a 13-person human team "
+                    "with 160 AI agents. Framework is called 'Super Coaching' (trademarked).\n\n"
+                    "TARGET AUDIENCE: Independent coaches who want to scale with AI, not humans.\n\n"
+                    "CONTENT GOAL: Build authority as THE person who helps coaches add AI agent "
+                    "teams. Every piece should leave the viewer thinking 'I need to talk to this guy.'"
+                )
+
         # Creator inspiration context
         creator_insp = context.get("creator_inspiration")
         if creator_insp:

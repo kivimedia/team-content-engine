@@ -137,29 +137,54 @@ class TrendScout(AgentBase):
 
         search = WebSearchService()
         search_results = []
+        niche = context.get("niche", "general")
+
         if search.api_key:
-            # Source diversity: wide-net queries across different domains
-            source_queries = [
-                "site:techcrunch.com AI startups funding",
-                "site:theverge.com technology product launch",
-                "site:reddit.com/r/artificial AI breakthrough",
-                "site:news.ycombinator.com Show HN",
-                "site:venturebeat.com enterprise AI automation",
-                "site:arxiv.org large language model",
-                "site:semafor.com technology business",
-                "site:platformer.news social media",
-            ]
-            # Topical diversity: different angles beyond just AI
-            topical_queries = [
-                "AI tools for small business this week",
-                "creator economy platform news",
-                "remote work productivity tools 2026",
-                "SaaS startup acquisition funding",
-                "marketing automation AI agency",
-                "no-code low-code platform launch",
-                "solo founder built product AI",
-                "business automation workflow case study",
-            ]
+            if niche == "coaching":
+                # Coaching-niche sources: topics that resonate with coaches
+                # wondering about AI agents and growing their practice
+                source_queries = [
+                    "AI coaching tools automation this week",
+                    "coaching business AI agents 2026",
+                    "AI replacing virtual assistants coaching",
+                    "coaching industry trends technology",
+                    "online coaching business growth AI",
+                    "AI content creation for coaches",
+                    "coaching client retention strategies AI",
+                    "solopreneur AI automation tools",
+                ]
+                topical_queries = [
+                    "AI agents for small business owners",
+                    "coaches using ChatGPT Claude AI",
+                    "done for you services coaching AI",
+                    "coaching business scalability without hiring",
+                    "AI marketing for coaches consultants",
+                    "vibe coding no code tools coaches",
+                    "digital products coaching AI automation",
+                    "coaching industry disruption AI 2026",
+                ]
+            else:
+                # General tech/business sources (original behavior)
+                source_queries = [
+                    "site:techcrunch.com AI startups funding",
+                    "site:theverge.com technology product launch",
+                    "site:reddit.com/r/artificial AI breakthrough",
+                    "site:news.ycombinator.com Show HN",
+                    "site:venturebeat.com enterprise AI automation",
+                    "site:arxiv.org large language model",
+                    "site:semafor.com technology business",
+                    "site:platformer.news social media",
+                ]
+                topical_queries = [
+                    "AI tools for small business this week",
+                    "creator economy platform news",
+                    "remote work productivity tools 2026",
+                    "SaaS startup acquisition funding",
+                    "marketing automation AI agency",
+                    "no-code low-code platform launch",
+                    "solo founder built product AI",
+                    "business automation workflow case study",
+                ]
             self._report(f"Searching {len(source_queries)} sources + {len(topical_queries)} topical + {len(focus_areas)} focus areas")
             for sq in source_queries:
                 results = await search.search_news(sq, count=5)

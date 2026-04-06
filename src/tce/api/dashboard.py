@@ -344,6 +344,7 @@ img{background:var(--card);border-radius:4px}
         <button class="sidebar-item" data-tab="packages"><span class="icon">&#128230;</span><span class="label">Packages</span></button>
         <button class="sidebar-item" data-tab="templates"><span class="icon">&#128196;</span><span class="label">Templates</span></button>
         <button class="sidebar-item" data-tab="product-demo"><span class="icon">&#127916;</span><span class="label">Product Demo</span></button>
+        <button class="sidebar-item" data-tab="video-lead"><span class="icon">&#127908;</span><span class="label">Video Lead</span></button>
       </div>
       <div class="sidebar-group">
         <div class="sidebar-group-label">Knowledge</div>
@@ -417,7 +418,7 @@ const TAB_LABELS = {
   agents: 'Agents', costs: 'Costs', analytics: 'Analytics',
   templates: 'Templates', prompts: 'Prompts', settings: 'Settings',
   chat: 'Chat', trends: 'Trends', help: 'Help',
-  'product-demo': 'Product Demo', brands: 'Brands'
+  'product-demo': 'Product Demo', 'video-lead': 'Video Lead', brands: 'Brands'
 };
 
 // Sidebar toggle
@@ -2339,6 +2340,7 @@ async function renderGenerate() {
               <option value="weekly_planning">Weekly Planning</option>
               <option value="corpus_ingestion">Corpus Ingestion</option>
               <option value="weekly_learning">Weekly Learning</option>
+              <option value="video_lead">Video Lead Script (coaching niche)</option>
             </select>
             <div id="wf-desc" style="font-size:12px;color:var(--text);margin-top:8px;max-width:500px;line-height:1.6;opacity:0.85"></div>
           </div>
@@ -2405,7 +2407,8 @@ const WF_DESCRIPTIONS = {
   daily_content: 'Generates one complete post package for today. Runs: TrendScout (finds trending stories) -> StoryStrategist (picks angle) -> ResearchAgent (verifies claims) -> FB + LI Writers (draft posts) -> CTA Agent (keyword + DM flow) -> Creative Director (image prompts) -> QA (quality check). Use this daily to produce content.',
   weekly_planning: 'Plans the entire week ahead. Runs: TrendScout (landscape scan) -> StoryStrategist (5-day theme) -> ResearchAgent (evidence bank) -> CTA Agent (weekly keyword) -> Guide Builder (creates downloadable DOCX brief). Use this on Sunday/Monday to set up the week.',
   corpus_ingestion: 'Processes uploaded DOCX files into structured post examples. Runs: CorpusAnalyst (parses posts from docs) -> EngagementScorer (rates each post) -> PatternMiner (extracts reusable templates). Use this after uploading new swipe files / FB profile exports.',
-  weekly_learning: 'Reviews the past week and improves the system. Runs: LearningLoop (analyzes what worked, updates templates and scoring). Use this at end of week to refine content quality over time.'
+  weekly_learning: 'Reviews the past week and improves the system. Runs: LearningLoop (analyzes what worked, updates templates and scoring). Use this at end of week to refine content quality over time.',
+  video_lead: 'Produces a 5-7 min talking-head video script for the coaching niche. Runs: TrendScout (coaching-specific trends) -> StoryStrategist (Super Coaching positioning) -> ResearchAgent (verify claims) -> VideoLeadWriter (teleprompter-ready script). Output includes title, full script, sections with timing, SEO description, and blog repurpose outline.'
 };
 function updateWfDesc() {
   const sel = document.getElementById('wf-select');
@@ -2419,7 +2422,9 @@ async function runPipeline() {
   document.getElementById('run-btn').disabled = true;
   document.getElementById('run-btn').textContent = 'Starting...';
   try {
-    const r = await api('/pipeline/run', { method: 'POST', body: JSON.stringify({ workflow: wf, context: { day_of_week: dow } }) });
+    const ctx = { day_of_week: dow };
+    if (wf === 'video_lead') { ctx.niche = 'coaching'; ctx.cta_url = 'https://kivimedia.co/30'; }
+    const r = await api('/pipeline/run', { method: 'POST', body: JSON.stringify({ workflow: wf, context: ctx }) });
     activePipelineRun = r.run_id;
     localStorage.setItem('tce_active_run', r.run_id);
     toast('Pipeline started: ' + r.run_id.substring(0, 8));
@@ -6825,9 +6830,130 @@ async function generateProductDemo(btn) {
   btn.textContent = 'Generate Demo Video';
 }
 
+// Video Lead tab
+let activeVideoLeadRun = null;
+let videoLeadPollInterval = null;
+
+async function renderVideoLead() {
+  const app = document.getElementById('app');
+  // Note: innerHTML usage matches existing dashboard patterns (internal admin tool)
+  app.innerHTML = '<div class="section">'
+    + '<h2>Video Lead Script Generator</h2>'
+    + '<p style="font-size:13px;color:var(--dim);margin-bottom:16px;line-height:1.6">'
+    + 'Generate a 5-7 minute talking-head video script optimized for the coaching niche. '
+    + 'Based on TJ Robertson\'s content machine model: record one video, repurpose everywhere. '
+    + 'The script follows a 9-section structure: Hook - Authority Bridge - Define Concept - Why Old Way Fails - Framework/Steps - Where Humans Win - What This Means - FAQ - CTA.'
+    + '</p>'
+    + '<div class="card" style="margin-bottom:16px">'
+    + '<div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">'
+    + '<div style="flex:1;min-width:250px">'
+    + '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Topic (optional - leave blank for auto-discovery)</label>'
+    + '<input type="text" id="vl-topic" placeholder="e.g. How coaches can use AI agents to deliver done-for-you services" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">'
+    + '</div>'
+    + '<div>'
+    + '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Niche</label>'
+    + '<select id="vl-niche" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">'
+    + '<option value="coaching" style="background:var(--card);color:var(--text)">Coaching (Super Coaching)</option>'
+    + '<option value="general" style="background:var(--card);color:var(--text)">General (AI/Tech)</option>'
+    + '</select>'
+    + '</div>'
+    + '<button class="btn btn-primary" id="vl-run-btn" onclick="runVideoLead()">Generate Script</button>'
+    + '</div></div>'
+    + '<div id="vl-status"></div>'
+    + '<div id="vl-result"></div>'
+    + '</div>';
+  if (activeVideoLeadRun) pollVideoLead();
+}
+
+async function runVideoLead() {
+  const topic = document.getElementById('vl-topic').value.trim();
+  const niche = document.getElementById('vl-niche').value;
+  const btn = document.getElementById('vl-run-btn');
+  btn.disabled = true; btn.textContent = 'Starting...';
+  const ctx = { niche: niche, cta_url: 'https://kivimedia.co/30' };
+  if (topic) ctx.topic = topic;
+  try {
+    const r = await api('/pipeline/run', { method: 'POST', body: JSON.stringify({ workflow: 'video_lead', context: ctx }) });
+    activeVideoLeadRun = r.run_id;
+    btn.textContent = 'Running...';
+    videoLeadPollInterval = setInterval(pollVideoLead, 3000);
+    pollVideoLead();
+  } catch(e) {
+    document.getElementById('vl-status').textContent = 'Error: ' + e.message;
+    btn.disabled = false; btn.textContent = 'Generate Script';
+  }
+}
+
+async function pollVideoLead() {
+  if (!activeVideoLeadRun) return;
+  try {
+    const r = await api('/pipeline/' + activeVideoLeadRun + '/status');
+    const statusEl = document.getElementById('vl-status');
+    if (!statusEl) return;
+
+    let html = '<div class="card" style="margin-bottom:12px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+      + '<span style="font-weight:600">' + (r.status || 'running') + '</span>';
+    if (r.elapsed_seconds) html += '<span style="font-size:12px;color:var(--dim)">' + Math.round(r.elapsed_seconds) + 's</span>';
+    html += '</div>';
+
+    if (r.progress_log && r.progress_log.length > 0) {
+      html += '<div style="font-size:12px;color:var(--dim);max-height:200px;overflow-y:auto;font-family:monospace;line-height:1.8">';
+      r.progress_log.forEach(function(line) { html += '<div>' + line.replace(/</g,'&lt;') + '</div>'; });
+      html += '</div>';
+    }
+    html += '</div>';
+    statusEl.innerHTML = html;
+
+    if (r.status === 'completed' || r.status === 'failed') {
+      clearInterval(videoLeadPollInterval);
+      videoLeadPollInterval = null;
+      const btn = document.getElementById('vl-run-btn');
+      if (btn) { btn.disabled = false; btn.textContent = 'Generate Script'; }
+
+      if (r.status === 'completed' && r.result && r.result.video_lead_script) {
+        const script = r.result.video_lead_script;
+        const resultEl = document.getElementById('vl-result');
+        if (resultEl) {
+          let rhtml = '<div class="section" style="margin-top:16px">'
+            + '<h2>' + (script.title || 'Video Script').replace(/</g,'&lt;') + '</h2>';
+          if (script.target_audience) rhtml += '<p style="font-size:12px;color:var(--dim);margin-bottom:12px">Audience: ' + script.target_audience.replace(/</g,'&lt;') + '</p>';
+          if (script.estimated_duration_minutes) rhtml += '<p style="font-size:12px;color:var(--dim);margin-bottom:16px">' + script.word_count + ' words - ~' + script.estimated_duration_minutes.toFixed(1) + ' min</p>';
+
+          if (script.sections && script.sections.length > 0) {
+            script.sections.forEach(function(s) {
+              rhtml += '<div class="card" style="margin-bottom:8px">'
+                + '<div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:6px">' + (s.name || '').replace(/</g,'&lt;') + ' (~' + (s.estimated_seconds || '?') + 's)</div>'
+                + '<div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + (s.text || '').replace(/</g,'&lt;') + '</div>'
+                + '</div>';
+            });
+          } else if (script.full_script) {
+            rhtml += '<div class="card"><div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + script.full_script.replace(/</g,'&lt;') + '</div></div>';
+          }
+
+          if (script.seo_description) {
+            rhtml += '<div class="card" style="margin-top:12px"><div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">SEO DESCRIPTION</div><div style="font-size:13px">' + script.seo_description.replace(/</g,'&lt;') + '</div></div>';
+          }
+          if (script.tags && script.tags.length) {
+            rhtml += '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">';
+            script.tags.forEach(function(t) { rhtml += '<span style="font-size:11px;background:var(--border);padding:2px 8px;border-radius:4px">' + t.replace(/</g,'&lt;') + '</span>'; });
+            rhtml += '</div>';
+          }
+          if (script.blog_repurpose_outline) {
+            rhtml += '<div class="card" style="margin-top:12px"><div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">BLOG REPURPOSE OUTLINE</div><div style="font-size:13px;white-space:pre-wrap">' + script.blog_repurpose_outline.replace(/</g,'&lt;') + '</div></div>';
+          }
+          rhtml += '</div>';
+          resultEl.innerHTML = rhtml;
+        }
+      }
+      activeVideoLeadRun = null;
+    }
+  } catch(e) { console.error('Poll video lead error:', e); }
+}
+
 // Router
 function render() {
-  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, topic: renderTopic, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, brands: renderBrands };
+  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, topic: renderTopic, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, 'video-lead': renderVideoLead, brands: renderBrands };
   updateBreadcrumb(null);
   (map[currentTab] || renderGenerate)();
 }

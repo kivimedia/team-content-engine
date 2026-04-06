@@ -186,6 +186,19 @@ PRODUCT_DEMO_WORKFLOW = [
     ),
 ]
 
+# Video lead workflow - produces long-form talking-head scripts (TJ Robertson style)
+# Uses coaching-niche trend scout, then story strategist, research, and video lead writer
+VIDEO_LEAD_WORKFLOW = [
+    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=120),
+    PipelineStep(agent_name="story_strategist", depends_on=["trend_scout"], timeout_seconds=120),
+    PipelineStep(agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=120),
+    PipelineStep(
+        agent_name="video_lead_writer",
+        depends_on=["story_strategist", "research_agent"],
+        timeout_seconds=120,
+    ),
+]
+
 # Workflow registry
 WORKFLOWS: dict[str, list[PipelineStep]] = {
     "daily_content": DAILY_CONTENT_WORKFLOW,
@@ -200,4 +213,5 @@ WORKFLOWS: dict[str, list[PipelineStep]] = {
     "polish_from_copy": POLISH_FROM_COPY_WORKFLOW,
     "video_generation": VIDEO_GENERATION_WORKFLOW,
     "product_demo": PRODUCT_DEMO_WORKFLOW,
+    "video_lead": VIDEO_LEAD_WORKFLOW,
 }

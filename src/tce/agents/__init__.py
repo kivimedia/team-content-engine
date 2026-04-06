@@ -19,6 +19,7 @@ from tce.agents import (  # noqa: F401
     trend_scout,
     script_agent,
     video_agent,
+    video_lead_writer,
     weekly_planner,
 )
 from tce.agents.base import AgentBase
