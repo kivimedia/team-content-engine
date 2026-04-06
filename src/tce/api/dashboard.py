@@ -6841,7 +6841,7 @@ async function renderVideoLead() {
     + '<h2>Video Lead Script Generator</h2>'
     + '<p style="font-size:13px;color:var(--dim);margin-bottom:16px;line-height:1.6">'
     + 'Generate a 5-7 minute talking-head video script optimized for the coaching niche. '
-    + 'Based on TJ Robertson\'s content machine model: record one video, repurpose everywhere. '
+    + 'Based on the TJ Robertson content machine model: record one video, repurpose everywhere. '
     + 'The script follows a 9-section structure: Hook - Authority Bridge - Define Concept - Why Old Way Fails - Framework/Steps - Where Humans Win - What This Means - FAQ - CTA.'
     + '</p>'
     + '<div class="card" style="margin-bottom:16px">'
