@@ -192,6 +192,34 @@ class WeeklyPlanner(AgentBase):
         if operator_overrides:
             prompt_parts.append(f"\nOPERATOR OVERRIDES:\n{json.dumps(operator_overrides)}")
 
+        # === Inject niche strategy context ===
+        niche = context.get("niche", "general")
+        if niche == "coaching":
+            import os
+            strategy_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+                "docs", "super-coaching-strategy.md",
+            )
+            try:
+                with open(strategy_path, "r", encoding="utf-8") as f:
+                    strategy_text = f.read()
+                if len(strategy_text) > 3000:
+                    strategy_text = strategy_text[:3000]
+                prompt_parts.append(
+                    "\nNICHE STRATEGY - SUPER COACHING:\n"
+                    "All 5 days MUST be framed for coaches who want to add AI agent teams "
+                    "to their coaching business. The creator is Ziv Raviv (Kivi Media, 300+ clients, "
+                    "replaced 13-person team with 160 AI agents, trademarked Super Coaching).\n\n"
+                    f"{strategy_text}\n\n"
+                    "Every topic should make a coach think: I need AI agents in my practice."
+                )
+                self._report("Loaded Super Coaching strategy for weekly planning")
+            except FileNotFoundError:
+                prompt_parts.append(
+                    "\nNICHE: coaching - Target coaches who want to add AI agent teams. "
+                    "All topics should be relevant to coaches scaling with AI, not generic tech."
+                )
+
         # === Inject voice context so planner considers the team's identity ===
         founder_voice = context.get("founder_voice")
         if founder_voice:

@@ -42,6 +42,7 @@ class MonthPlanRequest(BaseModel):
     monthly_theme: str | None = None
     sensitive_period: bool = False
     seasonal_context: str | None = None
+    niche: str = "general"  # "coaching" for Super Coaching niche
 
 
 @router.post("/plan")
@@ -134,6 +135,7 @@ async def plan_month(
                 scout_ctx = {
                     "scan_type": "weekly",
                     "focus_areas": ["AI", "technology", "business automation"],
+                    "niche": request.niche,
                 }
                 scout_result = await trend_scout._execute(scout_ctx)
                 shared_trend_brief = scout_result.get("trend_brief", {})
@@ -235,6 +237,7 @@ async def plan_month(
                         "creator_profiles": creator_profiles,
                         "sensitive_period": request.sensitive_period,
                         "recent_posts": [{"topic": t} for t in all_prior_topics],
+                        "niche": request.niche,
                     }
                     if request.monthly_theme:
                         week_context["operator_overrides"] = {

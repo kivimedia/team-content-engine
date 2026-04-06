@@ -2354,6 +2354,13 @@ async function renderGenerate() {
               <option value="4">Fri - Second Order</option>
             </select>
           </div>
+          <div>
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Niche</label>
+            <select id="niche-select" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+              <option value="coaching" style="background:var(--card);color:var(--text)">Coaching (Super Coaching)</option>
+              <option value="general" style="background:var(--card);color:var(--text)">General (AI/Tech)</option>
+            </select>
+          </div>
           <button class="btn btn-primary" id="run-btn" onclick="runPipeline()">Run Pipeline</button>
         </div>
       </div>
@@ -2422,8 +2429,10 @@ async function runPipeline() {
   document.getElementById('run-btn').disabled = true;
   document.getElementById('run-btn').textContent = 'Starting...';
   try {
-    const ctx = { day_of_week: dow };
-    if (wf === 'video_lead') { ctx.niche = 'coaching'; ctx.cta_url = 'https://kivimedia.co/30'; }
+    const nicheEl = document.getElementById('niche-select');
+    const niche = nicheEl ? nicheEl.value : 'general';
+    const ctx = { day_of_week: dow, niche: niche };
+    if (niche === 'coaching') { ctx.cta_url = 'https://kivimedia.co/30'; }
     const r = await api('/pipeline/run', { method: 'POST', body: JSON.stringify({ workflow: wf, context: ctx }) });
     activePipelineRun = r.run_id;
     localStorage.setItem('tce_active_run', r.run_id);
@@ -6264,13 +6273,23 @@ function wbRestore() {
     if (h) _wbHidden = new Set(JSON.parse(h));
   } catch {}
 }
+function wbResetPlan() {
+  if (!confirm('Reset the entire week plan? This clears all slots and topic ideas.')) return;
+  _wbPool = [];
+  _wbSlots = [null, null, null, null, null, null, null];
+  _wbHidden = new Set();
+  localStorage.removeItem('wb_pool');
+  localStorage.removeItem('wb_slots');
+  localStorage.removeItem('wb_hidden');
+  renderWeekBuilder();
+}
 const WB_DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const WB_ANGLE_COLORS = { big_shift_explainer: '#6366f1', tactical_workflow_guide: '#22c55e', contrarian_diagnosis: '#ef4444', case_study_build_story: '#eab308', second_order_implication: '#3b82f6' };
 
 async function renderWeekBuilder() {
   wbRestore();
   const app = document.getElementById('app');
-  app.innerHTML = '<div class="section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><h2>Week Builder</h2><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary" id="wb-generate-btn" onclick="wbGeneratePool()">Generate 20 Ideas (~$0.45)</button><button class="btn btn-green" id="wb-approve-btn" onclick="wbApproveWeek()" style="display:none">Approve Week</button></div></div><p style="color:var(--dim);font-size:13px;margin-bottom:16px">Generate a pool of topic ideas, then drag the best ones into your 7-day slots.</p><div class="wb-layout"><div class="wb-slots" id="wb-slots"></div><div class="wb-pool" id="wb-pool"><div style="text-align:center;padding:40px 20px;color:var(--muted)"><div style="font-size:28px;margin-bottom:8px">&#127919;</div>Click "Generate 20 Ideas" to fill this pool with AI-generated topics from current trends.</div></div></div></div>';
+  app.innerHTML = '<div class="section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><h2>Week Builder</h2><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary" id="wb-generate-btn" onclick="wbGeneratePool()">Generate 20 Ideas (~$0.45)</button><button class="btn btn-green" id="wb-approve-btn" onclick="wbApproveWeek()" style="display:none">Approve Week</button><button class="btn" style="background:var(--border);color:var(--text)" onclick="wbResetPlan()">Reset Plan</button></div></div><p style="color:var(--dim);font-size:13px;margin-bottom:16px">Generate a pool of topic ideas, then drag the best ones into your 7-day slots.</p><div class="wb-layout"><div class="wb-slots" id="wb-slots"></div><div class="wb-pool" id="wb-pool"><div style="text-align:center;padding:40px 20px;color:var(--muted)"><div style="font-size:28px;margin-bottom:8px">&#127919;</div>Click "Generate 20 Ideas" to fill this pool with AI-generated topics from current trends.</div></div></div></div>';
   if (_wbPool.length) {
     // Restored from localStorage - render immediately
     wbRenderSlots();
@@ -6435,7 +6454,7 @@ async function wbGeneratePool() {
   if (btn) { btn.disabled = true; btn.textContent = 'Generating ideas...'; }
   const monday = getMonday(new Date());
   try {
-    const r = await api('/monthly/plan', { method: 'POST', body: JSON.stringify({ month_start: fmtDate(monday) }) });
+    const r = await api('/monthly/plan', { method: 'POST', body: JSON.stringify({ month_start: fmtDate(monday), niche: 'coaching' }) });
     // Poll for completion
     let done = false;
     while (!done) {
