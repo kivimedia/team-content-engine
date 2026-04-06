@@ -6895,7 +6895,7 @@ async function loadVideoLeadScripts() {
       const dur = s.estimated_duration_minutes ? s.estimated_duration_minutes.toFixed(1) + ' min' : '';
       const words = s.word_count ? s.word_count + ' words' : '';
       const meta = [dur, words].filter(Boolean).join(' - ');
-      html += '<div class="card" style="margin-bottom:8px;cursor:pointer" onclick="viewVideoLeadScript(\'' + s.id + '\')">'
+      html += '<div class="card" style="margin-bottom:8px;cursor:pointer" onclick="viewVideoLeadScript(&quot;' + s.id + '&quot;)">'
         + '<div style="display:flex;justify-content:space-between;align-items:center">'
         + '<div>'
         + '<div style="font-weight:600;font-size:14px">' + esc(s.title || 'Untitled') + '</div>'
