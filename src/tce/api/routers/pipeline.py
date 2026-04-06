@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce.db.session import async_session, get_db
 from tce.models.pattern_template import PatternTemplate
 from tce.models.pipeline_run import PipelineRun
+from tce.models.video_lead_script import VideoLeadScript
 from tce.orchestrator.engine import PipelineOrchestrator
 from tce.orchestrator.workflows import WORKFLOWS
 from tce.settings import settings
@@ -208,6 +209,30 @@ async def trigger_pipeline(
                         snapshot = {k: ctx[k] for k in snapshot_keys if k in ctx}
                         if snapshot:
                             run_record.context_snapshot = snapshot
+                        # Save VideoLeadScript to dedicated table
+                        vls = ctx.get("video_lead_script")
+                        if vls and isinstance(vls, dict):
+                            story = ctx.get("story_brief", {})
+                            script_record = VideoLeadScript(
+                                title=vls.get("title", "Untitled"),
+                                title_pattern=vls.get("title_pattern"),
+                                hook=vls.get("hook"),
+                                full_script=vls.get("full_script"),
+                                sections=vls.get("sections"),
+                                word_count=vls.get("word_count"),
+                                estimated_duration_minutes=vls.get("estimated_duration_minutes"),
+                                target_audience=vls.get("target_audience"),
+                                key_takeaway=vls.get("key_takeaway"),
+                                niche=ctx.get("niche", "coaching"),
+                                seo_description=vls.get("seo_description"),
+                                tags=vls.get("tags"),
+                                blog_repurpose_outline=vls.get("blog_repurpose_outline"),
+                                pipeline_run_id=run_id,
+                                topic=story.get("topic"),
+                                thesis=story.get("thesis"),
+                            )
+                            bk_db.add(script_record)
+                            logger.info("pipeline.video_lead_script_saved", id=str(script_record.id))
                     if has_failures:
                         errors = result.get("step_errors", {})
                         run_record.error_message = "; ".join(f"{k}: {v}" for k, v in errors.items())
@@ -1737,4 +1762,71 @@ async def brainstorm(
         "reply": reply,
         "model": settings.default_model,
         "tool_calls_made": tool_calls_made,
+    }
+
+
+# --- Video Lead Scripts ---
+
+
+@router.get("/video-lead-scripts")
+async def list_video_lead_scripts(
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """List all video lead scripts, newest first."""
+    from sqlalchemy import desc
+    result = await db.execute(
+        select(VideoLeadScript)
+        .order_by(desc(VideoLeadScript.created_at))
+        .limit(limit)
+    )
+    scripts = result.scalars().all()
+    return [
+        {
+            "id": str(s.id),
+            "title": s.title,
+            "title_pattern": s.title_pattern,
+            "word_count": s.word_count,
+            "estimated_duration_minutes": s.estimated_duration_minutes,
+            "niche": s.niche,
+            "status": s.status,
+            "topic": s.topic,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+        }
+        for s in scripts
+    ]
+
+
+@router.get("/video-lead-scripts/{script_id}")
+async def get_video_lead_script(
+    script_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Get a single video lead script with full content."""
+    result = await db.execute(
+        select(VideoLeadScript).where(VideoLeadScript.id == uuid.UUID(script_id))
+    )
+    s = result.scalar_one_or_none()
+    if not s:
+        raise HTTPException(status_code=404, detail="Script not found")
+    return {
+        "id": str(s.id),
+        "title": s.title,
+        "title_pattern": s.title_pattern,
+        "hook": s.hook,
+        "full_script": s.full_script,
+        "sections": s.sections,
+        "word_count": s.word_count,
+        "estimated_duration_minutes": s.estimated_duration_minutes,
+        "target_audience": s.target_audience,
+        "key_takeaway": s.key_takeaway,
+        "niche": s.niche,
+        "seo_description": s.seo_description,
+        "tags": s.tags,
+        "blog_repurpose_outline": s.blog_repurpose_outline,
+        "status": s.status,
+        "topic": s.topic,
+        "thesis": s.thesis,
+        "pipeline_run_id": str(s.pipeline_run_id) if s.pipeline_run_id else None,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
     }

@@ -24,6 +24,7 @@ from tce.models.trend_brief import TrendBrief
 from tce.models.narration_script import NarrationScript
 from tce.models.render_queue import RenderQueueJob
 from tce.models.video_asset import VideoAsset
+from tce.models.video_lead_script import VideoLeadScript
 from tce.models.weekly_guide import WeeklyGuide
 
 __all__ = [
@@ -51,5 +52,6 @@ __all__ = [
     "SystemVersion",
     "TrendBrief",
     "VideoAsset",
+    "VideoLeadScript",
     "WeeklyGuide",
 ]

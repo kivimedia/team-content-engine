@@ -6861,8 +6861,102 @@ async function renderVideoLead() {
     + '</div></div>'
     + '<div id="vl-status"></div>'
     + '<div id="vl-result"></div>'
+    + '</div>'
+    + '<div class="section" style="margin-top:32px">'
+    + '<h2>Previous Scripts</h2>'
+    + '<div id="vl-scripts-list"><div style="color:var(--dim);font-size:13px">Loading...</div></div>'
     + '</div>';
-  if (activeVideoLeadRun) pollVideoLead();
+  // Restore active run from localStorage
+  if (!activeVideoLeadRun) {
+    const saved = localStorage.getItem('tce_vl_run');
+    if (saved) { activeVideoLeadRun = saved; }
+  }
+  if (activeVideoLeadRun) {
+    const btn = document.getElementById('vl-run-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Running...'; }
+    videoLeadPollInterval = setInterval(pollVideoLead, 3000);
+    pollVideoLead();
+  }
+  loadVideoLeadScripts();
+}
+
+async function loadVideoLeadScripts() {
+  try {
+    const scripts = await api('/pipeline/video-lead-scripts');
+    const el = document.getElementById('vl-scripts-list');
+    if (!el) return;
+    if (!scripts || scripts.length === 0) {
+      el.innerHTML = '<div style="color:var(--dim);font-size:13px">No scripts generated yet. Click "Generate Script" above to create your first one.</div>';
+      return;
+    }
+    let html = '';
+    scripts.forEach(function(s) {
+      const date = s.created_at ? new Date(s.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+      const dur = s.estimated_duration_minutes ? s.estimated_duration_minutes.toFixed(1) + ' min' : '';
+      const words = s.word_count ? s.word_count + ' words' : '';
+      const meta = [dur, words].filter(Boolean).join(' - ');
+      html += '<div class="card" style="margin-bottom:8px;cursor:pointer" onclick="viewVideoLeadScript(\'' + s.id + '\')">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center">'
+        + '<div>'
+        + '<div style="font-weight:600;font-size:14px">' + esc(s.title || 'Untitled') + '</div>'
+        + '<div style="font-size:12px;color:var(--dim);margin-top:2px">' + esc(s.topic || '') + '</div>'
+        + '</div>'
+        + '<div style="text-align:right">'
+        + '<div style="font-size:11px;color:var(--dim)">' + date + '</div>'
+        + '<div style="font-size:11px;color:var(--dim)">' + meta + '</div>'
+        + '<span style="font-size:10px;background:var(--border);padding:2px 8px;border-radius:4px;margin-top:4px;display:inline-block">' + esc(s.status || 'draft') + '</span>'
+        + '</div>'
+        + '</div></div>';
+    });
+    el.innerHTML = html;
+  } catch(e) {
+    const el = document.getElementById('vl-scripts-list');
+    if (el) el.innerHTML = '<div style="color:var(--dim);font-size:13px">Could not load scripts.</div>';
+  }
+}
+
+async function viewVideoLeadScript(scriptId) {
+  try {
+    const script = await api('/pipeline/video-lead-scripts/' + scriptId);
+    const resultEl = document.getElementById('vl-result');
+    if (!resultEl) return;
+    renderScriptResult(resultEl, script);
+    resultEl.scrollIntoView({ behavior: 'smooth' });
+  } catch(e) {
+    console.error('Failed to load script:', e);
+  }
+}
+
+function renderScriptResult(el, script) {
+  let rhtml = '<div class="section" style="margin-top:16px">'
+    + '<h2>' + esc(script.title || 'Video Script') + '</h2>';
+  if (script.target_audience) rhtml += '<p style="font-size:12px;color:var(--dim);margin-bottom:12px">Audience: ' + esc(script.target_audience) + '</p>';
+  if (script.estimated_duration_minutes) rhtml += '<p style="font-size:12px;color:var(--dim);margin-bottom:16px">' + (script.word_count||0) + ' words - ~' + (script.estimated_duration_minutes||0).toFixed(1) + ' min</p>';
+
+  if (script.sections && script.sections.length > 0) {
+    script.sections.forEach(function(s) {
+      rhtml += '<div class="card" style="margin-bottom:8px">'
+        + '<div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:6px">' + esc(s.name) + ' (~' + (s.estimated_seconds || '?') + 's)</div>'
+        + '<div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + esc(s.text) + '</div>'
+        + '</div>';
+    });
+  } else if (script.full_script) {
+    rhtml += '<div class="card"><div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + esc(script.full_script) + '</div></div>';
+  }
+
+  if (script.seo_description) {
+    rhtml += '<div class="card" style="margin-top:12px"><div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">SEO DESCRIPTION</div><div style="font-size:13px">' + esc(script.seo_description) + '</div></div>';
+  }
+  if (script.tags && script.tags.length) {
+    rhtml += '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">';
+    script.tags.forEach(function(t) { rhtml += '<span style="font-size:11px;background:var(--border);padding:2px 8px;border-radius:4px">' + esc(t) + '</span>'; });
+    rhtml += '</div>';
+  }
+  if (script.blog_repurpose_outline) {
+    rhtml += '<div class="card" style="margin-top:12px"><div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">BLOG REPURPOSE OUTLINE</div><div style="font-size:13px;white-space:pre-wrap">' + esc(script.blog_repurpose_outline) + '</div></div>';
+  }
+  rhtml += '</div>';
+  el.innerHTML = rhtml;
 }
 
 async function runVideoLead() {
@@ -6875,6 +6969,7 @@ async function runVideoLead() {
   try {
     const r = await api('/pipeline/run', { method: 'POST', body: JSON.stringify({ workflow: 'video_lead', context: ctx }) });
     activeVideoLeadRun = r.run_id;
+    localStorage.setItem('tce_vl_run', r.run_id);
     btn.textContent = 'Running...';
     videoLeadPollInterval = setInterval(pollVideoLead, 3000);
     pollVideoLead();
@@ -6939,41 +7034,12 @@ async function pollVideoLead() {
       if (btn) { btn.disabled = false; btn.textContent = 'Generate Script'; }
 
       if (!anyFailed && r.result && r.result.video_lead_script) {
-        const script = r.result.video_lead_script;
         const resultEl = document.getElementById('vl-result');
-        if (resultEl) {
-          let rhtml = '<div class="section" style="margin-top:16px">'
-            + '<h2>' + esc(script.title || 'Video Script') + '</h2>';
-          if (script.target_audience) rhtml += '<p style="font-size:12px;color:var(--dim);margin-bottom:12px">Audience: ' + esc(script.target_audience) + '</p>';
-          if (script.estimated_duration_minutes) rhtml += '<p style="font-size:12px;color:var(--dim);margin-bottom:16px">' + (script.word_count||0) + ' words - ~' + (script.estimated_duration_minutes||0).toFixed(1) + ' min</p>';
-
-          if (script.sections && script.sections.length > 0) {
-            script.sections.forEach(function(s) {
-              rhtml += '<div class="card" style="margin-bottom:8px">'
-                + '<div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:6px">' + esc(s.name) + ' (~' + (s.estimated_seconds || '?') + 's)</div>'
-                + '<div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + esc(s.text) + '</div>'
-                + '</div>';
-            });
-          } else if (script.full_script) {
-            rhtml += '<div class="card"><div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + esc(script.full_script) + '</div></div>';
-          }
-
-          if (script.seo_description) {
-            rhtml += '<div class="card" style="margin-top:12px"><div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">SEO DESCRIPTION</div><div style="font-size:13px">' + esc(script.seo_description) + '</div></div>';
-          }
-          if (script.tags && script.tags.length) {
-            rhtml += '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">';
-            script.tags.forEach(function(t) { rhtml += '<span style="font-size:11px;background:var(--border);padding:2px 8px;border-radius:4px">' + esc(t) + '</span>'; });
-            rhtml += '</div>';
-          }
-          if (script.blog_repurpose_outline) {
-            rhtml += '<div class="card" style="margin-top:12px"><div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">BLOG REPURPOSE OUTLINE</div><div style="font-size:13px;white-space:pre-wrap">' + esc(script.blog_repurpose_outline) + '</div></div>';
-          }
-          rhtml += '</div>';
-          resultEl.innerHTML = rhtml;
-        }
+        if (resultEl) renderScriptResult(resultEl, r.result.video_lead_script);
       }
       activeVideoLeadRun = null;
+      localStorage.removeItem('tce_vl_run');
+      loadVideoLeadScripts();
     }
   } catch(e) { console.error('Poll video lead error:', e); }
 }
