@@ -101,6 +101,23 @@ class PipelineOrchestrator:
                 gate_name = gate_steps[0]
                 self.step_status[gate_name] = StepStatus.PAUSED_AT_GATE
                 logger.info("pipeline.gate_reached", step=gate_name, run_id=str(self.run_id))
+                # Persist gate state to DB so it survives restarts
+                try:
+                    from tce.models.pipeline_run import PipelineRun
+                    from sqlalchemy import select as sa_select
+                    result = await self.db.execute(
+                        sa_select(PipelineRun).where(PipelineRun.run_id == self.run_id)
+                    )
+                    run_record = result.scalar_one_or_none()
+                    if run_record:
+                        run_record.status = "paused_at_gate"
+                        run_record.step_results = {
+                            **({k: v.value for k, v in self.step_status.items()}),
+                            "_paused_at_gate": gate_name,
+                        }
+                        await self.db.commit()
+                except Exception:
+                    logger.exception("pipeline.gate_persist_failed", run_id=str(self.run_id))
                 break  # Pause the pipeline - caller must resume later
 
             # Run ready steps concurrently

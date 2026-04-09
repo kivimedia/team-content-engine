@@ -21,7 +21,7 @@ from __future__ import annotations
 import contextvars
 import uuid
 
-from sqlalchemy import event
+from sqlalchemy import event, or_
 from sqlalchemy.orm import ORMExecuteState
 
 from tce.db.base import Base
@@ -66,8 +66,14 @@ def _apply_workspace_filter(execute_state: ORMExecuteState) -> None:
         if table_name in GLOBAL_TABLES:
             continue
         if hasattr(mapper.class_, "workspace_id"):
+            # Include legacy rows (workspace_id IS NULL) alongside workspace-scoped rows.
+            # This ensures pre-migration data (shared templates, patterns, etc.) remains
+            # visible to all workspaces until explicitly migrated.
             execute_state.statement = execute_state.statement.filter(
-                mapper.class_.workspace_id == ws_id
+                or_(
+                    mapper.class_.workspace_id == ws_id,
+                    mapper.class_.workspace_id.is_(None),
+                )
             )
 
 

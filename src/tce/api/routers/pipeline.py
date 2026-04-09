@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tce.api.deps import verify_service_auth
 from tce.db.session import async_session, get_db
 from tce.models.pattern_template import PatternTemplate
 from tce.models.pipeline_run import PipelineRun
@@ -275,14 +276,19 @@ async def get_pipeline_status(
     result = await db.execute(select(PipelineRun).where(PipelineRun.run_id == uuid.UUID(run_id)))
     run_record = result.scalar_one_or_none()
     if run_record:
+        step_results = run_record.step_results or {}
+        paused_at = step_results.pop("_paused_at_gate", None) if isinstance(step_results, dict) else None
+        is_paused = run_record.status == "paused_at_gate"
         return {
             "run_id": str(run_record.run_id),
             "status": run_record.status,
-            "step_status": run_record.step_results or {},
+            "step_status": step_results,
             "step_errors": run_record.step_errors or {},
             "step_logs": {},
             "error_message": run_record.error_message,
             "result": run_record.context_snapshot or {},
+            "paused": is_paused,
+            "paused_at_gate": paused_at if is_paused else None,
             "started_at": run_record.started_at.isoformat() if run_record.started_at else None,
             "completed_at": run_record.completed_at.isoformat()
             if run_record.completed_at
@@ -1856,14 +1862,13 @@ class WorkspaceRunResponse(BaseModel):
 async def trigger_workspace_pipeline(
     request: WorkspaceRunRequest,
     db: AsyncSession = Depends(get_db),
+    _auth: None = Depends(verify_service_auth),
 ) -> dict[str, str]:
     """Trigger a pipeline scoped to a workspace (multi-tenant).
 
     Called by km-worker to run a TCE workflow for a specific client.
     All records created during this run get stamped with workspace_id.
     """
-    from tce.api.deps import verify_service_auth
-
     if request.workflow not in WORKFLOWS:
         raise HTTPException(
             status_code=400,
@@ -1993,6 +1998,7 @@ async def run_single_agent(
     agent_name: str,
     request: AgentRunRequest,
     db: AsyncSession = Depends(get_db),
+    _auth: None = Depends(verify_service_auth),
 ) -> dict[str, Any]:
     """Run a single TCE agent synchronously. Returns when the agent completes.
 
