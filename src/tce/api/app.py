@@ -1,13 +1,16 @@
 """FastAPI application factory."""
 
+import uuid
 from contextlib import asynccontextmanager
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
+from tce.db.workspace_filter import set_workspace_context
 from tce.settings import settings
 
 from tce.api import dashboard
@@ -71,6 +74,23 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    # Workspace context middleware - extracts X-Workspace-Id header
+    # and sets it for automatic query filtering
+    class WorkspaceMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            ws_header = request.headers.get("x-workspace-id")
+            if ws_header:
+                try:
+                    set_workspace_context(uuid.UUID(ws_header))
+                except ValueError:
+                    pass
+            else:
+                set_workspace_context(None)
+            response = await call_next(request)
+            return response
+
+    app.add_middleware(WorkspaceMiddleware)
 
     # CORS
     app.add_middleware(

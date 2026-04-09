@@ -1841,6 +1841,8 @@ class WorkspaceRunRequest(BaseModel):
     workspace_id: str
     external_run_id: str | None = None
     context: dict[str, Any] = {}
+    api_keys: dict[str, str] | None = None  # Per-client API key overrides
+    budget: dict[str, float] | None = None  # Per-client budget caps
 
 
 class WorkspaceRunResponse(BaseModel):
@@ -1901,11 +1903,27 @@ async def trigger_workspace_pipeline(
             record_id = run_record.id
 
         try:
+            # Apply per-client API key and budget overrides
+            run_settings = settings
+            if request.api_keys or request.budget:
+                from copy import copy
+                run_settings = copy(settings)
+                if request.api_keys:
+                    for key, val in request.api_keys.items():
+                        if hasattr(run_settings, key) and val:
+                            setattr(run_settings, key, val)
+                if request.budget:
+                    from decimal import Decimal
+                    if "daily_usd" in request.budget:
+                        run_settings.daily_budget_usd = Decimal(str(request.budget["daily_usd"]))
+                    if "monthly_usd" in request.budget:
+                        run_settings.monthly_budget_usd = Decimal(str(request.budget["monthly_usd"]))
+
             async with async_session() as pipe_db:
                 orchestrator = PipelineOrchestrator(
                     steps=steps,
                     db=pipe_db,
-                    settings=settings,
+                    settings=run_settings,
                     run_id=run_id,
                     workspace_id=ws_id,
                     external_run_id=ext_run_id,

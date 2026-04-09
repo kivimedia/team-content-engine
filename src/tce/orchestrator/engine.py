@@ -26,6 +26,7 @@ class StepStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    PAUSED_AT_GATE = "paused_at_gate"
 
 
 class PipelineOrchestrator:
@@ -93,6 +94,14 @@ class PipelineOrchestrator:
                 for name in unfinished:
                     self.step_status[name] = StepStatus.SKIPPED
                 break
+
+            # Check if any ready step is a gate
+            gate_steps = [n for n in ready if self.steps[n].is_gate]
+            if gate_steps:
+                gate_name = gate_steps[0]
+                self.step_status[gate_name] = StepStatus.PAUSED_AT_GATE
+                logger.info("pipeline.gate_reached", step=gate_name, run_id=str(self.run_id))
+                break  # Pause the pipeline - caller must resume later
 
             # Run ready steps concurrently
             tasks = [self._run_step(name) for name in ready]
@@ -454,7 +463,9 @@ class PipelineOrchestrator:
             logger.info("pipeline.resume_skip", step=name, reason="predecessor of resume target")
 
     def _has_pending_steps(self) -> bool:
-        return any(s == StepStatus.PENDING for s in self.step_status.values())
+        return any(
+            s in (StepStatus.PENDING,) for s in self.step_status.values()
+        ) and not any(s == StepStatus.PAUSED_AT_GATE for s in self.step_status.values())
 
     def _get_ready_steps(self) -> list[str]:
         """Get steps whose dependencies are all completed."""
@@ -486,11 +497,17 @@ class PipelineOrchestrator:
 
     def get_status(self) -> dict[str, Any]:
         """Get current pipeline status."""
+        is_paused = any(s == StepStatus.PAUSED_AT_GATE for s in self.step_status.values())
+        paused_at = next(
+            (k for k, v in self.step_status.items() if v == StepStatus.PAUSED_AT_GATE), None
+        )
         status = {
             "run_id": str(self.run_id),
             "step_status": {k: v.value for k, v in self.step_status.items()},
             "step_errors": self.step_errors,
             "step_logs": {k: v[-20:] for k, v in self.step_logs.items()},
+            "paused": is_paused,
+            "paused_at_gate": paused_at,
         }
         # Include key outputs if available (for result display while still active)
         result_keys = ["video_lead_script", "story_brief", "narration_script"]

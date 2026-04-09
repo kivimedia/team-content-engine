@@ -14,3 +14,4 @@ class PipelineStep:
     max_retries: int = 2
     timeout_seconds: int = 120
     optional: bool = False  # If True, failure doesn't block downstream steps
+    is_gate: bool = False  # If True, pipeline pauses here for human approval
