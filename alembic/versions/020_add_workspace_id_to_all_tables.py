@@ -51,17 +51,30 @@ TABLES = [
 ]
 
 
+def _table_exists(table_name: str) -> bool:
+    """Check if a table exists in the database."""
+    conn = op.get_bind()
+    result = conn.execute(
+        sa.text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = :t)"),
+        {"t": table_name},
+    )
+    return result.scalar()
+
+
 def upgrade() -> None:
     for table in TABLES:
+        if not _table_exists(table):
+            continue
         op.add_column(table, sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=True))
         op.create_index(f"ix_{table}_workspace_id", table, ["workspace_id"])
 
     # Also add external_run_id to pipeline_runs for kmboards bridge
-    op.add_column(
-        "pipeline_runs",
-        sa.Column("external_run_id", postgresql.UUID(as_uuid=True), nullable=True),
-    )
-    op.create_index("ix_pipeline_runs_external_run_id", "pipeline_runs", ["external_run_id"])
+    if _table_exists("pipeline_runs"):
+        op.add_column(
+            "pipeline_runs",
+            sa.Column("external_run_id", postgresql.UUID(as_uuid=True), nullable=True),
+        )
+        op.create_index("ix_pipeline_runs_external_run_id", "pipeline_runs", ["external_run_id"])
 
 
 def downgrade() -> None:
