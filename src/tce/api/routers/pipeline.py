@@ -1911,18 +1911,19 @@ async def trigger_workspace_pipeline(
             # Apply per-client API key and budget overrides
             run_settings = settings
             if request.api_keys or request.budget:
-                from copy import copy
-                run_settings = copy(settings)
+                from decimal import Decimal
+                overrides: dict = {}
                 if request.api_keys:
                     for key, val in request.api_keys.items():
-                        if hasattr(run_settings, key) and val:
-                            setattr(run_settings, key, val)
+                        if hasattr(settings, key) and val:
+                            overrides[key] = val
                 if request.budget:
-                    from decimal import Decimal
                     if "daily_usd" in request.budget:
-                        run_settings.daily_budget_usd = Decimal(str(request.budget["daily_usd"]))
+                        overrides["daily_budget_usd"] = Decimal(str(request.budget["daily_usd"]))
                     if "monthly_usd" in request.budget:
-                        run_settings.monthly_budget_usd = Decimal(str(request.budget["monthly_usd"]))
+                        overrides["monthly_budget_usd"] = Decimal(str(request.budget["monthly_usd"]))
+                if overrides:
+                    run_settings = settings.model_copy(update=overrides)
 
             async with async_session() as pipe_db:
                 orchestrator = PipelineOrchestrator(
