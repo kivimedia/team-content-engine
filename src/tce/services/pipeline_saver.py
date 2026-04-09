@@ -85,7 +85,7 @@ class PipelineResultSaver:
     def _add(self, record: Any) -> None:
         """Add a record to DB with workspace_id stamped."""
         self._stamp(record)
-        self._add(record)
+        self.db.add(record)
 
     # --- Corpus ingestion pipeline ---
 

@@ -33,7 +33,6 @@ _workspace_id_var: contextvars.ContextVar[uuid.UUID | None] = contextvars.Contex
 
 # Models that should NOT be filtered by workspace_id (global/operational tables)
 GLOBAL_TABLES = frozenset({
-    "cost_events",
     "system_versions",
     "prompt_versions",
     "audit_logs",

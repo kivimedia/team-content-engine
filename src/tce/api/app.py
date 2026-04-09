@@ -8,7 +8,6 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from tce.db.workspace_filter import set_workspace_context
 from tce.settings import settings
@@ -75,24 +74,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Workspace context middleware - extracts X-Workspace-Id header
-    # and sets it for automatic query filtering
-    class WorkspaceMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request: Request, call_next):
-            ws_header = request.headers.get("x-workspace-id")
-            if ws_header:
-                try:
-                    set_workspace_context(uuid.UUID(ws_header))
-                except ValueError:
-                    pass
-            else:
-                set_workspace_context(None)
-            response = await call_next(request)
-            return response
-
-    app.add_middleware(WorkspaceMiddleware)
-
-    # CORS
+    # CORS (must be added before other middleware so it wraps outermost)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],  # Restrict in production
@@ -100,6 +82,21 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Workspace context middleware - uses @app.middleware (NOT BaseHTTPMiddleware)
+    # to avoid Starlette's known ContextVar propagation issues with BaseHTTPMiddleware.
+    @app.middleware("http")
+    async def workspace_middleware(request: Request, call_next):
+        ws_header = request.headers.get("x-workspace-id")
+        if ws_header:
+            try:
+                set_workspace_context(uuid.UUID(ws_header))
+            except ValueError:
+                pass
+        else:
+            set_workspace_context(None)
+        response = await call_next(request)
+        return response
 
     # Register routers
     prefix = "/api/v1"

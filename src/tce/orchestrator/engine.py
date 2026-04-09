@@ -427,12 +427,15 @@ class PipelineOrchestrator:
         try:
             entry = None
             if day_of_week is not None:
+                ws_filter = [
+                    ContentCalendarEntry.day_of_week == day_of_week,
+                    ContentCalendarEntry.status.in_(["planned", "generating", "ready"]),
+                ]
+                if self.workspace_id:
+                    ws_filter.append(ContentCalendarEntry.workspace_id == self.workspace_id)
                 stmt = (
                     select(ContentCalendarEntry)
-                    .where(
-                        ContentCalendarEntry.day_of_week == day_of_week,
-                        ContentCalendarEntry.status.in_(["planned", "generating", "ready"]),
-                    )
+                    .where(*ws_filter)
                     .order_by(ContentCalendarEntry.date.desc())
                     .limit(1)
                 )
