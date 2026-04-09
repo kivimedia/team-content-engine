@@ -11,7 +11,7 @@ engine = create_async_engine(settings.database_url, echo=False, pool_size=10)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 # Install automatic workspace_id filtering on all SELECT queries
-install_workspace_filter(async_session)
+install_workspace_filter(None)  # Attaches to SQLAlchemy Session class globally
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

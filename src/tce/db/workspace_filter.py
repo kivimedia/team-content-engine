@@ -71,9 +71,10 @@ def _apply_workspace_filter(execute_state: ORMExecuteState) -> None:
             )
 
 
-def install_workspace_filter(session_factory: object) -> None:
-    """Install the workspace filter event listener on a session factory.
+def install_workspace_filter(session_class: type | object) -> None:
+    """Install the workspace filter event listener on the Session class.
 
-    Call this once at app startup.
+    Call this once at app startup. Pass the Session class (not the session factory).
     """
-    event.listen(session_factory, "do_orm_execute", _apply_workspace_filter)
+    from sqlalchemy.orm import Session
+    event.listen(Session, "do_orm_execute", _apply_workspace_filter)
