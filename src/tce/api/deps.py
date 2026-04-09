@@ -1,6 +1,8 @@
 """Shared FastAPI dependencies."""
 
-from fastapi import Depends
+import uuid
+
+from fastapi import Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import get_db
@@ -11,6 +13,38 @@ from tce.settings import Settings, settings
 
 async def get_settings() -> Settings:
     return settings
+
+
+async def get_workspace_id(
+    x_workspace_id: str | None = Header(None),
+) -> uuid.UUID | None:
+    """Extract workspace_id from the X-Workspace-Id header.
+
+    Returns None for legacy single-tenant requests (no header).
+    When present, all queries and writes are scoped to this workspace.
+    """
+    if x_workspace_id is None:
+        return None
+    try:
+        return uuid.UUID(x_workspace_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid X-Workspace-Id header")
+
+
+async def verify_service_auth(
+    authorization: str | None = Header(None),
+) -> None:
+    """Verify service-to-service auth when service_key is configured.
+
+    If TCE_SERVICE_KEY is empty, auth is disabled (development mode).
+    """
+    if not settings.service_key:
+        return
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    expected = f"Bearer {settings.service_key}"
+    if authorization != expected:
+        raise HTTPException(status_code=403, detail="Invalid service key")
 
 
 async def get_cost_tracker(

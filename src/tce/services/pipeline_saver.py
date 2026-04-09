@@ -71,9 +71,21 @@ def _clean_dict(d: dict | None) -> dict | None:
 class PipelineResultSaver:
     """Persists agent output dicts as ORM records."""
 
-    def __init__(self, db: AsyncSession, run_id: uuid.UUID) -> None:
+    def __init__(self, db: AsyncSession, run_id: uuid.UUID, workspace_id: uuid.UUID | None = None) -> None:
         self.db = db
         self.run_id = run_id
+        self.workspace_id = workspace_id
+
+    def _stamp(self, record: Any) -> Any:
+        """Stamp workspace_id on a record before adding to DB."""
+        if self.workspace_id and hasattr(record, "workspace_id"):
+            record.workspace_id = self.workspace_id
+        return record
+
+    def _add(self, record: Any) -> None:
+        """Add a record to DB with workspace_id stamped."""
+        self._stamp(record)
+        self._add(record)
 
     # --- Corpus ingestion pipeline ---
 
@@ -90,7 +102,7 @@ class PipelineResultSaver:
             creator_name=creator_name,
             style_notes="Auto-created from corpus analysis",
         )
-        self.db.add(creator)
+        self._add(creator)
         await self.db.flush()
         logger.info("saver.creator_created", name=creator_name, id=str(creator.id))
         return creator.id
@@ -141,7 +153,7 @@ class PipelineResultSaver:
                 evidence_image_ref=ex.get("evidence_image_ref"),
                 parser_notes=ex.get("parser_notes"),
             )
-            self.db.add(record)
+            self._add(record)
             await self.db.flush()
             created_ids.append(record.id)
 
@@ -193,7 +205,7 @@ class PipelineResultSaver:
                 source_influence_weights=tpl.get("source_influence_weights"),
                 status="provisional",
             )
-            self.db.add(record)
+            self._add(record)
             await self.db.flush()
             created_ids.append(record.id)
 
@@ -213,7 +225,7 @@ class PipelineResultSaver:
             brief_type=context.get("scan_type", "daily"),
             trends=brief.get("trends"),
         )
-        self.db.add(record)
+        self._add(record)
         await self.db.flush()
         logger.info("saver.trend_brief", id=str(record.id))
         return record.id
@@ -271,7 +283,7 @@ class PipelineResultSaver:
             platform_notes=brief.get("platform_notes"),
             template_id=resolved_tpl_id,
         )
-        self.db.add(record)
+        self._add(record)
         await self.db.flush()
         logger.info("saver.story_brief", id=str(record.id), template=template_name)
         return record.id, resolved_tpl_dict
@@ -293,7 +305,7 @@ class PipelineResultSaver:
             risk_flags=brief.get("risk_flags"),
             safe_to_publish=brief.get("safe_to_publish"),
         )
-        self.db.add(record)
+        self._add(record)
         await self.db.flush()
         logger.info("saver.research_brief", id=str(record.id))
         return record.id
@@ -338,7 +350,7 @@ class PipelineResultSaver:
             approval_status="draft",
             pipeline_run_id=self.run_id,
         )
-        self.db.add(record)
+        self._add(record)
         await self.db.flush()
 
         # Save image assets
@@ -349,7 +361,7 @@ class PipelineResultSaver:
                 negative_prompt=prompt.get("negative_prompt"),
                 aspect_ratio=prompt.get("aspect_ratio"),
             )
-            self.db.add(asset)
+            self._add(asset)
 
         await self.db.flush()
         logger.info(
@@ -375,7 +387,7 @@ class PipelineResultSaver:
             final_verdict=scorecard.get("pass_status", "pending"),
             scored_by="model",
         )
-        self.db.add(record)
+        self._add(record)
         await self.db.flush()
         logger.info(
             "saver.qa_scorecard",
@@ -482,7 +494,7 @@ class PipelineResultSaver:
                 context.get("weekly_keyword"),
             ),
         )
-        self.db.add(record)
+        self._add(record)
         await self.db.flush()
         logger.info("saver.weekly_guide", id=str(record.id))
         return record.id

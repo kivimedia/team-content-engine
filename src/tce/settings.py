@@ -79,5 +79,8 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = ""  # Default voice ID for narrations
     elevenlabs_model: str = "eleven_multilingual_v2"
 
+    # Multi-tenancy / service auth
+    service_key: str = ""  # Shared secret for km-worker -> TCE calls
+
 
 settings = Settings()

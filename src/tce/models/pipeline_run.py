@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Float, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tce.db.base import Base
@@ -24,3 +24,6 @@ class PipelineRun(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     context_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    external_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True,
+    )

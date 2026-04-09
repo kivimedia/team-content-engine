@@ -1830,3 +1830,201 @@ async def get_video_lead_script(
         "pipeline_run_id": str(s.pipeline_run_id) if s.pipeline_run_id else None,
         "created_at": s.created_at.isoformat() if s.created_at else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Multi-tenant workspace endpoint (called by km-worker)
+# ---------------------------------------------------------------------------
+
+class WorkspaceRunRequest(BaseModel):
+    workflow: str = "daily_content"
+    workspace_id: str
+    external_run_id: str | None = None
+    context: dict[str, Any] = {}
+
+
+class WorkspaceRunResponse(BaseModel):
+    run_id: str
+    workflow: str
+    status: str
+    workspace_id: str
+
+
+@router.post("/run-for-workspace", response_model=WorkspaceRunResponse)
+async def trigger_workspace_pipeline(
+    request: WorkspaceRunRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Trigger a pipeline scoped to a workspace (multi-tenant).
+
+    Called by km-worker to run a TCE workflow for a specific client.
+    All records created during this run get stamped with workspace_id.
+    """
+    from tce.api.deps import verify_service_auth
+
+    if request.workflow not in WORKFLOWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown workflow: {request.workflow}. Available: {list(WORKFLOWS.keys())}",
+        )
+
+    try:
+        ws_id = uuid.UUID(request.workspace_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid workspace_id")
+
+    ext_run_id = None
+    if request.external_run_id:
+        try:
+            ext_run_id = uuid.UUID(request.external_run_id)
+        except ValueError:
+            pass
+
+    steps = WORKFLOWS[request.workflow]
+    run_id = uuid.uuid4()
+
+    async def _run() -> None:
+        from tce.db.session import async_session
+
+        async with async_session() as init_db:
+            run_record = PipelineRun(
+                run_id=run_id,
+                workflow=request.workflow,
+                status="running",
+                workspace_id=ws_id,
+                external_run_id=ext_run_id,
+                day_of_week=request.context.get("day_of_week"),
+                started_at=datetime.utcnow(),
+            )
+            init_db.add(run_record)
+            await init_db.commit()
+            record_id = run_record.id
+
+        try:
+            async with async_session() as pipe_db:
+                orchestrator = PipelineOrchestrator(
+                    steps=steps,
+                    db=pipe_db,
+                    settings=settings,
+                    run_id=run_id,
+                    workspace_id=ws_id,
+                    external_run_id=ext_run_id,
+                )
+                _active_runs[str(run_id)] = orchestrator
+                result = await orchestrator.run(request.context)
+
+            async with async_session() as bk_db:
+                run_record = await bk_db.get(PipelineRun, record_id)
+                if run_record:
+                    has_failures = any(
+                        v == "failed" for v in result.get("step_status", {}).values()
+                    )
+                    run_record.status = "failed" if has_failures else "completed"
+                    run_record.completed_at = datetime.utcnow()
+                    run_record.step_results = result.get("step_status", {})
+                    run_record.step_errors = result.get("step_errors", {})
+                    ctx = result.get("context", {})
+                    if ctx:
+                        snapshot_keys = ["video_lead_script", "story_brief", "narration_script"]
+                        snapshot = {k: ctx[k] for k in snapshot_keys if k in ctx}
+                        if snapshot:
+                            run_record.context_snapshot = snapshot
+                    await bk_db.commit()
+        except Exception as exc:
+            logger.exception("workspace_pipeline.failed", run_id=str(run_id), workspace_id=str(ws_id))
+            try:
+                async with async_session() as err_db:
+                    run_record = await err_db.get(PipelineRun, record_id)
+                    if run_record:
+                        run_record.status = "failed"
+                        run_record.error_message = str(exc)[:500]
+                        run_record.completed_at = datetime.utcnow()
+                        await err_db.commit()
+            except Exception:
+                pass
+        finally:
+            _active_runs.pop(str(run_id), None)
+
+    asyncio.create_task(_run())
+
+    return {
+        "run_id": str(run_id),
+        "workflow": request.workflow,
+        "status": "running",
+        "workspace_id": str(ws_id),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Standalone agent invocation (called by km-worker for individual skills)
+# ---------------------------------------------------------------------------
+
+class AgentRunRequest(BaseModel):
+    context: dict[str, Any] = {}
+    workspace_id: str | None = None
+
+
+class AgentRunResponse(BaseModel):
+    agent: str
+    status: str
+    result: dict[str, Any]
+
+
+@router.post("/agents/{agent_name}/run", response_model=AgentRunResponse)
+async def run_single_agent(
+    agent_name: str,
+    request: AgentRunRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Run a single TCE agent synchronously. Returns when the agent completes.
+
+    Used for standalone skills like copy-polisher, copy-analyzer that
+    don't need the full pipeline orchestrator.
+    """
+    from tce.agents.registry import agent_registry, get_agent_class
+    from tce.services.cost_tracker import CostTracker
+    from tce.services.prompt_manager import PromptManager
+
+    registry = agent_registry()
+    if agent_name not in registry:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent '{agent_name}' not found. Available: {list(registry.keys())}",
+        )
+
+    ws_id = None
+    if request.workspace_id:
+        try:
+            ws_id = uuid.UUID(request.workspace_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid workspace_id")
+
+    run_id = uuid.uuid4()
+    cost_tracker = CostTracker(db)
+    prompt_manager = PromptManager(db)
+
+    agent_cls = get_agent_class(agent_name)
+    agent = agent_cls(
+        db=db,
+        settings=settings,
+        cost_tracker=cost_tracker,
+        prompt_manager=prompt_manager,
+        run_id=run_id,
+        progress_log=[],
+    )
+
+    try:
+        result = await agent.run(request.context)
+        await db.commit()
+        return {
+            "agent": agent_name,
+            "status": "completed",
+            "result": result,
+        }
+    except Exception as exc:
+        logger.exception("agent.standalone_failed", agent=agent_name, run_id=str(run_id))
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Agent '{agent_name}' failed: {str(exc)[:200]}",
+        )

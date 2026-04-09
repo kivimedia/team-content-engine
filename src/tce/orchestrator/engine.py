@@ -37,18 +37,22 @@ class PipelineOrchestrator:
         db: AsyncSession,
         settings: Settings,
         run_id: uuid.UUID | None = None,
+        workspace_id: uuid.UUID | None = None,
+        external_run_id: uuid.UUID | None = None,
     ) -> None:
         self.steps = {s.agent_name: s for s in steps}
         self.db = db
         self.settings = settings
         self.run_id = run_id or uuid.uuid4()
+        self.workspace_id = workspace_id
+        self.external_run_id = external_run_id
         self.context: dict[str, Any] = {}
         self.step_status: dict[str, StepStatus] = {s.agent_name: StepStatus.PENDING for s in steps}
         self.step_errors: dict[str, str] = {}
         self.step_logs: dict[str, list[str]] = {s.agent_name: [] for s in steps}
         self._cost_tracker = CostTracker(db)
         self._prompt_manager = PromptManager(db)
-        self._saver = PipelineResultSaver(db, self.run_id)
+        self._saver = PipelineResultSaver(db, self.run_id, workspace_id=workspace_id)
 
     async def run(
         self,
@@ -333,6 +337,7 @@ class PipelineOrchestrator:
 
             va = VideoAsset(
                 id=uuid.uuid4(),
+                workspace_id=self.workspace_id,
                 package_id=pkg_id,
                 guide_id=guide_id,
                 template_name=asset["template_name"],
@@ -369,6 +374,7 @@ class PipelineOrchestrator:
             return
 
         ns = NarrationScript(
+            workspace_id=self.workspace_id,
             package_id=pkg_id,
             template_style=script_data.get("template_style", "hook_cta"),
             segments=script_data.get("segments"),
