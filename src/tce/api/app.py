@@ -1,15 +1,12 @@
 """FastAPI application factory."""
 
-import uuid
 from contextlib import asynccontextmanager
-
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from tce.db.workspace_filter import set_workspace_context
 from tce.settings import settings
 
 from tce.api import dashboard
@@ -64,12 +61,15 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     setup_logging()
 
+    from tce.api.deps import get_workspace_id
+
     app = FastAPI(
         title="Team Content Engine",
         description=(
             "Agentic content engine that learns from a swipe corpus "
             "and produces daily social media packages"
         ),
+        dependencies=[Depends(get_workspace_id)],
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -83,20 +83,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Workspace context middleware - uses @app.middleware (NOT BaseHTTPMiddleware)
-    # to avoid Starlette's known ContextVar propagation issues with BaseHTTPMiddleware.
-    @app.middleware("http")
-    async def workspace_middleware(request: Request, call_next):
-        ws_header = request.headers.get("x-workspace-id")
-        if ws_header:
-            try:
-                set_workspace_context(uuid.UUID(ws_header))
-            except ValueError:
-                pass
-        else:
-            set_workspace_context(None)
-        response = await call_next(request)
-        return response
+    # Workspace context is set via the get_workspace_id() FastAPI dependency
+    # in deps.py, NOT via middleware. Starlette's BaseHTTPMiddleware (which
+    # @app.middleware("http") also uses internally) breaks ContextVar propagation
+    # because it runs route handlers in a separate task. Dependencies run in
+    # the same task as the route handler, so ContextVars work correctly.
 
     # Register routers
     prefix = "/api/v1"

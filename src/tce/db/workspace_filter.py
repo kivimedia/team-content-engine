@@ -51,7 +51,15 @@ def get_workspace_context() -> uuid.UUID | None:
 
 
 def _apply_workspace_filter(execute_state: ORMExecuteState) -> None:
-    """SQLAlchemy event listener that adds workspace_id filter to SELECT queries."""
+    """SQLAlchemy event listener that adds workspace_id filter to SELECT queries.
+
+    For JOIN queries, the filter is applied once per joined model (correct
+    behavior - both sides of a JOIN should be workspace-scoped).
+
+    For raw text() queries or func() aggregations without an ORM mapper,
+    all_mappers is empty and no filter is applied. These queries must add
+    workspace_id filtering manually if needed.
+    """
     ws_id = _workspace_id_var.get()
     if ws_id is None:
         return
@@ -59,15 +67,17 @@ def _apply_workspace_filter(execute_state: ORMExecuteState) -> None:
     if not execute_state.is_select:
         return
 
-    # Get the mapper entities being queried
+    # Track which tables we've already filtered to avoid duplicates
+    # (can happen if the same model appears multiple times in a query)
+    filtered_tables: set[str] = set()
+
     for mapper in execute_state.all_mappers:
         table_name = mapper.local_table.name
-        if table_name in GLOBAL_TABLES:
+        if table_name in GLOBAL_TABLES or table_name in filtered_tables:
             continue
         if hasattr(mapper.class_, "workspace_id"):
+            filtered_tables.add(table_name)
             # Include legacy rows (workspace_id IS NULL) alongside workspace-scoped rows.
-            # This ensures pre-migration data (shared templates, patterns, etc.) remains
-            # visible to all workspaces until explicitly migrated.
             execute_state.statement = execute_state.statement.filter(
                 or_(
                     mapper.class_.workspace_id == ws_id,
