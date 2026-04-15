@@ -13,6 +13,7 @@ from tce.agents import (  # noqa: F401
     learning_loop,
     pattern_miner,
     platform_writer,
+    proof_checker,
     qa_agent,
     research_agent,
     story_strategist,

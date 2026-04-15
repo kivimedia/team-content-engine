@@ -258,7 +258,7 @@ class TrendScout(AgentBase):
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
             system=SYSTEM_PROMPT,
-            max_tokens=4096,
+            max_tokens=8192,
             temperature=0.5,
         )
 

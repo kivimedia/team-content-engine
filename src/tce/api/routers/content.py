@@ -26,9 +26,13 @@ async def list_packages(
     include_archived: bool = False,
     pipeline_run_id: str | None = None,
     guide_id: str | None = None,
+    source: str | None = None,
+    limit: int = 100,
     db: AsyncSession = Depends(get_db),
 ) -> list[PostPackage]:
     query = select(PostPackage).order_by(PostPackage.created_at.desc())
+    if source:
+        query = query.where(PostPackage.source == source)
     if pipeline_run_id:
         from sqlalchemy import cast, String
         query = query.where(
@@ -44,6 +48,7 @@ async def list_packages(
         query = query.where(PostPackage.approval_status == status)
     if not include_archived:
         query = query.where(PostPackage.is_archived.is_(False))
+    query = query.limit(limit)
     result = await db.execute(query)
     return list(result.scalars().all())
 
@@ -371,6 +376,12 @@ async def get_package_context(
         }
         if cal_entry.plan_context:
             context["plan_context"] = cal_entry.plan_context
+
+    # Proof trail from proof_checker agent
+    if pkg.proof_trail:
+        context["proof_trail"] = pkg.proof_trail
+    if pkg.proof_status:
+        context["proof_status"] = pkg.proof_status
 
     return context
 

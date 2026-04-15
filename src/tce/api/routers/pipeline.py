@@ -1058,6 +1058,7 @@ async def start_from_topic(
     context: dict[str, Any] = {
         "topic": request.topic,
         "language": request.language,
+        "_source": "topic",
     }
     if request.template_hint:
         context["template_hint"] = request.template_hint
@@ -1435,6 +1436,7 @@ async def polish_copy(
                     "platform": request.platform,
                     "cta_keyword": request.cta_keyword or "",
                     "notes": request.notes or "",
+                    "_source": "copy",
                 }
 
                 result = await orchestrator.run(context)

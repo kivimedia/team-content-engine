@@ -40,10 +40,12 @@ class PostPackageRead(BaseModel):
     approval_status: str
     is_archived: bool = False
     pipeline_run_id: uuid.UUID | None
+    proof_trail: list[dict] | dict | None = None
+    proof_status: str | None = None
     created_at: datetime
     updated_at: datetime
 
-    @field_validator("hook_variants", "image_prompts", "dm_flow", "quality_scores", mode="before")
+    @field_validator("hook_variants", "image_prompts", "dm_flow", "quality_scores", "proof_trail", mode="before")
     @classmethod
     def parse_json_strings(cls, v: Any) -> Any:
         return _parse_json_str(v)

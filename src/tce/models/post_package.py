@@ -51,6 +51,13 @@ class PostPackage(Base):
     # Element-level feedback (Phase 3 - 4-week planner)
     element_feedback: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # Proof trail - verified claims with source URLs
+    proof_trail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    proof_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # Source tracking: pipeline, topic, copy, manual
+    source: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
     # Relationships
     image_assets: Mapped[list["ImageAsset"]] = relationship(  # noqa: F821
         back_populates="post_package", cascade="all, delete-orphan"

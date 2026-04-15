@@ -349,6 +349,9 @@ class PipelineResultSaver:
             quality_scores=quality_meta if quality_meta else None,
             approval_status="draft",
             pipeline_run_id=self.run_id,
+            source=context.get('_source', 'pipeline'),
+            proof_trail=context.get("proof_trail"),
+            proof_status=context.get("proof_status"),
         )
         self._add(record)
         await self.db.flush()

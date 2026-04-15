@@ -2129,6 +2129,7 @@ async function renderTopic() {
       </div>
       <div id="topic-status"></div>
       <div id="topic-result" style="margin-top:16px"></div>
+      <div id="topic-history" style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px"></div>
     </div>`;
   // Restore active run if any
   const savedRun = localStorage.getItem('tce_topic_run');
@@ -2289,32 +2290,13 @@ async function pollTopicStatus() {
           const pkgs = await api('/content/packages?limit=1');
           if (pkgs && pkgs.length > 0) {
             const pkg = pkgs[0];
-            const _fbWc = (pkg.facebook_post || '').split(/\s+/).filter(Boolean).length;
-            const _liWc = (pkg.linkedin_post || '').split(/\s+/).filter(Boolean).length;
-            const _wcLabel = [_fbWc ? 'FB: ' + _fbWc + 'w' : '', _liWc ? 'LI: ' + _liWc + 'w' : ''].filter(Boolean).join(' / ');
-            let rhtml = '<div class="card" style="margin-bottom:16px"><div style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--primary);display:flex;align-items:center;gap:12px">Generated Content' + (_wcLabel ? '<span style="font-size:11px;font-weight:400;color:var(--dim);background:var(--bg);padding:2px 8px;border-radius:4px;border:1px solid var(--border)">' + _wcLabel + '</span>' : '') + '</div>';
-            if (pkg.facebook_post) {
-              rhtml += '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--accent);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">Facebook Post</div>';
-              rhtml += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.7;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border);max-height:400px;overflow-y:auto">' + esc(pkg.facebook_post) + '</div>';
-              rhtml += '<button class="btn" style="margin-top:6px;font-size:11px" onclick="copyPrev(this)">Copy FB</button></div>';
-            }
-            if (pkg.linkedin_post) {
-              rhtml += '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--info);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">LinkedIn Post</div>';
-              rhtml += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.7;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border);max-height:400px;overflow-y:auto">' + esc(pkg.linkedin_post) + '</div>';
-              rhtml += '<button class="btn" style="margin-top:6px;font-size:11px" onclick="copyPrev(this)">Copy LI</button></div>';
-            }
-            if (pkg.hook_variants && pkg.hook_variants.length) {
-              rhtml += '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--success);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">Hook Variants</div>';
-              rhtml += '<div style="font-size:13px;line-height:1.7;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">';
-              pkg.hook_variants.forEach(function(h, i) { rhtml += '<div style="margin-bottom:6px"><span style="color:var(--dim);font-size:11px">' + (i+1) + '.</span> ' + esc(typeof h === 'string' ? h : JSON.stringify(h)) + '</div>'; });
-              rhtml += '</div></div>';
-            }
-            if (pkg.visual_prompt) {
-              rhtml += '<div><div style="font-size:12px;font-weight:600;color:var(--warning);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">Visual Prompt</div>';
-              rhtml += '<div style="font-size:12px;color:var(--dim);padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">' + esc(typeof pkg.visual_prompt === 'string' ? pkg.visual_prompt : JSON.stringify(pkg.visual_prompt)) + '</div></div>';
-            }
-            rhtml += '</div>';
-            if (resultEl) resultEl.innerHTML = rhtml;
+            let topicHdr = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">';
+            topicHdr += '<span style="color:var(--green);font-weight:600;font-size:15px">Package created!</span>';
+            topicHdr += '<button class="btn btn-dim" style="font-size:11px" onclick="openBrainstorm('' + pkg.id + '')">Brainstorm</button>';
+            topicHdr += '<button class="btn btn-blue" style="font-size:11px" onclick="switchTab('packages')">View in Packages</button>';
+            topicHdr += '</div>';
+            if (resultEl) resultEl.innerHTML = topicHdr + _renderPkgCard(pkg);
+            loadSourceHistory('topic', 'topic-history');
           }
         } catch {}
       } else {
@@ -2403,6 +2385,7 @@ async function renderGenerate() {
           <span id="polish-elapsed" style="font-size:12px;color:var(--dim)"></span>
         </div>
         <div id="polish-status" style="margin-top:12px"></div>
+        <div id="copy-history" style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px"></div>
       </div>
     </div>`;
   if (activePipelineRun) { pollPipeline(); if(!pollInterval) pollInterval = setInterval(pollPipeline, 3000); }
@@ -2416,6 +2399,7 @@ const WF_DESCRIPTIONS = {
   corpus_ingestion: 'Processes uploaded DOCX files into structured post examples. Runs: CorpusAnalyst (parses posts from docs) -> EngagementScorer (rates each post) -> PatternMiner (extracts reusable templates). Use this after uploading new swipe files / FB profile exports.',
   weekly_learning: 'Reviews the past week and improves the system. Runs: LearningLoop (analyzes what worked, updates templates and scoring). Use this at end of week to refine content quality over time.',
   video_lead: 'Produces a 5-7 min talking-head video script for the coaching niche. Runs: TrendScout (coaching-specific trends) -> StoryStrategist (Super Coaching positioning) -> ResearchAgent (verify claims) -> VideoLeadWriter (teleprompter-ready script). Output includes title, full script, sections with timing, SEO description, and blog repurpose outline.'
+  loadSourceHistory('copy', 'copy-history');
 };
 function updateWfDesc() {
   const sel = document.getElementById('wf-select');
@@ -2747,6 +2731,12 @@ function _renderPkgCard(p) {
       if (fbWc) html += '<span style="color:var(--accent2);font-weight:600">FB: ' + fbWc + ' words</span>';
       if (liWc) html += '<span style="color:var(--accent2);font-weight:600">LI: ' + liWc + ' words</span>';
       if (p.pipeline_run_id) html += '<span>Run: ' + p.pipeline_run_id.substring(0, 8) + '</span>';
+      if (p.proof_status) {
+        const _ps = p.proof_status;
+        const _pc = _ps === 'verified' ? 'var(--green)' : _ps === 'partial' ? 'var(--yellow)' : _ps === 'rewritten' ? 'var(--accent)' : 'var(--red)';
+        const _pi = _ps === 'verified' ? '&#10003;' : _ps === 'partial' ? '~' : _ps === 'rewritten' ? '&#9998;' : '?';
+        html += '<span style="color:' + _pc + ';font-weight:600" title="Proof: ' + _ps + '">' + _pi + ' ' + _ps + '</span>';
+      }
       const _tpl = p.quality_scores?.matched_template;
       if (_tpl?.template_name) {
         html += '<span style="color:var(--yellow)">Template: <strong>' + esc(_tpl.template_name) + '</strong>';
@@ -3496,11 +3486,11 @@ function copyVideoLeadScript(pid) {
   const data = _vlScriptCache[pid];
   if (!data) return;
   let text = '';
-  if (data.title) text += data.title + '\n\n';
+  if (data.title) text += data.title + '\\n\\n';
   if (data.sections && data.sections.length > 0) {
     data.sections.forEach(function(s) {
-      text += '--- ' + (s.name || '').toUpperCase() + ' ---\n';
-      text += (s.text || '') + '\n\n';
+      text += '--- ' + (s.name || '').toUpperCase() + ' ---\\n';
+      text += (s.text || '') + '\\n\\n';
     });
   } else if (data.full_script) {
     text += data.full_script;
@@ -5241,6 +5231,34 @@ async function loadPackageContext(pkgId, el) {
         h += '</ul>';
       }
       h += '</div>';
+    // Proof Trail section
+    if (ctx.proof_trail?.length) {
+      h += '<div style="margin-bottom:12px;border-top:1px solid var(--border);padding-top:12px">';
+      h += '<div style="font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;margin-bottom:6px">Proof Trail</div>';
+      if (ctx.proof_status) {
+        const _ps2 = ctx.proof_status;
+        const _pc2 = _ps2 === 'verified' ? 'var(--green)' : _ps2 === 'partial' ? 'var(--yellow)' : _ps2 === 'rewritten' ? 'var(--accent)' : 'var(--red)';
+        h += '<div style="font-size:12px;margin-bottom:8px;color:' + _pc2 + ';font-weight:600">Status: ' + _ps2.toUpperCase() + '</div>';
+      }
+      if (ctx.proof_stats) {
+        const ps = ctx.proof_stats;
+        h += '<div style="font-size:11px;color:var(--dim);margin-bottom:8px">' + ps.verified + ' verified, ' + ps.partial + ' partial, ' + ps.unverified + ' unverified of ' + ps.total_claims + ' claims' + (ps.rewritten ? ' (post was rewritten)' : '') + '</div>';
+      }
+      ctx.proof_trail.forEach(function(pt) {
+        if (pt.status === 'skipped') return;
+        const ic = pt.status === 'verified' ? '#22c55e' : pt.status === 'partially_verified' ? '#eab308' : '#ef4444';
+        const icon = pt.status === 'verified' ? '&#10003;' : pt.status === 'partially_verified' ? '~' : '&#10007;';
+        h += '<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:4px;border-left:3px solid ' + ic + '">';
+        h += '<div style="display:flex;gap:6px;align-items:flex-start">';
+        h += '<span style="color:' + ic + ';font-weight:700;flex-shrink:0">' + icon + '</span>';
+        h += '<div style="flex:1">';
+        h += '<div style="color:var(--text)">' + escHtml(pt.claim) + '</div>';
+        if (pt.note) h += '<div style="color:var(--dim);font-size:11px;margin-top:2px">' + escHtml(pt.note) + '</div>';
+        if (pt.source_url) h += '<div style="margin-top:2px"><a href="' + escHtml(pt.source_url) + '" target="_blank" style="color:var(--accent);font-size:11px">' + escHtml(pt.source_title || pt.source_url) + '</a></div>';
+        h += '</div></div></div>';
+      });
+      h += '</div>';
+    }
     }
     if (!ctx.story_brief && !ctx.research_brief && !ctx.plan_context) {
       h += '<div style="font-size:13px;color:var(--dim)">No context available for this package. May have been generated before context tracking was added.</div>';
@@ -7124,6 +7142,7 @@ function render() {
   (map[currentTab] || renderGenerate)();
 }
 restoreGenAllState();
+  loadSourceHistory('topic', 'topic-history');
 // Tick elapsed timer every second when generating
 setInterval(() => { if (genAllState?.running) renderGenAllProgress(); }, 1000);
 
@@ -7191,6 +7210,7 @@ async function pollPolish() {
             hdr += '<button class="btn btn-blue" style="font-size:11px" onclick="switchTab(\\'packages\\')">View in Packages</button>';
             hdr += '</div>';
             container.innerHTML = badges + '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">' + hdr + _renderPkgCard(pkg) + '</div>';
+            loadSourceHistory('copy', 'copy-history');
             return;
           }
         } catch(e) { console.error('Failed to render inline package:', e); }
@@ -7205,6 +7225,27 @@ async function pollPolish() {
       container.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span class="spinner"></span><span>' + esc(r.phase_detail || 'Running...') + '</span></div>' + badges;
     }
   } catch (e) { /* ignore poll errors */ }
+}
+
+
+// --- Source History (shared by Start from Topic and Start from Copy) ---
+async function loadSourceHistory(source, containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  try {
+    const pkgs = await api('/content/packages?source=' + source + '&limit=20');
+    if (!pkgs || pkgs.length === 0) {
+      container.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:12px">No packages yet. Generate one above!</div>';
+      return;
+    }
+    let html = '<div style="font-size:14px;font-weight:600;margin-bottom:12px;color:var(--text)">' + (source === 'copy' ? 'From Copy' : 'From Topic') + ' History (' + pkgs.length + ')</div>';
+    for (const pkg of pkgs) {
+      html += _renderPkgCard(pkg);
+    }
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = '<div style="color:var(--dim);font-size:12px">Failed to load history</div>';
+  }
 }
 
 // --- Brainstorm ---
