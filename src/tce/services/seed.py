@@ -323,7 +323,7 @@ DEFAULT_PROMPTS = [
             "Your job is the most consequential decision each day: "
             "choosing what to write about and how to frame it."
         ),
-        "model_target": "claude-opus-4-20250514",
+        "model_target": "claude-opus-4-7",
     },
     {
         "agent_name": "facebook_writer",

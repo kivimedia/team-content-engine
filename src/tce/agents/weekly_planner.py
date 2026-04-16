@@ -135,7 +135,7 @@ OUTPUT: A JSON object with:
 @register_agent
 class WeeklyPlanner(AgentBase):
     name = "weekly_planner"
-    default_model = "claude-opus-4-20250514"
+    default_model = "claude-opus-4-7"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Plan the entire week's content from a single trend scan."""

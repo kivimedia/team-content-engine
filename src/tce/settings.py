@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # Model tiers (per PRD Section 37)
     default_model: str = "claude-sonnet-4-20250514"
-    opus_model: str = "claude-opus-4-20250514"
+    opus_model: str = "claude-opus-4-7"
     haiku_model: str = "claude-haiku-4-5-20251001"
     script_model: str = "claude-sonnet-4-20250514"  # Model for ScriptAgent narration
 

@@ -13,6 +13,12 @@ from tce.models.cost_event import CostEvent
 
 # Token pricing per model (per million tokens, March 2026 estimates)
 MODEL_PRICING: dict[str, dict[str, float]] = {
+    "claude-opus-4-7": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_read": 1.5,
+        "cache_write": 18.75,
+    },
     "claude-opus-4-20250514": {
         "input": 15.0,
         "output": 75.0,

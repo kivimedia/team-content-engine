@@ -48,7 +48,7 @@ RULES:
 @register_agent
 class StoryStrategist(AgentBase):
     name = "story_strategist"
-    default_model = "claude-opus-4-20250514"  # Most consequential decision — worth premium
+    default_model = "claude-opus-4-7"  # Most consequential decision - worth premium
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Select today's angle and produce a StoryBrief."""

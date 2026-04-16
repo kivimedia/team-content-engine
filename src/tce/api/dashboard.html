@@ -4369,17 +4369,20 @@ async function saveCreatorWeight(creatorId, pct) {
 const MODEL_LABELS = {
   'claude-haiku-4-5-20251001': 'Haiku 4.5',
   'claude-sonnet-4-20250514': 'Sonnet 4',
+  'claude-opus-4-7': 'Opus 4.7',
   'claude-opus-4-20250514': 'Opus 4',
 };
 const MODEL_IDS = Object.keys(MODEL_LABELS);
 const MODEL_COLORS = {
   'claude-haiku-4-5-20251001': '#22c55e',
   'claude-sonnet-4-20250514': '#6366f1',
+  'claude-opus-4-7': '#f59e0b',
   'claude-opus-4-20250514': '#f59e0b',
 };
 const MODEL_COSTS = {
   'claude-haiku-4-5-20251001': '$0.80/1M in, $4/1M out',
   'claude-sonnet-4-20250514': '$3/1M in, $15/1M out',
+  'claude-opus-4-7': '$15/1M in, $75/1M out',
   'claude-opus-4-20250514': '$15/1M in, $75/1M out',
 };
 
