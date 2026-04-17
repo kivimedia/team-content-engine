@@ -1,0 +1,45 @@
+# Normalize all text files to LF on checkout + commit.
+# Root cause of the Apr 17 2026 stash-pile incident: CRLF drift on files
+# written by Windows editors vs. LF files on the VPS, which made every
+# `git pull` from VPS see 300+ lines of phantom "uncommitted WIP" when
+# the only actual change was a handful of real lines.
+# Matching on `text=auto` lets git decide per-file; the explicit Linux-LF
+# entries below cover things the worker edits directly on VPS.
+
+* text=auto eol=lf
+
+# Python / backend
+*.py      text eol=lf
+*.sh      text eol=lf
+*.toml    text eol=lf
+*.ini     text eol=lf
+*.cfg     text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
+
+# Web / frontend
+*.html    text eol=lf
+*.css     text eol=lf
+*.js      text eol=lf
+*.mjs     text eol=lf
+*.ts      text eol=lf
+
+# SQL / migrations
+*.sql     text eol=lf
+
+# Binary - do not touch
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.webp    binary
+*.mp3     binary
+*.mp4     binary
+*.mov     binary
+*.pdf     binary
+*.zip     binary
+*.tar.gz  binary
+*.db      binary
+*.sqlite  binary
