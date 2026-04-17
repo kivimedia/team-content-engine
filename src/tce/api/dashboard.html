@@ -2752,7 +2752,7 @@ function _renderPkgFromCache() {
   const _opt = (v, l, cur) => '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + l + '</option>';
   tabHtml += '<select id="pkg-status-filter" onchange="filterPkgStatus()" style="' + _selStyle + '">' + _opt('', 'All statuses', pkgStatusFilter) + _opt('draft', 'Draft', pkgStatusFilter) + _opt('approved', 'Approved', pkgStatusFilter) + _opt('rejected', 'Rejected', pkgStatusFilter) + '</select>';
   tabHtml += '<select id="pkg-qa-filter" onchange="filterPkgStatus()" style="' + _selStyle + '">' + _opt('', 'Any QA', pkgQaFilter) + _opt('pass', 'QA Pass (7+)', pkgQaFilter) + _opt('conditional', 'Conditional (5-7)', pkgQaFilter) + _opt('fail', 'QA Fail (&lt;5)', pkgQaFilter) + '</select>';
-  tabHtml += '<select id="pkg-source-filter" onchange="filterPkgStatus()" style="' + _selStyle + '">' + _opt('', 'Any source', pkgSourceFilter) + _opt('topic', 'Started from Topic', pkgSourceFilter) + _opt('repo', 'From Repo', pkgSourceFilter) + _opt('pipeline', 'Pipeline', pkgSourceFilter) + _opt('copy', 'Copy', pkgSourceFilter) + _opt('manual', 'Manual', pkgSourceFilter) + '</select>';
+  tabHtml += '<select id="pkg-source-filter" onchange="filterPkgStatus()" style="' + _selStyle + '">' + _opt('', 'Any source', pkgSourceFilter) + _opt('__something__', 'Something (Topic/Repo/Copy)', pkgSourceFilter) + _opt('topic', 'Started from Topic', pkgSourceFilter) + _opt('repo', 'From Repo', pkgSourceFilter) + _opt('copy', 'Copy', pkgSourceFilter) + _opt('pipeline', 'Pipeline', pkgSourceFilter) + _opt('manual', 'Manual', pkgSourceFilter) + '</select>';
   tabHtml += '</div>';
   document.getElementById('pkg-day-tabs').innerHTML = tabHtml;
 
@@ -2766,7 +2766,13 @@ function _renderPkgFromCache() {
   }
   // GAP-29: Apply status, QA, and source filters (state vars survive the innerHTML rewrite above)
   if (pkgStatusFilter) filteredPkgs = filteredPkgs.filter(p => p.approval_status === pkgStatusFilter);
-  if (pkgSourceFilter) filteredPkgs = filteredPkgs.filter(p => p.source === pkgSourceFilter);
+  if (pkgSourceFilter === '__something__') {
+    // "Something" = anything from the unified Start-from-Something tab (Topic/Repo/Copy)
+    const somethingSources = new Set(['topic', 'repo', 'copy']);
+    filteredPkgs = filteredPkgs.filter(p => somethingSources.has(p.source));
+  } else if (pkgSourceFilter) {
+    filteredPkgs = filteredPkgs.filter(p => p.source === pkgSourceFilter);
+  }
   if (pkgQaFilter) {
     filteredPkgs = filteredPkgs.filter(p => {
       const qs = p.quality_scores?.composite_score || p.quality_scores?.overall;
