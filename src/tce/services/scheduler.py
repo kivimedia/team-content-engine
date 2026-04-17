@@ -117,6 +117,17 @@ class Scheduler:
             run_time=time(2, 0),  # 2 AM
             weekdays=[0, 1, 2, 3, 4, 5, 6],  # Every day
         )
+        # Weekly repo spotlight - Sunday 07:00 Asia/Jerusalem.
+        # Picks the tracked repo with the most recent commits this week
+        # and runs the weekly_repo_spotlight workflow on it.
+        # NOTE: scheduler uses server local time; on the VPS set TZ=Asia/Jerusalem
+        # (or keep UTC and adjust run_time) for the correct trigger.
+        self.jobs["weekly_repo_spotlight"] = ScheduledJob(
+            name="weekly_repo_spotlight",
+            workflow="weekly_repo_spotlight",
+            run_time=time(7, 0),  # 07:00 local
+            weekdays=[6],  # Sunday (0=Mon ... 6=Sun)
+        )
 
     def start(self) -> None:
         """Start the scheduler background loop."""
@@ -238,6 +249,58 @@ class Scheduler:
                         logger.info("scheduler.no_packages_this_week")
             except Exception:
                 logger.exception("scheduler.feedback_gathering_failed")
+
+        # Weekly repo spotlight: pick the hottest tracked repo and inject context
+        if job.workflow == "weekly_repo_spotlight":
+            try:
+                from sqlalchemy import select
+
+                from tce.db.session import async_session
+                from tce.models.tracked_repo import TrackedRepo
+                from tce.services.repo_service import RepoService
+
+                async with async_session() as picker_db:
+                    rows = (
+                        await picker_db.execute(
+                            select(TrackedRepo)
+                            .where(TrackedRepo.is_archived.is_(False))
+                            .order_by(
+                                TrackedRepo.priority_score.desc(),
+                                TrackedRepo.last_commit_at.desc().nulls_last(),
+                            )
+                            .limit(10)
+                        )
+                    ).scalars().all()
+
+                if not rows:
+                    logger.warning("scheduler.weekly_repo_spotlight.no_repos")
+                    return
+
+                # Fresh priority: latest remote HEAD changed in the last 7 days wins.
+                # Fallback to first row (highest priority_score).
+                service = RepoService()
+                chosen = rows[0]
+                for repo in rows:
+                    sha = await service.remote_head_sha(repo)
+                    if sha and sha != (repo.last_commit_sha or ""):
+                        chosen = repo
+                        break
+
+                job.context.update(
+                    {
+                        "tracked_repo_id": str(chosen.id),
+                        "angle": "new_features",
+                        "_source": "repo",
+                        "_source_angle": "new_features",
+                    }
+                )
+                logger.info(
+                    "scheduler.weekly_repo_spotlight.chosen",
+                    repo=chosen.slug,
+                )
+            except Exception:
+                logger.exception("scheduler.weekly_repo_spotlight.pick_failed")
+                return
 
         # Run pipeline workflow
         try:

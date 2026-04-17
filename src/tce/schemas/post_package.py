@@ -42,6 +42,7 @@ class PostPackageRead(BaseModel):
     pipeline_run_id: uuid.UUID | None
     proof_trail: list[dict] | dict | None = None
     proof_status: str | None = None
+    source: str | None = None
     created_at: datetime
     updated_at: datetime
 

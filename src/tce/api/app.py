@@ -33,6 +33,7 @@ from tce.api.routers import (
     prompts,
     qa,
     relearning,
+    repos,
     stack,
     trends,
     videos,
@@ -113,6 +114,7 @@ def create_app() -> FastAPI:
     app.include_router(operator_controls.router, prefix=prefix)
     app.include_router(dm_fulfillment.router, prefix=prefix)
     app.include_router(relearning.router, prefix=prefix)
+    app.include_router(repos.router, prefix=prefix)
     app.include_router(videos.router, prefix=prefix)
     app.include_router(narration.router, prefix=prefix)
     app.include_router(monthly.router, prefix=prefix)

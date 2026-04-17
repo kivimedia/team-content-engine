@@ -15,6 +15,8 @@ from tce.agents import (  # noqa: F401
     platform_writer,
     proof_checker,
     qa_agent,
+    repo_scout,
+    repo_storyteller,
     research_agent,
     story_strategist,
     trend_scout,

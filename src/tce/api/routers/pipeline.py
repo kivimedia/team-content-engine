@@ -2055,3 +2055,226 @@ async def run_single_agent(
             status_code=500,
             detail=f"Agent '{agent_name}' failed: {str(exc)[:200]}",
         )
+
+
+# ---------------------------------------------------------------------------
+# "Start From Repo" - full package from a GitHub repo (mirrors start-from-topic)
+# ---------------------------------------------------------------------------
+
+_start_repo_runs: dict[str, dict] = {}
+
+
+class StartFromRepoApiRequest(BaseModel):
+    """POST /pipeline/start-from-repo payload."""
+
+    repo_id: str | None = None  # uuid string (preferred)
+    repo_url: str | None = None  # ad hoc repo, will be auto-upserted
+    angle: str = "new_features"  # new_features | whole_repo | recent_fixes | generic
+    platform: str = "both"
+    cta_keyword: str | None = None
+    include_video: bool = False
+    language: str = "english"
+    notes: str | None = None
+    force_refresh: bool = False
+
+
+async def _persist_start_repo_status(run_id: str, status: dict) -> None:
+    """Persist start-from-repo run status to the polish_run_status table (reuse)."""
+    try:
+        async with async_session() as db:
+            await _ensure_polish_table(db)
+            now = datetime.utcnow().isoformat()
+            await db.execute(
+                text(
+                    "INSERT INTO polish_run_status (run_id, status_json, updated_at) "
+                    "VALUES (:rid, :sj, :ua) "
+                    "ON CONFLICT(run_id) DO UPDATE SET "
+                    "status_json = :sj, updated_at = :ua"
+                ),
+                {"rid": run_id, "sj": json.dumps(status), "ua": now},
+            )
+            await db.commit()
+    except Exception:
+        logger.warning("persist_start_repo_status.failed", run_id=run_id, exc_info=True)
+
+
+@router.post("/start-from-repo")
+async def start_from_repo(
+    request: StartFromRepoApiRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Generate a full post package based on a tracked GitHub repo.
+
+    Runs the `start_from_repo` workflow:
+    repo_scout -> repo_storyteller -> research_agent -> fb/li writers -> cta ->
+    creative_director -> proof_checker -> qa_agent -> (script + video if opted in).
+    """
+    if not request.repo_id and not request.repo_url:
+        raise HTTPException(status_code=400, detail="Need repo_id or repo_url")
+
+    angle = request.angle.lower()
+    if angle not in {"new_features", "whole_repo", "recent_fixes", "generic"}:
+        raise HTTPException(status_code=400, detail=f"Unknown angle: {angle}")
+
+    run_id = str(uuid.uuid4())
+
+    context: dict[str, Any] = {
+        "angle": angle,
+        "platform": request.platform,
+        "language": request.language,
+        "include_video": request.include_video,
+        "force_refresh": request.force_refresh,
+        "_source": "repo",
+        "_source_angle": angle,
+    }
+    if request.repo_id:
+        context["tracked_repo_id"] = request.repo_id
+        context["_source_repo_id"] = request.repo_id
+    if request.repo_url:
+        context["repo_url"] = request.repo_url
+    if request.cta_keyword:
+        context["weekly_keyword"] = request.cta_keyword
+    if request.notes:
+        context["operator_overrides"] = {"notes": request.notes}
+
+    # Initial status row for polling
+    _start_repo_runs[run_id] = {
+        "run_id": run_id,
+        "status": "running",
+        "phase": "starting",
+        "phase_detail": (
+            f"Preparing to clone + analyze repo (angle={angle})..."
+        ),
+        "pipeline_run_id": None,
+        "step_status": {},
+        "error": None,
+        "angle": angle,
+        "repo_id": request.repo_id,
+        "repo_url": request.repo_url,
+    }
+    await _persist_start_repo_status(run_id, _start_repo_runs[run_id])
+
+    async def _run() -> None:
+        status = _start_repo_runs[run_id]
+
+        async def _save() -> None:
+            await _persist_start_repo_status(run_id, status)
+
+        try:
+            status["phase"] = "running"
+            status["phase_detail"] = (
+                f"Running start_from_repo workflow (angle={angle})..."
+            )
+            await _save()
+
+            pipeline_run_id = uuid.uuid4()
+            async with async_session() as pipe_db:
+                run_record = PipelineRun(
+                    run_id=pipeline_run_id,
+                    workflow="start_from_repo",
+                    status="running",
+                    started_at=datetime.utcnow(),
+                )
+                pipe_db.add(run_record)
+                await pipe_db.commit()
+                record_id = run_record.id
+
+                steps = WORKFLOWS["start_from_repo"]
+                # Trim video if caller didn't opt in
+                if not request.include_video:
+                    steps = [
+                        s for s in steps
+                        if s.agent_name not in {"script_agent", "video_agent"}
+                    ]
+
+                orchestrator = PipelineOrchestrator(
+                    steps=steps,
+                    db=pipe_db,
+                    settings=settings,
+                    run_id=pipeline_run_id,
+                )
+                _active_runs[str(pipeline_run_id)] = orchestrator
+                status["pipeline_run_id"] = str(pipeline_run_id)
+                await _save()
+
+                result = await orchestrator.run(context)
+
+            # Bookkeeping
+            async with async_session() as bk_db:
+                rr = await bk_db.get(PipelineRun, record_id)
+                if rr:
+                    has_failures = any(
+                        v == "failed" for v in result.get("step_status", {}).values()
+                    )
+                    rr.status = "failed" if has_failures else "completed"
+                    rr.completed_at = datetime.utcnow()
+                    rr.step_results = result.get("step_status", {})
+                    rr.step_errors = result.get("step_errors", {})
+                    if has_failures:
+                        errors = result.get("step_errors", {})
+                        rr.error_message = "; ".join(
+                            f"{k}: {v}" for k, v in errors.items()
+                        )
+                    await bk_db.commit()
+
+            _active_runs.pop(str(pipeline_run_id), None)
+
+            status["phase"] = "completed"
+            status["phase_detail"] = "Repo package ready."
+            status["status"] = "completed"
+            status["step_status"] = result.get("step_status", {})
+            await _save()
+
+        except Exception as e:
+            logger.exception("start_from_repo.error", run_id=run_id)
+            status["phase"] = "failed"
+            status["error"] = str(e)
+            status["status"] = "failed"
+            await _save()
+
+    asyncio.create_task(_run())
+
+    return {
+        "run_id": run_id,
+        "status": "started",
+        "status_url": f"/api/v1/pipeline/start-from-repo/{run_id}/status",
+        "angle": angle,
+        "repo_id": request.repo_id,
+        "repo_url": request.repo_url,
+    }
+
+
+@router.get("/start-from-repo/{run_id}/status")
+async def get_start_from_repo_status(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Poll the status of a start-from-repo run."""
+    if run_id in _start_repo_runs:
+        status = _start_repo_runs[run_id]
+        pipe_id = status.get("pipeline_run_id")
+        if pipe_id and pipe_id in _active_runs:
+            live = _active_runs[pipe_id].get_status()
+            status["step_status"] = live.get("step_status", status.get("step_status", {}))
+            status["step_logs"] = live.get("step_logs", {})
+            for sname, sval in live.get("step_status", {}).items():
+                if sval == "running":
+                    status["phase_detail"] = f"Running {sname}..."
+                    break
+        return status
+
+    db_status = await _load_polish_status(run_id, db)
+    if db_status:
+        return db_status
+    raise HTTPException(status_code=404, detail="Run not found")
+
+
+@router.get("/start-from-repo/active")
+async def get_active_start_from_repo(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return the most recent running start-from-repo run, if any."""
+    for rid, status in _start_repo_runs.items():
+        if status.get("status") == "running":
+            return status
+    return {"status": "idle"}

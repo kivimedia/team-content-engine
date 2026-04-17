@@ -16,10 +16,12 @@ from tce.models.post_example import PostExample
 from tce.models.post_package import PostPackage
 from tce.models.prompt_version import PromptVersion
 from tce.models.qa_scorecard import QAScorecard
+from tce.models.repo_brief import RepoBrief
 from tce.models.research_brief import ResearchBrief
 from tce.models.source_document import SourceDocument
 from tce.models.story_brief import StoryBrief
 from tce.models.system_version import SystemVersion
+from tce.models.tracked_repo import TrackedRepo
 from tce.models.trend_brief import TrendBrief
 from tce.models.narration_script import NarrationScript
 from tce.models.render_queue import RenderQueueJob
@@ -46,10 +48,12 @@ __all__ = [
     "QAScorecard",
     "NarrationScript",
     "RenderQueueJob",
+    "RepoBrief",
     "ResearchBrief",
     "SourceDocument",
     "StoryBrief",
     "SystemVersion",
+    "TrackedRepo",
     "TrendBrief",
     "VideoAsset",
     "VideoLeadScript",

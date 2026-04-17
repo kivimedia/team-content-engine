@@ -82,5 +82,11 @@ class Settings(BaseSettings):
     # Multi-tenancy / service auth
     service_key: str = ""  # Shared secret for km-worker -> TCE calls
 
+    # Repo-based content (Start From Repo feature)
+    github_pat: str = ""  # Personal access token for private repos + higher rate limits
+    repo_cache_dir: str = str(_TMPDIR / "tce-repo-cache")
+    repo_brief_ttl_hours: int = 6  # How long a cached RepoBrief survives before re-fetch
+    repo_commit_window_days: int = 30  # How far back repo_scout looks for commits
+
 
 settings = Settings()

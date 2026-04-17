@@ -109,6 +109,42 @@ class ResearchAgent(AgentBase):
                 "Flag anything you cannot verify with high confidence."
             )
 
+        # Inject first-party repo examples when the topic overlaps tracked repos.
+        # This only runs when repo_scout has NOT already seeded a repo_brief
+        # (i.e. we're in a non-repo pipeline that could still benefit from a citation).
+        repo_examples: list[dict[str, Any]] = []
+        if not context.get("repo_brief"):
+            try:
+                from tce.services.repo_examples import find_repo_examples
+
+                repo_examples = await find_repo_examples(
+                    self.db, topic=topic, thesis=thesis, max_examples=3
+                )
+            except Exception as exc:
+                self._report(f"Repo-example lookup skipped: {exc}")
+        if repo_examples:
+            self._report(
+                f"Found {len(repo_examples)} matching tracked repos for examples"
+            )
+            prompt_parts.append("\n## First-party Repo Examples (our own shipped work)\n")
+            for ex in repo_examples:
+                hl = ex.get("highlight") or {}
+                line = (
+                    f"- **{ex['display_name']}** ({ex['repo_url']}):"
+                    f" {ex.get('summary', '')[:200]}"
+                )
+                if hl:
+                    line += (
+                        f"\n  e.g. {hl.get('kind', '')}: \"{hl.get('title', '')}\""
+                        f" (commit {hl.get('commit_sha', '')}) - {hl.get('why', '')}"
+                    )
+                prompt_parts.append(line)
+            prompt_parts.append(
+                "\nIf any of these repos genuinely illustrate the thesis, cite them"
+                " by short sha in the post (writers will pick this up). Never invent"
+                " details beyond what is stated above."
+            )
+
         prompt_parts.append(
             "\nIMPORTANT: Respond ONLY with a valid JSON object. "
             "No commentary before or after the JSON."

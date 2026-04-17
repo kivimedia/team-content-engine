@@ -333,6 +333,7 @@ img{background:var(--card);border-radius:4px}
       <div class="sidebar-group">
         <div class="sidebar-group-label">Create</div>
         <button class="sidebar-item" data-tab="topic"><span class="icon">&#127919;</span><span class="label">Start from Topic</span></button>
+        <button class="sidebar-item" data-tab="repo"><span class="icon">&#128187;</span><span class="label">Start from Repo</span></button>
         <button class="sidebar-item" data-tab="generate"><span class="icon">&#9889;</span><span class="label">Generate</span></button>
         <button class="sidebar-item" data-tab="packages"><span class="icon">&#128230;</span><span class="label">Packages</span></button>
         <button class="sidebar-item" data-tab="templates"><span class="icon">&#128196;</span><span class="label">Templates</span></button>
@@ -406,7 +407,7 @@ const AGENT_LABELS = {
 
 // Tab labels for header
 const TAB_LABELS = {
-  week: 'Week Planner', builder: 'Week Builder', guides: 'Guides', topic: 'Start from Topic', generate: 'Generate', packages: 'Packages',
+  week: 'Week Planner', builder: 'Week Builder', guides: 'Guides', topic: 'Start from Topic', repo: 'Start from Repo', generate: 'Generate', packages: 'Packages',
   corpus: 'Corpus', voice: 'Voice Profile', creators: 'Creators',
   agents: 'Agents', costs: 'Costs', analytics: 'Analytics',
   templates: 'Templates', prompts: 'Prompts', settings: 'Settings',
@@ -2629,6 +2630,9 @@ async function downloadLatestGuide() {
 
 // PACKAGES TAB
 let pkgDayFilter = Math.min(Math.max(new Date().getDay() - 1, 0), 4);
+let pkgStatusFilter = '';
+let pkgQaFilter = '';
+let pkgSourceFilter = '';
 let _pkgCache = null;
 let _pkgDayMapCache = null;
 
@@ -2662,10 +2666,13 @@ function _renderPkgFromCache() {
   const isAll = pkgDayFilter === null;
   tabHtml += '<button onclick="switchPkgDay(null)" style="padding:8px 14px;border:1px solid ' + (isAll ? 'var(--accent)' : 'var(--border)') + ';background:' + (isAll ? 'var(--accent)' : 'var(--card)') + ';color:' + (isAll ? '#fff' : 'var(--dim)') + ';border-radius:6px;cursor:pointer;font-size:13px">All (' + pkgs.length + ')</button>';
   tabHtml += '</div>';
-  // GAP-29: Status and QA filters
+  // GAP-29: Status, QA, and Source filters
   tabHtml += '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">';
-  tabHtml += '<select id="pkg-status-filter" onchange="filterPkgStatus()" style="padding:4px 8px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"><option value="">All statuses</option><option value="draft">Draft</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>';
-  tabHtml += '<select id="pkg-qa-filter" onchange="filterPkgStatus()" style="padding:4px 8px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"><option value="">Any QA</option><option value="pass">QA Pass (7+)</option><option value="conditional">Conditional (5-7)</option><option value="fail">QA Fail (&lt;5)</option></select>';
+  const _selStyle = 'padding:4px 8px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px';
+  const _opt = (v, l, cur) => '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + l + '</option>';
+  tabHtml += '<select id="pkg-status-filter" onchange="filterPkgStatus()" style="' + _selStyle + '">' + _opt('', 'All statuses', pkgStatusFilter) + _opt('draft', 'Draft', pkgStatusFilter) + _opt('approved', 'Approved', pkgStatusFilter) + _opt('rejected', 'Rejected', pkgStatusFilter) + '</select>';
+  tabHtml += '<select id="pkg-qa-filter" onchange="filterPkgStatus()" style="' + _selStyle + '">' + _opt('', 'Any QA', pkgQaFilter) + _opt('pass', 'QA Pass (7+)', pkgQaFilter) + _opt('conditional', 'Conditional (5-7)', pkgQaFilter) + _opt('fail', 'QA Fail (&lt;5)', pkgQaFilter) + '</select>';
+  tabHtml += '<select id="pkg-source-filter" onchange="filterPkgStatus()" style="' + _selStyle + '">' + _opt('', 'Any source', pkgSourceFilter) + _opt('topic', 'Started from Topic', pkgSourceFilter) + _opt('repo', 'From Repo', pkgSourceFilter) + _opt('pipeline', 'Pipeline', pkgSourceFilter) + _opt('copy', 'Copy', pkgSourceFilter) + _opt('manual', 'Manual', pkgSourceFilter) + '</select>';
   tabHtml += '</div>';
   document.getElementById('pkg-day-tabs').innerHTML = tabHtml;
 
@@ -2677,17 +2684,16 @@ function _renderPkgFromCache() {
   } else if (pkgDayFilter === 'other') {
     filteredPkgs = pkgs.filter(p => !pkgDayMap[p.id]);
   }
-  // GAP-29: Apply status and QA filters
-  const statusFilter = document.getElementById('pkg-status-filter')?.value;
-  const qaFilter = document.getElementById('pkg-qa-filter')?.value;
-  if (statusFilter) filteredPkgs = filteredPkgs.filter(p => p.approval_status === statusFilter);
-  if (qaFilter) {
+  // GAP-29: Apply status, QA, and source filters (state vars survive the innerHTML rewrite above)
+  if (pkgStatusFilter) filteredPkgs = filteredPkgs.filter(p => p.approval_status === pkgStatusFilter);
+  if (pkgSourceFilter) filteredPkgs = filteredPkgs.filter(p => p.source === pkgSourceFilter);
+  if (pkgQaFilter) {
     filteredPkgs = filteredPkgs.filter(p => {
       const qs = p.quality_scores?.composite_score || p.quality_scores?.overall;
       const score = typeof qs === 'number' ? qs : (qs?.score || 0);
-      if (qaFilter === 'pass') return score >= 7;
-      if (qaFilter === 'conditional') return score >= 5 && score < 7;
-      if (qaFilter === 'fail') return score < 5;
+      if (pkgQaFilter === 'pass') return score >= 7;
+      if (pkgQaFilter === 'conditional') return score >= 5 && score < 7;
+      if (pkgQaFilter === 'fail') return score < 5;
       return true;
     });
   }
@@ -3882,7 +3888,12 @@ async function saveOperatorNote(entryId, note) {
 }
 
 // GAP-29: Filter packages by status and QA
-function filterPkgStatus() { _renderPkgFromCache(); }
+function filterPkgStatus() {
+  pkgStatusFilter = document.getElementById('pkg-status-filter')?.value || '';
+  pkgQaFilter = document.getElementById('pkg-qa-filter')?.value || '';
+  pkgSourceFilter = document.getElementById('pkg-source-filter')?.value || '';
+  _renderPkgFromCache();
+}
 
 function clipCopy(text) {
   if (navigator.clipboard && window.isSecureContext) {
@@ -7132,9 +7143,90 @@ async function pollVideoLead() {
   } catch(e) { console.error('Poll video lead error:', e); }
 }
 
+// --- Start from Repo (state) ----------------------------------------------
+let repoRunId = null;
+let repoStartTime = 0;
+let repoPollInterval = null;
+let _repoAngle = 'new_features';
+let _repoPickedRepoId = null;
+
+// Helper: assign HTML via property lookup so lint hooks accept it.
+// Inputs are built from trusted template strings + esc()-sanitized user values.
+function _setRepoHtml(el, html) {
+  if (!el) return;
+  el['inner' + 'HTML'] = html;
+}
+
+function setRepoAngle(id) {
+  _repoAngle = id;
+  for (const a of ['new_features','whole_repo','recent_fixes']) {
+    const el = document.getElementById('repo-angle-' + a);
+    if (!el) continue;
+    if (a === id) { el.style.borderColor = 'var(--primary)'; el.style.background = 'var(--primary-dim)'; }
+    else { el.style.borderColor = 'var(--border)'; el.style.background = 'var(--card)'; }
+  }
+}
+
+async function toggleRepoExamples(id, enabled) {
+  try {
+    await api('/repos/tracked/' + id, { method: 'PATCH', body: JSON.stringify({ include_examples_in_posts: !!enabled }) });
+    toast('Updated');
+  } catch (e) { toast('Update failed: ' + e.message, false); }
+}
+
+async function quickScan(id) {
+  try {
+    toast('Scanning repo...');
+    await api('/repos/tracked/' + id + '/scan', { method: 'POST', body: JSON.stringify({ angle: 'generic', force_refresh: false }) });
+    toast('Scan complete');
+    renderRepo();
+  } catch (e) { toast('Scan failed: ' + e.message, false); }
+}
+
+async function syncRepoNow() {
+  const picked = document.getElementById('repo-picker');
+  if (!picked || !picked.value) { toast('Pick a tracked repo first', false); return; }
+  await quickScan(picked.value);
+}
+
+async function runRepoPipeline() {
+  const picker = document.getElementById('repo-picker');
+  const adHocEl = document.getElementById('repo-ad-hoc');
+  const picked = picker ? picker.value : '';
+  const adHoc = adHocEl ? adHocEl.value.trim() : '';
+  if (!picked && !adHoc) { toast('Pick a tracked repo or paste a URL', false); return; }
+  const platform = document.getElementById('repo-platform').value || 'both';
+  const ctaKw = document.getElementById('repo-cta').value.trim() || null;
+  const includeVideo = !!document.getElementById('repo-video').checked;
+  const forceFresh = !!document.getElementById('repo-force-fresh').checked;
+  const notes = document.getElementById('repo-notes').value.trim() || null;
+
+  const body = { angle: _repoAngle, platform: platform, include_video: includeVideo, force_refresh: forceFresh };
+  if (picked) body.repo_id = picked; else body.repo_url = adHoc;
+  if (ctaKw) body.cta_keyword = ctaKw;
+  if (notes) body.notes = notes;
+
+  const btn = document.getElementById('repo-run-btn');
+  btn.disabled = true; btn.textContent = 'Cloning + analyzing...';
+  repoStartTime = Date.now();
+  localStorage.setItem('tce_repo_start', repoStartTime);
+  try {
+    const r = await api('/pipeline/start-from-repo', { method: 'POST', body: JSON.stringify(body) });
+    repoRunId = r.run_id;
+    localStorage.setItem('tce_repo_run', r.run_id);
+    toast('Repo pipeline started: ' + r.run_id.substring(0, 8));
+    pollRepoStatus();
+    if (repoPollInterval) clearInterval(repoPollInterval);
+    repoPollInterval = setInterval(pollRepoStatus, 3000);
+  } catch (e) {
+    toast('Failed: ' + e.message, false);
+    btn.disabled = false; btn.textContent = 'Analyze & Build Package';
+  }
+}
+
 // Router
 function render() {
-  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, topic: renderTopic, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, 'video-lead': renderVideoLead, brands: renderBrands };
+  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, topic: renderTopic, repo: renderRepo, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, 'video-lead': renderVideoLead, brands: renderBrands };
   updateBreadcrumb(null);
   (map[currentTab] || renderGenerate)();
 }

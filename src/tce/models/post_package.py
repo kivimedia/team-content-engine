@@ -55,8 +55,14 @@ class PostPackage(Base):
     proof_trail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     proof_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
-    # Source tracking: pipeline, topic, copy, manual
+    # Source tracking: pipeline, topic, copy, repo, manual
     source: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+    # If source is "repo", link to the originating TrackedRepo + the chosen angle.
+    source_repo_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tracked_repos.id", ondelete="SET NULL"), nullable=True
+    )
+    source_repo_angle: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     # Relationships
     image_assets: Mapped[list["ImageAsset"]] = relationship(  # noqa: F821
