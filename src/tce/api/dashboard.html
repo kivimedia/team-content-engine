@@ -671,7 +671,7 @@ async function renderWeek() {
       }
       summaryHtml += '<div style="flex:0 0 auto;display:flex;align-items:center"><button class="btn btn-dim" style="padding:8px 14px;font-size:12px;white-space:nowrap" onclick="editWeekPlan()">Edit Plan</button></div>';
       summaryHtml += '</div>';
-      document.getElementById('week-grid').insertAdjacentHTML('beforebegin', summaryHtml);
+      document.getElementById('week-grid')?.insertAdjacentHTML('beforebegin', summaryHtml);
       // Store entries for edit
       window._weekEntries = entries;
       window._weekMondayStr = fmtDate(monday);
@@ -730,9 +730,12 @@ async function renderWeek() {
       html += '</div>';
       html += '</div>';
     }
-    document.getElementById('week-grid').innerHTML = html;
+    const wg = document.getElementById('week-grid');
+    if (wg) wg.innerHTML = html;
   } catch (e) {
-    document.getElementById('week-grid').innerHTML = '<div class="empty" style="grid-column:1/-1">Error loading calendar: ' + e.message + '</div>';
+    // Tab may have switched during the await - only write if week-grid is still in DOM
+    const wg = document.getElementById('week-grid');
+    if (wg) wg.innerHTML = '<div class="empty" style="grid-column:1/-1">Error loading calendar: ' + String(e.message || e).replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c])) + '</div>';
   }
 
   // Resume day regen polling if active (survives page refresh)
@@ -2102,8 +2105,8 @@ async function renderTopic() {
 
   app.innerHTML = `
     <div class="section">
-      <h2>Start from Topic</h2>
-      <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Describe your topic. Choose what to generate below.</p>
+      <h2>Start from Topic (you describe the angle)</h2>
+      <p style="font-size:13px;color:var(--dim);margin-bottom:16px">You provide the topic in your own words - skips TrendScout. Use this when you already know what you want to post about. <em>Difference vs. Generate:</em> Generate auto-discovers the topic via TrendScout; this one uses exactly what you type.</p>
       <div class="card" style="margin-bottom:16px">
         <div style="display:flex;gap:0;margin-bottom:16px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
           <button id="topic-mode-post" onclick="setTopicMode('post')" style="flex:1;padding:10px 16px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:var(--blue);color:#fff;transition:all 0.2s">Daily Post</button>
@@ -2334,7 +2337,8 @@ async function renderGenerate() {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="section">
-      <h2>Run Content Pipeline</h2>
+      <h2>Generate (auto-discover topic)</h2>
+      <p style="font-size:13px;color:var(--dim);margin:-6px 0 14px 0">TrendScout picks the hot topic for you, then runs the full pipeline. Use this when you don't have a specific angle in mind - pick a day + niche, click Run. See also: <strong>Start from Topic</strong> (you describe the topic), <strong>Start from Repo</strong> (topic comes from a GitHub repo), <strong>Start from Copy</strong> (polish existing copy).</p>
       <div class="card" style="margin-bottom:16px">
         <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
           <div>
@@ -7265,8 +7269,8 @@ async function renderRepo() {
 
   const html = `
     <div class="section">
-      <h2>Start from Repo</h2>
-      <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Generate FB + LI posts from a GitHub repo. Analyzes the codebase, picks an angle, and runs the full content pipeline.</p>
+      <h2>Start from Repo (topic extracted from a GitHub codebase)</h2>
+      <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Point at a GitHub repo; we scan commits/PRs/README to extract the story, then run the full content pipeline. Use this when you want to post about something a codebase just shipped. <em>Difference vs. Topic:</em> you give a URL, not a description.</p>
       <div class="card" style="margin-bottom:16px">
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
           <div style="flex:2;min-width:280px">
