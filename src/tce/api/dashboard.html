@@ -332,8 +332,7 @@ img{background:var(--card);border-radius:4px}
       </div>
       <div class="sidebar-group">
         <div class="sidebar-group-label">Create</div>
-        <button class="sidebar-item" data-tab="topic"><span class="icon">&#127919;</span><span class="label">Start from Topic</span></button>
-        <button class="sidebar-item" data-tab="repo"><span class="icon">&#128187;</span><span class="label">Start from Repo</span></button>
+        <button class="sidebar-item" data-tab="start"><span class="icon">&#128640;</span><span class="label">Start from Something</span></button>
         <button class="sidebar-item" data-tab="generate"><span class="icon">&#9889;</span><span class="label">Generate</span></button>
         <button class="sidebar-item" data-tab="packages"><span class="icon">&#128230;</span><span class="label">Packages</span></button>
         <button class="sidebar-item" data-tab="templates"><span class="icon">&#128196;</span><span class="label">Templates</span></button>
@@ -435,7 +434,7 @@ const AGENT_LABELS = {
 
 // Tab labels for header
 const TAB_LABELS = {
-  week: 'Week Planner', builder: 'Week Builder', guides: 'Guides', topic: 'Start from Topic', repo: 'Start from Repo', generate: 'Generate', packages: 'Packages',
+  week: 'Week Planner', builder: 'Week Builder', guides: 'Guides', start: 'Start from Something', topic: 'Start from Something', repo: 'Start from Something', generate: 'Generate', packages: 'Packages',
   corpus: 'Corpus', voice: 'Voice Profile', creators: 'Creators',
   agents: 'Agents', costs: 'Costs', analytics: 'Analytics',
   templates: 'Templates', prompts: 'Prompts', settings: 'Settings',
@@ -2093,8 +2092,91 @@ let topicRunId = null;
 let topicPollInterval = null;
 let topicStartTime = null;
 
-async function renderTopic() {
+// Unified Start tab - one entry point for Topic / Repo / Copy.
+// Sub-tabs persist via localStorage + infer from legacy currentTab aliases
+// so anything that used to set currentTab='topic' still lands users on
+// the right sub-form inside the unified view.
+async function renderStartFromSomething() {
   const app = document.getElementById('app');
+  if (!app) return;
+  let sub = localStorage.getItem('tce_start_subtab');
+  if (!sub) sub = currentTab === 'repo' ? 'repo' : currentTab === 'copy' ? 'copy' : 'topic';
+  const pills = ['topic','repo','copy'].map(t => {
+    const active = t === sub;
+    const lbl = t === 'topic' ? 'Topic (describe angle)' : t === 'repo' ? 'Repo (GitHub URL)' : 'Copy (polish draft)';
+    return '<button onclick="switchStartSubtab(&quot;' + t + '&quot;)" style="padding:10px 22px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:' + (active ? 'var(--accent)' : 'var(--card)') + ';color:' + (active ? '#fff' : 'var(--dim)') + ';transition:all 0.15s">' + lbl + '</button>';
+  }).join('');
+  app.innerHTML = `
+    <div class="section" style="padding-bottom:0">
+      <h2 style="margin-bottom:4px">Start from Something</h2>
+      <p style="font-size:13px;color:var(--dim);margin:0 0 14px 0">Three starting points for the content pipeline. Pick what you have:</p>
+      <div style="display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">${pills}</div>
+    </div>
+    <div id="start-content"></div>`;
+  await _renderStartSubContent(sub);
+}
+
+async function switchStartSubtab(sub) {
+  localStorage.setItem('tce_start_subtab', sub);
+  currentTab = 'start';
+  document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === 'start'));
+  await renderStartFromSomething();
+}
+
+async function _renderStartSubContent(sub) {
+  const c = document.getElementById('start-content');
+  if (!c) return;
+  if (sub === 'topic') await renderTopic(c);
+  else if (sub === 'repo') await renderRepo(c);
+  else _renderCopyFormInto(c);
+}
+
+function _renderCopyFormInto(container) {
+  container.innerHTML = `
+    <div class="section">
+      <h2>Start from Copy (polish your draft)</h2>
+      <p style="font-size:13px;color:var(--dim);margin-bottom:12px">Paste copy you already wrote. The agent team will analyze it, match it to a template, polish it into FB + LI drafts, generate image prompts, and QA the result.</p>
+      <div class="card">
+        <div style="margin-bottom:12px">
+          <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Your copy</label>
+          <textarea id="polish-copy-text" rows="8" style="width:100%;resize:vertical;min-height:120px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark" placeholder="Paste your draft copy here..."></textarea>
+        </div>
+        <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:12px">
+          <div>
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Platform</label>
+            <select id="polish-platform" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+              <option value="both" style="background:var(--card);color:var(--text)">Both (FB + LI)</option>
+              <option value="facebook" style="background:var(--card);color:var(--text)">Facebook only</option>
+              <option value="linkedin" style="background:var(--card);color:var(--text)">LinkedIn only</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">CTA Keyword (optional)</label>
+            <input type="text" id="polish-cta" placeholder="e.g. agency-growth" style="width:180px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+          </div>
+          <div style="flex:1;min-width:200px">
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Notes (optional)</label>
+            <input type="text" id="polish-notes" placeholder="Any extra instructions for the team..." style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="btn btn-primary" id="polish-btn" onclick="runPolishCopy()">Polish &amp; Build Package</button>
+          <span id="polish-elapsed" style="font-size:12px;color:var(--dim)"></span>
+        </div>
+        <div id="polish-status" style="margin-top:12px"></div>
+        <div id="copy-history" style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px"></div>
+      </div>
+    </div>`;
+  if (typeof activePolishRun !== 'undefined' && activePolishRun) {
+    pollPolish();
+    if (typeof polishPollInterval === 'undefined' || !polishPollInterval) polishPollInterval = setInterval(pollPolish, 3000);
+  }
+  loadSourceHistory('copy', 'copy-history');
+}
+
+async function renderTopic(container) {
+  const app = container || document.getElementById('app');
+  if (!app) return;
   // Load creators and posts for dropdowns
   let creators = [], posts = [];
   try { creators = await api('/pipeline/inspiration/creators'); } catch {}
@@ -2338,7 +2420,7 @@ async function renderGenerate() {
   app.innerHTML = `
     <div class="section">
       <h2>Generate (auto-discover topic)</h2>
-      <p style="font-size:13px;color:var(--dim);margin:-6px 0 14px 0">TrendScout picks the hot topic for you, then runs the full pipeline. Use this when you don't have a specific angle in mind - pick a day + niche, click Run. See also: <strong>Start from Topic</strong> (you describe the topic), <strong>Start from Repo</strong> (topic comes from a GitHub repo), <strong>Start from Copy</strong> (polish existing copy).</p>
+      <p style="font-size:13px;color:var(--dim);margin:-6px 0 14px 0">TrendScout picks the hot topic for you, then runs the full pipeline. Use this when you don't have a specific angle in mind - pick a day + niche, click Run. For all other starting points (you have a topic, a GitHub repo, or draft copy), use <strong>Start from Something</strong>.</p>
       <div class="card" style="margin-bottom:16px">
         <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
           <div>
@@ -2380,42 +2462,8 @@ async function renderGenerate() {
       </div>
       <div id="pipeline-status"></div>
     </div>
-    <div class="section" style="margin-top:32px">
-      <h2>Start From Copy</h2>
-      <p style="font-size:13px;color:var(--dim);margin-bottom:12px">Paste copy you already wrote. The agent team will analyze it, match it to a template, polish it into FB + LI drafts, generate image prompts, and QA the result.</p>
-      <div class="card">
-        <div style="margin-bottom:12px">
-          <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Your copy</label>
-          <textarea id="polish-copy-text" rows="8" style="width:100%;resize:vertical;min-height:120px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark" placeholder="Paste your draft copy here..."></textarea>
-        </div>
-        <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:12px">
-          <div>
-            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Platform</label>
-            <select id="polish-platform" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
-              <option value="both" style="background:var(--card);color:var(--text)">Both (FB + LI)</option>
-              <option value="facebook" style="background:var(--card);color:var(--text)">Facebook only</option>
-              <option value="linkedin" style="background:var(--card);color:var(--text)">LinkedIn only</option>
-            </select>
-          </div>
-          <div>
-            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">CTA Keyword (optional)</label>
-            <input type="text" id="polish-cta" placeholder="e.g. agency-growth" style="width:180px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
-          </div>
-          <div style="flex:1;min-width:200px">
-            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Notes (optional)</label>
-            <input type="text" id="polish-notes" placeholder="Any extra instructions for the team..." style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;gap:12px">
-          <button class="btn btn-primary" id="polish-btn" onclick="runPolishCopy()">Polish & Build Package</button>
-          <span id="polish-elapsed" style="font-size:12px;color:var(--dim)"></span>
-        </div>
-        <div id="polish-status" style="margin-top:12px"></div>
-        <div id="copy-history" style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px"></div>
-      </div>
     </div>`;
   if (activePipelineRun) { pollPipeline(); if(!pollInterval) pollInterval = setInterval(pollPipeline, 3000); }
-  if (activePolishRun) { pollPolish(); if(!polishPollInterval) polishPollInterval = setInterval(pollPolish, 3000); }
   updateWfDesc();
 }
 
@@ -7257,8 +7305,8 @@ async function runRepoPipeline() {
 }
 
 // Start-from-Repo render + poll.
-async function renderRepo() {
-  const app = document.getElementById('app');
+async function renderRepo(container) {
+  const app = container || document.getElementById('app');
   if (!app) return;
   let tracked = [];
   try { tracked = await api('/repos/tracked'); } catch(e) { tracked = []; }
@@ -7446,7 +7494,7 @@ function _renderShowFailure(tab, err) {
 }
 
 function render() {
-  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, topic: renderTopic, repo: renderRepo, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, 'video-lead': renderVideoLead, brands: renderBrands };
+  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, start: renderStartFromSomething, topic: renderStartFromSomething, repo: renderStartFromSomething, copy: renderStartFromSomething, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, 'video-lead': renderVideoLead, brands: renderBrands };
   updateBreadcrumb(null);
   const tab = currentTab;
   const fn = map[tab] || renderGenerate;
