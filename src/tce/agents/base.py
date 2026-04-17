@@ -34,6 +34,36 @@ def _model_accepts_temperature(model: str) -> bool:
     return not model.startswith(_MODELS_WITHOUT_TEMPERATURE)
 
 
+# Kwargs we're willing to strip on-the-fly when Anthropic returns a 400
+# complaining about an unsupported or deprecated parameter. This is the
+# runtime safety net that catches the NEXT undocumented model change
+# before it kills a production pipeline. We only strip top-level kwargs
+# that are safe to drop (sampling knobs); we never strip `model`,
+# `messages`, `max_tokens`, or `system`.
+_STRIPPABLE_KWARGS: frozenset[str] = frozenset({"temperature", "top_p", "top_k"})
+
+
+def _kwarg_from_anthropic_400(error_message: str) -> str | None:
+    """Extract the name of the offending kwarg from a 400 error message.
+
+    Anthropic's error strings like `temperature is deprecated for this model`
+    or `Unexpected parameter: top_p` consistently name the parameter. We
+    intersect that with our allowed-to-strip set so we never drop anything
+    the caller actually needs.
+    """
+    lower = error_message.lower()
+    for name in _STRIPPABLE_KWARGS:
+        if name in lower and (
+            "deprecat" in lower
+            or "unsupported" in lower
+            or "unexpected" in lower
+            or "not allowed" in lower
+            or "cannot be used" in lower
+        ):
+            return name
+    return None
+
+
 class AgentBase(ABC):
     """Abstract base for all content engine agents.
 
@@ -166,7 +196,26 @@ class AgentBase(ABC):
                 ]
 
         self._report(f"Calling {model}...")
-        response = await self._client.messages.create(**kwargs)
+        try:
+            response = await self._client.messages.create(**kwargs)
+        except anthropic.BadRequestError as exc:
+            # Runtime safety net: if Anthropic 400s because a parameter is
+            # deprecated/unsupported for this model, strip it once and retry.
+            # See _kwarg_from_anthropic_400 - we only strip sampling knobs,
+            # never load-bearing args like model/messages/max_tokens.
+            offender = _kwarg_from_anthropic_400(str(exc))
+            if offender and offender in kwargs:
+                logger.warning(
+                    "agent.kwarg_stripped_on_400",
+                    agent=self.name,
+                    model=model,
+                    stripped_kwarg=offender,
+                    error=str(exc)[:200],
+                )
+                kwargs.pop(offender)
+                response = await self._client.messages.create(**kwargs)
+            else:
+                raise
         elapsed = time.monotonic() - start
         in_tok = response.usage.input_tokens
         out_tok = response.usage.output_tokens
