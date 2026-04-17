@@ -1219,6 +1219,231 @@ async def get_start_from_topic_status(
 
 
 # ---------------------------------------------------------------------------
+# "Start Walking Video" — produces a 60-120s walking-monologue script
+# ---------------------------------------------------------------------------
+
+_start_walking_video_runs: dict[str, dict] = {}
+
+
+async def _persist_walking_video_status(run_id: str, status: dict) -> None:
+    """Reuse the polish_run_status table for walking-video run polling."""
+    try:
+        from tce.db.session import async_session
+        async with async_session() as db:
+            await _ensure_polish_table(db)
+            now = datetime.utcnow().isoformat()
+            await db.execute(text(
+                "INSERT INTO polish_run_status (run_id, status_json, updated_at) "
+                "VALUES (:rid, :sj, :ua) "
+                "ON CONFLICT(run_id) DO UPDATE SET status_json = :sj, updated_at = :ua"
+            ), {"rid": run_id, "sj": json.dumps(status), "ua": now})
+            await db.commit()
+    except Exception:
+        logger.warning("persist_walking_video_status.failed", run_id=run_id, exc_info=True)
+
+
+@router.post("/start-walking-video")
+async def start_walking_video(request: "StartWalkingVideoRequest") -> dict[str, Any]:
+    """Kick off the walking_video workflow: TrendScout -> Strategist -> Research -> WalkingVideoWriter.
+
+    Output lands in walking_video_scripts table with status=draft. Poll via
+    GET /start-walking-video/{run_id}/status. When the run completes, the
+    response will include walking_video_script_id pointing at the draft row.
+    """
+    from tce.models.creator_profile import CreatorProfile as CreatorProfileModel
+    from tce.models.walking_video_script import WalkingVideoScript
+
+    run_id = str(uuid.uuid4())
+    duration_target_s = max(45, min(180, int(request.duration_target_seconds or 90)))
+
+    # Resolve optional creator inspiration (e.g. TJ Robertson) for the writer prompt.
+    creator_profile_ctx: dict[str, Any] | None = None
+    creator_profile_id: uuid.UUID | None = None
+    if request.creator_inspiration_id:
+        try:
+            cid = uuid.UUID(request.creator_inspiration_id)
+        except ValueError:
+            cid = None
+        if cid:
+            from tce.db.session import async_session as _async_session
+            async with _async_session() as db:
+                creator = await db.get(CreatorProfileModel, cid)
+                if creator:
+                    creator_profile_id = creator.id
+                    creator_profile_ctx = {
+                        "creator_name": creator.creator_name,
+                        "style_notes": creator.style_notes or "",
+                        "top_patterns": list(creator.top_patterns or []),
+                    }
+
+    context: dict[str, Any] = {
+        "topic": request.topic,
+        "niche": request.niche,
+        "duration_target_seconds": duration_target_s,
+        "_source": "walking_video",
+    }
+    if request.notes:
+        context["operator_overrides"] = {"notes": request.notes}
+    if creator_profile_ctx:
+        context["creator_profile"] = creator_profile_ctx
+
+    _start_walking_video_runs[run_id] = {
+        "run_id": run_id,
+        "status": "running",
+        "phase": "starting",
+        "phase_detail": "Initializing walking-video generation...",
+        "pipeline_run_id": None,
+        "walking_video_script_id": None,
+        "step_status": {},
+        "error": None,
+        "topic": request.topic[:200],
+        "duration_target_seconds": duration_target_s,
+        "creator_inspiration": creator_profile_ctx.get("creator_name") if creator_profile_ctx else None,
+    }
+    await _persist_walking_video_status(run_id, _start_walking_video_runs[run_id])
+
+    async def _run_walking_video() -> None:
+        from tce.db.session import async_session
+        status = _start_walking_video_runs[run_id]
+
+        async def _save() -> None:
+            await _persist_walking_video_status(run_id, status)
+
+        try:
+            status["phase"] = "running"
+            status["phase_detail"] = "Running walking_video pipeline..."
+            await _save()
+
+            pipeline_run_id = uuid.uuid4()
+            async with async_session() as pipe_db:
+                run_record = PipelineRun(
+                    run_id=pipeline_run_id,
+                    workflow="walking_video",
+                    status="running",
+                    started_at=datetime.utcnow(),
+                )
+                pipe_db.add(run_record)
+                await pipe_db.commit()
+                record_id = run_record.id
+
+                steps = WORKFLOWS["walking_video"]
+                orchestrator = PipelineOrchestrator(
+                    steps=steps, db=pipe_db, settings=settings, run_id=pipeline_run_id,
+                )
+                _active_runs[str(pipeline_run_id)] = orchestrator
+                status["pipeline_run_id"] = str(pipeline_run_id)
+                await _save()
+
+                result = await orchestrator.run(context)
+
+            # Persist the script to walking_video_scripts
+            script_payload = (result.get("context") or {}).get("walking_video_script")
+            if not script_payload and isinstance(result, dict):
+                # Some orchestrators return context at the top level
+                script_payload = result.get("walking_video_script")
+
+            script_id: uuid.UUID | None = None
+            if script_payload:
+                story_brief = (result.get("context") or {}).get("story_brief") or {}
+                async with async_session() as save_db:
+                    script_row = WalkingVideoScript(
+                        title=script_payload.get("title") or request.topic[:200],
+                        hook=script_payload.get("hook"),
+                        hook_formula=(script_payload.get("hook_formula") or None),
+                        full_script=script_payload.get("full_script"),
+                        shot_notes=script_payload.get("shot_notes") or {},
+                        cutsense_prompt=script_payload.get("cutsense_prompt"),
+                        word_count=script_payload.get("word_count"),
+                        estimated_duration_seconds=script_payload.get("estimated_duration_seconds"),
+                        duration_target_seconds=duration_target_s,
+                        topic=request.topic,
+                        thesis=story_brief.get("thesis"),
+                        target_audience=story_brief.get("audience"),
+                        niche=request.niche,
+                        creator_profile_id=creator_profile_id,
+                        seo_description=script_payload.get("seo_description"),
+                        tags=script_payload.get("tags") or [],
+                        repurpose=script_payload.get("repurpose") or {},
+                        status="draft",
+                        pipeline_run_id=pipeline_run_id,
+                    )
+                    save_db.add(script_row)
+                    await save_db.commit()
+                    script_id = script_row.id
+                status["walking_video_script_id"] = str(script_id)
+
+            # Bookkeeping on PipelineRun
+            async with async_session() as bk_db:
+                run_record = await bk_db.get(PipelineRun, record_id)
+                if run_record:
+                    has_failures = any(
+                        v == "failed" for v in result.get("step_status", {}).values()
+                    )
+                    run_record.status = "failed" if has_failures else "completed"
+                    run_record.completed_at = datetime.utcnow()
+                    run_record.step_results = result.get("step_status", {})
+                    run_record.step_errors = result.get("step_errors", {})
+                    if has_failures:
+                        errors = result.get("step_errors", {})
+                        run_record.error_message = "; ".join(
+                            f"{k}: {v}" for k, v in errors.items()
+                        )
+                    await bk_db.commit()
+
+            _active_runs.pop(str(pipeline_run_id), None)
+            status["phase"] = "completed" if script_id else "failed"
+            status["phase_detail"] = (
+                "Walking-video script ready" if script_id else "Pipeline finished but no script was produced"
+            )
+            status["status"] = "completed" if script_id else "failed"
+            status["step_status"] = result.get("step_status", {})
+            await _save()
+
+        except Exception as e:
+            logger.exception("start_walking_video.error", run_id=run_id)
+            status["phase"] = "failed"
+            status["error"] = str(e)
+            status["status"] = "failed"
+            await _save()
+
+    asyncio.create_task(_run_walking_video())
+
+    return {
+        "run_id": run_id,
+        "status": "started",
+        "status_url": f"/api/v1/pipeline/start-walking-video/{run_id}/status",
+        "topic": request.topic[:200],
+        "duration_target_seconds": duration_target_s,
+        "creator_inspiration": creator_profile_ctx.get("creator_name") if creator_profile_ctx else None,
+    }
+
+
+@router.get("/start-walking-video/{run_id}/status")
+async def get_start_walking_video_status(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Poll status of a walking-video run. Mirrors start-from-topic polling."""
+    if run_id in _start_walking_video_runs:
+        status = _start_walking_video_runs[run_id]
+        pipe_id = status.get("pipeline_run_id")
+        if pipe_id and pipe_id in _active_runs:
+            live = _active_runs[pipe_id].get_status()
+            status["step_status"] = live.get("step_status", status.get("step_status", {}))
+            status["step_logs"] = live.get("step_logs", {})
+            for sname, sval in live.get("step_status", {}).items():
+                if sval == "running":
+                    status["phase_detail"] = f"Running {sname}..."
+                    break
+        return status
+
+    db_status = await _load_polish_status(run_id, db)
+    if db_status:
+        return db_status
+    raise HTTPException(status_code=404, detail="Walking-video run not found")
+
+
+# ---------------------------------------------------------------------------
 # Inspiration selectors — list creators and top posts for UI combo/selector
 # ---------------------------------------------------------------------------
 
@@ -1327,6 +1552,15 @@ class StartFromTopicRequest(BaseModel):
     inspire_by_post_id: str | None = None  # Specific post example UUID
     cta_keyword: str | None = None
     language: str = "english"
+    notes: str | None = None
+
+
+class StartWalkingVideoRequest(BaseModel):
+    """Generate a walking-monologue video script (60-120s, phone-held, vertical)."""
+    topic: str
+    niche: str = "general"
+    duration_target_seconds: int = 90  # Clamped to [45, 180] in the handler
+    creator_inspiration_id: str | None = None  # CreatorProfile UUID (e.g. TJ Robertson)
     notes: str | None = None
 
 

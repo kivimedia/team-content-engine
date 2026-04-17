@@ -333,6 +333,7 @@ img{background:var(--card);border-radius:4px}
       <div class="sidebar-group">
         <div class="sidebar-group-label">Create</div>
         <button class="sidebar-item" data-tab="start"><span class="icon">&#128640;</span><span class="label">Start from Something</span></button>
+        <button class="sidebar-item" data-tab="video-studio"><span class="icon">&#127916;</span><span class="label">Video Studio</span></button>
         <button class="sidebar-item" data-tab="generate"><span class="icon">&#9889;</span><span class="label">Generate</span></button>
         <button class="sidebar-item" data-tab="packages"><span class="icon">&#128230;</span><span class="label">Packages</span></button>
         <button class="sidebar-item" data-tab="templates"><span class="icon">&#128196;</span><span class="label">Templates</span></button>
@@ -434,7 +435,7 @@ const AGENT_LABELS = {
 
 // Tab labels for header
 const TAB_LABELS = {
-  week: 'Week Planner', builder: 'Week Builder', guides: 'Guides', start: 'Start from Something', topic: 'Start from Something', repo: 'Start from Something', generate: 'Generate', packages: 'Packages',
+  week: 'Week Planner', builder: 'Week Builder', guides: 'Guides', start: 'Start from Something', topic: 'Start from Something', repo: 'Start from Something', 'video-studio': 'Video Studio', generate: 'Generate', packages: 'Packages',
   corpus: 'Corpus', voice: 'Voice Profile', creators: 'Creators',
   agents: 'Agents', costs: 'Costs', analytics: 'Analytics',
   templates: 'Templates', prompts: 'Prompts', settings: 'Settings',
@@ -2091,6 +2092,396 @@ async function runWeeklyPlanning() {
 let topicRunId = null;
 let topicPollInterval = null;
 let topicStartTime = null;
+
+// ===========================================================================
+// Video Studio tab - unified entry for Walking / Talking-head / Library.
+// ===========================================================================
+let walkingVideoRunId = null;
+let walkingVideoStartTime = 0;
+let walkingVideoPollInterval = null;
+
+async function renderVideoStudio() {
+  const app = document.getElementById('app');
+  if (!app) return;
+  let sub = localStorage.getItem('tce_video_studio_subtab');
+  if (!sub) sub = currentTab === 'video-lead' ? 'talking_head' : 'walking';
+  const pills = [
+    { id: 'walking', label: 'Walking (60-120s phone-held)' },
+    { id: 'talking_head', label: 'Talking-head (5-7 min teleprompter)' },
+    { id: 'library', label: 'Library' },
+  ].map(p => {
+    const a = p.id === sub;
+    return '<button onclick="switchVideoStudioSubtab(&quot;' + p.id + '&quot;)" style="padding:10px 22px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:' + (a ? 'var(--accent)' : 'var(--card)') + ';color:' + (a ? '#fff' : 'var(--dim)') + ';transition:all 0.15s">' + p.label + '</button>';
+  }).join('');
+  app.innerHTML = `
+    <div class="section" style="padding-bottom:0">
+      <h2 style="margin-bottom:4px">Video Studio</h2>
+      <p style="font-size:13px;color:var(--dim);margin:0 0 14px 0">Generate video scripts, browse the library, and copy CutSense CLI handoffs.</p>
+      <div style="display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">${pills}</div>
+    </div>
+    <div id="video-studio-content"></div>`;
+  await _renderVideoStudioSubContent(sub);
+}
+
+async function switchVideoStudioSubtab(sub) {
+  localStorage.setItem('tce_video_studio_subtab', sub);
+  currentTab = 'video-studio';
+  document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === 'video-studio'));
+  await renderVideoStudio();
+}
+
+async function _renderVideoStudioSubContent(sub) {
+  const c = document.getElementById('video-studio-content');
+  if (!c) return;
+  if (sub === 'walking') await _renderWalkingVideoFormInto(c);
+  else if (sub === 'talking_head') await renderVideoLead(c);
+  else await _renderVideoLibraryInto(c);
+}
+
+async function _renderWalkingVideoFormInto(container) {
+  let creators = [];
+  try { creators = await api('/pipeline/inspiration/creators'); } catch {}
+  const creatorOpts = creators.map(c => `<option value="${c.id}">${esc(c.creator_name)} (${c.post_count} posts)</option>`).join('');
+  container.innerHTML = `
+    <div class="section">
+      <h2>Walking Monologue Script</h2>
+      <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Short (60-180s) phone-held vertical scripts in the TJ Robertson style. Hook up front, one concrete stat, stance over teaching.</p>
+      <div class="card" style="margin-bottom:16px">
+        <div style="margin-bottom:12px">
+          <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Topic / angle *</label>
+          <textarea id="wv-topic" rows="3" style="width:100%;resize:vertical;min-height:60px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark" placeholder="e.g. OpenAI just announced a new Operator Agent that can book meetings. Why this changes cold outbound."></textarea>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+          <div>
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Target duration</label>
+            <select id="wv-duration" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+              <option value="60">60 seconds</option>
+              <option value="90" selected>90 seconds</option>
+              <option value="120">120 seconds</option>
+              <option value="150">150 seconds</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Niche</label>
+            <input type="text" id="wv-niche" value="general" style="width:180px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+          </div>
+          <div style="flex:1;min-width:240px">
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Style anchor (creator)</label>
+            <select id="wv-creator" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+              <option value="">-- No style anchor --</option>
+              ${creatorOpts}
+            </select>
+          </div>
+        </div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Notes (optional)</label>
+          <input type="text" id="wv-notes" placeholder="Any extra direction for the writer..." style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="btn btn-primary" id="wv-run-btn" onclick="runWalkingVideo()">Generate Script</button>
+          <span id="wv-elapsed" style="font-size:12px;color:var(--dim)"></span>
+        </div>
+      </div>
+      <div id="wv-status"></div>
+      <div id="wv-result" style="margin-top:16px"></div>
+    </div>`;
+  const savedRun = localStorage.getItem('tce_walking_video_run');
+  if (savedRun) {
+    walkingVideoRunId = savedRun;
+    walkingVideoStartTime = parseInt(localStorage.getItem('tce_walking_video_start') || Date.now());
+    pollWalkingVideoStatus();
+    if (!walkingVideoPollInterval) walkingVideoPollInterval = setInterval(pollWalkingVideoStatus, 3000);
+  }
+}
+
+async function runWalkingVideo() {
+  const topic = (document.getElementById('wv-topic')?.value || '').trim();
+  if (!topic) { toast('Describe your topic first', false); return; }
+  const duration = parseInt(document.getElementById('wv-duration')?.value || '90');
+  const niche = (document.getElementById('wv-niche')?.value || 'general').trim() || 'general';
+  const creatorId = document.getElementById('wv-creator')?.value || null;
+  const notes = (document.getElementById('wv-notes')?.value || '').trim() || null;
+  const body = { topic, niche, duration_target_seconds: duration };
+  if (creatorId) body.creator_inspiration_id = creatorId;
+  if (notes) body.notes = notes;
+  const btn = document.getElementById('wv-run-btn');
+  btn.disabled = true; btn.textContent = 'Starting...';
+  walkingVideoStartTime = Date.now();
+  localStorage.setItem('tce_walking_video_start', walkingVideoStartTime);
+  try {
+    const r = await api('/pipeline/start-walking-video', { method: 'POST', body: JSON.stringify(body) });
+    walkingVideoRunId = r.run_id;
+    localStorage.setItem('tce_walking_video_run', r.run_id);
+    toast('Walking-video pipeline started: ' + r.run_id.substring(0, 8));
+    pollWalkingVideoStatus();
+    if (walkingVideoPollInterval) clearInterval(walkingVideoPollInterval);
+    walkingVideoPollInterval = setInterval(pollWalkingVideoStatus, 3000);
+    btn.textContent = 'Running...';
+  } catch(e) {
+    toast('Failed: ' + e.message, false);
+    btn.disabled = false; btn.textContent = 'Generate Script';
+  }
+}
+
+async function pollWalkingVideoStatus() {
+  if (!walkingVideoRunId) return;
+  try {
+    const d = await api('/pipeline/start-walking-video/' + walkingVideoRunId + '/status');
+    const statusEl = document.getElementById('wv-status');
+    if (!statusEl) return;
+    const elapsed = Math.round((Date.now() - walkingVideoStartTime) / 1000);
+    const phase = d.phase || d.status || 'running';
+    const detail = d.phase_detail || '';
+    const done = phase === 'completed' || phase === 'failed';
+    while (statusEl.firstChild) statusEl.removeChild(statusEl.firstChild);
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.cssText = 'padding:14px 16px;border-left:4px solid ' + (phase === 'failed' ? 'var(--red)' : phase === 'completed' ? 'var(--green)' : 'var(--accent)');
+    const h = document.createElement('div');
+    h.style.cssText = 'font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap';
+    const hL = document.createElement('span'); hL.textContent = 'Phase: ' + phase;
+    const hR = document.createElement('span');
+    hR.style.cssText = 'font-weight:400;color:var(--dim);font-size:12px';
+    hR.textContent = elapsed + 's elapsed' + (d.pipeline_run_id ? ' | run ' + String(d.pipeline_run_id).slice(0,8) : '');
+    h.appendChild(hL); h.appendChild(hR); card.appendChild(h);
+    if (detail) {
+      const pd = document.createElement('div');
+      pd.style.cssText = 'font-size:13px;color:var(--dim)';
+      pd.textContent = detail;
+      card.appendChild(pd);
+    }
+    if (d.error) {
+      const err = document.createElement('pre');
+      err.style.cssText = 'margin-top:8px;white-space:pre-wrap;font-size:12px;color:var(--red);background:var(--bg);padding:8px;border-radius:4px;max-height:200px;overflow:auto';
+      err.textContent = String(d.error);
+      card.appendChild(err);
+    }
+    statusEl.appendChild(card);
+    if (done) {
+      if (walkingVideoPollInterval) { clearInterval(walkingVideoPollInterval); walkingVideoPollInterval = null; }
+      localStorage.removeItem('tce_walking_video_run');
+      localStorage.removeItem('tce_walking_video_start');
+      const btn = document.getElementById('wv-run-btn');
+      if (btn) { btn.disabled = false; btn.textContent = 'Generate Script'; }
+      if (phase === 'completed' && d.walking_video_script_id) {
+        await _showWalkingVideoResult(d.walking_video_script_id);
+      }
+    }
+  } catch(e) {
+    if (window._tceShowErr) window._tceShowErr((e && e.message) || String(e), 'pollWalkingVideoStatus');
+  }
+}
+
+async function _showWalkingVideoResult(scriptId) {
+  const result = document.getElementById('wv-result');
+  if (!result) return;
+  try {
+    const s = await api('/video-scripts/walking/' + scriptId);
+    _renderScriptDetailInto(result, s, { inline: true });
+  } catch(e) {
+    if (window._tceShowErr) window._tceShowErr((e && e.message) || String(e), '_showWalkingVideoResult');
+  }
+}
+
+async function _renderVideoLibraryInto(container) {
+  container.innerHTML = '<div class="section"><div class="empty" style="padding:24px;text-align:center">Loading scripts...</div></div>';
+  let scripts = [];
+  try { scripts = await api('/video-scripts?limit=100'); } catch(e) { scripts = []; }
+  while (container.firstChild) container.removeChild(container.firstChild);
+  const section = document.createElement('div');
+  section.className = 'section';
+  const h = document.createElement('h2');
+  h.textContent = 'Library (' + scripts.length + ')';
+  section.appendChild(h);
+  if (!scripts.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.style.cssText = 'padding:24px;text-align:center';
+    empty.textContent = 'No video scripts yet. Generate one from the Walking or Talking-head tabs.';
+    section.appendChild(empty);
+    container.appendChild(section);
+    return;
+  }
+  const grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px';
+  for (const s of scripts) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.cssText = 'padding:14px 16px;cursor:pointer;border-left:4px solid ' + (s.kind === 'walking' ? 'var(--accent)' : 'var(--accent2,var(--accent))');
+    card.onclick = () => _openScriptDetail(s.kind, s.id);
+    const statusColor = s.status === 'approved' ? 'var(--green)' : s.status === 'published' ? 'var(--accent2,var(--accent))' : s.status === 'rejected' ? 'var(--red)' : 'var(--dim)';
+    const tagKind = document.createElement('span');
+    tagKind.textContent = s.kind === 'walking' ? 'Walking' : 'Talking-head';
+    tagKind.style.cssText = 'font-size:10px;text-transform:uppercase;letter-spacing:1px;font-weight:600;color:var(--accent);margin-right:8px';
+    const tagStatus = document.createElement('span');
+    tagStatus.textContent = s.status;
+    tagStatus.style.cssText = 'font-size:10px;text-transform:uppercase;letter-spacing:1px;font-weight:600;color:' + statusColor;
+    const tagRow = document.createElement('div');
+    tagRow.style.cssText = 'margin-bottom:6px';
+    tagRow.appendChild(tagKind); tagRow.appendChild(tagStatus);
+    card.appendChild(tagRow);
+    const title = document.createElement('div');
+    title.style.cssText = 'font-weight:600;font-size:14px;margin-bottom:4px';
+    title.textContent = s.title || '(Untitled)';
+    card.appendChild(title);
+    if (s.hook) {
+      const hook = document.createElement('div');
+      hook.style.cssText = 'font-size:12px;color:var(--dim);margin-bottom:6px;line-height:1.4';
+      hook.textContent = s.hook.length > 140 ? s.hook.slice(0, 140) + '...' : s.hook;
+      card.appendChild(hook);
+    }
+    const meta = document.createElement('div');
+    meta.style.cssText = 'font-size:11px;color:var(--dim);display:flex;gap:10px;flex-wrap:wrap';
+    const dur = s.estimated_duration_seconds ? Math.round(s.estimated_duration_seconds) + 's' : '?s';
+    const wc = s.word_count ? s.word_count + ' words' : '';
+    const d = s.created_at ? new Date(s.created_at).toLocaleDateString() : '';
+    meta.textContent = [dur, wc, s.niche, d].filter(Boolean).join(' | ');
+    card.appendChild(meta);
+    grid.appendChild(card);
+  }
+  section.appendChild(grid);
+  container.appendChild(section);
+}
+
+async function _openScriptDetail(kind, id) {
+  const container = document.getElementById('video-studio-content');
+  if (!container) return;
+  container.innerHTML = '<div class="section"><div class="empty" style="padding:24px;text-align:center">Loading...</div></div>';
+  try {
+    const script = await api('/video-scripts/' + kind + '/' + id);
+    while (container.firstChild) container.removeChild(container.firstChild);
+    const section = document.createElement('div');
+    section.className = 'section';
+    const back = document.createElement('button');
+    back.className = 'btn btn-dim';
+    back.textContent = '<- Back to Library';
+    back.style.marginBottom = '12px';
+    back.onclick = () => switchVideoStudioSubtab('library');
+    section.appendChild(back);
+    _renderScriptDetailInto(section, script, { inline: false, kind });
+    container.appendChild(section);
+  } catch(e) {
+    if (window._tceShowErr) window._tceShowErr((e && e.message) || String(e), '_openScriptDetail');
+  }
+}
+
+function _renderScriptDetailInto(container, script, opts) {
+  const kind = (opts && opts.kind) || script.kind || 'walking';
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:12px';
+  const headLeft = document.createElement('div');
+  const title = document.createElement('h2');
+  title.textContent = script.title || '(Untitled)';
+  title.style.cssText = 'margin:0 0 4px 0';
+  headLeft.appendChild(title);
+  const meta = document.createElement('div');
+  meta.style.cssText = 'font-size:12px;color:var(--dim)';
+  const dur = script.estimated_duration_seconds ? Math.round(script.estimated_duration_seconds) + 's' : '?s';
+  meta.textContent = [dur, (script.word_count ? script.word_count + ' words' : ''), script.niche, script.hook_formula ? 'formula ' + script.hook_formula : ''].filter(Boolean).join(' | ');
+  headLeft.appendChild(meta);
+  head.appendChild(headLeft);
+  const statusRow = document.createElement('div');
+  statusRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+  ['approved', 'recorded', 'published', 'rejected'].forEach(st => {
+    const b = document.createElement('button');
+    b.className = 'btn btn-dim';
+    b.style.fontSize = '11px';
+    b.textContent = 'Mark ' + st;
+    b.onclick = async () => {
+      try {
+        await api('/video-scripts/' + kind + '/' + script.id, { method: 'PATCH', body: JSON.stringify({ status: st }) });
+        toast('Status: ' + st);
+      } catch(e) { toast('Failed: ' + e.message, false); }
+    };
+    statusRow.appendChild(b);
+  });
+  head.appendChild(statusRow);
+  container.appendChild(head);
+
+  const grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:start';
+  // LEFT: teleprompter
+  const tele = document.createElement('div');
+  tele.className = 'card';
+  tele.style.cssText = 'padding:20px 24px;font-size:18px;line-height:1.7;color:var(--text);white-space:pre-wrap;max-height:600px;overflow:auto';
+  tele.textContent = script.full_script || '(empty script)';
+  grid.appendChild(tele);
+  // RIGHT: shot notes + cutsense
+  const side = document.createElement('div');
+  side.style.cssText = 'display:flex;flex-direction:column;gap:12px';
+  if (kind === 'walking' && script.shot_notes) {
+    const sn = document.createElement('div');
+    sn.className = 'card';
+    sn.style.cssText = 'padding:12px 14px';
+    const snH = document.createElement('div');
+    snH.style.cssText = 'font-weight:600;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px';
+    snH.textContent = 'Shot notes';
+    sn.appendChild(snH);
+    const sl = document.createElement('ul');
+    sl.style.cssText = 'margin:0;padding-left:18px;font-size:13px;line-height:1.6';
+    for (const [k, v] of Object.entries(script.shot_notes || {})) {
+      const li = document.createElement('li');
+      li.textContent = k + ': ' + v;
+      sl.appendChild(li);
+    }
+    sn.appendChild(sl);
+    side.appendChild(sn);
+  }
+  if (kind === 'walking' && script.cutsense_prompt) {
+    const cs = document.createElement('div');
+    cs.className = 'card';
+    cs.style.cssText = 'padding:12px 14px';
+    const csH = document.createElement('div');
+    csH.style.cssText = 'font-weight:600;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px';
+    csH.textContent = 'CutSense handoff';
+    cs.appendChild(csH);
+    const cliText = 'cutsense run "$VIDEO_PATH" --prompt ' + JSON.stringify(script.cutsense_prompt) + ' --captions jumbo --duration ' + (script.estimated_duration_seconds || script.duration_target_seconds || 90);
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'background:var(--bg);padding:10px;border-radius:4px;font-size:11px;overflow:auto;max-height:140px;margin:0 0 8px 0;white-space:pre-wrap;word-break:break-all';
+    pre.textContent = cliText;
+    cs.appendChild(pre);
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'btn btn-primary';
+    copyBtn.style.cssText = 'font-size:12px';
+    copyBtn.textContent = 'Copy CutSense CLI';
+    copyBtn.onclick = async () => {
+      try { await navigator.clipboard.writeText(cliText); toast('Copied. Replace $VIDEO_PATH with your recorded file.'); } catch(e) { toast('Copy failed', false); }
+    };
+    cs.appendChild(copyBtn);
+    const help = document.createElement('div');
+    help.style.cssText = 'font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5';
+    help.textContent = 'After you record the walking video on your phone, airdrop or scp it to your laptop, replace $VIDEO_PATH with the absolute file path, and run.';
+    cs.appendChild(help);
+    side.appendChild(cs);
+  }
+  if (script.repurpose && (script.repurpose.fb_caption_draft || script.repurpose.li_caption_draft)) {
+    const rp = document.createElement('div');
+    rp.className = 'card';
+    rp.style.cssText = 'padding:12px 14px';
+    const rpH = document.createElement('div');
+    rpH.style.cssText = 'font-weight:600;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px';
+    rpH.textContent = 'Repurpose drafts';
+    rp.appendChild(rpH);
+    if (script.repurpose.fb_caption_draft) {
+      const fb = document.createElement('div');
+      fb.style.cssText = 'font-size:12px;margin-bottom:8px';
+      fb.textContent = 'FB: ' + script.repurpose.fb_caption_draft;
+      rp.appendChild(fb);
+    }
+    if (script.repurpose.li_caption_draft) {
+      const li = document.createElement('div');
+      li.style.cssText = 'font-size:12px';
+      li.textContent = 'LI: ' + script.repurpose.li_caption_draft;
+      rp.appendChild(li);
+    }
+    side.appendChild(rp);
+  }
+  grid.appendChild(side);
+  container.appendChild(grid);
+}
+// ===========================================================================
+// End Video Studio tab
+// ===========================================================================
 
 // Unified Start tab - one entry point for Topic / Repo / Copy.
 // Sub-tabs persist via localStorage + infer from legacy currentTab aliases
@@ -7031,8 +7422,9 @@ async function generateProductDemo(btn) {
 let activeVideoLeadRun = null;
 let videoLeadPollInterval = null;
 
-async function renderVideoLead() {
-  const app = document.getElementById('app');
+async function renderVideoLead(container) {
+  const app = container || document.getElementById('app');
+  if (!app) return;
   // Note: innerHTML usage matches existing dashboard patterns (internal admin tool)
   app.innerHTML = '<div class="section">'
     + '<h2>Video Lead Script Generator</h2>'
@@ -7512,7 +7904,7 @@ function _renderShowFailure(tab, err) {
 }
 
 function render() {
-  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, start: renderStartFromSomething, topic: renderStartFromSomething, repo: renderStartFromSomething, copy: renderStartFromSomething, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, 'video-lead': renderVideoLead, brands: renderBrands };
+  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, start: renderStartFromSomething, topic: renderStartFromSomething, repo: renderStartFromSomething, copy: renderStartFromSomething, 'video-studio': renderVideoStudio, 'video-lead': renderVideoStudio, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, brands: renderBrands };
   updateBreadcrumb(null);
   const tab = currentTab;
   const fn = map[tab] || renderGenerate;

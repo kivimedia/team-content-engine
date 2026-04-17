@@ -36,6 +36,7 @@ from tce.api.routers import (
     repos,
     stack,
     trends,
+    video_scripts,
     videos,
 )
 from tce.api.routers import (
@@ -140,6 +141,7 @@ def create_app() -> FastAPI:
     app.include_router(relearning.router, prefix=prefix)
     app.include_router(repos.router, prefix=prefix)
     app.include_router(videos.router, prefix=prefix)
+    app.include_router(video_scripts.router, prefix=prefix)
     app.include_router(narration.router, prefix=prefix)
     app.include_router(monthly.router, prefix=prefix)
     app.include_router(stack.router, prefix=prefix)

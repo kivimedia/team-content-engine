@@ -338,6 +338,19 @@ VIDEO_LEAD_WORKFLOW = [
     ),
 ]
 
+# Walking-monologue video script (60-120s phone-held vertical, TJ Robertson style).
+# Same upstream chain as video_lead; swaps the writer for walking_video_writer.
+WALKING_VIDEO_WORKFLOW = [
+    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=180),
+    PipelineStep(agent_name="story_strategist", depends_on=["trend_scout"], timeout_seconds=120),
+    PipelineStep(agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=120),
+    PipelineStep(
+        agent_name="walking_video_writer",
+        depends_on=["story_strategist", "research_agent"],
+        timeout_seconds=120,
+    ),
+]
+
 # Workflow registry
 WORKFLOWS: dict[str, list[PipelineStep]] = {
     "daily_content": DAILY_CONTENT_WORKFLOW,
@@ -353,6 +366,7 @@ WORKFLOWS: dict[str, list[PipelineStep]] = {
     "video_generation": VIDEO_GENERATION_WORKFLOW,
     "product_demo": PRODUCT_DEMO_WORKFLOW,
     "video_lead": VIDEO_LEAD_WORKFLOW,
+    "walking_video": WALKING_VIDEO_WORKFLOW,
     "start_from_repo": START_FROM_REPO_WORKFLOW,
     "weekly_repo_spotlight": WEEKLY_REPO_SPOTLIGHT_WORKFLOW,
 }

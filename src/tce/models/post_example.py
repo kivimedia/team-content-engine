@@ -59,6 +59,11 @@ class PostExample(Base):
     # Template linkage (set by enrichment pipeline)
     template_family: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # Format (from InstaIQ import + future corpus ingests)
+    # walking_monologue | talking_head | photo_post | carousel | reel_text
+    # Drives writer-agent style selection (see walking_video_writer).
+    format_label: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     # Review
     manual_review_status: Mapped[str] = mapped_column(String(20), default="pending")
     parser_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
