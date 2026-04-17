@@ -2752,7 +2752,19 @@ function _renderPkgFromCache() {
   const _opt = (v, l, cur) => '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + l + '</option>';
   tabHtml += '<select id="pkg-status-filter" onchange="filterPkgStatus()" style="' + _selStyle + '">' + _opt('', 'All statuses', pkgStatusFilter) + _opt('draft', 'Draft', pkgStatusFilter) + _opt('approved', 'Approved', pkgStatusFilter) + _opt('rejected', 'Rejected', pkgStatusFilter) + '</select>';
   tabHtml += '<select id="pkg-qa-filter" onchange="filterPkgStatus()" style="' + _selStyle + '">' + _opt('', 'Any QA', pkgQaFilter) + _opt('pass', 'QA Pass (7+)', pkgQaFilter) + _opt('conditional', 'Conditional (5-7)', pkgQaFilter) + _opt('fail', 'QA Fail (&lt;5)', pkgQaFilter) + '</select>';
-  tabHtml += '<select id="pkg-source-filter" onchange="filterPkgStatus()" style="' + _selStyle + '">' + _opt('', 'Any source', pkgSourceFilter) + _opt('__something__', 'Something (Topic/Repo/Copy)', pkgSourceFilter) + _opt('topic', 'Started from Topic', pkgSourceFilter) + _opt('repo', 'From Repo', pkgSourceFilter) + _opt('copy', 'Copy', pkgSourceFilter) + _opt('pipeline', 'Pipeline', pkgSourceFilter) + _opt('manual', 'Manual', pkgSourceFilter) + '</select>';
+  tabHtml += '<select id="pkg-source-filter" onchange="filterPkgStatus()" style="' + _selStyle + '">'
+    + _opt('', 'Any origin', pkgSourceFilter)
+    + '<optgroup label="Start from Something">'
+    + _opt('__something__', 'Any Something', pkgSourceFilter)
+    + _opt('topic', 'Topic', pkgSourceFilter)
+    + _opt('repo', 'Repo', pkgSourceFilter)
+    + _opt('copy', 'Copy', pkgSourceFilter)
+    + '</optgroup>'
+    + '<optgroup label="Other origins">'
+    + _opt('pipeline', 'Pipeline', pkgSourceFilter)
+    + _opt('manual', 'Manual', pkgSourceFilter)
+    + '</optgroup>'
+    + '</select>';
   tabHtml += '</div>';
   document.getElementById('pkg-day-tabs').innerHTML = tabHtml;
 
