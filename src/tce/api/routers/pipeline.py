@@ -564,6 +564,25 @@ async def generate_week(
 
             for i, day_plan in enumerate(days):
                 day_num = day_plan.get("day_of_week", i)
+                # M5 safety: walking_video days go through /pipeline/start-walking-video,
+                # not the daily_from_plan text pipeline. Skip them here so curl or
+                # other non-UI callers don't accidentally generate a text post on a
+                # day the planner marked as walking_video.
+                _day_src = day_plan.get("story_brief") or day_plan
+                _day_fmt = (day_plan.get("content_format")
+                            or _day_src.get("content_format"))
+                if _day_fmt == "walking_video":
+                    status["phase_detail"] = (
+                        f"Skipping day {i + 1}/5 (walking_video - use Video Studio)"
+                    )
+                    status["current_day"] = i
+                    await _save()
+                    logger.info(
+                        "generate_week.skip_video_day",
+                        week_id=week_id,
+                        day_num=day_num,
+                    )
+                    continue
                 status["phase_detail"] = f"Generating day {i + 1}/5 (day_of_week={day_num})..."
                 status["current_day"] = i
                 await _save()
@@ -605,6 +624,12 @@ async def generate_week(
                         "guide_title": gift_theme,
                         "connection_to_gift": day_plan.get("connection_to_gift", ""),
                         "founder_voice": _founder_voice,
+                        # Label the resulting PostPackage with where it came from.
+                        # Without this, generate-from-plan packages default to
+                        # 'pipeline' and look indistinguishable from direct
+                        # /pipeline/run calls. Now they show source='weekly_plan'
+                        # in the Packages tab filter.
+                        "_source": "weekly_plan",
                     }
 
                     # Resolve template name to full formulas for writers
@@ -1249,12 +1274,23 @@ async def start_walking_video(request: "StartWalkingVideoRequest") -> dict[str, 
     Output lands in walking_video_scripts table with status=draft. Poll via
     GET /start-walking-video/{run_id}/status. When the run completes, the
     response will include walking_video_script_id pointing at the draft row.
+
+    If calendar_entry_id is provided, the saved script's id is written back
+    to ContentCalendarEntry.walking_video_script_id so the Week Planner
+    card for that day flips from PLANNED to READY.
     """
+    from tce.models.content_calendar import ContentCalendarEntry
     from tce.models.creator_profile import CreatorProfile as CreatorProfileModel
     from tce.models.walking_video_script import WalkingVideoScript
 
     run_id = str(uuid.uuid4())
     duration_target_s = max(45, min(180, int(request.duration_target_seconds or 90)))
+    calendar_entry_uuid: uuid.UUID | None = None
+    if request.calendar_entry_id:
+        try:
+            calendar_entry_uuid = uuid.UUID(request.calendar_entry_id)
+        except ValueError:
+            calendar_entry_uuid = None
 
     # Resolve optional creator inspiration (e.g. TJ Robertson) for the writer prompt.
     creator_profile_ctx: dict[str, Any] | None = None
@@ -1370,6 +1406,15 @@ async def start_walking_video(request: "StartWalkingVideoRequest") -> dict[str, 
                     save_db.add(script_row)
                     await save_db.commit()
                     script_id = script_row.id
+
+                    # Link back to the calendar entry (if this run came from a
+                    # Week Planner video-day card) so the card status updates.
+                    if calendar_entry_uuid:
+                        entry = await save_db.get(ContentCalendarEntry, calendar_entry_uuid)
+                        if entry:
+                            entry.walking_video_script_id = script_id
+                            entry.status = "ready"
+                            await save_db.commit()
                 status["walking_video_script_id"] = str(script_id)
 
             # Bookkeeping on PipelineRun
@@ -1562,6 +1607,10 @@ class StartWalkingVideoRequest(BaseModel):
     duration_target_seconds: int = 90  # Clamped to [45, 180] in the handler
     creator_inspiration_id: str | None = None  # CreatorProfile UUID (e.g. TJ Robertson)
     notes: str | None = None
+    # When the run is triggered from a Week Planner video-day card, include
+    # the calendar entry id so the saved script links back to the calendar
+    # row and the card can flip from PLANNED to READY.
+    calendar_entry_id: str | None = None
 
 
 class PolishCopyRequest(BaseModel):

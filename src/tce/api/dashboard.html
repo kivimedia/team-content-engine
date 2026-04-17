@@ -737,7 +737,13 @@ async function renderWeek() {
           // Walking video days route to Video Studio (different backend pipeline).
           // We do NOT use post_packages for walking videos - they go to walking_video_scripts.
           const escTopic = esc(entry.topic || '');
-          html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="openVideoStudioForEntry(\'' + entry.id + '\', \'' + escTopic.replace(/\'/g, "\\'") + '\')">Open in Video Studio</button>';
+          const videoScriptId = entry.walking_video_script_id;
+          if (videoScriptId) {
+            html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="openWalkingScriptDetail(\'' + videoScriptId + '\')">View Script</button>';
+            html += '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="openVideoStudioForEntry(\'' + entry.id + '\', \'' + escTopic.replace(/\'/g, "\\'") + '\')">Regenerate</button>';
+          } else {
+            html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="openVideoStudioForEntry(\'' + entry.id + '\', \'' + escTopic.replace(/\'/g, "\\'") + '\')">Open in Video Studio</button>';
+          }
         } else if (hasPackage) {
           html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="viewPackage(\'' + entry.post_package_id + '\',' + i + ')">Package</button>';
           html += '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="runDayPipeline(' + i + ',\'' + (entry?.id || '') + '\')">Regenerate</button>';
@@ -2140,6 +2146,20 @@ let walkingVideoRunId = null;
 let walkingVideoStartTime = 0;
 let walkingVideoPollInterval = null;
 
+// Jump straight to the walking-video detail view for a given script id.
+// Used by the Week Planner calendar when the operator clicks "View Script"
+// on a video-day card that has already generated a draft.
+async function openWalkingScriptDetail(scriptId) {
+  try {
+    localStorage.setItem('tce_video_studio_subtab', 'library');
+  } catch (e) { /* ignore */ }
+  currentTab = 'video-studio';
+  document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === 'video-studio'));
+  // Render the shell first (Library pill active), then open the detail.
+  await renderVideoStudio();
+  await _openScriptDetail('walking', scriptId);
+}
+
 // Called from the Week Planner calendar when the operator clicks a video-day
 // card. Stashes the topic in localStorage so the Walking sub-form auto-fills
 // it on mount, then navigates to Video Studio.
@@ -2265,9 +2285,18 @@ async function runWalkingVideo() {
   const niche = (document.getElementById('wv-niche')?.value || 'general').trim() || 'general';
   const creatorId = document.getElementById('wv-creator')?.value || null;
   const notes = (document.getElementById('wv-notes')?.value || '').trim() || null;
+  // If this run was kicked off from a Week Planner video-day card, pass the
+  // calendar entry id so the backend links the script back to the calendar
+  // row (so the card flips PLANNED -> READY after generation).
+  let calendarEntryId = null;
+  try {
+    calendarEntryId = localStorage.getItem('tce_video_prefill_entry_id') || null;
+    if (calendarEntryId) localStorage.removeItem('tce_video_prefill_entry_id');
+  } catch (e) { /* ignore */ }
   const body = { topic, niche, duration_target_seconds: duration };
   if (creatorId) body.creator_inspiration_id = creatorId;
   if (notes) body.notes = notes;
+  if (calendarEntryId) body.calendar_entry_id = calendarEntryId;
   const btn = document.getElementById('wv-run-btn');
   btn.disabled = true; btn.textContent = 'Starting...';
   walkingVideoStartTime = Date.now();
@@ -3216,7 +3245,8 @@ function _renderPkgFromCache() {
     + _opt('copy', 'Copy', pkgSourceFilter)
     + '</optgroup>'
     + '<optgroup label="Other origins">'
-    + _opt('pipeline', 'Pipeline', pkgSourceFilter)
+    + _opt('weekly_plan', 'Weekly Plan (Generate from Plan)', pkgSourceFilter)
+    + _opt('pipeline', 'Pipeline (legacy)', pkgSourceFilter)
     + _opt('manual', 'Manual', pkgSourceFilter)
     + '</optgroup>'
     + '</select>';

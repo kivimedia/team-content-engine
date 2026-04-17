@@ -26,6 +26,11 @@ class ContentCalendarEntry(Base):
     weekly_guide_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("weekly_guides.id"), nullable=True
     )
+    # Set when a walking_video day's script has been generated via Video Studio.
+    # Allows the calendar card to show READY + "View Script" instead of PLANNED.
+    walking_video_script_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("walking_video_scripts.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Status: planned / generating / ready / approved / published / skipped
     status: Mapped[str] = mapped_column(String(20), default="planned")

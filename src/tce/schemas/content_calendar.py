@@ -25,6 +25,7 @@ class ContentCalendarRead(BaseModel):
     topic: str | None
     post_package_id: uuid.UUID | None
     weekly_guide_id: uuid.UUID | None
+    walking_video_script_id: uuid.UUID | None = None
     status: str
     operator_notes: str | None
     plan_context: dict | None = None
