@@ -4,7 +4,9 @@ from tce.orchestrator.step import PipelineStep
 
 # Full daily content workflow (PRD Section 15.3)
 DAILY_CONTENT_WORKFLOW = [
-    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=60),
+    # trend_scout runs 19 web searches then a Claude call with max_tokens=8192;
+    # 60s was too tight once the search fan-out grew. Match the weekly_planner workflow.
+    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=180),
     PipelineStep(agent_name="story_strategist", depends_on=["trend_scout"], timeout_seconds=120),
     PipelineStep(agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=120),
     PipelineStep(
@@ -201,6 +203,128 @@ PRODUCT_DEMO_WORKFLOW = [
     ),
 ]
 
+# Start From Repo - full package from a GitHub repo with angle (features/whole/fixes)
+# Parallels POLISH_FROM_COPY_WORKFLOW so the resulting PostPackage has ALL package features
+# (FB + LI + CTA + images + QA + optional video).
+START_FROM_REPO_WORKFLOW = [
+    PipelineStep(agent_name="repo_scout", depends_on=[], timeout_seconds=300),
+    PipelineStep(
+        agent_name="repo_storyteller",
+        depends_on=["repo_scout"],
+        timeout_seconds=180,
+    ),
+    PipelineStep(
+        agent_name="research_agent",
+        depends_on=["repo_storyteller"],
+        timeout_seconds=180,
+    ),
+    PipelineStep(
+        agent_name="facebook_writer",
+        depends_on=["repo_storyteller", "research_agent"],
+        timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="linkedin_writer",
+        depends_on=["repo_storyteller", "research_agent"],
+        timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="cta_agent",
+        depends_on=["repo_storyteller"],
+        timeout_seconds=60,
+    ),
+    PipelineStep(
+        agent_name="creative_director",
+        depends_on=["facebook_writer", "linkedin_writer"],
+        timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="proof_checker",
+        depends_on=["facebook_writer", "linkedin_writer"],
+        timeout_seconds=180,
+    ),
+    PipelineStep(
+        agent_name="qa_agent",
+        depends_on=[
+            "facebook_writer",
+            "linkedin_writer",
+            "cta_agent",
+            "creative_director",
+            "proof_checker",
+        ],
+        timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="script_agent",
+        depends_on=["qa_agent"],
+        timeout_seconds=120,
+        optional=True,
+    ),
+    PipelineStep(
+        agent_name="video_agent",
+        depends_on=["script_agent", "creative_director"],
+        timeout_seconds=600,
+        optional=True,
+    ),
+]
+
+# Weekly repo spotlight - scheduled job variant of start_from_repo + guide section.
+# The caller (scheduler) picks the repo and sets `tracked_repo_id` in context.
+WEEKLY_REPO_SPOTLIGHT_WORKFLOW = [
+    PipelineStep(agent_name="repo_scout", depends_on=[], timeout_seconds=300),
+    PipelineStep(
+        agent_name="repo_storyteller",
+        depends_on=["repo_scout"],
+        timeout_seconds=180,
+    ),
+    PipelineStep(
+        agent_name="research_agent",
+        depends_on=["repo_storyteller"],
+        timeout_seconds=180,
+    ),
+    PipelineStep(
+        agent_name="facebook_writer",
+        depends_on=["repo_storyteller", "research_agent"],
+        timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="linkedin_writer",
+        depends_on=["repo_storyteller", "research_agent"],
+        timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="cta_agent",
+        depends_on=["repo_storyteller"],
+        timeout_seconds=60,
+    ),
+    PipelineStep(
+        agent_name="creative_director",
+        depends_on=["facebook_writer", "linkedin_writer"],
+        timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="proof_checker",
+        depends_on=["facebook_writer", "linkedin_writer"],
+        timeout_seconds=180,
+    ),
+    PipelineStep(
+        agent_name="qa_agent",
+        depends_on=[
+            "facebook_writer",
+            "linkedin_writer",
+            "cta_agent",
+            "creative_director",
+            "proof_checker",
+        ],
+        timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="docx_guide_builder",
+        depends_on=["repo_storyteller", "research_agent", "cta_agent"],
+        timeout_seconds=300,
+    ),
+]
+
 # Video lead workflow - produces long-form talking-head scripts (TJ Robertson style)
 # Uses coaching-niche trend scout, then story strategist, research, and video lead writer
 VIDEO_LEAD_WORKFLOW = [
@@ -229,4 +353,6 @@ WORKFLOWS: dict[str, list[PipelineStep]] = {
     "video_generation": VIDEO_GENERATION_WORKFLOW,
     "product_demo": PRODUCT_DEMO_WORKFLOW,
     "video_lead": VIDEO_LEAD_WORKFLOW,
+    "start_from_repo": START_FROM_REPO_WORKFLOW,
+    "weekly_repo_spotlight": WEEKLY_REPO_SPOTLIGHT_WORKFLOW,
 }
