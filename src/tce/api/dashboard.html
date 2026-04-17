@@ -7252,6 +7252,32 @@ async function runRepoPipeline() {
   }
 }
 
+// Start-from-Repo stubs - the UI helpers and backend shipped together but
+// the main render + poll functions are still WIP. Stubs keep the dashboard
+// alive (no ReferenceError) and give operators a clear status instead of
+// a blank page when they click the Repo tab.
+function renderRepo() {
+  const app = document.getElementById('app');
+  if (!app) return;
+  while (app.firstChild) app.removeChild(app.firstChild);
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'padding:40px 32px;max-width:720px;margin:40px auto;background:var(--card);border:1px solid var(--border);border-radius:8px';
+  const h = document.createElement('h2');
+  h.textContent = 'Start from Repo';
+  h.style.marginTop = '0';
+  wrap.appendChild(h);
+  const p = document.createElement('p');
+  p.style.cssText = 'color:var(--dim);line-height:1.6';
+  p.textContent = 'Backend routes are live (/api/v1/pipeline/start-from-repo, /api/v1/repos/tracked). UI wiring is still in progress. Use the API directly or check back soon.';
+  wrap.appendChild(p);
+  const code = document.createElement('pre');
+  code.style.cssText = 'background:var(--bg);padding:12px;border-radius:4px;font-size:12px;overflow:auto';
+  code.textContent = 'curl -X POST http://5.161.71.94:8200/api/v1/pipeline/start-from-repo \\\n  -H "Content-Type: application/json" \\\n  -d \'{"repo_url":"https://github.com/owner/name","angle":"new_features","platform":"both"}\'';
+  wrap.appendChild(code);
+  app.appendChild(wrap);
+}
+function pollRepoStatus() { /* stub - wired up when renderRepo UI is completed */ }
+
 // Router - wrapped with error surfacing so failed renders show a retry
 // panel instead of a blank app region.
 function _renderShowFailure(tab, err) {
