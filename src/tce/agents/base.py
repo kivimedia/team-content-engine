@@ -21,6 +21,19 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 
+# Anthropic's reasoning-class models reject the `temperature` parameter
+# (thinking budget is the knob, not sampling entropy). Any model whose ID
+# starts with one of these prefixes gets the kwarg silently dropped inside
+# _call_llm below. Extend this tuple when Anthropic releases another one.
+_MODELS_WITHOUT_TEMPERATURE: tuple[str, ...] = (
+    "claude-opus-4-7",
+)
+
+
+def _model_accepts_temperature(model: str) -> bool:
+    return not model.startswith(_MODELS_WITHOUT_TEMPERATURE)
+
+
 class AgentBase(ABC):
     """Abstract base for all content engine agents.
 
@@ -124,8 +137,16 @@ class AgentBase(ABC):
             "model": model,
             "max_tokens": max_tokens,
             "messages": messages,
-            "temperature": temperature,
         }
+        if _model_accepts_temperature(model):
+            kwargs["temperature"] = temperature
+        elif temperature != 0.7:
+            logger.info(
+                "agent.temperature_dropped",
+                agent=self.name,
+                model=model,
+                requested_temperature=temperature,
+            )
         if system:
             # GAP-07: Multi-segment prompt caching (PRD Section 36.8)
             # Try to build full cached prefix with house voice, templates, etc.
