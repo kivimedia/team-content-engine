@@ -58,7 +58,7 @@ CORPUS_INGESTION_WORKFLOW = [
 
 # Weekly planning workflow (PRD Section 15.2)
 WEEKLY_PLANNING_WORKFLOW = [
-    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=120),
+    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=180),
     PipelineStep(agent_name="story_strategist", depends_on=["trend_scout"], timeout_seconds=180),
     PipelineStep(agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=180),
     PipelineStep(agent_name="cta_agent", depends_on=["story_strategist"], timeout_seconds=60),
@@ -328,7 +328,7 @@ WEEKLY_REPO_SPOTLIGHT_WORKFLOW = [
 # Video lead workflow - produces long-form talking-head scripts (TJ Robertson style)
 # Uses coaching-niche trend scout, then story strategist, research, and video lead writer
 VIDEO_LEAD_WORKFLOW = [
-    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=120),
+    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=180),
     PipelineStep(agent_name="story_strategist", depends_on=["trend_scout"], timeout_seconds=120),
     PipelineStep(agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=120),
     PipelineStep(
