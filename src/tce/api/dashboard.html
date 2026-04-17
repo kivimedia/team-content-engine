@@ -383,6 +383,34 @@ img{background:var(--card);border-radius:4px}
 </div>
 <script>
 const API = '/api/v1';
+
+// === Global error surfacing ===
+// Silent blank-page failures are the #1 source of "TCE is dead, what broke"
+// tickets. Any uncaught JS error or unhandled promise rejection now appears
+// as a red banner at the top of the page with the message + stack. Users
+// can see the real problem instead of staring at an empty app region.
+(function _installTceErrorBar() {
+  function _escapeHtml(s) {
+    return String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  }
+  function _showErr(msg, src) {
+    try {
+      let bar = document.getElementById('_tce_err_bar');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = '_tce_err_bar';
+        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7a1d1d;color:#fff;padding:10px 16px;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5;border-bottom:2px solid #ff4040;max-height:45vh;overflow:auto;box-shadow:0 4px 14px rgba(0,0,0,0.5)';
+        (document.body || document.documentElement).appendChild(bar);
+      }
+      const time = new Date().toLocaleTimeString();
+      const html = '<div style="margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.15)"><strong>[' + time + ' ' + _escapeHtml(src) + ']</strong> ' + _escapeHtml(msg) + ' <button onclick="var b=document.getElementById(&quot;_tce_err_bar&quot;);this.parentElement.remove();if(b&&!b.children.length)b.remove()" style="margin-left:8px;background:rgba(255,255,255,0.18);color:#fff;border:none;padding:2px 10px;cursor:pointer;border-radius:3px;font-size:11px">dismiss</button></div>';
+      bar.insertAdjacentHTML('beforeend', html);
+    } catch (nested) { /* last resort - avoid infinite loop */ console.error('tce error-bar failed:', nested); }
+  }
+  window.addEventListener('error', e => _showErr((e.error && e.error.stack) || e.message || 'unknown error', 'JS'));
+  window.addEventListener('unhandledrejection', e => _showErr((e.reason && (e.reason.stack || e.reason.message)) || String(e.reason), 'Promise'));
+  window._tceShowErr = _showErr;
+})();
 let currentTab = 'week';
 let activePipelineRun = localStorage.getItem('tce_active_run') || null;
 let pollInterval = null;
@@ -7224,11 +7252,52 @@ async function runRepoPipeline() {
   }
 }
 
-// Router
+// Router - wrapped with error surfacing so failed renders show a retry
+// panel instead of a blank app region.
+function _renderShowFailure(tab, err) {
+  const msg = (err && (err.stack || err.message)) || String(err);
+  if (window._tceShowErr) window._tceShowErr(msg, 'render.' + tab);
+  const app = document.getElementById('app');
+  if (!app) return;
+  // Build failure panel imperatively (avoid innerHTML with user content)
+  while (app.firstChild) app.removeChild(app.firstChild);
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'padding:40px 32px;max-width:720px;margin:40px auto;background:var(--card);border:1px solid var(--red,#a33);border-radius:8px';
+  const h = document.createElement('h3');
+  h.style.cssText = 'color:var(--red,#e66);margin-top:0';
+  h.textContent = 'Render failed: ' + tab;
+  wrap.appendChild(h);
+  const pre = document.createElement('pre');
+  pre.style.cssText = 'white-space:pre-wrap;word-break:break-word;font-size:12px;color:var(--dim);background:var(--bg);padding:12px;border-radius:4px;max-height:300px;overflow:auto';
+  pre.textContent = msg;
+  wrap.appendChild(pre);
+  const actions = document.createElement('div');
+  actions.style.cssText = 'margin-top:16px;display:flex;gap:8px';
+  const retry = document.createElement('button');
+  retry.className = 'btn btn-primary';
+  retry.textContent = 'Retry';
+  retry.onclick = () => render();
+  const reload = document.createElement('button');
+  reload.className = 'btn btn-dim';
+  reload.textContent = 'Full reload';
+  reload.onclick = () => location.reload();
+  actions.appendChild(retry);
+  actions.appendChild(reload);
+  wrap.appendChild(actions);
+  app.appendChild(wrap);
+}
+
 function render() {
   const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, topic: renderTopic, repo: renderRepo, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, 'video-lead': renderVideoLead, brands: renderBrands };
   updateBreadcrumb(null);
-  (map[currentTab] || renderGenerate)();
+  const tab = currentTab;
+  const fn = map[tab] || renderGenerate;
+  try {
+    const result = fn();
+    if (result && typeof result.then === 'function') result.catch(e => _renderShowFailure(tab, e));
+  } catch (e) {
+    _renderShowFailure(tab, e);
+  }
 }
 restoreGenAllState();
   loadSourceHistory('topic', 'topic-history');
