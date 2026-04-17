@@ -52,6 +52,13 @@ class PlanWeekDeepRequest(BaseModel):
     focus_areas: list[str] | None = None
     sensitive_period: bool = False
     humanitarian_context: str | None = None
+    # Video Studio integration: reserve one weekday slot for a walking video
+    # script. Planner prefers walking-friendly angles for that day (hot takes,
+    # contrarian reframes, news reactions) and marks plan_context.content_format
+    # = "walking_video" so the dashboard renders the card differently and
+    # routes Generate clicks to Video Studio instead of the text pipeline.
+    # 0=Monday .. 4=Friday; None = no video day this week.
+    video_day_weekday: int | None = None
 
 
 class PlanApproveRequest(BaseModel):

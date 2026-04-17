@@ -321,6 +321,8 @@ async def plan_week_deep(
                     context["sensitive_period"] = True
                 if request.humanitarian_context:
                     context["humanitarian_context"] = request.humanitarian_context
+                if request.video_day_weekday is not None and 0 <= request.video_day_weekday <= 4:
+                    context["video_day_weekday"] = request.video_day_weekday
 
                 # Load founder voice
                 fv_result = await bg_db.execute(
@@ -407,6 +409,17 @@ async def plan_week_deep(
                     if not options and day_plan.get("topic"):
                         options = [day_plan]  # Backward compat: single option
 
+                    # Enforce content_format on the designated video day, even if
+                    # the LLM forgot to set it. Other days default to "text".
+                    is_video_day = (
+                        request.video_day_weekday is not None
+                        and day_num == request.video_day_weekday
+                    )
+                    desired_format = "walking_video" if is_video_day else "text"
+                    for opt in options:
+                        if is_video_day or not opt.get("content_format"):
+                            opt["content_format"] = desired_format
+
                     # Primary option (index 0) is the default selection
                     primary = options[0] if options else day_plan
                     story_brief = primary
@@ -419,6 +432,9 @@ async def plan_week_deep(
                             "cta_keyword": weekly_plan.get("cta_keyword", ""),
                         },
                     }
+                    # Mirror content_format at the top level of plan_context so the
+                    # dashboard can read it without digging into nested options.
+                    enriched_context["content_format"] = primary.get("content_format") or desired_format
 
                     if entry:
                         entry.topic = story_brief.get("topic", entry.topic)

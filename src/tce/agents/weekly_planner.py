@@ -107,6 +107,20 @@ Rules for topic/thesis writing:
 - Short sentences. Plain words. No jargon unless the audience uses that jargon daily.
 - The topic should make someone stop scrolling. The thesis should make them want to read.
 
+VIDEO DAY (optional, user-specified):
+If the input says "Video day: Day N", that day's 3 topic options MUST be
+written as walking-monologue candidates - phone-held vertical, 60-120s
+single take, TJ Robertson style. Prefer walking-friendly angles:
+- Hot-take reactions to a named breaking story (OpenAI, Google, Anthropic)
+- Counterintuitive stances ("you should absolutely have a second website")
+- Paradigm reframes ("your website isn't just for humans anymore")
+- Crisis-signal openings with a named actor + specific outcome
+AVOID for video days: dense numbered how-tos (bad walking pacing), long
+proof-heavy explainers, and tutorials with step counts > 3. Each video-day
+option's "topic" must be specific enough that the viewer knows the stake
+in 5 seconds. Mark each of that day's 3 options with `content_format:
+"walking_video"`. All other days default to `content_format: "text"`.
+
 OUTPUT: A JSON object with:
 - weekly_theme: 1 sentence describing the week's narrative arc (conversational, not corporate)
 - guide_options: array of 3 objects, each a different freebie/guide idea for the week:
@@ -128,6 +142,7 @@ OUTPUT: A JSON object with:
     - visual_job: cinematic_symbolic / proof_diagram / emotional_alternate
     - connection_to_gift: how this day's post connects to the weekly gift
     - platform_notes: any platform-specific adjustments
+    - content_format: "text" (default) or "walking_video" (only on the designated Video Day)
   The first option (index 0) should be your BEST pick. Options 1-2 are solid alternatives.
 """
 
@@ -259,6 +274,18 @@ class WeeklyPlanner(AgentBase):
                 + "\n\nConsider which creators are strongest at which angles when assigning topics. "
                 "Pick topics that resonate with the founder's recurring themes and values. "
                 "The weekly theme should sound like something the founder would actually say."
+            )
+
+        # === Video day context ===
+        video_day = context.get("video_day_weekday")
+        if video_day is not None and 0 <= video_day <= 4:
+            day_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"][video_day]
+            prompt_parts.append(
+                f"\nVIDEO DAY: Day {video_day} ({day_name}) is the walking-video slot. "
+                f"All 3 of this day's options MUST be walking-monologue candidates "
+                f"(60-120s, phone-held, vertical, TJ Robertson style). Mark each "
+                f"with content_format: \"walking_video\". Every other day should "
+                f"have content_format: \"text\"."
             )
 
         # === Humanitarian sensitivity context ===

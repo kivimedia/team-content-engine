@@ -601,6 +601,19 @@ async function renderWeek() {
           </label>
           <input id="seasonal-context" type="text" placeholder="e.g. Post-holiday focus, Q1 planning season..." style="display:none;width:240px;font-size:11px;padding:4px 8px">
         </div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--dim);cursor:pointer" title="Reserve one weekday for a walking-monologue video script (TJ style). The planner will pick walking-friendly angles for that day.">
+            <input type="checkbox" id="video-day-toggle" onchange="document.getElementById('video-day-weekday').style.display=this.checked?'':'none'" style="accent-color:var(--accent)">
+            Include Video Day
+          </label>
+          <select id="video-day-weekday" style="display:none;width:150px;font-size:11px;padding:4px 8px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;color-scheme:dark">
+            <option value="0">Monday</option>
+            <option value="1">Tuesday</option>
+            <option value="2" selected>Wednesday</option>
+            <option value="3">Thursday</option>
+            <option value="4">Friday</option>
+          </select>
+        </div>
         <span id="plan-cost-hint" style="font-size:11px;color:var(--dim);margin-left:6px" title="Trend scout (Sonnet) + Weekly planner (Opus)">~$0.25 per plan</span>
         <button class="btn btn-green" id="gen-all-btn" onclick="generateFromPlan()" ${genAllState?.running ? 'disabled' : ''}>${genAllState?.running ? (genAllState.unified ? 'Running...' : 'Generating...') : 'Generate from Plan'}</button>
       </div>
@@ -699,18 +712,20 @@ async function renderWeek() {
       const isToday = ds === todayStr;
       const angle = entry ? entry.angle_type : ['big_shift_explainer','tactical_workflow_guide','contrarian_diagnosis','case_study_build_story','second_order_implication'][i];
       const status = entry ? entry.status : 'unplanned';
+      // M5: Walking video day slots render + behave differently
+      const isVideoDay = !!(entry?.plan_context && entry.plan_context.content_format === 'walking_video');
 
       const cardDrag = entry ? ' draggable="true" ondragstart="dragEntry(event,\'' + entry.id + '\',\'' + ds + '\')"' : '';
-      html += '<div class="day-card' + (isToday ? ' today' : '') + '" data-day-idx="' + i + '" data-day-date="' + ds + '"' + cardDrag + ' ondragover="event.preventDefault();this.classList.add(\'drag-over\')" ondragleave="this.classList.remove(\'drag-over\')" ondrop="this.classList.remove(\'drag-over\');dropEntry(event,\'' + ds + '\',' + i + ')" style="' + (entry ? 'cursor:grab' : '') + '">';
-      html += '<div class="day-header">' + DAY_NAMES[i] + (isToday ? ' (TODAY)' : '') + '</div>';
+      const videoBorder = isVideoDay ? 'box-shadow:inset 0 0 0 2px var(--accent);' : '';
+      html += '<div class="day-card' + (isToday ? ' today' : '') + (isVideoDay ? ' day-card-video' : '') + '" data-day-idx="' + i + '" data-day-date="' + ds + '"' + cardDrag + ' ondragover="event.preventDefault();this.classList.add(\'drag-over\')" ondragleave="this.classList.remove(\'drag-over\')" ondrop="this.classList.remove(\'drag-over\');dropEntry(event,\'' + ds + '\',' + i + ')" style="' + videoBorder + (entry ? 'cursor:grab' : '') + '">';
+      html += '<div class="day-header">' + DAY_NAMES[i] + (isToday ? ' (TODAY)' : '') + (isVideoDay ? ' <span style="font-size:11px;color:var(--accent);font-weight:700;letter-spacing:1px">&#127916; VIDEO</span>' : '') + '</div>';
       html += '<div class="day-date">' + d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + '</div>';
       const tip = ANGLE_TIPS[angle] || '';
-      html += '<div class="day-angle" style="position:relative;cursor:help">' + (ANGLE_LABELS[angle] || angle.replace(/_/g,' '));
-      if (tip) html += ' <span class="tip-icon" data-tip="' + esc(tip) + '">i</span>';
+      html += '<div class="day-angle" style="position:relative;cursor:help">' + (isVideoDay ? 'Walking video (60-120s)' : (ANGLE_LABELS[angle] || angle.replace(/_/g,' ')));
+      if (!isVideoDay && tip) html += ' <span class="tip-icon" data-tip="' + esc(tip) + '">i</span>';
       html += '</div>';
       if (entry?.topic) html += '<div class="day-topic">' + esc(entry.topic) + '</div>';
       else html += '<div class="day-topic" style="color:var(--dim);font-style:italic">No topic set</div>';
-      // GAP-31: Buffer toggle
       if (entry?.is_buffer) html += '<div style="font-size:10px;color:var(--yellow);margin-bottom:4px">Buffer post</div>';
       html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto;gap:4px;flex-wrap:wrap">';
       if (entry) {
@@ -718,7 +733,12 @@ async function renderWeek() {
         const stLabel = hasPackage && status === 'planned' ? 'READY' : status.toUpperCase();
         const stClass = hasPackage && status === 'planned' ? 'ready' : status;
         html += '<span class="day-status day-status-' + stClass + '">' + stLabel + '</span>';
-        if (hasPackage) {
+        if (isVideoDay) {
+          // Walking video days route to Video Studio (different backend pipeline).
+          // We do NOT use post_packages for walking videos - they go to walking_video_scripts.
+          const escTopic = esc(entry.topic || '');
+          html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="openVideoStudioForEntry(\'' + entry.id + '\', \'' + escTopic.replace(/\'/g, "\\'") + '\')">Open in Video Studio</button>';
+        } else if (hasPackage) {
           html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="viewPackage(\'' + entry.post_package_id + '\',' + i + ')">Package</button>';
           html += '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="runDayPipeline(' + i + ',\'' + (entry?.id || '') + '\')">Regenerate</button>';
         } else if (status === 'planned' || status === 'approved') {
@@ -806,6 +826,9 @@ async function planWeekDeep(mondayStr) {
   // GAP-47: Seasonal override context
   const seasonalOverride = document.getElementById('seasonal-override-toggle')?.checked || false;
   const seasonalContext = document.getElementById('seasonal-context')?.value || null;
+  // M5: Video day (walking-video slot inside the weekly plan)
+  const videoDayEnabled = document.getElementById('video-day-toggle')?.checked || false;
+  const videoDayWeekday = videoDayEnabled ? parseInt(document.getElementById('video-day-weekday')?.value || '2', 10) : null;
   const btn = document.getElementById('plan-week-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Planning...'; }
   const panel = document.getElementById('plan-review-panel');
@@ -838,7 +861,7 @@ async function planWeekDeep(mondayStr) {
   try {
     const r = await api('/calendar/plan-week-deep', {
       method: 'POST',
-      body: JSON.stringify({ week_start: mondayStr, weekly_theme: theme || null, sensitive_period: sensitivePeriod, humanitarian_context: seasonalOverride ? seasonalContext : null }),
+      body: JSON.stringify({ week_start: mondayStr, weekly_theme: theme || null, sensitive_period: sensitivePeriod, humanitarian_context: seasonalOverride ? seasonalContext : null, video_day_weekday: videoDayWeekday }),
     });
     deepPlanId = r.plan_id;
 
@@ -1300,7 +1323,24 @@ async function savePlanOnly(mondayStr) {
 }
 
 async function generateFromApprovedPlan(plan) {
-  genAllState = { running: true, current: -1, total: 5, startTime: Date.now(), results: [], totalCost: 0, unified: true, weekId: null, phase: 'starting', phaseDetail: 'Starting generation from approved plan...', weeklyTheme: plan.weekly_theme, giftTheme: plan.gift_theme, weeklyKeyword: plan.cta_keyword };
+  // M5: walking-video days don't go through /pipeline/generate-week (which
+  // writes to post_packages). The operator generates those from Video Studio
+  // instead. Strip them from the plan before kicking off bulk-gen.
+  let skippedVideoDays = 0;
+  if (plan && Array.isArray(plan.days)) {
+    const filtered = [];
+    for (const day of plan.days) {
+      const primary = (day.options && day.options[0]) || day;
+      const fmt = (primary && primary.content_format) || day.content_format;
+      if (fmt === 'walking_video') { skippedVideoDays++; continue; }
+      filtered.push(day);
+    }
+    plan = { ...plan, days: filtered };
+  }
+  if (skippedVideoDays > 0) {
+    toast('Skipping ' + skippedVideoDays + ' video day(s) - generate those from Video Studio', true);
+  }
+  genAllState = { running: true, current: -1, total: plan.days ? plan.days.length : 5, startTime: Date.now(), results: [], totalCost: 0, unified: true, weekId: null, phase: 'starting', phaseDetail: 'Starting generation from approved plan...', weeklyTheme: plan.weekly_theme, giftTheme: plan.gift_theme, weeklyKeyword: plan.cta_keyword };
   saveGenAllState();
   // Hide plan review to avoid text-on-text overlap with progress card
   const prp = document.getElementById('plan-review-panel');
@@ -2100,6 +2140,21 @@ let walkingVideoRunId = null;
 let walkingVideoStartTime = 0;
 let walkingVideoPollInterval = null;
 
+// Called from the Week Planner calendar when the operator clicks a video-day
+// card. Stashes the topic in localStorage so the Walking sub-form auto-fills
+// it on mount, then navigates to Video Studio.
+function openVideoStudioForEntry(entryId, topic) {
+  try {
+    if (topic) localStorage.setItem('tce_video_prefill_topic', topic);
+    if (entryId) localStorage.setItem('tce_video_prefill_entry_id', entryId);
+    localStorage.setItem('tce_start_subtab', 'walking'); // legacy safety
+    localStorage.setItem('tce_video_studio_subtab', 'walking');
+  } catch (e) { /* ignore storage errors */ }
+  currentTab = 'video-studio';
+  document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === 'video-studio'));
+  render();
+}
+
 async function renderVideoStudio() {
   const app = document.getElementById('app');
   if (!app) return;
@@ -2185,6 +2240,15 @@ async function _renderWalkingVideoFormInto(container) {
       <div id="wv-status"></div>
       <div id="wv-result" style="margin-top:16px"></div>
     </div>`;
+  // M5: consume prefill topic that openVideoStudioForEntry may have set
+  try {
+    const prefillTopic = localStorage.getItem('tce_video_prefill_topic');
+    if (prefillTopic) {
+      const ta = document.getElementById('wv-topic');
+      if (ta && !ta.value) ta.value = prefillTopic;
+      localStorage.removeItem('tce_video_prefill_topic');
+    }
+  } catch (e) { /* ignore */ }
   const savedRun = localStorage.getItem('tce_walking_video_run');
   if (savedRun) {
     walkingVideoRunId = savedRun;
