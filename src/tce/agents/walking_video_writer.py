@@ -16,12 +16,16 @@ Key difference from video_lead_writer:
 from __future__ import annotations
 
 import json
+import re
+import uuid
 from typing import Any
 
 import structlog
+from sqlalchemy import select
 
 from tce.agents.base import AgentBase
 from tce.agents.registry import register_agent
+from tce.models.post_example import PostExample
 
 logger = structlog.get_logger()
 
@@ -123,6 +127,86 @@ class WalkingVideoWriter(AgentBase):
     name = "walking_video_writer"
     default_model = "claude-sonnet-4-20250514"
 
+    _STOPWORDS: frozenset[str] = frozenset({
+        "the", "a", "an", "and", "or", "but", "of", "in", "on", "at", "to", "for",
+        "with", "by", "from", "as", "is", "are", "was", "were", "be", "been",
+        "being", "have", "has", "had", "do", "does", "did", "will", "would",
+        "should", "could", "can", "may", "might", "must", "shall", "this",
+        "that", "these", "those", "i", "you", "he", "she", "it", "we", "they",
+        "me", "him", "her", "us", "them", "my", "your", "his", "its", "our",
+        "their", "what", "which", "who", "how", "when", "where", "why", "not",
+        "no", "so", "if", "than", "then", "just", "now", "up", "out", "about",
+        "over", "into", "through", "after", "before", "against", "between",
+        "under", "again", "further", "more", "most", "some", "any", "each",
+        "few", "both", "all", "every", "also", "new", "because",
+    })
+
+    def _extract_keywords(self, *texts: str) -> list[str]:
+        """Pull meaningful nouns/verbs out of the topic/thesis for similarity."""
+        combined = " ".join(t for t in texts if t).lower()
+        words = re.findall(r"[a-z][a-z0-9_]{2,}", combined)
+        keywords = [w for w in words if w not in self._STOPWORDS]
+        # De-duplicate while preserving order (stable top-N)
+        seen: set[str] = set()
+        out: list[str] = []
+        for w in keywords:
+            if w not in seen:
+                seen.add(w)
+                out.append(w)
+        return out
+
+    async def _retrieve_similar_posts(
+        self,
+        creator_id: uuid.UUID,
+        topic: str,
+        thesis: str,
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Find the creator's top-engagement posts that share keywords with
+        the current topic. Simple bag-of-keywords overlap since the 269-post
+        scale doesn't justify pgvector or external embeddings.
+
+        Scoring: keyword overlap count (Jaccard-ish) broken by raw_score
+        (engagement rate). Short-circuits if the creator has <=limit posts
+        by just returning their top-engagement ones.
+        """
+        keywords = self._extract_keywords(topic, thesis)
+        result = await self.db.execute(
+            select(PostExample)
+            .where(PostExample.creator_id == creator_id)
+            .order_by(PostExample.raw_score.desc().nulls_last())
+            .limit(60)  # narrow pool to top-60 by engagement before scoring
+        )
+        candidates = list(result.scalars().all())
+        if not candidates:
+            return []
+
+        if not keywords:
+            # No usable keywords - just return top-engagement posts
+            return [self._post_to_example(p) for p in candidates[:limit]]
+
+        kw_set = set(keywords)
+
+        def score(p: PostExample) -> tuple[int, float]:
+            text = ((p.post_text_raw or "") + " " + (p.hook_text or "")).lower()
+            overlap = sum(1 for k in kw_set if k in text)
+            return (overlap, float(p.raw_score or 0))
+
+        ranked = sorted(candidates, key=score, reverse=True)
+        # Drop posts with zero keyword overlap unless we need to fill `limit`
+        with_overlap = [p for p in ranked if score(p)[0] > 0]
+        picked = with_overlap[:limit] if len(with_overlap) >= limit else ranked[:limit]
+        return [self._post_to_example(p) for p in picked]
+
+    @staticmethod
+    def _post_to_example(p: PostExample) -> dict[str, Any]:
+        return {
+            "hook": p.hook_text or (p.post_text_raw or "")[:200],
+            "engagement_rate": p.raw_score,
+            "topic_cluster": p.topic_cluster,
+            "hook_type": p.hook_type,
+        }
+
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         story_brief = context.get("story_brief") or {}
         research_brief = context.get("research_brief") or {}
@@ -172,6 +256,37 @@ class WalkingVideoWriter(AgentBase):
                 f"\nSTYLE ANCHOR: emulate the pacing + hook style of {creator_name} "
                 f"but do NOT copy their specific phrasings or signature lines."
             )
+
+        # Layer 4 of TJ grounding: retrieve top 3 PostExample rows from this
+        # creator that share keywords with the current topic. Include their
+        # hooks + engagement rate as "proven patterns" in the prompt. This
+        # gives the writer real reference examples that worked on adjacent
+        # topics, not just abstract formulas.
+        creator_id_str = creator_profile.get("creator_id")
+        if creator_id_str:
+            try:
+                examples = await self._retrieve_similar_posts(
+                    creator_id=uuid.UUID(creator_id_str),
+                    topic=topic,
+                    thesis=thesis,
+                    limit=3,
+                )
+            except Exception as e:
+                self._report(f"Similar-posts retrieval failed: {e}")
+                examples = []
+            if examples:
+                prompt_parts.append(
+                    f"\nPROVEN HOOKS from {creator_name} on similar topics "
+                    f"(for style reference - do NOT rewrite these, write your own):"
+                )
+                for ex in examples:
+                    er = ex.get("engagement_rate")
+                    er_str = f" ({er:.1f}% eng)" if isinstance(er, (int, float)) else ""
+                    hook_excerpt = (ex.get("hook") or "")[:220]
+                    cluster = ex.get("topic_cluster") or "general"
+                    prompt_parts.append(
+                        f"- [{cluster}{er_str}] {hook_excerpt}"
+                    )
 
         duration_word_target = int(duration_target_s * 140 / 60)
         prompt_parts.append(

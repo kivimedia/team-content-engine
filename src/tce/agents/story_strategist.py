@@ -116,6 +116,40 @@ class StoryStrategist(AgentBase):
         if operator_overrides:
             prompt_parts.append(f"Operator overrides: {json.dumps(operator_overrides)}")
 
+        # Layer 3 of TJ grounding: when a creator_profile is in context, bake
+        # in their failure patterns + angle preferences so the StoryBrief this
+        # agent produces respects what works for that creator's audience.
+        creator_profile = context.get("creator_profile") or {}
+        if creator_profile:
+            creator_name = creator_profile.get("creator_name", "the reference creator")
+            disallowed = creator_profile.get("disallowed_clone_markers") or []
+            angle_weights = creator_profile.get("angle_weights") or {}
+            top_patterns = creator_profile.get("top_patterns") or []
+            hook_prefs = [p.split(":", 1)[1].replace("_", " ")
+                          for p in top_patterns if p.startswith("hook:")]
+            creator_parts = [f"\nCREATOR STYLE ANCHOR ({creator_name}):"]
+            if disallowed:
+                creator_parts.append(
+                    "HARD AVOID (these failure patterns scored 0 views in their bottom 10 posts):\n"
+                    + "\n".join(f"- {d.replace('_', ' ')}" for d in disallowed)
+                )
+            if hook_prefs:
+                creator_parts.append(
+                    "PREFERRED HOOK FORMULAS (their top-performing opening patterns):\n"
+                    + "\n".join(f"- {h}" for h in hook_prefs)
+                )
+            if angle_weights:
+                weighted = sorted(angle_weights.items(), key=lambda kv: -kv[1])
+                creator_parts.append(
+                    "ANGLE FIT WEIGHTS for this creator (pick higher-weighted angles when the topic fits):\n"
+                    + "\n".join(f"- {a}: {w:.1f}" for a, w in weighted)
+                )
+            creator_parts.append(
+                "Use these as calibration, not a checklist. The goal is a brief that "
+                "a writer can execute in this creator's voice without parroting them."
+            )
+            prompt_parts.append("\n".join(creator_parts))
+
         # Niche-specific strategy context
         niche = context.get("niche", "general")
         if niche == "coaching":

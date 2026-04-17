@@ -64,6 +64,12 @@ class PostExample(Base):
     # Drives writer-agent style selection (see walking_video_writer).
     format_label: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
+    # High-level topic zone. Populated by the LLM enrichment pass in
+    # services/enrich_post_examples.py. Used by trend_scout to bias toward
+    # clusters the creator has proven engagement on, and by the walking
+    # video writer to retrieve on-topic in-context examples.
+    topic_cluster: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
     # Review
     manual_review_status: Mapped[str] = mapped_column(String(20), default="pending")
     parser_notes: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -1306,10 +1306,18 @@ async def start_walking_video(request: "StartWalkingVideoRequest") -> dict[str, 
                 creator = await db.get(CreatorProfileModel, cid)
                 if creator:
                     creator_profile_id = creator.id
+                    # Pass the FULL creator profile through context so layers
+                    # 2-4 (trend_scout, story_strategist, writer RAG) all
+                    # read from the same source of truth.
                     creator_profile_ctx = {
                         "creator_name": creator.creator_name,
+                        "creator_id": str(creator.id),
                         "style_notes": creator.style_notes or "",
                         "top_patterns": list(creator.top_patterns or []),
+                        "disallowed_clone_markers": list(creator.disallowed_clone_markers or []),
+                        "voice_axes": dict(creator.voice_axes or {}),
+                        "angle_weights": dict(creator.angle_weights or {}),
+                        "allowed_influence_weight": creator.allowed_influence_weight or 0.25,
                     }
 
     context: dict[str, Any] = {

@@ -213,6 +213,24 @@ class TrendScout(AgentBase):
             f"HARD RULE: Today is {today_str}. Only include stories from the last 14 days.",
         ]
 
+        # Layer 2 of TJ grounding: when a creator_profile is in context (e.g.
+        # TJ Robertson for walking-video generation), bias the trend scan
+        # toward their high-engagement topic clusters so downstream agents
+        # start with raw material that fits the creator's proven zones.
+        creator_profile = context.get("creator_profile") or {}
+        top_patterns = creator_profile.get("top_patterns") or []
+        topic_prefs = [p.split(":", 1)[1].replace("_", " ")
+                       for p in top_patterns if p.startswith("topic:")]
+        if topic_prefs:
+            creator_name = creator_profile.get("creator_name", "the reference creator")
+            prompt_parts.append(
+                f"\nPREFERRED TOPIC CLUSTERS (from {creator_name}'s engagement analysis):\n"
+                + "\n".join(f"- {t}" for t in topic_prefs)
+                + "\nRank trends that fit these clusters higher (multiply relevance_score by 1.3). "
+                "Do not invent stories to fit - only prefer stories that organically match. "
+                "If no eligible stories fit a cluster, do not force it."
+            )
+
         if operator_topics:
             prompt_parts.append(
                 f"The operator has specifically requested coverage of: {', '.join(operator_topics)}"
