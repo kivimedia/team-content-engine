@@ -1284,7 +1284,10 @@ async def start_walking_video(request: "StartWalkingVideoRequest") -> dict[str, 
     from tce.models.walking_video_script import WalkingVideoScript
 
     run_id = str(uuid.uuid4())
-    duration_target_s = max(45, min(180, int(request.duration_target_seconds or 90)))
+    # Clamp range informed by TJ corpus deliverable_3: 60-120s is optimal but
+    # 2-4min still works for deeper takes. Hard ceiling 5min prevents the
+    # 8min outlier category (all of which scored 0% engagement per the data).
+    duration_target_s = max(45, min(300, int(request.duration_target_seconds or 90)))
     calendar_entry_uuid: uuid.UUID | None = None
     if request.calendar_entry_id:
         try:

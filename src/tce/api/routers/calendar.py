@@ -321,8 +321,12 @@ async def plan_week_deep(
                     context["sensitive_period"] = True
                 if request.humanitarian_context:
                     context["humanitarian_context"] = request.humanitarian_context
-                if request.video_day_weekday is not None and 0 <= request.video_day_weekday <= 4:
-                    context["video_day_weekday"] = request.video_day_weekday
+                _video_days = sorted(request.resolved_video_days())
+                if _video_days:
+                    # Canonical plural for agents
+                    context["video_day_weekdays"] = _video_days
+                    # Legacy singular for any code path still reading it
+                    context["video_day_weekday"] = _video_days[0]
 
                 # Load founder voice
                 fv_result = await bg_db.execute(
@@ -409,12 +413,9 @@ async def plan_week_deep(
                     if not options and day_plan.get("topic"):
                         options = [day_plan]  # Backward compat: single option
 
-                    # Enforce content_format on the designated video day, even if
-                    # the LLM forgot to set it. Other days default to "text".
-                    is_video_day = (
-                        request.video_day_weekday is not None
-                        and day_num == request.video_day_weekday
-                    )
+                    # Enforce content_format on the designated video days, even
+                    # if the LLM forgot to set it. Other days default to "text".
+                    is_video_day = day_num in set(request.resolved_video_days())
                     desired_format = "walking_video" if is_video_day else "text"
                     for opt in options:
                         if is_video_day or not opt.get("content_format"):

@@ -602,17 +602,18 @@ async function renderWeek() {
           <input id="seasonal-context" type="text" placeholder="e.g. Post-holiday focus, Q1 planning season..." style="display:none;width:240px;font-size:11px;padding:4px 8px">
         </div>
         <div style="display:flex;flex-direction:column;gap:4px">
-          <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--dim);cursor:pointer" title="Reserve one weekday for a walking-monologue video script (TJ style). The planner will pick walking-friendly angles for that day.">
-            <input type="checkbox" id="video-day-toggle" onchange="document.getElementById('video-day-weekday').style.display=this.checked?'':'none'" style="accent-color:var(--accent)">
-            Include Video Day
-          </label>
-          <select id="video-day-weekday" style="display:none;width:150px;font-size:11px;padding:4px 8px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;color-scheme:dark">
-            <option value="0">Monday</option>
-            <option value="1">Tuesday</option>
-            <option value="2" selected>Wednesday</option>
-            <option value="3">Thursday</option>
-            <option value="4">Friday</option>
-          </select>
+          <div style="font-size:11px;color:var(--dim);display:flex;align-items:center;gap:8px">
+            <span title="Walking-video slots for the week. Each checked day becomes a TJ-style walking-monologue script instead of a text post.">Video Days</span>
+            <button type="button" onclick="setAllVideoDays(true)" style="padding:1px 6px;font-size:10px;background:var(--card);color:var(--dim);border:1px solid var(--border);border-radius:3px;cursor:pointer">All 5</button>
+            <button type="button" onclick="setAllVideoDays(false)" style="padding:1px 6px;font-size:10px;background:var(--card);color:var(--dim);border:1px solid var(--border);border-radius:3px;cursor:pointer">None</button>
+          </div>
+          <div id="video-day-checkboxes" style="display:flex;gap:6px;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--dim);cursor:pointer;background:var(--card);padding:2px 8px;border:1px solid var(--border);border-radius:4px"><input type="checkbox" class="video-day-checkbox" value="0" style="accent-color:var(--accent);margin:0">Mon</label>
+            <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--dim);cursor:pointer;background:var(--card);padding:2px 8px;border:1px solid var(--border);border-radius:4px"><input type="checkbox" class="video-day-checkbox" value="1" style="accent-color:var(--accent);margin:0">Tue</label>
+            <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--dim);cursor:pointer;background:var(--card);padding:2px 8px;border:1px solid var(--border);border-radius:4px"><input type="checkbox" class="video-day-checkbox" value="2" style="accent-color:var(--accent);margin:0">Wed</label>
+            <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--dim);cursor:pointer;background:var(--card);padding:2px 8px;border:1px solid var(--border);border-radius:4px"><input type="checkbox" class="video-day-checkbox" value="3" style="accent-color:var(--accent);margin:0">Thu</label>
+            <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--dim);cursor:pointer;background:var(--card);padding:2px 8px;border:1px solid var(--border);border-radius:4px"><input type="checkbox" class="video-day-checkbox" value="4" style="accent-color:var(--accent);margin:0">Fri</label>
+          </div>
         </div>
         <span id="plan-cost-hint" style="font-size:11px;color:var(--dim);margin-left:6px" title="Trend scout (Sonnet) + Weekly planner (Opus)">~$0.25 per plan</span>
         <button class="btn btn-green" id="gen-all-btn" onclick="generateFromPlan()" ${genAllState?.running ? 'disabled' : ''}>${genAllState?.running ? (genAllState.unified ? 'Running...' : 'Generating...') : 'Generate from Plan'}</button>
@@ -832,9 +833,11 @@ async function planWeekDeep(mondayStr) {
   // GAP-47: Seasonal override context
   const seasonalOverride = document.getElementById('seasonal-override-toggle')?.checked || false;
   const seasonalContext = document.getElementById('seasonal-context')?.value || null;
-  // M5: Video day (walking-video slot inside the weekly plan)
-  const videoDayEnabled = document.getElementById('video-day-toggle')?.checked || false;
-  const videoDayWeekday = videoDayEnabled ? parseInt(document.getElementById('video-day-weekday')?.value || '2', 10) : null;
+  // M5: Video days (multi-select). Collect all checked weekdays.
+  const videoDayWeekdays = Array.from(document.querySelectorAll('.video-day-checkbox'))
+    .filter(el => el.checked)
+    .map(el => parseInt(el.value, 10))
+    .filter(n => !Number.isNaN(n) && n >= 0 && n <= 4);
   const btn = document.getElementById('plan-week-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Planning...'; }
   const panel = document.getElementById('plan-review-panel');
@@ -867,7 +870,7 @@ async function planWeekDeep(mondayStr) {
   try {
     const r = await api('/calendar/plan-week-deep', {
       method: 'POST',
-      body: JSON.stringify({ week_start: mondayStr, weekly_theme: theme || null, sensitive_period: sensitivePeriod, humanitarian_context: seasonalOverride ? seasonalContext : null, video_day_weekday: videoDayWeekday }),
+      body: JSON.stringify({ week_start: mondayStr, weekly_theme: theme || null, sensitive_period: sensitivePeriod, humanitarian_context: seasonalOverride ? seasonalContext : null, video_day_weekdays: videoDayWeekdays }),
     });
     deepPlanId = r.plan_id;
 
@@ -2146,6 +2149,11 @@ let walkingVideoRunId = null;
 let walkingVideoStartTime = 0;
 let walkingVideoPollInterval = null;
 
+// Bulk-toggle Week Planner video day checkboxes.
+function setAllVideoDays(checked) {
+  document.querySelectorAll('.video-day-checkbox').forEach(el => { el.checked = !!checked; });
+}
+
 // Jump straight to the walking-video detail view for a given script id.
 // Used by the Week Planner calendar when the operator clicks "View Script"
 // on a video-day card that has already generated a draft.
@@ -2229,11 +2237,12 @@ async function _renderWalkingVideoFormInto(container) {
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
           <div>
             <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Target duration</label>
-            <select id="wv-duration" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+            <select id="wv-duration" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark" title="TJ's analysis shows 60-120s is the engagement sweet spot. Longer (up to 4min) works for deeper takes.">
               <option value="60">60 seconds</option>
-              <option value="90" selected>90 seconds</option>
-              <option value="120">120 seconds</option>
-              <option value="150">150 seconds</option>
+              <option value="90" selected>90 seconds (sweet spot)</option>
+              <option value="120">120 seconds (sweet spot)</option>
+              <option value="180">3 minutes</option>
+              <option value="240">4 minutes</option>
             </select>
           </div>
           <div>

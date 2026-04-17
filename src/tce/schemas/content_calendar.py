@@ -53,13 +53,25 @@ class PlanWeekDeepRequest(BaseModel):
     focus_areas: list[str] | None = None
     sensitive_period: bool = False
     humanitarian_context: str | None = None
-    # Video Studio integration: reserve one weekday slot for a walking video
-    # script. Planner prefers walking-friendly angles for that day (hot takes,
-    # contrarian reframes, news reactions) and marks plan_context.content_format
-    # = "walking_video" so the dashboard renders the card differently and
-    # routes Generate clicks to Video Studio instead of the text pipeline.
-    # 0=Monday .. 4=Friday; None = no video day this week.
-    video_day_weekday: int | None = None
+    # Video Studio integration: reserve one or more weekday slots for walking
+    # video scripts. For each selected day, the planner prefers walking-friendly
+    # angles (hot takes, contrarian reframes, news reactions) and marks
+    # plan_context.content_format = "walking_video" so the dashboard renders
+    # those cards differently and routes Generate clicks to Video Studio
+    # instead of the text pipeline.
+    # Values are weekday indices 0=Monday .. 4=Friday. Empty = no video days.
+    # Legacy scalar `video_day_weekday` still accepted (auto-promoted to list).
+    video_day_weekdays: list[int] | None = None
+    video_day_weekday: int | None = None  # deprecated - use video_day_weekdays
+
+    def resolved_video_days(self) -> set[int]:
+        """Merge legacy + new fields into the canonical set of video weekday indices."""
+        days: set[int] = set()
+        if self.video_day_weekdays:
+            days.update(d for d in self.video_day_weekdays if 0 <= d <= 4)
+        if self.video_day_weekday is not None and 0 <= self.video_day_weekday <= 4:
+            days.add(self.video_day_weekday)
+        return days
 
 
 class PlanApproveRequest(BaseModel):

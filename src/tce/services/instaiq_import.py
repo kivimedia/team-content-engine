@@ -193,7 +193,7 @@ async def _amain(argv: list[str] | None = None) -> int:
     parser.add_argument("--dir", required=True, help="Path to InstaIQ run directory")
     parser.add_argument("--creator", required=True, help="Creator display name (e.g. 'TJ Robertson')")
     parser.add_argument("--handle", required=True, help="Instagram handle (e.g. 'tjrobertsondigital')")
-    parser.add_argument("--format", default="walking_monologue", help="Default format_label for REELs")
+    parser.add_argument("--format", default="short_form_talking", help="Default format_label for REELs. Neutral label covering walking/standing/sitting phone-held single-take video (the TJ-style format family).")
     args = parser.parse_args(argv)
 
     output_dir = Path(args.dir).resolve()

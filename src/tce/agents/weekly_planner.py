@@ -276,16 +276,38 @@ class WeeklyPlanner(AgentBase):
                 "The weekly theme should sound like something the founder would actually say."
             )
 
-        # === Video day context ===
-        video_day = context.get("video_day_weekday")
-        if video_day is not None and 0 <= video_day <= 4:
-            day_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"][video_day]
+        # === Video days context (may be 1-5 weekdays) ===
+        video_days = context.get("video_day_weekdays")
+        if not video_days:
+            legacy = context.get("video_day_weekday")
+            if legacy is not None and 0 <= legacy <= 4:
+                video_days = [legacy]
+        if video_days:
+            day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+            selected_names = [day_names[d] for d in sorted(set(video_days)) if 0 <= d <= 4]
+            count = len(selected_names)
+            video_days_list = ", ".join(f"Day {d} ({day_names[d]})" for d in sorted(set(video_days)) if 0 <= d <= 4)
+            if count >= 4:
+                variety_note = (
+                    "Across all video days, vary the hook formulas and topic clusters - "
+                    "do NOT give 5 near-identical hot-takes. Mix: 1 crisis-signal, "
+                    "1 counterintuitive, 1 paradigm reframe, 1 news peg, 1 hidden-process reveal. "
+                )
+            else:
+                variety_note = ""
             prompt_parts.append(
-                f"\nVIDEO DAY: Day {video_day} ({day_name}) is the walking-video slot. "
-                f"All 3 of this day's options MUST be walking-monologue candidates "
-                f"(60-120s, phone-held, vertical, TJ Robertson style). Mark each "
-                f"with content_format: \"walking_video\". Every other day should "
-                f"have content_format: \"text\"."
+                f"\nVIDEO DAYS ({count} total): {video_days_list}.\n"
+                f"Each of these days MUST have all 3 options written as walking-video "
+                f"candidates in the TJ Robertson short-form style. Optimal length 60-120 "
+                f"seconds (not longer - deliverable_3 analysis shows videos over 150s "
+                f"lose viewers before the CTA lands). Mark each of these days' options "
+                f"with content_format: \"walking_video\". Every non-video day should have "
+                f"content_format: \"text\".\n"
+                f"{variety_note}"
+                f"Prefer walking-friendly angles: hot takes, counterintuitive claims, "
+                f"news reactions with named actors + specific numbers, paradigm reframes. "
+                f"Avoid dense how-tos with step counts > 3, personal metaphors unrelated "
+                f"to the topic, and question hooks without stakes."
             )
 
         # === Humanitarian sensitivity context ===
