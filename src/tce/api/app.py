@@ -48,14 +48,38 @@ from tce.utils.logging import setup_logging
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Seed database with defaults on startup."""
+    """Seed database and start background scheduler on startup."""
     try:
         async with async_session() as db:
             await seed_database(db)
             await db.commit()
     except Exception:
         pass  # DB may not be available yet (e.g., during tests)
+
+    # Auto-start the scheduler so recurring workflows (daily_content,
+    # weekly_planning, daily_backup, etc.) fire without manual intervention.
+    # Tests skip this via the TCE_DISABLE_SCHEDULER env var.
+    import os
+
+    if os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
+        try:
+            from tce.services.scheduler import scheduler
+
+            scheduler.start()
+        except Exception:
+            # Scheduler failure must never block the API from booting.
+            pass
+
     yield
+
+    # Stop the scheduler on shutdown so tests/restarts don't leave
+    # orphaned background tasks.
+    try:
+        from tce.services.scheduler import scheduler
+
+        scheduler.stop()
+    except Exception:
+        pass
 
 
 def create_app() -> FastAPI:
