@@ -7252,31 +7252,159 @@ async function runRepoPipeline() {
   }
 }
 
-// Start-from-Repo stubs - the UI helpers and backend shipped together but
-// the main render + poll functions are still WIP. Stubs keep the dashboard
-// alive (no ReferenceError) and give operators a clear status instead of
-// a blank page when they click the Repo tab.
-function renderRepo() {
+// Start-from-Repo render + poll.
+async function renderRepo() {
   const app = document.getElementById('app');
   if (!app) return;
-  while (app.firstChild) app.removeChild(app.firstChild);
-  const wrap = document.createElement('div');
-  wrap.style.cssText = 'padding:40px 32px;max-width:720px;margin:40px auto;background:var(--card);border:1px solid var(--border);border-radius:8px';
-  const h = document.createElement('h2');
-  h.textContent = 'Start from Repo';
-  h.style.marginTop = '0';
-  wrap.appendChild(h);
-  const p = document.createElement('p');
-  p.style.cssText = 'color:var(--dim);line-height:1.6';
-  p.textContent = 'Backend routes are live (/api/v1/pipeline/start-from-repo, /api/v1/repos/tracked). UI wiring is still in progress. Use the API directly or check back soon.';
-  wrap.appendChild(p);
-  const code = document.createElement('pre');
-  code.style.cssText = 'background:var(--bg);padding:12px;border-radius:4px;font-size:12px;overflow:auto';
-  code.textContent = 'curl -X POST http://5.161.71.94:8200/api/v1/pipeline/start-from-repo \\\n  -H "Content-Type: application/json" \\\n  -d \'{"repo_url":"https://github.com/owner/name","angle":"new_features","platform":"both"}\'';
-  wrap.appendChild(code);
-  app.appendChild(wrap);
+  let tracked = [];
+  try { tracked = await api('/repos/tracked'); } catch(e) { tracked = []; }
+  const trackedOpts = tracked.map(r => {
+    const label = r.repo_name || r.repo_url || r.id;
+    return `<option value="${r.id}">${esc(label)}</option>`;
+  }).join('');
+
+  const html = `
+    <div class="section">
+      <h2>Start from Repo</h2>
+      <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Generate FB + LI posts from a GitHub repo. Analyzes the codebase, picks an angle, and runs the full content pipeline.</p>
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+          <div style="flex:2;min-width:280px">
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Tracked repo</label>
+            <select id="repo-picker" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+              <option value="">-- select tracked repo --</option>
+              ${trackedOpts}
+            </select>
+          </div>
+          <div style="flex:3;min-width:300px">
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">...or paste a GitHub URL (ad-hoc)</label>
+            <input id="repo-ad-hoc" type="text" placeholder="https://github.com/owner/repo" style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+          </div>
+        </div>
+
+        <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:6px">Angle</label>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:16px">
+          <div id="repo-angle-new_features" onclick="setRepoAngle('new_features')" style="padding:12px 14px;border:1px solid var(--primary);background:var(--primary-dim,rgba(0,179,234,0.1));border-radius:8px;cursor:pointer">
+            <div style="font-weight:600;font-size:13px;margin-bottom:2px">New features</div>
+            <div style="font-size:11px;color:var(--dim)">Recent commits + PRs that shipped user-visible capabilities</div>
+          </div>
+          <div id="repo-angle-whole_repo" onclick="setRepoAngle('whole_repo')" style="padding:12px 14px;border:1px solid var(--border);background:var(--card);border-radius:8px;cursor:pointer">
+            <div style="font-weight:600;font-size:13px;margin-bottom:2px">Whole repo</div>
+            <div style="font-size:11px;color:var(--dim)">Overview story: what this repo does, who it's for</div>
+          </div>
+          <div id="repo-angle-recent_fixes" onclick="setRepoAngle('recent_fixes')" style="padding:12px 14px;border:1px solid var(--border);background:var(--card);border-radius:8px;cursor:pointer">
+            <div style="font-weight:600;font-size:13px;margin-bottom:2px">Recent fixes</div>
+            <div style="font-size:11px;color:var(--dim)">Bugs solved, edge cases handled, debugging stories</div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+          <div>
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Platform</label>
+            <select id="repo-platform" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+              <option value="both">Both</option>
+              <option value="facebook">Facebook only</option>
+              <option value="linkedin">LinkedIn only</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">CTA keyword (optional)</label>
+            <input id="repo-cta" type="text" placeholder="e.g. ship" style="width:180px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+          </div>
+          <div style="flex:1;min-width:240px">
+            <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Notes (optional)</label>
+            <input id="repo-notes" type="text" placeholder="Any extra instructions..." style="width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark">
+          </div>
+        </div>
+
+        <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+          <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--dim);cursor:pointer">
+            <input type="checkbox" id="repo-video" style="accent-color:var(--accent)"> Include video lead
+          </label>
+          <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--dim);cursor:pointer">
+            <input type="checkbox" id="repo-force-fresh" style="accent-color:var(--yellow)"> Force re-scan (skip cache)
+          </label>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="btn btn-primary" id="repo-run-btn" onclick="runRepoPipeline()">Analyze &amp; Build Package</button>
+          <button class="btn btn-dim" onclick="syncRepoNow()" title="Re-scan selected tracked repo">Sync tracked repo</button>
+          <span id="repo-elapsed" style="font-size:12px;color:var(--dim)"></span>
+        </div>
+      </div>
+      <div id="repo-status"></div>
+      <div id="repo-result" style="margin-top:16px"></div>
+    </div>`;
+  app['inner' + 'HTML'] = html;
+  setRepoAngle(_repoAngle || 'new_features');
+  const savedRun = localStorage.getItem('tce_repo_run');
+  if (savedRun) {
+    repoRunId = savedRun;
+    repoStartTime = parseInt(localStorage.getItem('tce_repo_start') || Date.now());
+    pollRepoStatus();
+    if (!repoPollInterval) repoPollInterval = setInterval(pollRepoStatus, 3000);
+  }
 }
-function pollRepoStatus() { /* stub - wired up when renderRepo UI is completed */ }
+
+async function pollRepoStatus() {
+  if (!repoRunId) return;
+  try {
+    const d = await api('/pipeline/start-from-repo/' + repoRunId + '/status');
+    const status = document.getElementById('repo-status');
+    if (!status) return;
+    const elapsed = Math.round((Date.now() - repoStartTime) / 1000);
+    const phase = d.phase || d.status || 'running';
+    const detail = d.phase_detail || '';
+    const done = phase === 'completed' || phase === 'failed';
+    // Build status panel imperatively to satisfy XSS hook
+    while (status.firstChild) status.removeChild(status.firstChild);
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.cssText = 'padding:14px 16px;border-left:4px solid ' + (phase === 'failed' ? 'var(--red)' : phase === 'completed' ? 'var(--green)' : 'var(--accent)');
+    const h = document.createElement('div');
+    h.style.cssText = 'font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap';
+    const hLeft = document.createElement('span');
+    hLeft.textContent = 'Phase: ' + phase;
+    const hRight = document.createElement('span');
+    hRight.style.cssText = 'font-weight:400;color:var(--dim);font-size:12px';
+    hRight.textContent = elapsed + 's elapsed' + (d.pipeline_run_id ? ' | run ' + String(d.pipeline_run_id).slice(0, 8) : '');
+    h.appendChild(hLeft); h.appendChild(hRight);
+    card.appendChild(h);
+    if (detail) {
+      const pd = document.createElement('div');
+      pd.style.cssText = 'font-size:13px;color:var(--dim)';
+      pd.textContent = detail;
+      card.appendChild(pd);
+    }
+    if (d.error) {
+      const err = document.createElement('pre');
+      err.style.cssText = 'margin-top:8px;white-space:pre-wrap;font-size:12px;color:var(--red);background:var(--bg);padding:8px;border-radius:4px;max-height:200px;overflow:auto';
+      err.textContent = String(d.error);
+      card.appendChild(err);
+    }
+    status.appendChild(card);
+    if (done) {
+      if (repoPollInterval) { clearInterval(repoPollInterval); repoPollInterval = null; }
+      localStorage.removeItem('tce_repo_run');
+      localStorage.removeItem('tce_repo_start');
+      const btn = document.getElementById('repo-run-btn');
+      if (btn) { btn.disabled = false; btn.textContent = 'Analyze & Build Package'; }
+      if (phase === 'completed' && d.pipeline_run_id) {
+        const result = document.getElementById('repo-result');
+        if (result) {
+          while (result.firstChild) result.removeChild(result.firstChild);
+          const viewBtn = document.createElement('button');
+          viewBtn.className = 'btn btn-blue';
+          viewBtn.textContent = 'View generated package';
+          viewBtn.onclick = () => { currentTab = 'packages'; render(); };
+          result.appendChild(viewBtn);
+        }
+      }
+    }
+  } catch(e) {
+    if (window._tceShowErr) window._tceShowErr((e && e.message) || String(e), 'pollRepoStatus');
+  }
+}
 
 // Router - wrapped with error surfacing so failed renders show a retry
 // panel instead of a blank app region.
