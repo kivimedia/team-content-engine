@@ -2785,6 +2785,32 @@ function _renderScriptDetailInto(container, script, opts) {
       toast('Hook copied');
     }, 'Copy just the opening hook'));
   }
+  actionsRow.appendChild(mkBtn('Email', 'btn btn-dim', () => {
+    // Open Gmail compose in a new tab with subject + body prefilled. Works
+    // from the HTTP dashboard (unlike server-side send which would need
+    // gws creds on the VPS). Operator clicks Send in Gmail UI.
+    const subject = '[Video Script] ' + (script.title || 'Untitled');
+    const lines = [];
+    lines.push(script.hook || '');
+    lines.push('');
+    lines.push('---');
+    lines.push((script.full_script || '').trim());
+    lines.push('');
+    lines.push('---');
+    lines.push('Shot notes: ' + JSON.stringify(script.shot_notes || {}, null, 2));
+    if (script.cutsense_prompt) {
+      lines.push('');
+      lines.push('CutSense prompt: ' + script.cutsense_prompt);
+    }
+    lines.push('');
+    lines.push('Duration: ' + (script.estimated_duration_seconds || '?') + 's | Words: ' + (script.word_count || '?') + ' | Niche: ' + (script.niche || '?'));
+    if (script.topic) { lines.push('Topic: ' + script.topic); }
+    if (script.thesis) { lines.push('Thesis: ' + script.thesis); }
+    const body = lines.join('\n');
+    const url = 'https://mail.google.com/mail/?view=cm&fs=1&to=ravivziv@gmail.com&su=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
+    window.open(url, '_blank', 'noopener,noreferrer');
+    toast('Gmail compose opened - click Send');
+  }, 'Open Gmail compose with the full script pre-filled'));
   actionsRow.appendChild(mkBtn('Edit', 'btn btn-dim', () => {
     // Toggle edit mode on the teleprompter below
     const tele = container.querySelector('[data-role="teleprompter"]');
