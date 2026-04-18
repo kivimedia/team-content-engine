@@ -54,10 +54,13 @@ class WalkingVideoScript(Base):
     repurpose: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Lifecycle
-    # draft | approved | recorded | edited | published | rejected
+    # draft | approved | recorded | edited | published | rejected | archived
     status: Mapped[str] = mapped_column(String(30), default="draft")
     recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     video_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Operator captures - revision notes, approval rationale, "tune next time"
+    operator_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Pipeline reference
     pipeline_run_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)

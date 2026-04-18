@@ -24,8 +24,14 @@ router = APIRouter(prefix="/video-scripts", tags=["video-scripts"])
 
 
 class ScriptStatusUpdate(BaseModel):
-    status: str  # draft | approved | recorded | edited | published | rejected
+    # Any subset of these can be patched in one call. Status remains required
+    # where it used to be; other fields are optional so the frontend can send
+    # just operator_feedback or just full_script without a status change.
+    status: str | None = None  # draft | approved | recorded | edited | published | rejected | archived
     video_file_path: str | None = None  # set when marking recorded
+    full_script: str | None = None  # inline edit target
+    operator_feedback: str | None = None  # revision notes / "tune next time"
+    hook: str | None = None  # inline hook edit
 
 
 def _walking_to_card(row: WalkingVideoScript) -> dict[str, Any]:
@@ -113,6 +119,7 @@ async def get_walking_script(
         "seo_description": row.seo_description,
         "tags": row.tags or [],
         "repurpose": row.repurpose or {},
+        "operator_feedback": row.operator_feedback,
         "recorded_at": row.recorded_at.isoformat() if row.recorded_at else None,
         "video_file_path": row.video_file_path,
         "pipeline_run_id": str(row.pipeline_run_id) if row.pipeline_run_id else None,
@@ -150,14 +157,26 @@ async def update_walking_script(
     row = await db.get(WalkingVideoScript, script_id)
     if not row:
         raise HTTPException(status_code=404, detail="Walking-video script not found")
-    valid = {"draft", "approved", "recorded", "edited", "published", "rejected"}
-    if data.status not in valid:
-        raise HTTPException(status_code=400, detail=f"Invalid status; must be one of {sorted(valid)}")
-    row.status = data.status
-    if data.status == "recorded":
-        row.recorded_at = datetime.utcnow()
-        if data.video_file_path:
-            row.video_file_path = data.video_file_path
+    # Apply only fields the caller actually sent.
+    if data.status is not None:
+        valid = {"draft", "approved", "recorded", "edited", "published", "rejected", "archived"}
+        if data.status not in valid:
+            raise HTTPException(status_code=400, detail=f"Invalid status; must be one of {sorted(valid)}")
+        row.status = data.status
+        if data.status == "recorded":
+            row.recorded_at = datetime.utcnow()
+    if data.video_file_path is not None:
+        row.video_file_path = data.video_file_path
+    if data.full_script is not None:
+        row.full_script = data.full_script
+        # Recompute word count so library card + estimated duration stay honest
+        wc = len(data.full_script.split()) if data.full_script.strip() else 0
+        row.word_count = wc
+        row.estimated_duration_seconds = int(wc * 60 / 140) if wc else row.estimated_duration_seconds
+    if data.hook is not None:
+        row.hook = data.hook
+    if data.operator_feedback is not None:
+        row.operator_feedback = data.operator_feedback
     await db.commit()
     await db.refresh(row)
     return _walking_to_card(row)

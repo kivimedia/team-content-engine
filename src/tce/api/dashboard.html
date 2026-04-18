@@ -691,6 +691,10 @@ async function renderWeek() {
       // Lookup by id for inline generators (generateWalkingVideoInline reads this)
       window._weekEntriesById = {};
       for (const e of entries) { if (e && e.id) window._weekEntriesById[e.id] = e; }
+      // After the grid renders, resume any inflight video pollers from a
+      // prior session/tab/refresh so they keep ticking + auto-update the
+      // card when the backend run completes.
+      _resumeInflightVideoRuns();
       window._weekMondayStr = fmtDate(monday);
     }
 
@@ -752,13 +756,16 @@ async function renderWeek() {
           // Walking video days route to Video Studio (different backend pipeline).
           // We do NOT use post_packages for walking videos - they go to walking_video_scripts.
           const videoScriptId = entry.walking_video_script_id;
-          const inflight = _videoGenState[entry.id];
-          if (videoScriptId) {
+          // Inflight check reads localStorage so the state survives navigation
+          // + full page refresh. Double-click is blocked by rendering a
+          // disabled Generating button when the entry is in the map.
+          const inflightRec = _isInflight(entry.id);
+          if (videoScriptId && !inflightRec) {
             html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="openWalkingScriptDetail(\'' + videoScriptId + '\')">Package</button>';
             html += '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="regenerateWalkingVideo(\'' + entry.id + '\', this)">Regenerate</button>';
-          } else if (inflight && inflight.status === 'running') {
-            const elapsed = Math.round((Date.now() - inflight.startedAt) / 1000);
-            html += '<button class="btn btn-dim" disabled style="padding:4px 10px;font-size:11px">Generating ' + elapsed + 's...</button>';
+          } else if (inflightRec) {
+            const elapsed = Math.round((Date.now() - (inflightRec.startedAt || Date.now())) / 1000);
+            html += '<button class="btn btn-dim" disabled data-entry-inflight="' + entry.id + '" style="padding:4px 10px;font-size:11px">Generating ' + elapsed + 's...</button>';
           } else {
             html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="generateWalkingVideoInline(\'' + entry.id + '\', this)">Generate</button>';
           }
@@ -2204,7 +2211,104 @@ function setAllVideoDays(checked) {
 
 // Inline walking-video generation state, keyed by calendar entry id so multiple
 // cards can show independent progress without clobbering each other.
+// Also persisted to localStorage (key tce_inflight_video_runs) so page refresh
+// + tab switches resume correctly. Map shape: { entryId: { runId, startedAt } }
 const _videoGenState = {};
+
+function _loadInflightVideoMap() {
+  try {
+    const raw = localStorage.getItem('tce_inflight_video_runs');
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+function _saveInflightVideoMap(map) {
+  try {
+    if (Object.keys(map).length === 0) localStorage.removeItem('tce_inflight_video_runs');
+    else localStorage.setItem('tce_inflight_video_runs', JSON.stringify(map));
+  } catch { /* quota etc - ignore */ }
+}
+function _rememberInflight(entryId, runId, startedAt) {
+  const m = _loadInflightVideoMap();
+  m[entryId] = { runId, startedAt };
+  _saveInflightVideoMap(m);
+}
+function _forgetInflight(entryId) {
+  const m = _loadInflightVideoMap();
+  delete m[entryId];
+  _saveInflightVideoMap(m);
+}
+function _isInflight(entryId) {
+  const m = _loadInflightVideoMap();
+  const rec = m[entryId];
+  if (!rec) return null;
+  // Treat runs older than 10 minutes as stale (caller can clear)
+  if (Date.now() - (rec.startedAt || 0) > 10 * 60 * 1000) return null;
+  return rec;
+}
+
+// Resume background poller for any entry still marked inflight at the time
+// renderWeek runs. No visible UI change besides the card already rendering
+// "Generating Xs..." from state; when the poll completes it swaps the
+// card in place via _updateVideoCardToReady.
+const _resumedPollers = new Set();
+function _resumeInflightVideoRuns() {
+  const m = _loadInflightVideoMap();
+  for (const entryId of Object.keys(m)) {
+    if (_resumedPollers.has(entryId)) continue;
+    const rec = m[entryId];
+    if (!rec || !rec.runId) continue;
+    _resumedPollers.add(entryId);
+    _videoGenState[entryId] = { status: 'running', startedAt: rec.startedAt || Date.now() };
+    (async () => {
+      let done = false, failed = false, scriptId = null, polls = 0;
+      while (!done && polls < 240) {  // ~10 min
+        await new Promise(ok => setTimeout(ok, 3000));
+        try {
+          const st = await api('/pipeline/start-walking-video/' + rec.runId + '/status');
+          if (st.status === 'completed' || st.phase === 'completed') {
+            done = true;
+            scriptId = st.walking_video_script_id || null;
+          } else if (st.status === 'failed' || st.phase === 'failed') {
+            done = true; failed = true;
+          }
+        } catch { /* transient - keep polling */ }
+        polls++;
+      }
+      _resumedPollers.delete(entryId);
+      _forgetInflight(entryId);
+      _videoGenState[entryId] = { status: failed ? 'failed' : 'done' };
+      if (!failed && scriptId) {
+        _updateVideoCardToReady(entryId, scriptId);
+      } else if (failed) {
+        // Card might still show "Generating" - force a targeted reset
+        const cards = document.querySelectorAll('.day-card');
+        for (const card of cards) {
+          if (card.querySelector('[data-entry-inflight="' + entryId + '"]')) {
+            // Trigger a full re-render since failure is rare and we don't
+            // have a clean partial reset path
+            renderWeek();
+            break;
+          }
+        }
+      }
+    })();
+  }
+}
+
+// Global 1s ticker that updates textContent of any visible "Generating Xs..."
+// button WITHOUT re-rendering the grid. Cards are marked via
+// data-entry-inflight attribute at render time.
+setInterval(() => {
+  const map = _loadInflightVideoMap();
+  if (Object.keys(map).length === 0) return;
+  document.querySelectorAll('[data-entry-inflight]').forEach(el => {
+    const entryId = el.getAttribute('data-entry-inflight');
+    const rec = map[entryId];
+    if (!rec) return;
+    const secs = Math.round((Date.now() - (rec.startedAt || Date.now())) / 1000);
+    el.textContent = 'Generating ' + secs + 's...';
+  });
+}, 1000);
 
 // Fire walking_video_from_plan for a single calendar entry (inline - no
 // navigation to Video Studio). Uses the lean workflow (research -> writer)
@@ -2248,6 +2352,7 @@ async function generateWalkingVideoInline(entryId, btn) {
       }),
     });
     const runId = r.run_id;
+    _rememberInflight(entryId, runId, startedAt);
     let done = false, failed = false, scriptId = null;
     let polls = 0;
     while (!done && polls < 120) {
@@ -2266,6 +2371,7 @@ async function generateWalkingVideoInline(entryId, btn) {
     }
     if (timerHandle) clearInterval(timerHandle);
     _videoGenState[entryId] = { status: failed ? 'failed' : 'done' };
+    _forgetInflight(entryId);
     if (failed) {
       if (btn) { btn.disabled = false; btn.textContent = 'Generate'; }
     } else if (scriptId) {
@@ -2278,6 +2384,7 @@ async function generateWalkingVideoInline(entryId, btn) {
   } catch (e) {
     if (timerHandle) clearInterval(timerHandle);
     _videoGenState[entryId] = { status: 'failed' };
+    _forgetInflight(entryId);
     toast('Failed: ' + e.message, false);
     if (btn) { btn.disabled = false; btn.textContent = 'Generate'; }
     return null;
@@ -2633,45 +2740,162 @@ async function _openScriptDetail(kind, id) {
 
 function _renderScriptDetailInto(container, script, opts) {
   const kind = (opts && opts.kind) || script.kind || 'walking';
+  const isArchived = script.status === 'archived';
+
+  // === HEADER: title, meta, top-right action cluster ===
   const head = document.createElement('div');
   head.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:12px';
   const headLeft = document.createElement('div');
+  headLeft.style.cssText = 'flex:1;min-width:280px';
   const title = document.createElement('h2');
   title.textContent = script.title || '(Untitled)';
   title.style.cssText = 'margin:0 0 4px 0';
+  if (isArchived) title.style.opacity = '0.5';
   headLeft.appendChild(title);
   const meta = document.createElement('div');
   meta.style.cssText = 'font-size:12px;color:var(--dim)';
   const dur = script.estimated_duration_seconds ? Math.round(script.estimated_duration_seconds) + 's' : '?s';
-  meta.textContent = [dur, (script.word_count ? script.word_count + ' words' : ''), script.niche, script.hook_formula ? 'formula ' + script.hook_formula : ''].filter(Boolean).join(' | ');
+  const statusBadge = script.status ? script.status.toUpperCase() : 'DRAFT';
+  meta.textContent = [statusBadge, dur, (script.word_count ? script.word_count + ' words' : ''), script.niche, script.hook_formula ? 'formula ' + script.hook_formula : ''].filter(Boolean).join(' | ');
   headLeft.appendChild(meta);
   head.appendChild(headLeft);
+
+  // Top-right action cluster: Copy Script (prominent), Copy Hook, Edit, Archive
+  const actionsRow = document.createElement('div');
+  actionsRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center';
+  const mkBtn = (label, cls, onClick, title) => {
+    const b = document.createElement('button');
+    b.className = cls;
+    b.style.cssText = 'font-size:12px;padding:6px 12px';
+    b.textContent = label;
+    if (title) b.title = title;
+    b.onclick = onClick;
+    return b;
+  };
+  actionsRow.appendChild(mkBtn('Copy Script', 'btn btn-primary', async () => {
+    try { await navigator.clipboard.writeText(script.full_script || ''); toast('Script copied to clipboard'); }
+    catch(e) { toast('Copy failed', false); }
+  }, 'Copy the full teleprompter script'));
+  if (script.hook) {
+    actionsRow.appendChild(mkBtn('Copy Hook', 'btn btn-dim', async () => {
+      try { await navigator.clipboard.writeText(script.hook || ''); toast('Hook copied'); }
+      catch(e) { toast('Copy failed', false); }
+    }, 'Copy just the opening hook'));
+  }
+  actionsRow.appendChild(mkBtn('Edit', 'btn btn-dim', () => {
+    // Toggle edit mode on the teleprompter below
+    const tele = container.querySelector('[data-role="teleprompter"]');
+    const editBox = container.querySelector('[data-role="tele-editor"]');
+    const saveBtn = container.querySelector('[data-role="tele-save"]');
+    const cancelBtn = container.querySelector('[data-role="tele-cancel"]');
+    if (!tele || !editBox) return;
+    if (editBox.style.display === 'none') {
+      editBox.value = script.full_script || '';
+      editBox.style.display = '';
+      tele.style.display = 'none';
+      if (saveBtn) saveBtn.style.display = '';
+      if (cancelBtn) cancelBtn.style.display = '';
+      editBox.focus();
+    }
+  }, 'Edit the script inline'));
+  if (!isArchived) {
+    actionsRow.appendChild(mkBtn('Archive', 'btn btn-dim', async () => {
+      if (!confirm('Archive this script? It will stay in the database but won\'t show in the default library view.')) return;
+      try {
+        await api('/video-scripts/' + kind + '/' + script.id, { method: 'PATCH', body: JSON.stringify({ status: 'archived' }) });
+        toast('Archived');
+        script.status = 'archived';
+        _openScriptDetail(kind, script.id); // re-render detail
+      } catch(e) { toast('Failed: ' + e.message, false); }
+    }, 'Soft-delete this script'));
+  } else {
+    actionsRow.appendChild(mkBtn('Unarchive', 'btn btn-dim', async () => {
+      try {
+        await api('/video-scripts/' + kind + '/' + script.id, { method: 'PATCH', body: JSON.stringify({ status: 'draft' }) });
+        toast('Unarchived');
+        script.status = 'draft';
+        _openScriptDetail(kind, script.id);
+      } catch(e) { toast('Failed: ' + e.message, false); }
+    }));
+  }
+  head.appendChild(actionsRow);
+  container.appendChild(head);
+
+  // === STATUS TRANSITIONS (approved / recorded / published / rejected) ===
   const statusRow = document.createElement('div');
-  statusRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+  statusRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;font-size:11px;color:var(--dim);align-items:center';
+  const statusLabel = document.createElement('span');
+  statusLabel.textContent = 'Mark as:';
+  statusLabel.style.marginRight = '4px';
+  statusRow.appendChild(statusLabel);
   ['approved', 'recorded', 'published', 'rejected'].forEach(st => {
     const b = document.createElement('button');
     b.className = 'btn btn-dim';
-    b.style.fontSize = '11px';
-    b.textContent = 'Mark ' + st;
+    b.style.cssText = 'font-size:11px;padding:4px 10px';
+    b.textContent = st;
     b.onclick = async () => {
       try {
         await api('/video-scripts/' + kind + '/' + script.id, { method: 'PATCH', body: JSON.stringify({ status: st }) });
         toast('Status: ' + st);
+        script.status = st;
+        _openScriptDetail(kind, script.id);
       } catch(e) { toast('Failed: ' + e.message, false); }
     };
     statusRow.appendChild(b);
   });
-  head.appendChild(statusRow);
-  container.appendChild(head);
+  container.appendChild(statusRow);
 
   const grid = document.createElement('div');
   grid.style.cssText = 'display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:start';
-  // LEFT: teleprompter
+
+  // === LEFT: teleprompter + edit textarea (hidden by default) + save/cancel ===
+  const teleWrap = document.createElement('div');
+  teleWrap.style.cssText = 'display:flex;flex-direction:column;gap:8px';
   const tele = document.createElement('div');
   tele.className = 'card';
+  tele.setAttribute('data-role', 'teleprompter');
   tele.style.cssText = 'padding:20px 24px;font-size:18px;line-height:1.7;color:var(--text);white-space:pre-wrap;max-height:600px;overflow:auto';
   tele.textContent = script.full_script || '(empty script)';
-  grid.appendChild(tele);
+  teleWrap.appendChild(tele);
+  const editBox = document.createElement('textarea');
+  editBox.setAttribute('data-role', 'tele-editor');
+  editBox.style.cssText = 'display:none;width:100%;min-height:400px;padding:16px 20px;font-size:16px;line-height:1.6;background:var(--card);color:var(--text);border:1px solid var(--accent);border-radius:8px;resize:vertical;font-family:inherit';
+  teleWrap.appendChild(editBox);
+  const editActions = document.createElement('div');
+  editActions.style.cssText = 'display:flex;gap:6px';
+  const saveEditBtn = document.createElement('button');
+  saveEditBtn.className = 'btn btn-primary';
+  saveEditBtn.setAttribute('data-role', 'tele-save');
+  saveEditBtn.style.cssText = 'display:none;font-size:12px;padding:6px 14px';
+  saveEditBtn.textContent = 'Save Script';
+  saveEditBtn.onclick = async () => {
+    const newText = editBox.value;
+    try {
+      await api('/video-scripts/' + kind + '/' + script.id, { method: 'PATCH', body: JSON.stringify({ full_script: newText }) });
+      toast('Script saved');
+      script.full_script = newText;
+      tele.textContent = newText;
+      tele.style.display = '';
+      editBox.style.display = 'none';
+      saveEditBtn.style.display = 'none';
+      cancelEditBtn.style.display = 'none';
+    } catch(e) { toast('Save failed: ' + e.message, false); }
+  };
+  const cancelEditBtn = document.createElement('button');
+  cancelEditBtn.className = 'btn btn-dim';
+  cancelEditBtn.setAttribute('data-role', 'tele-cancel');
+  cancelEditBtn.style.cssText = 'display:none;font-size:12px;padding:6px 14px';
+  cancelEditBtn.textContent = 'Cancel';
+  cancelEditBtn.onclick = () => {
+    editBox.style.display = 'none';
+    tele.style.display = '';
+    saveEditBtn.style.display = 'none';
+    cancelEditBtn.style.display = 'none';
+  };
+  editActions.appendChild(saveEditBtn);
+  editActions.appendChild(cancelEditBtn);
+  teleWrap.appendChild(editActions);
+  grid.appendChild(teleWrap);
   // RIGHT: shot notes + cutsense
   const side = document.createElement('div');
   side.style.cssText = 'display:flex;flex-direction:column;gap:12px';
@@ -2742,6 +2966,93 @@ function _renderScriptDetailInto(container, script, opts) {
     }
     side.appendChild(rp);
   }
+
+  // === CONTEXT PANEL: what the planner + strategist gave the writer ===
+  const ctx = document.createElement('div');
+  ctx.className = 'card';
+  ctx.style.cssText = 'padding:12px 14px';
+  const ctxH = document.createElement('div');
+  ctxH.style.cssText = 'font-weight:600;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px';
+  ctxH.textContent = 'Context used for generation';
+  ctx.appendChild(ctxH);
+  const rows = [
+    ['Topic', script.topic],
+    ['Thesis', script.thesis],
+    ['Audience', script.target_audience],
+    ['Hook formula', script.hook_formula],
+    ['Niche', script.niche],
+    ['Duration target', script.duration_target_seconds ? script.duration_target_seconds + 's' : null],
+    ['Est. duration', script.estimated_duration_seconds ? script.estimated_duration_seconds + 's' : null],
+    ['SEO description', script.seo_description],
+  ];
+  for (const [k, v] of rows) {
+    if (!v) continue;
+    const row = document.createElement('div');
+    row.style.cssText = 'font-size:12px;margin-bottom:6px;line-height:1.5';
+    const kEl = document.createElement('div');
+    kEl.style.cssText = 'color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:1px';
+    kEl.textContent = k;
+    row.appendChild(kEl);
+    const vEl = document.createElement('div');
+    vEl.style.color = 'var(--text)';
+    vEl.textContent = v;
+    row.appendChild(vEl);
+    ctx.appendChild(row);
+  }
+  if (Array.isArray(script.tags) && script.tags.length) {
+    const tagRow = document.createElement('div');
+    tagRow.style.cssText = 'font-size:12px;margin-top:8px';
+    const tagH = document.createElement('div');
+    tagH.style.cssText = 'color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px';
+    tagH.textContent = 'Tags';
+    tagRow.appendChild(tagH);
+    const tagBox = document.createElement('div');
+    tagBox.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px';
+    script.tags.forEach(t => {
+      const chip = document.createElement('span');
+      chip.style.cssText = 'background:var(--bg);color:var(--dim);padding:2px 8px;border-radius:10px;font-size:11px';
+      chip.textContent = t;
+      tagBox.appendChild(chip);
+    });
+    tagRow.appendChild(tagBox);
+    ctx.appendChild(tagRow);
+  }
+  side.appendChild(ctx);
+
+  // === FEEDBACK panel: operator notes ("tune this next time") ===
+  const fb = document.createElement('div');
+  fb.className = 'card';
+  fb.style.cssText = 'padding:12px 14px';
+  const fbH = document.createElement('div');
+  fbH.style.cssText = 'font-weight:600;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px';
+  fbH.textContent = 'Operator feedback';
+  fb.appendChild(fbH);
+  const fbHelp = document.createElement('div');
+  fbHelp.style.cssText = 'font-size:11px;color:var(--dim);margin-bottom:6px;line-height:1.4';
+  fbHelp.textContent = 'Notes for future runs: what worked, what to tune, approval rationale. Saved on the script - not sent as input to agents automatically.';
+  fb.appendChild(fbHelp);
+  const fbBox = document.createElement('textarea');
+  fbBox.style.cssText = 'width:100%;min-height:80px;padding:8px 10px;font-size:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;resize:vertical;font-family:inherit';
+  fbBox.placeholder = 'e.g. "Hook was too hedged - next time push the stakes harder" or "Perfect as-is, approved for Wed"';
+  fbBox.value = script.operator_feedback || '';
+  fb.appendChild(fbBox);
+  const fbActions = document.createElement('div');
+  fbActions.style.cssText = 'display:flex;justify-content:flex-end;margin-top:6px';
+  const fbSave = document.createElement('button');
+  fbSave.className = 'btn btn-dim';
+  fbSave.style.cssText = 'font-size:11px;padding:4px 12px';
+  fbSave.textContent = 'Save feedback';
+  fbSave.onclick = async () => {
+    try {
+      await api('/video-scripts/' + kind + '/' + script.id, { method: 'PATCH', body: JSON.stringify({ operator_feedback: fbBox.value }) });
+      script.operator_feedback = fbBox.value;
+      toast('Feedback saved');
+    } catch(e) { toast('Save failed: ' + e.message, false); }
+  };
+  fbActions.appendChild(fbSave);
+  fb.appendChild(fbActions);
+  side.appendChild(fb);
+
   grid.appendChild(side);
   container.appendChild(grid);
 }
