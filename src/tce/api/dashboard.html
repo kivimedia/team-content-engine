@@ -2785,32 +2785,27 @@ function _renderScriptDetailInto(container, script, opts) {
       toast('Hook copied');
     }, 'Copy just the opening hook'));
   }
-  actionsRow.appendChild(mkBtn('Email', 'btn btn-dim', () => {
-    // Open Gmail compose in a new tab with subject + body prefilled. Works
-    // from the HTTP dashboard (unlike server-side send which would need
-    // gws creds on the VPS). Operator clicks Send in Gmail UI.
-    const subject = '[Video Script] ' + (script.title || 'Untitled');
-    const lines = [];
-    lines.push(script.hook || '');
-    lines.push('');
-    lines.push('---');
-    lines.push((script.full_script || '').trim());
-    lines.push('');
-    lines.push('---');
-    lines.push('Shot notes: ' + JSON.stringify(script.shot_notes || {}, null, 2));
-    if (script.cutsense_prompt) {
-      lines.push('');
-      lines.push('CutSense prompt: ' + script.cutsense_prompt);
+  actionsRow.appendChild(mkBtn('Email', 'btn btn-dim', async (ev) => {
+    // Server-side send via `gws` on the VPS. Recipient is fixed in the
+    // backend (ravivziv@gmail.com) - no caller-controlled recipient field.
+    const btn = ev && ev.currentTarget;
+    const original = btn ? btn.textContent : null;
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
+    try {
+      const kindPath = (script.kind === 'walking') ? 'walking' : 'talking_head';
+      const res = await fetch(`/api/v1/video-scripts/${kindPath}/${script.id}/email`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.text().catch(() => '');
+        throw new Error(err || `HTTP ${res.status}`);
+      }
+      const data = await res.json().catch(() => ({}));
+      toast('Email sent to ravivziv@gmail.com' + (data.gmail_message_id ? ' (id: ' + String(data.gmail_message_id).slice(0, 8) + ')' : ''));
+    } catch (e) {
+      toast('Email failed: ' + (e && e.message ? e.message : 'unknown'));
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = original || 'Email'; }
     }
-    lines.push('');
-    lines.push('Duration: ' + (script.estimated_duration_seconds || '?') + 's | Words: ' + (script.word_count || '?') + ' | Niche: ' + (script.niche || '?'));
-    if (script.topic) { lines.push('Topic: ' + script.topic); }
-    if (script.thesis) { lines.push('Thesis: ' + script.thesis); }
-    const body = lines.join('\n');
-    const url = 'https://mail.google.com/mail/?view=cm&fs=1&to=ravivziv@gmail.com&su=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
-    window.open(url, '_blank', 'noopener,noreferrer');
-    toast('Gmail compose opened - click Send');
-  }, 'Open Gmail compose with the full script pre-filled'));
+  }, 'Send the script to ravivziv@gmail.com via Gmail API'));
   actionsRow.appendChild(mkBtn('Edit', 'btn btn-dim', () => {
     // Toggle edit mode on the teleprompter below
     const tele = container.querySelector('[data-role="teleprompter"]');

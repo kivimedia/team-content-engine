@@ -7,6 +7,8 @@ updates are type-aware via the `kind` path segment.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 from datetime import datetime
 from typing import Any
@@ -21,6 +23,10 @@ from tce.models.video_lead_script import VideoLeadScript
 from tce.models.walking_video_script import WalkingVideoScript
 
 router = APIRouter(prefix="/video-scripts", tags=["video-scripts"])
+
+# Destination is hardcoded so this endpoint cannot be used as an open relay.
+# If we ever need more recipients, move to an allowlist (never free-form input).
+_EMAIL_RECIPIENT = "ravivziv@gmail.com"
 
 
 class ScriptStatusUpdate(BaseModel):
@@ -180,6 +186,106 @@ async def update_walking_script(
     await db.commit()
     await db.refresh(row)
     return _walking_to_card(row)
+
+
+def _format_email_subject(title: str | None) -> str:
+    return f"[Video Script] {title or 'Untitled'}"
+
+
+def _format_email_body(script: dict[str, Any]) -> str:
+    """Mirror the frontend compose-URL body so operator sees the same shape."""
+    lines: list[str] = []
+    lines.append(script.get("hook") or "")
+    lines.append("")
+    lines.append("---")
+    lines.append((script.get("full_script") or "").strip())
+    lines.append("")
+    lines.append("---")
+    lines.append(f"Shot notes: {json.dumps(script.get('shot_notes') or {}, indent=2)}")
+    if script.get("cutsense_prompt"):
+        lines.append("")
+        lines.append(f"CutSense prompt: {script['cutsense_prompt']}")
+    lines.append("")
+    dur = script.get("estimated_duration_seconds") or "?"
+    wc = script.get("word_count") or "?"
+    niche = script.get("niche") or "?"
+    lines.append(f"Duration: {dur}s | Words: {wc} | Niche: {niche}")
+    if script.get("topic"):
+        lines.append(f"Topic: {script['topic']}")
+    if script.get("thesis"):
+        lines.append(f"Thesis: {script['thesis']}")
+    return "\n".join(lines)
+
+
+async def _send_via_gws(subject: str, body: str) -> dict[str, Any]:
+    """Invoke the `gws` CLI to deliver mail via the Gmail API.
+
+    Auth comes from ~/.config/gws/ on the VPS (credentials copied from local
+    install). Recipient is fixed to _EMAIL_RECIPIENT - do not accept
+    caller-supplied recipients. Uses argv (create_subprocess_exec, not shell),
+    so subject/body cannot be injected.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "gws", "gmail", "+send",
+        "--to", _EMAIL_RECIPIENT,
+        "--subject", subject,
+        "--body", body,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise HTTPException(status_code=504, detail="gws send timed out after 30s")
+    if proc.returncode != 0:
+        err = (stderr.decode("utf-8", errors="replace") or stdout.decode("utf-8", errors="replace")).strip()
+        raise HTTPException(status_code=502, detail=f"gws send failed: {err[:500]}")
+    text = stdout.decode("utf-8", errors="replace")
+    try:
+        start = text.find("{")
+        parsed = json.loads(text[start:]) if start >= 0 else {}
+        return {
+            "ok": True,
+            "gmail_message_id": parsed.get("id"),
+            "thread_id": parsed.get("threadId"),
+            "to": _EMAIL_RECIPIENT,
+        }
+    except json.JSONDecodeError:
+        return {"ok": True, "to": _EMAIL_RECIPIENT, "raw": text[:500]}
+
+
+@router.post("/walking/{script_id}/email")
+async def email_walking_script(
+    script_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    row = await db.get(WalkingVideoScript, script_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Walking-video script not found")
+    payload = {
+        **_walking_to_card(row),
+        "full_script": row.full_script,
+        "shot_notes": row.shot_notes or {},
+        "cutsense_prompt": row.cutsense_prompt,
+        "thesis": row.thesis,
+    }
+    return await _send_via_gws(_format_email_subject(row.title), _format_email_body(payload))
+
+
+@router.post("/talking_head/{script_id}/email")
+async def email_talking_head_script(
+    script_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    row = await db.get(VideoLeadScript, script_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Talking-head script not found")
+    payload = {
+        **_talking_to_card(row),
+        "full_script": row.full_script,
+    }
+    return await _send_via_gws(_format_email_subject(row.title), _format_email_body(payload))
 
 
 @router.patch("/talking_head/{script_id}")
