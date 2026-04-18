@@ -2266,10 +2266,14 @@ async function generateWalkingVideoInline(entryId, btn) {
     }
     if (timerHandle) clearInterval(timerHandle);
     _videoGenState[entryId] = { status: failed ? 'failed' : 'done' };
-    // Single full re-render AFTER completion so the card picks up the new
-    // walking_video_script_id from the API and flips Generate -> Package.
-    await renderWeek();
-    if (!failed && scriptId) toast('Script ready for ' + (entry.day_of_week >= 0 ? DAY_NAMES[entry.day_of_week] : 'entry'));
+    if (failed) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Generate'; }
+    } else if (scriptId) {
+      // Targeted DOM update - no full week re-render. Find the card and
+      // swap its button row in place so other cards don't repaint.
+      _updateVideoCardToReady(entryId, scriptId);
+      toast('Script ready for ' + (entry.day_of_week >= 0 ? DAY_NAMES[entry.day_of_week] : 'entry'));
+    }
     return scriptId;
   } catch (e) {
     if (timerHandle) clearInterval(timerHandle);
@@ -2285,6 +2289,33 @@ async function generateWalkingVideoInline(entryId, btn) {
 async function regenerateWalkingVideo(entryId, btn) {
   if (!confirm('Replace the existing script with a new one?')) return;
   return generateWalkingVideoInline(entryId, btn);
+}
+
+// Swap a single video-day card from "Generating" state to "READY + Package"
+// without touching other cards. Updates the local entry cache too so a
+// future full renderWeek() will agree with the visible DOM.
+function _updateVideoCardToReady(entryId, scriptId) {
+  if (window._weekEntriesById && window._weekEntriesById[entryId]) {
+    window._weekEntriesById[entryId].walking_video_script_id = scriptId;
+    window._weekEntriesById[entryId].status = 'ready';
+  }
+  // Find the card in the grid by matching any button/element carrying the
+  // entryId in its onclick. Cards have no data-entry-id attribute today,
+  // so we walk via a known onclick signature.
+  const nodes = document.querySelectorAll('.day-card');
+  for (const card of nodes) {
+    const match = card.querySelector('button[onclick*="' + entryId + '"]');
+    if (!match) continue;
+    // The button row is the last flex row in the card (status tag + buttons)
+    const rows = card.querySelectorAll('div[style*="margin-top:auto"]');
+    const btnRow = rows.length ? rows[rows.length - 1] : null;
+    if (!btnRow) return;
+    btnRow.innerHTML =
+      '<span class="day-status day-status-ready">READY</span>' +
+      '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="openWalkingScriptDetail(\'' + scriptId + '\')">Package</button>' +
+      '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="regenerateWalkingVideo(\'' + entryId + '\', this)">Regenerate</button>';
+    return;
+  }
 }
 
 // Jump straight to the walking-video detail view for a given script id.
@@ -8153,8 +8184,11 @@ function render() {
 }
 restoreGenAllState();
   loadSourceHistory('topic', 'topic-history');
-// Tick elapsed timer every second when generating
-setInterval(() => { if (genAllState?.running) renderGenAllProgress(); }, 1000);
+// Tick elapsed timer when generating. 3s instead of 1s - the progress card's
+// elapsed counter is cosmetic and rewriting the whole card every second was
+// causing perceived flicker on the Week Planner. The actual poll loops
+// already call renderGenAllProgress themselves when status changes.
+setInterval(() => { if (genAllState?.running) renderGenAllProgress(); }, 3000);
 
 // --- Start From Copy ---
 function runPolishCopy() {
