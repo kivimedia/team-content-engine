@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fix 2 of the port-8201 zombie triad: re-register TCE with pm2 using a
+# Fix 2 of the port-8200 zombie triad: re-register TCE with pm2 using a
 # longer kill_timeout so pm2 actually waits for uvicorn's graceful
 # shutdown (configured in start.sh) before SIGKILL.
 #

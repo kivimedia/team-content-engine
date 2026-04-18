@@ -1,13 +1,13 @@
 #!/bin/bash
-# Fix 3 of the port-8201 zombie triad: deploy-restart that ALWAYS clears
-# port 8201 before starting the new process. Use this instead of bare
+# Fix 3 of the port-8200 zombie triad: deploy-restart that ALWAYS clears
+# port 8200 before starting the new process. Use this instead of bare
 # `pm2 restart tce` on the VPS to guarantee deploys are idempotent even
 # when the graceful-shutdown + kill-timeout combo fails (e.g. runaway
 # request, stuck DB query, OOM).
 #
 # Flow:
 #   1. pm2 stop tce   -> sends SIGTERM, uvicorn drains (~10s)
-#   2. Poll :8201 up to 15s waiting for TCP release
+#   2. Poll :8200 up to 15s waiting for TCP release
 #   3. If still held, force fuser -k
 #   4. pm2 start tce
 #
@@ -18,18 +18,18 @@ set -euo pipefail
 echo "[deploy-restart] Stopping tce (graceful)..."
 pm2 stop tce 2>&1 | tail -1
 
-echo "[deploy-restart] Waiting up to 15s for port 8201 to release..."
+echo "[deploy-restart] Waiting up to 15s for port 8200 to release..."
 for i in $(seq 1 15); do
-  if ! sudo ss -lntp 2>/dev/null | grep -q ':8201 '; then
-    echo "[deploy-restart] Port 8201 free after ${i}s"
+  if ! sudo ss -lntp 2>/dev/null | grep -q ':8200 '; then
+    echo "[deploy-restart] Port 8200 free after ${i}s"
     break
   fi
   sleep 1
 done
 
-if sudo ss -lntp 2>/dev/null | grep -q ':8201 '; then
+if sudo ss -lntp 2>/dev/null | grep -q ':8200 '; then
   echo "[deploy-restart] Port still held - force-killing zombies..."
-  sudo fuser -k 8201/tcp 2>&1 | tail -1 || true
+  sudo fuser -k 8200/tcp 2>&1 | tail -1 || true
   sleep 1
 fi
 
