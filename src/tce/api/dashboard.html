@@ -2772,14 +2772,17 @@ function _renderScriptDetailInto(container, script, opts) {
     b.onclick = onClick;
     return b;
   };
-  actionsRow.appendChild(mkBtn('Copy Script', 'btn btn-primary', async () => {
-    try { await navigator.clipboard.writeText(script.full_script || ''); toast('Script copied to clipboard'); }
-    catch(e) { toast('Copy failed', false); }
+  actionsRow.appendChild(mkBtn('Copy Script', 'btn btn-primary', () => {
+    // clipCopy handles HTTPS (navigator.clipboard) + HTTP fallback
+    // (textarea + execCommand). Dashboard runs on HTTP so direct clipboard
+    // API would fail - this helper already exists in the codebase.
+    clipCopy(script.full_script || '');
+    toast('Script copied to clipboard');
   }, 'Copy the full teleprompter script'));
   if (script.hook) {
-    actionsRow.appendChild(mkBtn('Copy Hook', 'btn btn-dim', async () => {
-      try { await navigator.clipboard.writeText(script.hook || ''); toast('Hook copied'); }
-      catch(e) { toast('Copy failed', false); }
+    actionsRow.appendChild(mkBtn('Copy Hook', 'btn btn-dim', () => {
+      clipCopy(script.hook || '');
+      toast('Hook copied');
     }, 'Copy just the opening hook'));
   }
   actionsRow.appendChild(mkBtn('Edit', 'btn btn-dim', () => {
@@ -2934,8 +2937,9 @@ function _renderScriptDetailInto(container, script, opts) {
     copyBtn.className = 'btn btn-primary';
     copyBtn.style.cssText = 'font-size:12px';
     copyBtn.textContent = 'Copy CutSense CLI';
-    copyBtn.onclick = async () => {
-      try { await navigator.clipboard.writeText(cliText); toast('Copied. Replace $VIDEO_PATH with your recorded file.'); } catch(e) { toast('Copy failed', false); }
+    copyBtn.onclick = () => {
+      clipCopy(cliText);
+      toast('Copied. Replace $VIDEO_PATH with your recorded file.');
     };
     cs.appendChild(copyBtn);
     const help = document.createElement('div');
