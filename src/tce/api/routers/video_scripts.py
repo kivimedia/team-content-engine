@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce.db.session import get_db
 from tce.models.video_lead_script import VideoLeadScript
 from tce.models.walking_video_script import WalkingVideoScript
+from tce.settings import settings
 
 router = APIRouter(prefix="/video-scripts", tags=["video-scripts"])
 
@@ -257,6 +260,88 @@ async def _send_via_gws(subject: str, body: str) -> dict[str, Any]:
         }
     except json.JSONDecodeError:
         return {"ok": True, "to": _EMAIL_RECIPIENT, "raw": text[:500]}
+
+
+_VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
+_MAX_UPLOAD_BYTES = 1_000_000_000  # 1 GB hard cap per upload
+
+
+async def _save_upload(upload: UploadFile, dest: Path) -> int:
+    """Stream the upload to disk. Returns bytes written. Enforces size cap."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with dest.open("wb") as out:
+        while True:
+            chunk = await upload.read(1024 * 1024)  # 1 MB chunks
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > _MAX_UPLOAD_BYTES:
+                out.close()
+                dest.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail=f"Upload exceeds {_MAX_UPLOAD_BYTES // 1_000_000} MB")
+            out.write(chunk)
+    return written
+
+
+def _resolve_ext(upload: UploadFile) -> str:
+    ext = Path(upload.filename or "").suffix.lower()
+    if ext not in _VIDEO_EXTS:
+        raise HTTPException(status_code=400, detail=f"Unsupported video extension {ext!r}; expected one of {sorted(_VIDEO_EXTS)}")
+    return ext
+
+
+@router.post("/walking/{script_id}/upload-raw")
+async def upload_walking_raw(
+    script_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Accept the raw recording from the operator, store on disk, set
+    video_file_path + status=recorded. URL is served by the /media mount."""
+    row = await db.get(WalkingVideoScript, script_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Walking-video script not found")
+    ext = _resolve_ext(file)
+    out_path = Path(settings.video_output_dir) / "walking_scripts" / str(script_id) / f"raw{ext}"
+    bytes_written = await _save_upload(file, out_path)
+    row.video_file_path = f"/media/walking_scripts/{script_id}/raw{ext}"
+    row.status = "recorded"
+    row.recorded_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(row)
+    return {
+        **_walking_to_card(row),
+        "video_file_path": row.video_file_path,
+        "edited_video_file_path": row.edited_video_file_path,
+        "bytes_written": bytes_written,
+    }
+
+
+@router.post("/walking/{script_id}/upload-edited")
+async def upload_walking_edited(
+    script_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Accept the CutSense-edited video, store on disk, set
+    edited_video_file_path + status=edited."""
+    row = await db.get(WalkingVideoScript, script_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Walking-video script not found")
+    ext = _resolve_ext(file)
+    out_path = Path(settings.video_output_dir) / "walking_scripts" / str(script_id) / f"edited{ext}"
+    bytes_written = await _save_upload(file, out_path)
+    row.edited_video_file_path = f"/media/walking_scripts/{script_id}/edited{ext}"
+    row.status = "edited"
+    await db.commit()
+    await db.refresh(row)
+    return {
+        **_walking_to_card(row),
+        "video_file_path": row.video_file_path,
+        "edited_video_file_path": row.edited_video_file_path,
+        "bytes_written": bytes_written,
+    }
 
 
 @router.post("/walking/{script_id}/email")

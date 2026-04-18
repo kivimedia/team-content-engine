@@ -2884,6 +2884,65 @@ function _renderScriptDetailInto(container, script, opts) {
   });
   container.appendChild(statusRow);
 
+  // === UPLOAD ROW: drop the raw recording / CutSense output directly ===
+  // Walking-only for now: operator records on phone, drops the mp4 here,
+  // and TCE stores it on disk at /media/walking_scripts/{id}/ so the
+  // Footage card gets a real URL without manual Drive upload + URL paste.
+  if (kind === 'walking') {
+    const uploadRow = document.createElement('div');
+    uploadRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;font-size:11px;color:var(--dim);align-items:center';
+    const upLabel = document.createElement('span');
+    upLabel.textContent = 'Upload:';
+    upLabel.style.marginRight = '4px';
+    uploadRow.appendChild(upLabel);
+    const mkUploadBtn = (label, which, setsField, setsStatus) => {
+      const wrap = document.createElement('label');
+      wrap.className = 'btn btn-dim';
+      wrap.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;display:inline-block';
+      wrap.textContent = label;
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'video/*,.mp4,.mov,.m4v,.webm';
+      input.style.display = 'none';
+      wrap.appendChild(input);
+      input.onchange = async () => {
+        const f = input.files && input.files[0];
+        if (!f) return;
+        const sizeMB = (f.size / 1048576).toFixed(1);
+        wrap.textContent = 'Uploading ' + sizeMB + 'MB...';
+        wrap.style.pointerEvents = 'none';
+        try {
+          const fd = new FormData();
+          fd.append('file', f);
+          const res = await fetch('/api/v1/video-scripts/walking/' + script.id + '/upload-' + which, {
+            method: 'POST',
+            body: fd,
+          });
+          if (!res.ok) {
+            const txt = await res.text().catch(() => '');
+            throw new Error('HTTP ' + res.status + ': ' + txt.slice(0, 200));
+          }
+          const data = await res.json();
+          toast('Uploaded ' + which + ' (' + sizeMB + 'MB). Status: ' + (data.status || setsStatus));
+          _openScriptDetail(kind, script.id);
+        } catch(e) {
+          toast('Upload failed: ' + (e.message || 'unknown'), false);
+          wrap.textContent = label;
+          wrap.style.pointerEvents = '';
+          wrap.appendChild(input);
+        }
+      };
+      return wrap;
+    };
+    uploadRow.appendChild(mkUploadBtn('Raw recording', 'raw', 'video_file_path', 'recorded'));
+    uploadRow.appendChild(mkUploadBtn('CutSense output', 'edited', 'edited_video_file_path', 'edited'));
+    const hint = document.createElement('span');
+    hint.style.cssText = 'font-size:10px;color:var(--dim);margin-left:8px;opacity:0.7';
+    hint.textContent = 'mp4/mov/m4v/webm, 1 GB max';
+    uploadRow.appendChild(hint);
+    container.appendChild(uploadRow);
+  }
+
   const grid = document.createElement('div');
   grid.style.cssText = 'display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:start';
 
@@ -2972,7 +3031,9 @@ function _renderScriptDetailInto(container, script, opts) {
       lbl.textContent = label + ': ';
       lbl.style.color = 'var(--dim)';
       row.appendChild(lbl);
-      if (/^https?:\/\//i.test(url)) {
+      // Absolute URLs AND our /media/* served paths are both clickable.
+      // Other paths (bare filesystem) render as plain text.
+      if (/^(https?:\/\/|\/media\/)/i.test(url)) {
         const a = document.createElement('a');
         a.href = url; a.target = '_blank'; a.rel = 'noopener';
         a.textContent = url.length > 60 ? url.slice(0, 60) + '...' : url;
