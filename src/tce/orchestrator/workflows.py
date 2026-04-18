@@ -351,6 +351,20 @@ WALKING_VIDEO_WORKFLOW = [
     ),
 ]
 
+# Walking-video generation from an already-planned calendar entry. Skips
+# trend_scout + story_strategist because the weekly_planner already picked
+# the topic, thesis, audience, angle, and belief shift - re-running those
+# agents wastes tokens and risks drifting from the approved plan.
+# Mirror of daily_from_plan for text packages.
+WALKING_VIDEO_FROM_PLAN_WORKFLOW = [
+    PipelineStep(agent_name="research_agent", depends_on=[], timeout_seconds=120),
+    PipelineStep(
+        agent_name="walking_video_writer",
+        depends_on=["research_agent"],
+        timeout_seconds=120,
+    ),
+]
+
 # Workflow registry
 WORKFLOWS: dict[str, list[PipelineStep]] = {
     "daily_content": DAILY_CONTENT_WORKFLOW,
@@ -367,6 +381,7 @@ WORKFLOWS: dict[str, list[PipelineStep]] = {
     "product_demo": PRODUCT_DEMO_WORKFLOW,
     "video_lead": VIDEO_LEAD_WORKFLOW,
     "walking_video": WALKING_VIDEO_WORKFLOW,
+    "walking_video_from_plan": WALKING_VIDEO_FROM_PLAN_WORKFLOW,
     "start_from_repo": START_FROM_REPO_WORKFLOW,
     "weekly_repo_spotlight": WEEKLY_REPO_SPOTLIGHT_WORKFLOW,
 }

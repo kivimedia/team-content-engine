@@ -1295,6 +1295,23 @@ async def start_walking_video(request: "StartWalkingVideoRequest") -> dict[str, 
         except ValueError:
             calendar_entry_uuid = None
 
+    # Default creator anchor: when generating from a Week Planner video-day
+    # card without an explicit creator choice, use TJ Robertson (the only
+    # creator with full 4-layer grounding today). Lets operators click a
+    # single Generate button without needing to pick a style anchor each
+    # time. They can still override by calling /start-walking-video directly
+    # with creator_inspiration_id.
+    if calendar_entry_uuid and not request.creator_inspiration_id:
+        from tce.db.session import async_session as _asess
+        from sqlalchemy import select as _sel
+        async with _asess() as db:
+            r = await db.execute(
+                _sel(CreatorProfileModel).where(CreatorProfileModel.creator_name == "TJ Robertson")
+            )
+            _default = r.scalar_one_or_none()
+            if _default:
+                request = request.model_copy(update={"creator_inspiration_id": str(_default.id)})
+
     # Resolve optional creator inspiration (e.g. TJ Robertson) for the writer prompt.
     creator_profile_ctx: dict[str, Any] | None = None
     creator_profile_id: uuid.UUID | None = None
@@ -1334,6 +1351,45 @@ async def start_walking_video(request: "StartWalkingVideoRequest") -> dict[str, 
     if creator_profile_ctx:
         context["creator_profile"] = creator_profile_ctx
 
+    # If the run originates from a Week Planner video-day card, load the
+    # calendar entry's plan_context and use the LEAN workflow
+    # (research_agent -> walking_video_writer) that skips trend_scout +
+    # story_strategist. The planner already made those decisions. Re-running
+    # them wastes 2 agent calls per script and risks drifting from the
+    # approved angle/thesis.
+    use_lean_workflow = False
+    if calendar_entry_uuid:
+        from tce.db.session import async_session as _async_session
+        async with _async_session() as cdb:
+            entry = await cdb.get(ContentCalendarEntry, calendar_entry_uuid)
+            if entry and entry.plan_context:
+                pc = dict(entry.plan_context)
+                weekly = pc.pop("_weekly", {}) or {}
+                # Build story_brief from plan_context fields the planner saved
+                brief_keys = (
+                    "topic", "thesis", "audience", "angle_type", "day_label",
+                    "visual_job", "platform_notes", "desired_belief_shift",
+                    "evidence_requirements", "template_id", "connection_to_gift",
+                )
+                story_brief = {k: pc[k] for k in brief_keys if k in pc}
+                if story_brief:
+                    context["story_brief"] = story_brief
+                    # Forward weekly theme + gift so the writer can reference them
+                    if weekly.get("weekly_theme"):
+                        context["weekly_theme"] = weekly["weekly_theme"]
+                    if weekly.get("gift_theme"):
+                        context["gift_theme"] = weekly["gift_theme"]
+                        context["guide_title"] = weekly["gift_theme"]
+                    if weekly.get("cta_keyword"):
+                        context["weekly_keyword"] = weekly["cta_keyword"]
+                    if weekly.get("gift_sections"):
+                        context["gift_sections"] = weekly["gift_sections"]
+                    # Prefer the plan's richer topic/thesis if the caller only
+                    # passed the headline topic
+                    if pc.get("topic") and not request.topic.strip().startswith(pc["topic"][:40]):
+                        context["topic"] = pc["topic"]
+                    use_lean_workflow = True
+
     _start_walking_video_runs[run_id] = {
         "run_id": run_id,
         "status": "running",
@@ -1362,10 +1418,11 @@ async def start_walking_video(request: "StartWalkingVideoRequest") -> dict[str, 
             await _save()
 
             pipeline_run_id = uuid.uuid4()
+            workflow_name = "walking_video_from_plan" if use_lean_workflow else "walking_video"
             async with async_session() as pipe_db:
                 run_record = PipelineRun(
                     run_id=pipeline_run_id,
-                    workflow="walking_video",
+                    workflow=workflow_name,
                     status="running",
                     started_at=datetime.utcnow(),
                 )
@@ -1373,7 +1430,7 @@ async def start_walking_video(request: "StartWalkingVideoRequest") -> dict[str, 
                 await pipe_db.commit()
                 record_id = run_record.id
 
-                steps = WORKFLOWS["walking_video"]
+                steps = WORKFLOWS[workflow_name]
                 orchestrator = PipelineOrchestrator(
                     steps=steps, db=pipe_db, settings=settings, run_id=pipeline_run_id,
                 )

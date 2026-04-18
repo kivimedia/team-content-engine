@@ -688,6 +688,9 @@ async function renderWeek() {
       document.getElementById('week-grid')?.insertAdjacentHTML('beforebegin', summaryHtml);
       // Store entries for edit
       window._weekEntries = entries;
+      // Lookup by id for inline generators (generateWalkingVideoInline reads this)
+      window._weekEntriesById = {};
+      for (const e of entries) { if (e && e.id) window._weekEntriesById[e.id] = e; }
       window._weekMondayStr = fmtDate(monday);
     }
 
@@ -748,13 +751,16 @@ async function renderWeek() {
         if (isVideoDay) {
           // Walking video days route to Video Studio (different backend pipeline).
           // We do NOT use post_packages for walking videos - they go to walking_video_scripts.
-          const escTopic = esc(entry.topic || '');
           const videoScriptId = entry.walking_video_script_id;
+          const inflight = _videoGenState[entry.id];
           if (videoScriptId) {
-            html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="openWalkingScriptDetail(\'' + videoScriptId + '\')">View Script</button>';
-            html += '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="openVideoStudioForEntry(\'' + entry.id + '\', \'' + escTopic.replace(/\'/g, "\\'") + '\')">Regenerate</button>';
+            html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="openWalkingScriptDetail(\'' + videoScriptId + '\')">Package</button>';
+            html += '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="regenerateWalkingVideo(\'' + entry.id + '\', this)">Regenerate</button>';
+          } else if (inflight && inflight.status === 'running') {
+            const elapsed = Math.round((Date.now() - inflight.startedAt) / 1000);
+            html += '<button class="btn btn-dim" disabled style="padding:4px 10px;font-size:11px">Generating ' + elapsed + 's...</button>';
           } else {
-            html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="openVideoStudioForEntry(\'' + entry.id + '\', \'' + escTopic.replace(/\'/g, "\\'") + '\')">Open in Video Studio</button>';
+            html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="generateWalkingVideoInline(\'' + entry.id + '\', this)">Generate</button>';
           }
         } else if (hasPackage) {
           html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="viewPackage(\'' + entry.post_package_id + '\',' + i + ')">Package</button>';
@@ -1343,22 +1349,28 @@ async function savePlanOnly(mondayStr) {
 }
 
 async function generateFromApprovedPlan(plan) {
-  // M5: walking-video days don't go through /pipeline/generate-week (which
-  // writes to post_packages). The operator generates those from Video Studio
-  // instead. Strip them from the plan before kicking off bulk-gen.
-  let skippedVideoDays = 0;
+  // Separate text days (handled by /pipeline/generate-week -> post_packages)
+  // from video days (handled by /pipeline/start-walking-video ->
+  // walking_video_scripts). Bulk-gen now covers both: text first in one
+  // backend batch, then video days one at a time so the operator sees the
+  // full 5-day week fill in.
+  const videoDayNums = new Set();
   if (plan && Array.isArray(plan.days)) {
     const filtered = [];
     for (const day of plan.days) {
       const primary = (day.options && day.options[0]) || day;
       const fmt = (primary && primary.content_format) || day.content_format;
-      if (fmt === 'walking_video') { skippedVideoDays++; continue; }
+      if (fmt === 'walking_video') {
+        const dow = day.day_of_week;
+        if (typeof dow === 'number') videoDayNums.add(dow);
+        continue;
+      }
       filtered.push(day);
     }
     plan = { ...plan, days: filtered };
   }
-  if (skippedVideoDays > 0) {
-    toast('Skipping ' + skippedVideoDays + ' video day(s) - generate those from Video Studio', true);
+  if (videoDayNums.size > 0) {
+    toast('Generating ' + plan.days.length + ' text + ' + videoDayNums.size + ' video script(s)');
   }
   genAllState = { running: true, current: -1, total: plan.days ? plan.days.length : 5, startTime: Date.now(), results: [], totalCost: 0, unified: true, weekId: null, phase: 'starting', phaseDetail: 'Starting generation from approved plan...', weeklyTheme: plan.weekly_theme, giftTheme: plan.gift_theme, weeklyKeyword: plan.cta_keyword };
   saveGenAllState();
@@ -1417,6 +1429,31 @@ async function generateFromApprovedPlan(plan) {
     genAllState.phaseDetail = 'Failed to start: ' + e.message;
     toast('Generation failed: ' + e.message, false);
   }
+
+  // After text days complete, iterate video days sequentially (one walking
+  // video per call). Each fires /start-walking-video with calendar_entry_id
+  // so the lean workflow (research -> writer) runs and the result links
+  // back to the calendar entry automatically.
+  if (videoDayNums && videoDayNums.size > 0 && genAllState.phase !== 'failed') {
+    genAllState.phase = 'generating_videos';
+    genAllState.phaseDetail = 'Text done; generating ' + videoDayNums.size + ' video script(s)...';
+    saveGenAllState(); renderGenAllProgress();
+    // Sort video days by weekday so progress reads Mon -> Fri
+    const dayOrder = Array.from(videoDayNums).sort((a, b) => a - b);
+    for (let i = 0; i < dayOrder.length; i++) {
+      const dow = dayOrder[i];
+      const entry = (window._weekEntries || []).find(e => e.day_of_week === dow);
+      if (!entry) continue;
+      genAllState.phaseDetail = 'Video ' + (i + 1) + '/' + dayOrder.length + ': generating ' + DAY_NAMES[dow] + '...';
+      saveGenAllState(); renderGenAllProgress();
+      try {
+        await generateWalkingVideoInline(entry.id, null);
+      } catch (e) {
+        toast('Video day ' + DAY_NAMES[dow] + ' failed: ' + e.message, false);
+      }
+    }
+  }
+
   genAllState.running = false;
   saveGenAllState();
   renderGenAllProgress();
@@ -2163,6 +2200,68 @@ let walkingVideoPollInterval = null;
 // Bulk-toggle Week Planner video day checkboxes.
 function setAllVideoDays(checked) {
   document.querySelectorAll('.video-day-checkbox').forEach(el => { el.checked = !!checked; });
+}
+
+// Inline walking-video generation state, keyed by calendar entry id so multiple
+// cards can show independent progress without clobbering each other.
+const _videoGenState = {};
+
+// Fire walking_video_from_plan for a single calendar entry (inline - no
+// navigation to Video Studio). Uses the lean workflow (research -> writer)
+// since the weekly planner already picked the angle/thesis.
+// Returns the completed script_id or null on failure.
+async function generateWalkingVideoInline(entryId, btn) {
+  const entry = (window._weekEntriesById || {})[entryId];
+  if (!entry) { toast('Calendar entry not found', false); return null; }
+  const topic = (entry.topic || '').trim() || '(no topic)';
+  _videoGenState[entryId] = { status: 'running', startedAt: Date.now() };
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating...'; }
+  try {
+    const r = await api('/pipeline/start-walking-video', {
+      method: 'POST',
+      body: JSON.stringify({
+        topic: topic,
+        niche: 'general',
+        duration_target_seconds: 90,
+        calendar_entry_id: entryId,
+      }),
+    });
+    const runId = r.run_id;
+    let done = false, failed = false, scriptId = null;
+    let pollInterval = setInterval(() => { renderWeek(); }, 3000);
+    let polls = 0;
+    while (!done && polls < 120) {
+      await new Promise(ok => setTimeout(ok, 2500));
+      try {
+        const st = await api('/pipeline/start-walking-video/' + runId + '/status');
+        if (st.status === 'completed' || st.phase === 'completed') {
+          done = true;
+          scriptId = st.walking_video_script_id || null;
+        } else if (st.status === 'failed' || st.phase === 'failed') {
+          done = true; failed = true;
+          toast('Generation failed: ' + (st.error || 'unknown'), false);
+        }
+      } catch (e) { /* transient - keep polling */ }
+      polls++;
+    }
+    clearInterval(pollInterval);
+    _videoGenState[entryId] = { status: failed ? 'failed' : 'done' };
+    await renderWeek();
+    if (!failed && scriptId) toast('Script ready for ' + (entry.day_of_week >= 0 ? DAY_NAMES[entry.day_of_week] : 'entry'));
+    return scriptId;
+  } catch (e) {
+    _videoGenState[entryId] = { status: 'failed' };
+    toast('Failed: ' + e.message, false);
+    await renderWeek();
+    return null;
+  }
+}
+
+// Regenerate: fire a fresh script over the existing calendar entry. Backend
+// writes the new script_id, overwriting walking_video_script_id on the entry.
+async function regenerateWalkingVideo(entryId, btn) {
+  if (!confirm('Replace the existing script with a new one?')) return;
+  return generateWalkingVideoInline(entryId, btn);
 }
 
 // Jump straight to the walking-video detail view for a given script id.
