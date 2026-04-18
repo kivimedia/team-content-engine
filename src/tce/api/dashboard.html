@@ -2209,13 +2209,34 @@ const _videoGenState = {};
 // Fire walking_video_from_plan for a single calendar entry (inline - no
 // navigation to Video Studio). Uses the lean workflow (research -> writer)
 // since the weekly planner already picked the angle/thesis.
+//
+// PERFORMANCE: updates only the triggering button's text in place. Does NOT
+// re-render the whole week every poll (that caused flicker + jump). The
+// full renderWeek() runs exactly ONCE at completion to swap Generate ->
+// Package based on the new walking_video_script_id.
+//
 // Returns the completed script_id or null on failure.
 async function generateWalkingVideoInline(entryId, btn) {
   const entry = (window._weekEntriesById || {})[entryId];
   if (!entry) { toast('Calendar entry not found', false); return null; }
   const topic = (entry.topic || '').trim() || '(no topic)';
-  _videoGenState[entryId] = { status: 'running', startedAt: Date.now() };
-  if (btn) { btn.disabled = true; btn.textContent = 'Generating...'; }
+  const startedAt = Date.now();
+  _videoGenState[entryId] = { status: 'running', startedAt };
+
+  // In-place button updater: keeps a live "Generating Xs..." timer on the
+  // clicked button without re-rendering the week grid.
+  let timerHandle = null;
+  const updateBtn = () => {
+    if (!btn) return;
+    const secs = Math.round((Date.now() - startedAt) / 1000);
+    btn.disabled = true;
+    btn.textContent = 'Generating ' + secs + 's...';
+  };
+  if (btn) {
+    updateBtn();
+    timerHandle = setInterval(updateBtn, 1000);
+  }
+
   try {
     const r = await api('/pipeline/start-walking-video', {
       method: 'POST',
@@ -2228,7 +2249,6 @@ async function generateWalkingVideoInline(entryId, btn) {
     });
     const runId = r.run_id;
     let done = false, failed = false, scriptId = null;
-    let pollInterval = setInterval(() => { renderWeek(); }, 3000);
     let polls = 0;
     while (!done && polls < 120) {
       await new Promise(ok => setTimeout(ok, 2500));
@@ -2241,18 +2261,21 @@ async function generateWalkingVideoInline(entryId, btn) {
           done = true; failed = true;
           toast('Generation failed: ' + (st.error || 'unknown'), false);
         }
-      } catch (e) { /* transient - keep polling */ }
+      } catch (e) { /* transient - keep polling silently */ }
       polls++;
     }
-    clearInterval(pollInterval);
+    if (timerHandle) clearInterval(timerHandle);
     _videoGenState[entryId] = { status: failed ? 'failed' : 'done' };
+    // Single full re-render AFTER completion so the card picks up the new
+    // walking_video_script_id from the API and flips Generate -> Package.
     await renderWeek();
     if (!failed && scriptId) toast('Script ready for ' + (entry.day_of_week >= 0 ? DAY_NAMES[entry.day_of_week] : 'entry'));
     return scriptId;
   } catch (e) {
+    if (timerHandle) clearInterval(timerHandle);
     _videoGenState[entryId] = { status: 'failed' };
     toast('Failed: ' + e.message, false);
-    await renderWeek();
+    if (btn) { btn.disabled = false; btn.textContent = 'Generate'; }
     return null;
   }
 }
