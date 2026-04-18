@@ -34,7 +34,8 @@ class ScriptStatusUpdate(BaseModel):
     # where it used to be; other fields are optional so the frontend can send
     # just operator_feedback or just full_script without a status change.
     status: str | None = None  # draft | approved | recorded | edited | published | rejected | archived
-    video_file_path: str | None = None  # set when marking recorded
+    video_file_path: str | None = None  # raw recording URL/path (set when marking recorded)
+    edited_video_file_path: str | None = None  # CutSense output URL/path (set when marking edited)
     full_script: str | None = None  # inline edit target
     operator_feedback: str | None = None  # revision notes / "tune next time"
     hook: str | None = None  # inline hook edit
@@ -128,6 +129,7 @@ async def get_walking_script(
         "operator_feedback": row.operator_feedback,
         "recorded_at": row.recorded_at.isoformat() if row.recorded_at else None,
         "video_file_path": row.video_file_path,
+        "edited_video_file_path": row.edited_video_file_path,
         "pipeline_run_id": str(row.pipeline_run_id) if row.pipeline_run_id else None,
     }
 
@@ -173,6 +175,8 @@ async def update_walking_script(
             row.recorded_at = datetime.utcnow()
     if data.video_file_path is not None:
         row.video_file_path = data.video_file_path
+    if data.edited_video_file_path is not None:
+        row.edited_video_file_path = data.edited_video_file_path
     if data.full_script is not None:
         row.full_script = data.full_script
         # Recompute word count so library card + estimated duration stay honest

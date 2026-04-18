@@ -2852,14 +2852,29 @@ function _renderScriptDetailInto(container, script, opts) {
   statusLabel.textContent = 'Mark as:';
   statusLabel.style.marginRight = '4px';
   statusRow.appendChild(statusLabel);
-  ['approved', 'recorded', 'published', 'rejected'].forEach(st => {
+  ['approved', 'recorded', 'edited', 'published', 'rejected'].forEach(st => {
     const b = document.createElement('button');
     b.className = 'btn btn-dim';
     b.style.cssText = 'font-size:11px;padding:4px 10px';
     b.textContent = st;
     b.onclick = async () => {
       try {
-        await api('/video-scripts/' + kind + '/' + script.id, { method: 'PATCH', body: JSON.stringify({ status: st }) });
+        const body = { status: st };
+        // Recorded + Edited prompt for the footage URL so TCE tracks what
+        // the operator actually produced. Skip if the script already has
+        // the field set (let them re-open the URL without re-prompting).
+        if (st === 'recorded') {
+          const current = script.video_file_path || '';
+          const url = prompt('Paste the raw recording URL (Drive/Dropbox/path):', current);
+          if (url === null) return; // cancel
+          if (url.trim()) body.video_file_path = url.trim();
+        } else if (st === 'edited') {
+          const current = script.edited_video_file_path || '';
+          const url = prompt('Paste the CutSense-edited video URL:', current);
+          if (url === null) return;
+          if (url.trim()) body.edited_video_file_path = url.trim();
+        }
+        await api('/video-scripts/' + kind + '/' + script.id, { method: 'PATCH', body: JSON.stringify(body) });
         toast('Status: ' + st);
         script.status = st;
         _openScriptDetail(kind, script.id);
@@ -2941,6 +2956,39 @@ function _renderScriptDetailInto(container, script, opts) {
     sn.appendChild(sl);
     side.appendChild(sn);
   }
+  // === FOOTAGE CARD: raw recording + edited CutSense output links ===
+  if (kind === 'walking' && (script.video_file_path || script.edited_video_file_path)) {
+    const fg = document.createElement('div');
+    fg.className = 'card';
+    fg.style.cssText = 'padding:12px 14px';
+    const fgH = document.createElement('div');
+    fgH.style.cssText = 'font-weight:600;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px';
+    fgH.textContent = 'Footage';
+    fg.appendChild(fgH);
+    const mkRow = (label, url) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'font-size:12px;margin-bottom:6px;line-height:1.4';
+      const lbl = document.createElement('span');
+      lbl.textContent = label + ': ';
+      lbl.style.color = 'var(--dim)';
+      row.appendChild(lbl);
+      if (/^https?:\/\//i.test(url)) {
+        const a = document.createElement('a');
+        a.href = url; a.target = '_blank'; a.rel = 'noopener';
+        a.textContent = url.length > 60 ? url.slice(0, 60) + '...' : url;
+        a.style.color = 'var(--accent)';
+        row.appendChild(a);
+      } else {
+        const span = document.createElement('span');
+        span.textContent = url;
+        row.appendChild(span);
+      }
+      return row;
+    };
+    if (script.video_file_path) fg.appendChild(mkRow('Raw', script.video_file_path));
+    if (script.edited_video_file_path) fg.appendChild(mkRow('Edited', script.edited_video_file_path));
+    side.appendChild(fg);
+  }
   if (kind === 'walking' && script.cutsense_prompt) {
     const cs = document.createElement('div');
     cs.className = 'card';
@@ -2949,7 +2997,11 @@ function _renderScriptDetailInto(container, script, opts) {
     csH.style.cssText = 'font-weight:600;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px';
     csH.textContent = 'CutSense handoff';
     cs.appendChild(csH);
-    const cliText = 'cutsense run "$VIDEO_PATH" --prompt ' + JSON.stringify(script.cutsense_prompt) + ' --captions jumbo --duration ' + (script.estimated_duration_seconds || script.duration_target_seconds || 90);
+    // If we already have a recorded URL, substitute it into the CLI so the
+    // operator can copy-paste a ready-to-run command instead of replacing
+    // $VIDEO_PATH themselves.
+    const videoArg = script.video_file_path || '$VIDEO_PATH';
+    const cliText = 'cutsense run ' + JSON.stringify(videoArg) + ' --prompt ' + JSON.stringify(script.cutsense_prompt) + ' --captions jumbo --duration ' + (script.estimated_duration_seconds || script.duration_target_seconds || 90);
     const pre = document.createElement('pre');
     pre.style.cssText = 'background:var(--bg);padding:10px;border-radius:4px;font-size:11px;overflow:auto;max-height:140px;margin:0 0 8px 0;white-space:pre-wrap;word-break:break-all';
     pre.textContent = cliText;
@@ -2960,12 +3012,14 @@ function _renderScriptDetailInto(container, script, opts) {
     copyBtn.textContent = 'Copy CutSense CLI';
     copyBtn.onclick = () => {
       clipCopy(cliText);
-      toast('Copied. Replace $VIDEO_PATH with your recorded file.');
+      toast(script.video_file_path ? 'Copied, ready to run.' : 'Copied. Replace $VIDEO_PATH with your recorded file.');
     };
     cs.appendChild(copyBtn);
     const help = document.createElement('div');
     help.style.cssText = 'font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5';
-    help.textContent = 'After you record the walking video on your phone, airdrop or scp it to your laptop, replace $VIDEO_PATH with the absolute file path, and run.';
+    help.textContent = script.video_file_path
+      ? 'CLI already points at your recorded file. Paste into terminal after downloading, then Mark as edited with the CutSense output URL.'
+      : 'After you record the walking video on your phone, airdrop or scp it to your laptop, replace $VIDEO_PATH with the absolute file path, and run.';
     cs.appendChild(help);
     side.appendChild(cs);
   }

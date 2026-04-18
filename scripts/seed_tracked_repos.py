@@ -128,8 +128,7 @@ KNOWN_REPOS: list[dict] = [
 ]
 
 
-def gh_api(path: str) -> dict | None:
-    """Call `gh api <path>` and return parsed JSON, or None on failure."""
+def _gh_via_cli(path: str) -> dict | None:
     try:
         result = subprocess.run(
             ["gh", "api", path],
@@ -143,8 +142,49 @@ def gh_api(path: str) -> dict | None:
         import json as _json
 
         return _json.loads(result.stdout)
+    except FileNotFoundError:
+        return None
     except Exception:
         return None
+
+
+def _gh_via_rest(path: str) -> dict | None:
+    """Direct REST call using TCE_GITHUB_PAT. Works on the VPS where `gh` isn't installed."""
+    import json as _json
+    import os as _os
+    import urllib.error
+    import urllib.request
+
+    pat = _os.environ.get("TCE_GITHUB_PAT") or _os.environ.get("GITHUB_TOKEN") or ""
+    # Pull from .env file too
+    if not pat:
+        env_file = Path(__file__).parent.parent / ".env"
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                if line.startswith("TCE_GITHUB_PAT="):
+                    pat = line.split("=", 1)[1].strip()
+                    break
+    url = "https://api.github.com/" + path.lstrip("/")
+    req = urllib.request.Request(url)
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("User-Agent", "tce-seed-script")
+    if pat:
+        req.add_header("Authorization", f"Bearer {pat}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return _json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError:
+        return None
+    except Exception:
+        return None
+
+
+def gh_api(path: str) -> dict | None:
+    """Fetch a GitHub API path via `gh` CLI, falling back to direct REST with TCE_GITHUB_PAT."""
+    data = _gh_via_cli(path)
+    if data is not None:
+        return data
+    return _gh_via_rest(path)
 
 
 async def seed(dry_run: bool = False, include_private: bool = True) -> None:
