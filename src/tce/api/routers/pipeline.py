@@ -30,6 +30,30 @@ router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 # In-memory store for active pipeline runs (DB is the source of truth for completed)
 _active_runs: dict[str, PipelineOrchestrator] = {}
 
+
+async def _rollup_pipeline_run_cost(db: AsyncSession, run_record: PipelineRun) -> None:
+    """Aggregate cost_events for this run and write total to the PipelineRun row.
+
+    Called from every bookkeeping block that finalises a run. Without this,
+    pipeline_runs.total_cost_usd stays NULL forever even though cost_events
+    populate correctly per step. feedback.py and other consumers read the
+    column directly.
+
+    Never raises: a cost-rollup failure should never fail the pipeline
+    that produced real work.
+    """
+    from tce.services.cost_tracker import CostTracker
+
+    try:
+        summary = await CostTracker(db).get_run_summary(run_record.run_id)
+        run_record.total_cost_usd = summary.get("total_cost_usd")
+    except Exception:
+        logger.warning(
+            "cost_rollup_failed",
+            run_id=str(run_record.run_id),
+            exc_info=True,
+        )
+
 # Track the active generate-week orchestration (in-memory cache, DB is source of truth)
 _week_generation: dict[str, dict] = {}
 
@@ -201,6 +225,7 @@ async def trigger_pipeline(
                     run_record.completed_at = datetime.utcnow()
                     run_record.step_results = result.get("step_status", {})
                     run_record.step_errors = result.get("step_errors", {})
+                    await _rollup_pipeline_run_cost(bk_db, run_record)
                     # Persist key outputs from pipeline context for result retrieval
                     ctx = result.get("context", {})
                     if ctx:
@@ -1158,6 +1183,7 @@ async def start_from_topic(
                     run_record.completed_at = datetime.utcnow()
                     run_record.step_results = result.get("step_status", {})
                     run_record.step_errors = result.get("step_errors", {})
+                    await _rollup_pipeline_run_cost(bk_db, run_record)
                     if has_failures:
                         errors = result.get("step_errors", {})
                         run_record.error_message = "; ".join(
@@ -1496,6 +1522,7 @@ async def start_walking_video(request: "StartWalkingVideoRequest") -> dict[str, 
                     run_record.completed_at = datetime.utcnow()
                     run_record.step_results = result.get("step_status", {})
                     run_record.step_errors = result.get("step_errors", {})
+                    await _rollup_pipeline_run_cost(bk_db, run_record)
                     if has_failures:
                         errors = result.get("step_errors", {})
                         run_record.error_message = "; ".join(
@@ -1803,6 +1830,7 @@ async def polish_copy(
                     run_record.completed_at = datetime.utcnow()
                     run_record.step_results = result.get("step_status", {})
                     run_record.step_errors = result.get("step_errors", {})
+                    await _rollup_pipeline_run_cost(bk_db, run_record)
                     if has_failures:
                         errors = result.get("step_errors", {})
                         run_record.error_message = "; ".join(f"{k}: {v}" for k, v in errors.items())
@@ -2300,6 +2328,7 @@ async def trigger_workspace_pipeline(
                     run_record.completed_at = datetime.utcnow()
                     run_record.step_results = result.get("step_status", {})
                     run_record.step_errors = result.get("step_errors", {})
+                    await _rollup_pipeline_run_cost(bk_db, run_record)
                     ctx = result.get("context", {})
                     if ctx:
                         snapshot_keys = ["video_lead_script", "story_brief", "narration_script"]
