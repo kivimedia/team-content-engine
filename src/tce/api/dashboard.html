@@ -731,8 +731,19 @@ async function renderWeek() {
       html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto;gap:4px;flex-wrap:wrap">';
       if (entry) {
         const hasPackage = !!entry.post_package_id;
-        const stLabel = hasPackage && status === 'planned' ? 'READY' : status.toUpperCase();
-        const stClass = hasPackage && status === 'planned' ? 'ready' : status;
+        const hasVideoScript = !!entry.walking_video_script_id;
+        let stLabel, stClass;
+        if (isVideoDay) {
+          // Video days: READY only when the walking_video_script is actually
+          // generated. A leftover post_package_id from a prior text-plan run
+          // does not count - the card would mislead operators into thinking
+          // a script exists when they've only picked a topic.
+          if (hasVideoScript) { stLabel = 'READY'; stClass = 'ready'; }
+          else { stLabel = 'PLANNED'; stClass = 'planned'; }
+        } else {
+          stLabel = hasPackage && status === 'planned' ? 'READY' : status.toUpperCase();
+          stClass = hasPackage && status === 'planned' ? 'ready' : status;
+        }
         html += '<span class="day-status day-status-' + stClass + '">' + stLabel + '</span>';
         if (isVideoDay) {
           // Walking video days route to Video Studio (different backend pipeline).
