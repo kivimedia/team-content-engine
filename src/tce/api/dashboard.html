@@ -702,6 +702,7 @@ async function renderWeek() {
       // prior session/tab/refresh so they keep ticking + auto-update the
       // card when the backend run completes.
       _resumeInflightVideoRuns();
+      _resumePendingVideoEntries(); // fire-and-forget: re-starts entries the loop hadn't reached before refresh
       window._weekMondayStr = fmtDate(monday);
     }
 
@@ -1486,6 +1487,10 @@ async function generateFromApprovedPlan(plan) {
     saveGenAllState(); renderGenAllProgress();
     // Sort video days by weekday so progress reads Mon -> Fri
     const dayOrder = Array.from(videoDayNums).sort((a, b) => a - b);
+    // Persist the full to-do list before starting so a mid-loop refresh
+    // can resume whichever entries didn't get a /start-walking-video call yet.
+    const pendingIds = dayOrder.map(dow => (window._weekEntries || []).find(e => e.day_of_week === dow)?.id).filter(Boolean);
+    _savePendingVideoEntries(pendingIds);
     for (let i = 0; i < dayOrder.length; i++) {
       const dow = dayOrder[i];
       const entry = (window._weekEntries || []).find(e => e.day_of_week === dow);
@@ -1497,7 +1502,9 @@ async function generateFromApprovedPlan(plan) {
       } catch (e) {
         toast('Video day ' + DAY_NAMES[dow] + ' failed: ' + e.message, false);
       }
+      _clearPendingVideoEntry(entry.id); // crossed off whether it succeeded or failed
     }
+    _savePendingVideoEntries([]); // loop finished cleanly
   }
 
   genAllState.running = false;
@@ -2483,6 +2490,43 @@ function _isInflight(entryId) {
   // Treat runs older than 10 minutes as stale (caller can clear)
   if (Date.now() - (rec.startedAt || 0) > 10 * 60 * 1000) return null;
   return rec;
+}
+
+// Pending video entries: entry IDs queued by generateFromPlan but not yet
+// started. Written before the loop, cleared per-entry as each finishes.
+// On renderWeek restore, any survivors that aren't already inflight get
+// re-triggered so a page refresh mid-loop loses no work.
+function _savePendingVideoEntries(ids) {
+  try {
+    if (!ids || !ids.length) localStorage.removeItem('tce_pending_video_entries');
+    else localStorage.setItem('tce_pending_video_entries', JSON.stringify(ids));
+  } catch { /* quota - ignore */ }
+}
+function _loadPendingVideoEntries() {
+  try { const r = localStorage.getItem('tce_pending_video_entries'); return r ? JSON.parse(r) : []; } catch { return []; }
+}
+function _clearPendingVideoEntry(entryId) {
+  _savePendingVideoEntries(_loadPendingVideoEntries().filter(id => id !== entryId));
+}
+
+async function _resumePendingVideoEntries() {
+  const pending = _loadPendingVideoEntries();
+  if (!pending.length) return;
+  const inflight = _loadInflightVideoMap();
+  const byId = window._weekEntriesById || {};
+  const toResume = pending.filter(entryId => {
+    if (inflight[entryId]) return false; // _resumeInflightVideoRuns already owns it
+    const entry = byId[entryId];
+    if (!entry) return false; // not this week - skip until the right week loads
+    if (entry.walking_video_script_id) { _clearPendingVideoEntry(entryId); return false; } // already done
+    return true;
+  });
+  if (!toResume.length) return;
+  toast('Resuming ' + toResume.length + ' video script(s) from before the refresh...');
+  for (const entryId of toResume) {
+    try { await generateWalkingVideoInline(entryId, null); } catch { /* handled inside */ }
+    _clearPendingVideoEntry(entryId);
+  }
 }
 
 // Resume background poller for any entry still marked inflight at the time
