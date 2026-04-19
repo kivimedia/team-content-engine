@@ -130,6 +130,8 @@ async def get_walking_script(
         "tags": row.tags or [],
         "repurpose": row.repurpose or {},
         "operator_feedback": row.operator_feedback,
+        "personal_anchor": row.personal_anchor,
+        "strategic_justification": row.strategic_justification,
         "recorded_at": row.recorded_at.isoformat() if row.recorded_at else None,
         "video_file_path": row.video_file_path,
         "edited_video_file_path": row.edited_video_file_path,

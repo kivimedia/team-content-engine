@@ -41,6 +41,40 @@ phone-held, vertical talking-head (some walking, some standing). Your
 script could be delivered any of those ways. Content-side style is
 what matters, not body position.
 
+PERSONAL ANGLE IS NON-NEGOTIABLE:
+TJ's highest-engagement posts are always personal. He is inside the story,
+not reporting on it. Study these patterns and pick one for every script:
+
+1. SELF-IMPLICATION (TJ's most-used): The creator has skin in the game.
+   "I predicted agencies would be dead by 2027. I run one. Here's why I
+   changed my mind."
+   "We built [tool] six months ago. The results are not what I expected."
+   "I was completely wrong about [claim]. Here's the data that changed my mind."
+
+2. PROPRIETARY OBSERVATION: The creator sees something from inside their
+   work that others can't see.
+   "We track [X] across hundreds of clients. The number that surprised me..."
+   "We just shipped [feature] and the thing users did first was not
+   what we designed it for."
+   "One of our clients is a [type] business. Last week they told me..."
+
+3. PREDICTION + PERSONAL STAKE: The creator makes a call and ties their
+   own reputation or livelihood to it.
+   "I'm making a call for 2026. If I'm wrong, post this back at me."
+   "I've been saying [X] for two years. This week it became undeniable."
+
+4. REPO/BUILD ANCHOR: Script is directly tied to something the team
+   built, shipped, or learned from a real project.
+   If repos or team context is provided below, USE IT. A script about
+   AI agents that opens "We shipped an AI agent six weeks ago..." is
+   ten times more credible than the same script opened as news.
+
+THE TEST: Before writing the hook, ask yourself - does the narrator
+have personal stakes in this story? If the answer is no, rework the
+angle until the answer is yes. An operator can always deliver a script
+that starts "I was completely wrong about this" more authentically than
+one that starts "A new report says..."
+
 ENGAGEMENT SWEET SPOT (from TJ's 268-post corpus analysis):
 - 60-120 seconds is optimal. Videos over 150 seconds consistently lose
   viewers before the CTA. Videos under 30 seconds only work for pure
@@ -58,11 +92,14 @@ Your job is to sound like him without copying his signature phrasings.
 
 STRUCTURE (single take, NO sections):
 1. HOOK (first 1-2 sentences, 5-8 seconds)
-   - Open with one of the seven proven formulas below.
-   - No questions, no personal metaphors, no vague urgency.
+   - Open with one of the seven proven formulas below AND a personal stake.
+   - No questions, no vague urgency. Personal angle does not mean
+     storytelling preamble - the hook is still punchy and immediate.
 2. THE REVEAL (next 15-25 seconds)
    - Name the mechanism. What just changed? Who did what?
    - One concrete number or product name inside this section.
+   - If this came from your own observation, say so: "We noticed this
+     with a client", "this showed up in our data", "I tested this".
 3. THE IMPLICATION (25-45 seconds)
    - What this means for the viewer's business, right now.
    - Stance: take a position. Do not hedge the core claim.
@@ -88,6 +125,7 @@ G. Patent/filing reveal
    "[Company] just filed a [patent/doc] that reveals they intend on [disrupting your owned asset]."
 
 NEVER DO (failure patterns that scored 0 views in 268-post analysis):
+- Reporting on news from the outside with no personal stake
 - Personal metaphors unrelated to the topic ("my kids' school / Disney line")
 - Vague urgency without specifics ("changing too fast", "you're already losing")
 - Question hooks without stakes ("Are people searching for what you sell?")
@@ -109,12 +147,14 @@ TARGET LENGTH:
 - TJ's engagement data: 60-120s is the proven sweet spot. Do not pad.
 
 OUTPUT FORMAT:
-Return a JSON object with:
+Return a JSON object with ALL of these fields:
 {{
   "title": "Short shareable title (under 80 chars)",
   "hook": "The opening 1-2 sentence hook",
   "full_script": "The complete script as one continuous paragraph with natural line breaks for breathing points. No section markers.",
   "hook_formula": "A|B|C|D|E|F|G - which formula was used",
+  "personal_anchor": "One sentence: the specific personal/first-person angle used and WHY it fits this topic. e.g. 'Self-implication: we shipped an AI agent last month and the client result contradicts the mainstream take on agents replacing humans.'",
+  "strategic_justification": "2-3 sentences: why THIS topic was chosen right now, how this angle serves the content strategy, and what belief it shifts in the target audience. Be specific - name the trend, the timing, the gap in the content landscape.",
   "word_count": 200,
   "estimated_duration_seconds": 85,
   "shot_notes": {{
@@ -246,7 +286,30 @@ class WalkingVideoWriter(AgentBase):
             f"TARGET AUDIENCE: {audience}",
         ]
         if angle_type:
-            prompt_parts.append(f"ANGLE: {angle_type}")
+            prompt_parts.append(f"CADENCE ANGLE TYPE: {angle_type} (use this as a structural guide, but the personal anchor takes priority over the angle type label)")
+
+        # Pass real team/repo context so the writer can tie to actual builds.
+        # This is the primary source of personal angles - real work the team has done.
+        repos = context.get("repos") or []
+        team_context = context.get("team_context") or context.get("own_work_context") or ""
+        if repos:
+            repo_lines = []
+            for r in repos[:5]:
+                if isinstance(r, dict):
+                    name = r.get("name") or r.get("title") or ""
+                    desc = r.get("description") or r.get("summary") or ""
+                    if name:
+                        repo_lines.append(f"- {name}: {desc[:120]}" if desc else f"- {name}")
+                elif isinstance(r, str):
+                    repo_lines.append(f"- {r[:150]}")
+            if repo_lines:
+                prompt_parts.append(
+                    "\nTEAM'S OWN WORK (use these as personal anchors where relevant - "
+                    "a script tied to something we actually built is always stronger than "
+                    "pure news commentary):\n" + "\n".join(repo_lines)
+                )
+        if team_context:
+            prompt_parts.append(f"\nTEAM CONTEXT: {team_context[:400]}")
 
         claims = research_brief.get("verified_claims") or []
         findings = research_brief.get("key_findings") or []
@@ -360,5 +423,9 @@ class WalkingVideoWriter(AgentBase):
         duration = script.get("estimated_duration_seconds") or int(word_count * 60 / 140)
         title = script.get("title", "Untitled")
         self._report(f'Script: "{title}" | {word_count} words | ~{duration}s')
+        if script.get("personal_anchor"):
+            self._report(f'Personal anchor: {script["personal_anchor"]}')
+        if script.get("strategic_justification"):
+            self._report(f'Strategy: {script["strategic_justification"]}')
 
         return {"walking_video_script": script}

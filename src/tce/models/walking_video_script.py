@@ -53,6 +53,10 @@ class WalkingVideoScript(Base):
     tags: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     repurpose: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # Writer's reasoning - visible in detail view so operator can judge quality
+    personal_anchor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    strategic_justification: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Lifecycle
     # draft | approved | recorded | edited | published | rejected | archived
     status: Mapped[str] = mapped_column(String(30), default="draft")

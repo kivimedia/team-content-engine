@@ -1494,6 +1494,8 @@ async def start_walking_video(request: "StartWalkingVideoRequest") -> dict[str, 
                         seo_description=script_payload.get("seo_description"),
                         tags=script_payload.get("tags") or [],
                         repurpose=script_payload.get("repurpose") or {},
+                        personal_anchor=script_payload.get("personal_anchor"),
+                        strategic_justification=script_payload.get("strategic_justification"),
                         status="draft",
                         pipeline_run_id=pipeline_run_id,
                     )
