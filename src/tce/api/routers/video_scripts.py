@@ -444,7 +444,8 @@ async def export_weekly_scripts_docx(
     # Preserve calendar order
     scripts = [scripts_by_id[e.walking_video_script_id] for e in entries if e.walking_video_script_id in scripts_by_id]
 
-    not_approved = [s.title for s in scripts if s.status != "approved"]
+    EXPORTABLE = {"draft", "approved", "recorded", "edited", "published"}
+    not_approved = [s.title for s in scripts if s.status not in EXPORTABLE]
     if not_approved:
         raise HTTPException(
             status_code=400,
