@@ -1959,7 +1959,7 @@ async function renderWalkingVideoPanel(entries, monday) {
   // 2. Upload dropzone
   const uploadDisabled = !weeklyPlanId;
   html += '<label class="btn btn-dim" style="cursor:pointer;' + (uploadDisabled ? 'opacity:0.4;pointer-events:none' : '') + '" title="Upload the single long walking video for this week">';
-  html += '&#128190; Upload Recording';
+  html += '&#128228; Upload Recording';
   html += '<input type="file" accept="video/*" style="display:none" ' + (uploadDisabled ? 'disabled' : '') + ' onchange="uploadWeeklyRecording(event,\'' + weeklyPlanId + '\')">';
   html += '</label>';
 
