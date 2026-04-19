@@ -425,3 +425,115 @@ The bottleneck isn't the offer, tech skills, niche knowledge, or content. It's t
 
 ### Key Insight
 New coaching clients at $4-5K with AI agent delivery have near-zero COGS (clients bring own API keys, no VA team needed). Every new coaching client is almost pure margin.
+
+---
+
+## TARGET ARCHETYPE (April 2026 Precision Update)
+
+The person who watches a walking video and thinks "this person gets it":
+
+- Coach or consultant with a real content library they built themselves - not occasional posting, actual depth
+- Earning $10K-30K/mo — business works, marketing is underperforming relative to what they know they're capable of
+- **Burned by an agency that used a questionnaire instead of actually reading their content.** Voice precision is non-negotiable for them — they've been traumatized by semantic drift (generic output from a team that consumed nothing).
+- NOT: a solo coach drowning in admin. NOT: a beginner. NOT: a tech-curious generalist.
+- Archetype A: Analytical consultant with multiple credentials and a strong personal POV. Thinks carefully. Doesn't want to sound like everyone else. MBA-level. Has a philosophy, not just a method.
+- Archetype B: 7-figure person who built their business on content quality and reputation alone — not marketing volume. Not repurposing their content. Skeptical of agencies because they failed before.
+
+What they FEEL when they see Ziv's content: "This person actually consumed material like mine and understands what's at stake."
+
+What they FEEL when they see generic AI content: "Another agency that used a questionnaire."
+
+---
+
+## FB POST IMAGERY STRATEGY
+
+Every story_brief's `visual_job` field must describe a scene or emotion — not just "show the product."
+
+**What works:**
+- Authentic over stock — never laptops on desks, never people pointing at whiteboards
+- Screenshots of tools producing real output: dashboards, before/after counts ("240 videos → 44 scripts"), actual results in a real UI
+- Behind the scenes: Ziv's actual workspace, tools in use, real numbers on screen
+- Emotional contrast: overwhelmed manual state vs calm automated state — show the gap
+- Mood: understated confidence, not hustle culture. Dark tones + clean UI > bright colors + stock smiles
+
+**What never works:**
+- Generic "AI robot" or "brain with circuit board" imagery
+- Stock photos of team meetings, handshakes, or people pointing at whiteboards
+- Animated explainer graphics that look like agency decks
+
+**How to write `visual_job`:** Describe the emotional scene. "A quiet screenshot of a tool that just did what a team of 5 used to do" beats "show the AI product." The image should answer "how does it feel to have this working?" not "what does this thing look like?"
+
+---
+
+## WALKING VIDEO TOPIC CRITERIA
+
+Walking video topics are different from text post topics. Additional rules beyond the standard topic filter:
+
+**A topic PASSES for walking video if:**
+- It is confessional and first-person: "I did X and here's what happened" — personal stake visible in the first 5 words
+- It's something Ziv is thinking about because he lived it, not because it's timely
+- The hook starts with personal experience: "I built 44 scripts from a client's 240 videos for $7 last week" — not "AI is changing content creation"
+- A coach watching it would feel "he's telling me something from inside the room, not from a stage"
+
+**A topic FAILS for walking video if:**
+- It's news-driven: "OpenAI just announced..." — no personal stake
+- It could have been written by any "AI for business" creator
+- The hook is a data point without a human being living the experience
+- It requires visual aids or slides to make sense (walking video = one person, one camera, one idea)
+
+**Good examples:**
+- "I fired my marketing agency last year — here is what I actually learned"
+- "I built 44 scripts for a client's 240 videos for $7 last week — here is the process"
+- "A client of mine just let go of her last VA — here is what changed first"
+- "My worst client result in 6 years — and what it taught me about AI delivery"
+
+---
+
+## WHAT ACTUALLY CONVERTS (Working Examples, April 2026)
+
+These are observed from real outreach and demos that moved prospects:
+
+**Email hook that worked:** "Her marketing company made a mess" — conflict + peer-register + specificity. Triggers the burned-by-agency archetype directly. Opens because the reader suspects their own agency made a mess too.
+
+**Demo that landed:** InstaIQ - "240 Reels → 44 voice-matched scripts overnight, for $7." The specificity (not "low cost" but "$7"), the evidence of volume (240 Reels = they consumed her material), and the overnight turnaround together = credibility. Vague demos don't land. This one lands.
+
+**Format that worked:** Dimitri proposal — 4-page PDF in Cambria, typographically clean, peer-to-peer memo tone, zero agency language. The FORMAT itself communicated "I'm not an agency, I'm a peer who builds things." Agencies send decks. Peers send memos.
+
+**Pattern:** Specificity + evidence you consumed their content = trust. Generic + impressive numbers = skepticism.
+
+---
+
+## ZIV'S VOICE AND WRITING STYLE (36 observed patterns, apply to all content)
+
+These patterns are derived from Ziv's actual writing side-by-side comparisons, April 2026.
+
+**Tone:**
+- Peer language over funnel language: "another great coach I worked with" not "a client" or "a prospect"
+- Underclaim for credibility: "minimal tweaking required" not "zero tweaking" — underclaiming is more believable and avoids shaming the prospect for current work
+- Write like sharing an insight, not closing a deal. Lower pressure than instinct suggests.
+- One idea per piece — never stack offers, secondary pitches, or alternate angles in the same post
+
+**Hooks and subject lines:**
+- Conflict language outperforms curiosity-gap: "her marketing company made a mess" beats "a story from last week"
+- Anonymize heroes, specify villains fairly: "a brilliant coach" (universal, reader identifies) + "a marketing company with a famous CEO" (specific villain, but fair to their strengths first)
+- Fair to villain = credible to reader: acknowledge legit strengths BEFORE the critique. "His books are genuinely good - his team created a mess." The concession is load-bearing.
+
+**Structure:**
+- Bulleted pain points with emotional words: "super annoying", "ignored", "felt dismissed" — AI models sand off emotion; humans don't
+- Three-beat emotional cadence for the turn: Feeling → interpretation → wish. Short lines. Space between. Becomes readable like prose.
+- One standalone aphorism on its own line — once per piece, not crowded: "Some call it authenticity." alone = poetic pause
+- Profanity signals peer-register when used once: "shit show" once = intimate and honest. Twice = vulgar. Zero = cold.
+- Show the hero being patient before they snap: "She trusted the process. She gave it months. Eventually she had to let them go." Patience beat makes the decision feel measured, not reactive.
+
+**Arguments:**
+- Diagnosis > observation: "They templatized her without studying her voice" beats "they used a questionnaire." Name the mental model, not the symptom.
+- Process language > result language: "a process that creates voice precision" beats just "voice precision." Operators hire the repeatable.
+- Name the 2026 objection, not a 2022 one: "AI content = prompts and templates" is today's skeptic. "AI content = cheaper/faster" was 2022's. Pinpoint the current resistance.
+- Seller's subjective + client's confirmation > numbers alone: "I liked them, and so did he" — double-validation is more credible than data alone.
+
+**Never use:**
+- Agency-speak: "maximize ROI", "AI-powered solutions", "leverage synergies", "seamlessly integrates"
+- Generic filler: "In today's fast-paced world...", "Now more than ever..."
+- Emdashes or double dashes — use single dash with spaces: " - "
+
+**Meta-rule:** After drafting any piece of content, ask: "Could this have been written by a peer with no stake in the outcome?" If no, cut until it could.

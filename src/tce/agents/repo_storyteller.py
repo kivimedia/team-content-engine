@@ -44,6 +44,7 @@ Top-performing templates to choose from:
 
 Optional weekly keyword / CTA: {weekly_keyword}
 Operator notes: {notes}
+{strategy_block}
 
 Return a single JSON object:
 {{
@@ -88,6 +89,17 @@ class RepoStoryteller(AgentBase):
         angle = repo_brief.get("angle") or context.get("angle") or "generic"
         weekly_keyword = context.get("weekly_keyword") or ""
         notes = (context.get("operator_overrides") or {}).get("notes") or ""
+
+        from tce.services.strategy_loader import load_strategy
+        _strategy = load_strategy()
+        strategy_block = (
+            "\nBUSINESS STRATEGY CONTEXT (audience, framing, and visual_job must reflect this):\n"
+            "The repo story will become a post targeting coaches/consultants burned by generic agency content.\n"
+            "The audience field must name coaches or agency owners, not generic 'builders'.\n"
+            f"{_strategy[:3500]}"
+        ) if _strategy else ""
+        if _strategy:
+            self._report("Loaded strategy context for repo storytelling")
 
         self._report(
             f"Story brief for {repo_brief.get('slug', '?')} (angle={angle})"
@@ -138,6 +150,7 @@ class RepoStoryteller(AgentBase):
             templates_json=json.dumps(templates, indent=2) if templates else "[]",
             weekly_keyword=weekly_keyword or "(none)",
             notes=notes or "(none)",
+            strategy_block=strategy_block,
         )
 
         response = await self._call_llm(

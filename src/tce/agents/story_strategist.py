@@ -150,46 +150,29 @@ class StoryStrategist(AgentBase):
             )
             prompt_parts.append("\n".join(creator_parts))
 
-        # Niche-specific strategy context
-        niche = context.get("niche", "general")
-        if niche == "coaching":
-            # Load the Super Coaching strategy doc for full context
-            import os
-            strategy_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-                "docs", "super-coaching-strategy.md",
+        # Business strategy context — always loaded, not gated on niche flag
+        from tce.services.strategy_loader import load_strategy
+        strategy_context = load_strategy()
+        if strategy_context:
+            self._report("Loaded Super Coaching strategy doc for topic selection")
+            prompt_parts.append(
+                "BUSINESS STRATEGY — READ BEFORE CHOOSING ANY TOPIC:\n"
+                "The following defines who this content is for, what makes a topic pass or fail, "
+                "and what the content must make the viewer feel. Apply the topic filter, "
+                "the 5 pillars, and the emotional trigger test to every topic you pick.\n\n"
+                f"{strategy_context}\n\n"
+                "CONTENT GOAL: Build authority as THE person who helps coaches add AI agent "
+                "teams. Every piece should leave the viewer thinking 'I need to talk to this guy.'"
             )
-            strategy_context = ""
-            try:
-                with open(strategy_path, "r", encoding="utf-8") as f:
-                    strategy_context = f.read()
-                self._report("Loaded Super Coaching strategy doc for niche context")
-            except FileNotFoundError:
-                self._report("Strategy doc not found, using inline context")
-
-            if strategy_context:
-                # Truncate to keep prompt manageable (first 4000 chars covers key sections)
-                if len(strategy_context) > 4000:
-                    strategy_context = strategy_context[:4000] + "\n\n[... truncated for prompt size]"
-                prompt_parts.append(
-                    "NICHE CONTEXT - SUPER COACHING STRATEGY:\n"
-                    "The following is the creator's growth strategy. Use it to inform "
-                    "topic selection, framing, audience targeting, and positioning.\n\n"
-                    f"{strategy_context}\n\n"
-                    "CONTENT GOAL: Build authority as THE person who helps coaches add AI agent "
-                    "teams. Every piece should leave the viewer thinking 'I need to talk to this guy.'"
-                )
-            else:
-                prompt_parts.append(
-                    "NICHE CONTEXT - SUPER COACHING:\n"
-                    "This content is for coaches who want to add AI agent teams to their "
-                    "coaching business. The creator (Ziv Raviv) runs Kivi Media, has served "
-                    "300+ clients over 6 years, and recently replaced a 13-person human team "
-                    "with 160 AI agents. Framework is called 'Super Coaching' (trademarked).\n\n"
-                    "TARGET AUDIENCE: Independent coaches who want to scale with AI, not humans.\n\n"
-                    "CONTENT GOAL: Build authority as THE person who helps coaches add AI agent "
-                    "teams. Every piece should leave the viewer thinking 'I need to talk to this guy.'"
-                )
+        else:
+            self._report("Strategy doc not found — using inline fallback context")
+            prompt_parts.append(
+                "NICHE CONTEXT - SUPER COACHING:\n"
+                "This content is for coaches who want to add AI agent teams to their coaching business. "
+                "Creator: Ziv Raviv (Kivi Media, 300+ clients, 'Super Coaching' trademarked).\n"
+                "TARGET: Independent coaches earning $10K-30K/mo, burned by generic agency content.\n"
+                "GOAL: Every piece makes a coach think 'I need to talk to Ziv Raviv.'"
+            )
 
         # Creator inspiration context
         creator_insp = context.get("creator_inspiration")

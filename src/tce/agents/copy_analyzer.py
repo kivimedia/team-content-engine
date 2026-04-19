@@ -10,13 +10,19 @@ from sqlalchemy import select
 from tce.agents.base import AgentBase
 from tce.agents.registry import register_agent
 from tce.models.pattern_template import PatternTemplate
+from tce.services.strategy_loader import load_strategy as _load_strategy
 
-SYSTEM_PROMPT = """\
+_STRATEGY = _load_strategy()
+
+SYSTEM_PROMPT = f"""\
 You are the Copy Analyzer for Team Content Engine. Your job is to:
 1. Read raw copy the user has written
-2. Extract a synthetic story_brief (the same shape downstream agents expect)
+2. Extract a synthetic story_brief targeting the creator's specific audience (see strategy below)
 3. Analyze the copy structure (hook type, body structure, gaps)
-4. Match to the best PatternTemplate from the provided list
+4. Match to the best PatternTemplate from the provided list — match against the 5 pillars in the strategy
+
+CREATOR STRATEGY — use to inform audience, angle_type, and visual_job:
+{_STRATEGY[:3000] if _STRATEGY else "(strategy doc not available — default to coaching audience)"}
 
 You always respond in valid JSON only, no markdown fences.
 """

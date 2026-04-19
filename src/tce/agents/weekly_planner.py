@@ -207,33 +207,24 @@ class WeeklyPlanner(AgentBase):
         if operator_overrides:
             prompt_parts.append(f"\nOPERATOR OVERRIDES:\n{json.dumps(operator_overrides)}")
 
-        # === Inject niche strategy context ===
-        niche = context.get("niche", "general")
-        if niche == "coaching":
-            import os
-            strategy_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-                "docs", "super-coaching-strategy.md",
+        # === Business strategy context — always loaded, not gated on niche flag ===
+        from tce.services.strategy_loader import load_strategy
+        strategy_text = load_strategy()
+        if strategy_text:
+            prompt_parts.append(
+                "\nBUSINESS STRATEGY — APPLY TO ALL 5 DAYS:\n"
+                "All topics MUST pass the Emotional Trigger Test from the strategy below. "
+                "Use the 5 pillars and the topic filter (pass/fail) to select topics. "
+                "Creator: Ziv Raviv (Kivi Media, 300+ clients, Super Coaching trademarked).\n\n"
+                f"{strategy_text}\n\n"
+                "Every topic should make a coach think: I need to talk to Ziv Raviv."
             )
-            try:
-                with open(strategy_path, "r", encoding="utf-8") as f:
-                    strategy_text = f.read()
-                if len(strategy_text) > 3000:
-                    strategy_text = strategy_text[:3000]
-                prompt_parts.append(
-                    "\nNICHE STRATEGY - SUPER COACHING:\n"
-                    "All 5 days MUST be framed for coaches who want to add AI agent teams "
-                    "to their coaching business. The creator is Ziv Raviv (Kivi Media, 300+ clients, "
-                    "replaced 13-person team with 160 AI agents, trademarked Super Coaching).\n\n"
-                    f"{strategy_text}\n\n"
-                    "Every topic should make a coach think: I need AI agents in my practice."
-                )
-                self._report("Loaded Super Coaching strategy for weekly planning")
-            except FileNotFoundError:
-                prompt_parts.append(
-                    "\nNICHE: coaching - Target coaches who want to add AI agent teams. "
-                    "All topics should be relevant to coaches scaling with AI, not generic tech."
-                )
+            self._report("Loaded Super Coaching strategy for weekly planning")
+        else:
+            prompt_parts.append(
+                "\nNICHE: coaching - Target coaches who want to add AI agent teams. "
+                "All topics should be relevant to coaches scaling with AI, not generic tech."
+            )
 
         # === Inject voice context so planner considers the team's identity ===
         founder_voice = context.get("founder_voice")
