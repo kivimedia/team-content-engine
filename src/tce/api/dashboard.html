@@ -1910,7 +1910,10 @@ async function renderWalkingVideoPanel(entries, monday) {
   if (!panel) return;
 
   // Only show if at least one entry is a walking-video day
-  const videoEntries = (entries || []).filter(e => e && e.plan_context && e.plan_context.content_format === 'walking_video');
+  const videoEntries = (entries || []).filter(e => e && (
+    (e.plan_context && (e.plan_context.content_format || '').toLowerCase().includes('walking')) ||
+    e.walking_video_script_id
+  ));
   if (!videoEntries.length) { panel.style.display = 'none'; return; }
 
   const weeklyPlanId = videoEntries.find(e => e.weekly_plan_id)?.weekly_plan_id;
@@ -6512,6 +6515,7 @@ document.addEventListener('click', e => { if (!e.target.closest('#global-search'
 function updateBreadcrumb(parts) {
   const bc = document.getElementById('breadcrumb');
   const text = document.getElementById('bc-text');
+  if (!bc || !text) return;
   if (!parts || parts.length <= 1) { bc.style.display = 'none'; return; }
   bc.style.display = 'block';
   text.innerHTML = parts.map((p, i) => i < parts.length - 1 ? '<span style="cursor:pointer;color:var(--accent)" onclick="' + (p.action || '') + '">' + esc(p.label) + '</span>' : '<span style="color:var(--text)">' + esc(p.label) + '</span>').join(' <span style="color:var(--dim)">&#8250;</span> ');
