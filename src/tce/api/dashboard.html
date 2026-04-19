@@ -559,6 +559,7 @@ function fmtDate(d) {
 
 let weekOffset = 0;
 let _weekEntries = {}; // calendar entries by day index, cached during renderWeek
+let _weekMode = 'posts'; // 'posts' or 'videos'
 
 async function renderWeek() {
   const app = document.getElementById('app');
@@ -581,13 +582,17 @@ async function renderWeek() {
           </div>
         </div>
       </div>
+      <div style="display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:12px">
+        <button id="mode-posts" type="button" onclick="_setWeekMode('posts')" style="padding:6px 18px;font-size:12px;font-weight:700;background:${_weekMode==='posts'?'var(--accent)':'var(--card)'};color:${_weekMode==='posts'?'#fff':'var(--dim)'};border:none;cursor:pointer;letter-spacing:.3px">&#128221; Posts</button>
+        <button id="mode-videos" type="button" onclick="_setWeekMode('videos')" style="padding:6px 18px;font-size:12px;font-weight:700;background:${_weekMode==='videos'?'var(--accent)':'var(--card)'};color:${_weekMode==='videos'?'#fff':'var(--dim)'};border:none;border-left:1px solid var(--border);cursor:pointer;letter-spacing:.3px">&#127916; Videos</button>
+      </div>
       <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:16px">
-        <div>
+        <div id="week-theme-wrap" style="${_weekMode==='videos'?'display:none':''}">
           <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Weekly Theme (optional hint for the planner)</label>
-          <input id="week-theme" type="text" placeholder="e.g. Agency scaling without burnout" style="width:320px">
+          <input id="week-theme" type="text" placeholder="${_weekMode==='videos'?'e.g. Why AI agents let coaches charge 2x':'e.g. Agency scaling without burnout'}" style="width:320px">
         </div>
         <div style="display:flex;flex-direction:column;gap:4px">
-          <button class="btn btn-primary" id="plan-week-btn" onclick="planWeekDeep('${fmtDate(monday)}')">Plan This Week</button>
+          <button class="btn btn-primary" id="plan-week-btn" onclick="planWeekDeep('${fmtDate(monday)}')">${_weekMode==='videos'?'Plan Video Week':'Plan Posts Week'}</button>
           <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--dim);cursor:pointer" title="When active, the planner avoids topics that could trivialize human suffering, war metaphors, and fear-based hooks">
             <input type="checkbox" id="sensitive-period-toggle" style="accent-color:var(--accent)">
             Sensitive Period
@@ -600,9 +605,9 @@ async function renderWeek() {
           </label>
           <input id="seasonal-context" type="text" placeholder="e.g. Post-holiday focus, Q1 planning season..." style="display:none;width:240px;font-size:11px;padding:4px 8px">
         </div>
-        <div style="display:flex;flex-direction:column;gap:4px">
+        <div id="video-day-checkboxes-wrap" style="display:flex;flex-direction:column;gap:4px;${_weekMode==='videos'?'display:none':''}">
           <div style="font-size:11px;color:var(--dim);display:flex;align-items:center;gap:8px">
-            <span title="Walking-video slots for the week. Each checked day becomes a TJ-style walking-monologue script instead of a text post.">Video Days</span>
+            <span title="Mark specific days as walking-video scripts instead of text posts.">Video Days</span>
             <button type="button" onclick="setAllVideoDays(true)" style="padding:1px 6px;font-size:10px;background:var(--card);color:var(--dim);border:1px solid var(--border);border-radius:3px;cursor:pointer">All 5</button>
             <button type="button" onclick="setAllVideoDays(false)" style="padding:1px 6px;font-size:10px;background:var(--card);color:var(--dim);border:1px solid var(--border);border-radius:3px;cursor:pointer">None</button>
           </div>
@@ -861,11 +866,13 @@ async function planWeekDeep(mondayStr) {
   // GAP-47: Seasonal override context
   const seasonalOverride = document.getElementById('seasonal-override-toggle')?.checked || false;
   const seasonalContext = document.getElementById('seasonal-context')?.value || null;
-  // M5: Video days (multi-select). Collect all checked weekdays.
-  const videoDayWeekdays = Array.from(document.querySelectorAll('.video-day-checkbox'))
-    .filter(el => el.checked)
-    .map(el => parseInt(el.value, 10))
-    .filter(n => !Number.isNaN(n) && n >= 0 && n <= 4);
+  // Video days: in Videos mode all 5 days are video days; in Posts mode use checkboxes.
+  const videoDayWeekdays = _weekMode === 'videos'
+    ? [0, 1, 2, 3, 4]
+    : Array.from(document.querySelectorAll('.video-day-checkbox'))
+        .filter(el => el.checked)
+        .map(el => parseInt(el.value, 10))
+        .filter(n => !Number.isNaN(n) && n >= 0 && n <= 4);
   const btn = document.getElementById('plan-week-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Planning...'; }
   const panel = document.getElementById('plan-review-panel');
@@ -912,7 +919,13 @@ async function planWeekDeep(mondayStr) {
         failCount = 0;
         const progEl = document.getElementById('plan-progress-text');
         if (progEl) {
-          const phases = {
+          const phases = _weekMode === 'videos' ? {
+            starting: 'Initializing video planning engine...',
+            trend_research: 'Searching for coaching-relevant stories for this week\'s walking scripts...',
+            strategist: 'Opus strategist picking 5 walking video angles (one per pillar)...',
+            completed: 'Video scripts plan ready - review and approve to record.',
+            failed: 'Planning failed'
+          } : {
             starting: 'Initializing planning engine...',
             trend_research: 'Searching the web for current AI, tech, and business trends...',
             strategist: 'Opus strategist choosing 5 topics, gift theme, and CTA keyword...',
@@ -950,6 +963,25 @@ async function planWeekDeep(mondayStr) {
   if (planElapsedTimer) { clearInterval(planElapsedTimer); planElapsedTimer = null; }
   if (btn) { btn.disabled = false; btn.textContent = 'Plan This Week'; }
   // DON'T call renderWeek() here - it would wipe the plan review panel
+}
+
+function _setWeekMode(mode) {
+  _weekMode = mode;
+  const isVideos = mode === 'videos';
+  // Toggle button active states
+  const postBtn = document.getElementById('mode-posts');
+  const vidBtn = document.getElementById('mode-videos');
+  if (postBtn) { postBtn.style.background = isVideos ? 'var(--card)' : 'var(--accent)'; postBtn.style.color = isVideos ? 'var(--dim)' : '#fff'; }
+  if (vidBtn) { vidBtn.style.background = isVideos ? 'var(--accent)' : 'var(--card)'; vidBtn.style.color = isVideos ? '#fff' : 'var(--dim)'; }
+  // Show/hide video-day checkboxes (only relevant in Posts mode for hybrid weeks)
+  const vdWrap = document.getElementById('video-day-checkboxes-wrap');
+  if (vdWrap) vdWrap.style.display = isVideos ? 'none' : 'flex';
+  // Show/hide theme input (not useful in Videos mode)
+  const themeWrap = document.getElementById('week-theme-wrap');
+  if (themeWrap) themeWrap.style.display = isVideos ? 'none' : '';
+  // Update Plan button label
+  const planBtn = document.getElementById('plan-week-btn');
+  if (planBtn && planBtn.textContent !== 'Planning...') planBtn.textContent = isVideos ? 'Plan Video Week' : 'Plan Posts Week';
 }
 
 // === AI FEEDBACK BUTTONS ===
