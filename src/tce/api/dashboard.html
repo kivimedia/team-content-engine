@@ -768,7 +768,7 @@ async function renderWeek() {
           // disabled Generating button when the entry is in the map.
           const inflightRec = _isInflight(entry.id);
           if (videoScriptId && !inflightRec) {
-            html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="openWalkingScriptDetail(\'' + videoScriptId + '\')">Package</button>';
+            html += '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="openWalkingScriptDetail(\'' + videoScriptId + '\')">View Script</button>';
             html += '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="regenerateWalkingVideo(\'' + entry.id + '\', this)">Regenerate</button>';
           } else if (inflightRec) {
             const elapsed = Math.round((Date.now() - (inflightRec.startedAt || Date.now())) / 1000);
@@ -1988,8 +1988,8 @@ async function renderWalkingVideoPanel(entries, monday) {
   html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">';
 
   // 1. Download DOCX button
-  const docxDisabled = !allApproved && !weeklyPlanId;
-  html += '<a href="' + (weeklyPlanId ? '/api/v1/video-scripts/walking/weekly/' + weeklyPlanId + '/export-docx' : '#') + '" ' + (docxDisabled ? 'style="pointer-events:none;opacity:0.4"' : '') + ' class="btn btn-dim" download title="' + (allApproved ? 'Download week scripts as DOCX' : 'Approve all 5 scripts first') + '">&#128196; Download Week Scripts</a>';
+  const docxDisabled = !weeklyPlanId;
+  html += '<a href="' + (weeklyPlanId ? '/api/v1/video-scripts/walking/weekly/' + weeklyPlanId + '/export-docx' : '#') + '" ' + (docxDisabled ? 'style="pointer-events:none;opacity:0.4"' : '') + ' class="btn btn-dim" download title="' + (weeklyPlanId ? 'Download all 5 scripts as DOCX' : 'Run Plan Video Week first') + '">&#128196; Download Week Scripts</a>';
 
   // 2. Upload dropzone
   const uploadDisabled = !weeklyPlanId;
