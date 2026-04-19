@@ -252,6 +252,156 @@ Founder of Agency Mavericks (formerly WP Elevation). Coached 2,500+ agency owner
 
 ---
 
+## CONTENT STRATEGY
+
+### The One Job Every Piece of Content Has
+
+Every video, post, or script must leave a coach thinking: **"I need to talk to Ziv Raviv."**
+
+Not "interesting news." Not "good point." Not "I should look into that."
+
+The viewer is an independent coach earning $2K-$8K/month. They either have VAs they're frustrated with, clients they're losing, prices they can't raise, or delivery they can't scale. They are NOT interested in AI company valuations, supply chain disruption, or general tech news. They are interested in their own business surviving and growing.
+
+### The Emotional Trigger Test
+
+Before picking any topic, ask: does this make a coach feel one of these three things?
+
+1. **"I'm losing ground and I didn't know it"** - a threat they haven't yet named
+2. **"There's something working right now that I'm not doing"** - a specific opportunity with a window
+3. **"Someone just solved the problem I've been stuck on"** - a direct answer to a real blocker
+
+If the answer is none of the three, the topic fails. Drop it regardless of how newsworthy it is.
+
+### Topic Filter: Pass/Fail
+
+**A topic PASSES if:**
+- A coach earning $3K/month could watch 90 seconds and see a direct threat or opportunity in their own business
+- The insight is only possible from Ziv's position: 6 years + 300+ clients + AI agent infrastructure
+- It naturally ends with a question only a strategy session can answer
+
+**A topic FAILS if:**
+- It references AI company funding rounds, valuations, or press releases coaches don't care about
+- It could be written by any "AI for business" creator with zero coaching experience
+- It's interesting but creates no urgency to act or talk to anyone
+
+---
+
+### The 5 Content Pillars
+
+#### Pillar 1: The VA Team Is Dying
+
+The coaches who hired human teams to scale are watching clients leave. AI agent teams are faster, more consistent, and cheaper. This is already happening - not a prediction.
+
+**Emotional trigger:** "I'm losing ground and I didn't know it."
+
+**Audience belief going in:** "I need a good team to scale."
+**Belief shift:** "The team model is being disrupted from underneath me."
+
+**Example topics (use as pattern, not scripts):**
+- A client cut her operations team from 5 to 1 and doubled her output in 60 days - here is what changed
+- Your VA is making you look unprofessional to your clients and you probably don't know it
+- The hidden cost of a human operations team that nobody in the coaching industry is talking about
+- Why 6 of my long-term clients didn't renew last year - the real reason was not price
+- What coaching clients are actually comparing when they decide whether to stay with you
+
+#### Pillar 2: The Economics of High-Ticket AI Delivery
+
+What separates a $2K/month coach from a $5K/month coach is not credentials or methodology. It is the cost and quality of delivery. AI agents enable done-for-you delivery at near-zero cost of goods. This changes the entire pricing model.
+
+**Emotional trigger:** "There's something working right now that I'm not doing."
+
+**Audience belief going in:** "I can't charge more without working more."
+**Belief shift:** "The price ceiling is a delivery problem, not a value problem."
+
+**Example topics:**
+- Why the $2K coach and the $5K coach do almost identical work - and what actually creates the gap
+- The coaching offer with near-zero cost of delivery (clients bring their own API keys)
+- How to raise your coaching prices without changing your methodology or working more hours
+- The done-for-you coaching model that runs while you sleep - what it actually looks like
+- I coach coaches for $4,500 a month and my delivery cost is under $50 - here is how
+
+#### Pillar 3: The Coaching Industry Is Being Restructured Right Now
+
+Coaches who don't adapt to AI agent delivery will lose clients to coaches who do. This is not a future warning - the restructuring is happening in 2026. Clients are already benchmarking their coach's team output against AI tools they use themselves.
+
+**Emotional trigger:** "I'm losing ground and I didn't know it."
+
+**Audience belief going in:** "My clients trust me and my team."
+**Belief shift:** "My clients are already using AI tools that outperform my team - they just haven't said it yet."
+
+**Example topics:**
+- What happens when your clients discover that ChatGPT can do what your team does in 10 minutes
+- The coaching business model that will look outdated in 18 months - and the one replacing it
+- Why AI did not kill coaching - it raised the bar for what good coaching delivery looks like
+- The signal I watch in my client roster that tells me a client is about to leave (it has nothing to do with results)
+- Three types of coaches who will thrive in 2026 - and two types who will not
+
+#### Pillar 4: AI Agent Teams - What They Actually Look Like in Practice
+
+Most coaches have heard "use AI agents" and have no idea what that means in their business. Not theory. Not tools lists. Real implementations from real coaching businesses Ziv has built these in.
+
+**Emotional trigger:** "Someone just solved the problem I've been stuck on."
+
+**Audience belief going in:** "AI agents are too technical for me."
+**Belief shift:** "This is concrete and achievable - and someone has already done it for businesses like mine."
+
+**Example topics:**
+- What my client's coaching business looks like with an AI agent team - a real walkthrough
+- The seven jobs I replaced with AI agents in my own business (in order of easiest to hardest)
+- Why "just use ChatGPT" is the wrong advice for coaches - and what actually works
+- The first AI agent I set up for every new coaching client - and why this one first
+- My client's agent generated her first piece of client content while she was on vacation - here is how that works
+
+#### Pillar 5: The Super Coaching Proof
+
+Six years. Three hundred clients. A published book. A named methodology. This pillar is authority - earned, specific, verifiable. Not thought leadership. Evidence.
+
+**Emotional trigger:** "This person has done this at scale. I should talk to them."
+
+**Audience belief going in:** "Everyone says they know how to scale coaching."
+**Belief shift:** "This person has actually done it with hundreds of coaches and has data."
+
+**Example topics:**
+- After 300 coaching clients, one pattern separates the ones who hit $10K months from the ones who don't
+- What I would write differently in The Fully Booked Coach if I wrote it today
+- The one question I ask every new coaching client before we build anything
+- The mistake I made with my first 50 clients that I corrected in the next 250
+- Six years of coaching coaches: the three things that actually move the needle (none of them are what you think)
+
+---
+
+### Day-of-Week Angle Calibration
+
+Apply these angles to whichever pillar fits the day's strongest available story:
+
+- **Monday:** Big shift - something in the coaching industry just changed or is changing
+- **Tuesday:** Tactical - here is exactly how to do a specific thing
+- **Wednesday:** Contrarian - everyone believes X, here is why X is wrong
+- **Thursday:** Case study - a real client, a real result, a real sequence of events
+- **Friday:** Second-order - the downstream consequence of something coaches haven't noticed yet
+
+---
+
+### What the Topic Selection Agent Must Never Do
+
+- Pick AI news stories (funding rounds, product launches, valuations) and try to make them relevant to coaches - this always produces generic content
+- Use Ziv's name or "I" in topic titles - hooks are about the viewer, not the creator
+- Pick topics that require the viewer to care about tech trends - they care about their business, not the industry
+- Produce five variations of the same angle in one week - each day must hit a different pillar or a different emotional trigger
+- Choose a topic where the insight is equally available from any other creator - if TJ Robertson, Justin Welsh, or any generic "AI for business" account could have said it, it is not specific enough
+
+---
+
+### The Competitive Position
+
+Ziv is not an AI influencer. He is not an SEO expert. He is not a productivity guru.
+
+He is the person with the deepest track record of making coaches' businesses actually work - 300+ clients, published book, proven methodology - who also happens to have built the AI agent infrastructure that makes high-ticket done-for-you coaching economically viable at near-zero cost.
+
+The content should constantly reflect that specific combination. Neither half alone is interesting. Together, they are a category of one.
+
+---
+
 ## THE UNCOMFORTABLE TRUTH
 
 The bottleneck isn't the offer, tech skills, niche knowledge, or content. It's that 20 hours/week go to building tools and 0 hours go to selling. This plan works ONLY if 10 of those R&D hours shift to outreach, strategy sessions, and webinar building. The first email goes out today.
