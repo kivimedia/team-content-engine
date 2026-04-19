@@ -25,6 +25,7 @@ from tce.agents import (  # noqa: F401
     video_lead_writer,
     walking_video_writer,
     weekly_planner,
+    weekly_walking_pipeline,
 )
 from tce.agents.base import AgentBase
 from tce.agents.registry import agent_registry, register_agent

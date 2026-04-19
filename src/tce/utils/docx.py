@@ -735,3 +735,160 @@ def create_guide_docx(
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     doc.save(out_path)
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# Weekly walking-video scripts DOCX
+# ---------------------------------------------------------------------------
+
+# Header background for script dividers - deep navy matching CLR_NEAR_BLACK
+BG_SCRIPT_HEADER = "0F172A"
+# Accent for shot notes callout - matches blue callout
+BG_SHOT_NOTES = "EFF6FF"
+
+
+def _add_page_break(doc) -> None:
+    """Insert a page break."""
+    from docx.enum.text import WD_BREAK  # type: ignore[attr-defined]
+
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(0)
+    run = p.add_run()
+    run.add_break(WD_BREAK.PAGE)
+
+
+def _add_script_header(doc, day_label: str, title: str, estimated_sec: int | None) -> None:
+    """Full-width dark header block for one script section."""
+    table = doc.add_table(rows=1, cols=1)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _remove_table_borders(table)
+
+    # Stretch table to page width
+    tbl = table._tbl
+    tbl_pr = tbl.tblPr if tbl.tblPr is not None else OxmlElement("w:tblPr")
+    tbl_w = OxmlElement("w:tblW")
+    tbl_w.set(qn("w:w"), "9360")  # 6.5 inches in twips at 1440/inch
+    tbl_w.set(qn("w:type"), "dxa")
+    tbl_pr.append(tbl_w)
+
+    cell = table.cell(0, 0)
+    _set_cell_shading(cell, BG_SCRIPT_HEADER)
+    _set_cell_margins(cell, top=200, bottom=160, left=200, right=200)
+
+    cell.paragraphs[0].clear()
+    p = cell.paragraphs[0]
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(4)
+
+    white = RGBColor(0xFF, 0xFF, 0xFF)
+    dim_white = RGBColor(0xA0, 0xAE, 0xC0)
+
+    # Day label (small, muted)
+    _add_run(p, day_label.upper() + "  ", bold=True, size=9, color=dim_white)
+
+    # Title (large, white)
+    p2 = cell.add_paragraph()
+    p2.paragraph_format.space_before = Pt(2)
+    p2.paragraph_format.space_after = Pt(0)
+    _add_run(p2, title, bold=True, size=18, color=white)
+
+    if estimated_sec:
+        mins = estimated_sec // 60
+        secs = estimated_sec % 60
+        duration_str = f"{mins}:{secs:02d} min" if mins else f"{secs}s"
+        p3 = cell.add_paragraph()
+        p3.paragraph_format.space_before = Pt(6)
+        p3.paragraph_format.space_after = Pt(0)
+        _add_run(p3, f"Estimated duration: {duration_str}", size=10, color=dim_white)
+
+
+def _add_shot_notes_callout(doc, shot_notes: dict | str) -> None:
+    """Render shot notes as a blue callout box."""
+    if isinstance(shot_notes, dict):
+        lines = [f"{k}: {v}" for k, v in shot_notes.items() if v]
+        content = " | ".join(lines) if lines else str(shot_notes)
+    else:
+        content = str(shot_notes)
+
+    _add_callout_box(doc, "SHOT NOTES", content, BG_SHOT_NOTES, CLR_BLUE_DARK)
+
+
+def build_weekly_scripts_docx(scripts: list) -> bytes:
+    """Build a printable DOCX bundling all 5 walking-video scripts for the week.
+
+    Each script gets a full-page section: dark header with day + title + estimated
+    duration, hook in bold, full_script body, shot notes in a callout box.
+    Scripts are separated by page breaks so boundaries are unmistakable when printing.
+
+    Args:
+        scripts: list of WalkingVideoScript ORM objects (or dicts with same fields),
+                 ordered by intended recording sequence (day 1 first).
+
+    Returns:
+        Raw DOCX bytes, ready for StreamingResponse.
+    """
+    import io
+
+    doc = docx.Document()
+
+    # Global styles
+    style = doc.styles["Normal"]
+    style.font.name = FONT_NAME
+    style.font.size = Pt(11)
+    style.font.color.rgb = CLR_BODY
+    style.paragraph_format.space_after = Pt(6)
+
+    sec_fmt = doc.sections[0]
+    sec_fmt.top_margin = Inches(0.75)
+    sec_fmt.bottom_margin = Inches(0.75)
+    sec_fmt.left_margin = Inches(1)
+    sec_fmt.right_margin = Inches(1)
+
+    for idx, script in enumerate(scripts):
+        # Support both ORM objects and plain dicts
+        def _f(attr: str, default=None):
+            return getattr(script, attr, None) if not isinstance(script, dict) else script.get(attr, default)
+
+        if idx > 0:
+            _add_page_break(doc)
+
+        day_label = f"Script {idx + 1} of {len(scripts)}"
+        title = _f("title") or "Untitled"
+        estimated_sec = _f("estimated_duration_seconds")
+        hook = _f("hook")
+        full_script = _f("full_script")
+        shot_notes = _f("shot_notes")
+
+        # Header
+        _add_script_header(doc, day_label, title, estimated_sec)
+
+        # Gap after header
+        doc.add_paragraph().paragraph_format.space_after = Pt(4)
+
+        # Hook (bold, slightly larger)
+        if hook:
+            _add_horizontal_rule(doc, color="2563EB", thickness=6)
+            _add_styled_paragraph(doc, "HOOK", size=9, color=CLR_BLUE, bold=True, space_after=2)
+            _add_styled_paragraph(doc, hook, size=13, color=CLR_NEAR_BLACK, bold=True, space_after=10)
+            _add_light_rule(doc)
+
+        # Full script body
+        if full_script:
+            _add_styled_paragraph(doc, "SCRIPT", size=9, color=CLR_DIM, bold=True, space_before=8, space_after=4)
+            for line in full_script.split("\n"):
+                stripped = line.strip()
+                if stripped:
+                    _add_styled_paragraph(doc, stripped, size=12, color=CLR_BODY, space_after=8)
+                else:
+                    doc.add_paragraph().paragraph_format.space_after = Pt(4)
+
+        # Shot notes
+        if shot_notes:
+            doc.add_paragraph().paragraph_format.space_after = Pt(6)
+            _add_shot_notes_callout(doc, shot_notes)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()

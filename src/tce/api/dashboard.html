@@ -620,6 +620,7 @@ async function renderWeek() {
       </div>
       <div id="plan-review-panel"></div>
       <div id="gen-all-progress"></div>
+      <div id="weekly-walking-panel" style="margin-bottom:16px"></div>
       <div class="week-grid" id="week-grid"><div class="empty" style="grid-column:1/-1">Loading calendar...</div></div>
     </div>`;
 
@@ -788,6 +789,10 @@ async function renderWeek() {
     const wg = document.getElementById('week-grid');
     if (wg) wg.innerHTML = '<div class="empty" style="grid-column:1/-1">Error loading calendar: ' + String(e.message || e).replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c])) + '</div>';
   }
+
+  // Render weekly walking-video panel after grid is ready
+  try { await renderWalkingVideoPanel(typeof entries !== 'undefined' ? entries : [], monday); }
+  catch(wpErr) { if (window._tceShowErr) window._tceShowErr('Walking video panel: ' + wpErr.message); }
 
   // Resume day regen polling if active (survives page refresh)
   try {
@@ -1893,6 +1898,175 @@ function renderGenAllProgress() {
     } else {
       btn.textContent = 'Generate All Days';
     }
+  }
+}
+
+// ─── Weekly Walking-Video Panel ───────────────────────────────────────────────
+
+let _walkingPipelineRunId = null;
+let _walkingPollTimer = null;
+
+async function renderWalkingVideoPanel(entries, monday) {
+  const panel = document.getElementById('weekly-walking-panel');
+  if (!panel) return;
+
+  // Only show if at least one entry is a walking-video day
+  const videoEntries = (entries || []).filter(e => e && e.plan_context && e.plan_context.content_format === 'walking_video');
+  if (!videoEntries.length) { panel.style.display = 'none'; return; }
+
+  const weeklyPlanId = videoEntries.find(e => e.weekly_plan_id)?.weekly_plan_id;
+  const allApproved = videoEntries.length >= 5 && videoEntries.every(e => e.walking_video_script_status === 'approved' || (window._walkingScriptStatuses && window._walkingScriptStatuses[e.walking_video_script_id] === 'approved'));
+
+  // Fetch recording state if plan ID is known
+  let recording = null;
+  if (weeklyPlanId) {
+    try { recording = await api('/video-scripts/walking/weekly/' + weeklyPlanId + '/recording'); } catch(_) {}
+  }
+
+  const hasRecording = recording && recording.status !== undefined;
+  const canEdit = hasRecording && recording.status === 'uploaded';
+  const isPipelineRunning = hasRecording && ['transcribing','aligning','splitting','editing'].includes(recording.status);
+  const isDone = hasRecording && recording.status === 'done';
+
+  const escP = s => String(s||'').replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+
+  // Status color
+  const statusColors = {uploaded:'var(--blue)',transcribing:'var(--yellow)',aligning:'var(--yellow)',splitting:'var(--yellow)',editing:'var(--yellow)',done:'var(--green)',failed:'var(--red)'};
+  const statusColor = statusColors[recording?.status] || 'var(--dim)';
+  const statusLabel = (recording?.status||'none').toUpperCase();
+
+  let html = '<div style="background:linear-gradient(135deg,#0f1a2e,#152040);border:1px solid var(--accent);border-radius:10px;padding:16px 20px">';
+  html += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">';
+  html += '<div style="display:flex;align-items:center;gap:10px">';
+  html += '<span style="font-size:18px">&#127916;</span>';
+  html += '<div><div style="font-size:14px;font-weight:700;color:var(--text)">Weekly Walking Video</div>';
+  html += '<div style="font-size:11px;color:var(--dim)">One recording for all ' + videoEntries.length + ' scripts</div></div>';
+  html += '</div>';
+  if (hasRecording) {
+    html += '<span style="font-size:11px;font-weight:700;letter-spacing:1px;color:' + statusColor + ';background:rgba(255,255,255,0.04);border:1px solid ' + statusColor + ';border-radius:4px;padding:2px 8px">' + escP(statusLabel) + '</span>';
+  }
+  html += '</div>';
+
+  // Action row
+  html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">';
+
+  // 1. Download DOCX button
+  const docxDisabled = !allApproved && !weeklyPlanId;
+  html += '<a href="' + (weeklyPlanId ? '/api/v1/video-scripts/walking/weekly/' + weeklyPlanId + '/export-docx' : '#') + '" ' + (docxDisabled ? 'style="pointer-events:none;opacity:0.4"' : '') + ' class="btn btn-dim" download title="' + (allApproved ? 'Download week scripts as DOCX' : 'Approve all 5 scripts first') + '">&#128196; Download Week Scripts</a>';
+
+  // 2. Upload dropzone
+  const uploadDisabled = !weeklyPlanId;
+  html += '<label class="btn btn-dim" style="cursor:pointer;' + (uploadDisabled ? 'opacity:0.4;pointer-events:none' : '') + '" title="Upload the single long walking video for this week">';
+  html += '&#128190; Upload Recording';
+  html += '<input type="file" accept="video/*" style="display:none" ' + (uploadDisabled ? 'disabled' : '') + ' onchange="uploadWeeklyRecording(event,\'' + weeklyPlanId + '\')">';
+  html += '</label>';
+
+  // 3. Split & Edit button
+  html += '<button class="btn btn-primary" ' + (!canEdit ? 'disabled' : '') + ' title="' + (canEdit ? 'Run the full split-and-edit pipeline' : 'Upload a recording first') + '" onclick="runWeeklySplitEdit(\'' + weeklyPlanId + '\')">';
+  html += isPipelineRunning ? '&#9201; Running...' : (isDone ? '&#9989; Rerun Pipeline' : '&#9654; Split &amp; Edit Week');
+  html += '</button>';
+  html += '</div>';
+
+  // Pipeline progress (3-second rule: verbose step names)
+  if (isPipelineRunning || isDone) {
+    const stageLabels = {
+      transcribing: 'Transcribing audio (faster-whisper)...',
+      aligning: 'Aligning 5 script anchors to transcript...',
+      splitting: 'Splitting video into 5 clips (FFmpeg lossless)...',
+      editing: 'Editing clips with CutSense (captions + silence cuts + take-picking)...',
+      done: 'All 5 clips edited and ready.',
+      failed: 'Pipeline failed.'
+    };
+    html += '<div style="margin-top:14px;padding:10px 14px;background:rgba(0,0,0,0.25);border-radius:6px;border-left:3px solid ' + statusColor + '">';
+    html += '<div style="font-size:12px;color:' + statusColor + ';font-weight:600">' + escP(stageLabels[recording.status] || recording.status) + '</div>';
+    if (recording.error_message) html += '<div style="font-size:11px;color:var(--red);margin-top:4px">' + escP(recording.error_message) + '</div>';
+
+    // Per-clip CutSense job status mini-cards
+    if (recording.cutsense_jobs && Object.keys(recording.cutsense_jobs).length) {
+      html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">';
+      Object.entries(recording.cutsense_jobs).forEach(([scriptId, jobId], idx) => {
+        const clipStatus = window._clipStatuses && window._clipStatuses[jobId];
+        const clipColor = {render_done:'var(--green)',edit_failed:'var(--red)',render_failed:'var(--red)'}[clipStatus?.state] || 'var(--yellow)';
+        const clipLabel = {render_done:'Done',ingest_failed:'Ingest failed',edit_failed:'Edit failed',render_failed:'Render failed'}[clipStatus?.state] || (clipStatus?.state || 'pending').replace(/_/g,' ');
+        html += '<div style="background:rgba(255,255,255,0.04);border:1px solid ' + clipColor + ';border-radius:6px;padding:6px 10px;min-width:90px;text-align:center">';
+        html += '<div style="font-size:10px;color:var(--dim)">Clip ' + (idx+1) + '</div>';
+        html += '<div style="font-size:11px;font-weight:600;color:' + clipColor + '">' + escP(clipLabel) + '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  html += '</div>';
+  panel.style.display = 'block';
+  panel.innerHTML = html;
+
+  // Start polling if pipeline is running
+  if (isPipelineRunning && weeklyPlanId) {
+    _walkingPipelineRunId = recording.pipeline_run_id;
+    _startWalkingPipelinePoll(weeklyPlanId, entries, monday);
+  }
+}
+
+function _startWalkingPipelinePoll(weeklyPlanId, entries, monday) {
+  if (_walkingPollTimer) clearInterval(_walkingPollTimer);
+  _walkingPollTimer = setInterval(async () => {
+    try {
+      const rec = await api('/video-scripts/walking/weekly/' + weeklyPlanId + '/recording');
+      // Poll per-clip job statuses
+      if (rec.cutsense_jobs && Object.keys(rec.cutsense_jobs).length) {
+        window._clipStatuses = window._clipStatuses || {};
+        for (const [scriptId, jobId] of Object.entries(rec.cutsense_jobs)) {
+          try {
+            const st = await fetch('/api/v1/video-scripts/cutsense-proxy/jobs/' + jobId + '/status').then(r => r.json());
+            window._clipStatuses[jobId] = st;
+          } catch(_) {}
+        }
+      }
+      // Re-render panel with latest state
+      await renderWalkingVideoPanel(entries, monday);
+      // Stop polling when terminal state reached
+      if (!['transcribing','aligning','splitting','editing'].includes(rec.status)) {
+        clearInterval(_walkingPollTimer);
+        _walkingPollTimer = null;
+      }
+    } catch(_) {}
+  }, 3000);
+}
+
+async function uploadWeeklyRecording(event, weeklyPlanId) {
+  const file = event.target.files[0];
+  if (!file || !weeklyPlanId) return;
+  const panel = document.getElementById('weekly-walking-panel');
+  const statusDiv = panel ? panel.querySelector('[data-upload-status]') : null;
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const btn = event.target.closest('label');
+  if (btn) { btn.style.opacity = '0.6'; btn.style.pointerEvents = 'none'; }
+
+  try {
+    const resp = await fetch('/api/v1/video-scripts/walking/weekly/' + weeklyPlanId + '/upload-recording', {
+      method: 'POST', body: formData,
+    });
+    if (!resp.ok) { const t = await resp.text(); throw new Error(t); }
+    await renderWeek();
+  } catch(err) {
+    if (window._tceShowErr) window._tceShowErr('Upload failed: ' + err.message);
+    if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
+  }
+}
+
+async function runWeeklySplitEdit(weeklyPlanId) {
+  if (!weeklyPlanId) return;
+  try {
+    const result = await api('/video-scripts/walking/weekly/' + weeklyPlanId + '/run-split-edit', { method: 'POST' });
+    _walkingPipelineRunId = result.pipeline_run_id;
+    await renderWeek();
+  } catch(err) {
+    if (window._tceShowErr) window._tceShowErr('Failed to start pipeline: ' + err.message);
   }
 }
 

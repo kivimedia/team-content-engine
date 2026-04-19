@@ -365,6 +365,29 @@ WALKING_VIDEO_FROM_PLAN_WORKFLOW = [
     ),
 ]
 
+# One-button weekly walking-video split-and-edit pipeline.
+# Strictly sequential: transcribe the long video, align 5 script anchors,
+# split into 5 clips via FFmpeg, then run CutSense edit on each clip.
+# No LLM cost - these agents call the CutSense VPS HTTP shim.
+WEEKLY_WALKING_SPLIT_EDIT_WORKFLOW = [
+    PipelineStep(agent_name="weekly_transcriber", depends_on=[], timeout_seconds=3600),
+    PipelineStep(
+        agent_name="weekly_script_aligner",
+        depends_on=["weekly_transcriber"],
+        timeout_seconds=120,
+    ),
+    PipelineStep(
+        agent_name="weekly_clip_splitter",
+        depends_on=["weekly_script_aligner"],
+        timeout_seconds=1800,
+    ),
+    PipelineStep(
+        agent_name="weekly_clip_editor",
+        depends_on=["weekly_clip_splitter"],
+        timeout_seconds=18000,  # 5h for 5 clips (each up to 1h)
+    ),
+]
+
 # Workflow registry
 WORKFLOWS: dict[str, list[PipelineStep]] = {
     "daily_content": DAILY_CONTENT_WORKFLOW,
@@ -382,6 +405,7 @@ WORKFLOWS: dict[str, list[PipelineStep]] = {
     "video_lead": VIDEO_LEAD_WORKFLOW,
     "walking_video": WALKING_VIDEO_WORKFLOW,
     "walking_video_from_plan": WALKING_VIDEO_FROM_PLAN_WORKFLOW,
+    "weekly_walking_split_edit": WEEKLY_WALKING_SPLIT_EDIT_WORKFLOW,
     "start_from_repo": START_FROM_REPO_WORKFLOW,
     "weekly_repo_spotlight": WEEKLY_REPO_SPOTLIGHT_WORKFLOW,
 }

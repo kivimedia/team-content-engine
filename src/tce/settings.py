@@ -88,5 +88,12 @@ class Settings(BaseSettings):
     repo_brief_ttl_hours: int = 6  # How long a cached RepoBrief survives before re-fetch
     repo_commit_window_days: int = 30  # How far back repo_scout looks for commits
 
+    # CutSense VPS HTTP shim (weekly walking-video pipeline)
+    cutsense_api_url: str = "http://localhost:8300"
+    cutsense_service_key: str = ""  # Matches CUTSENSE_SERVICE_KEY on VPS; empty = no auth
+
+    # Feature flags
+    weekly_walking_pipeline: bool = False  # TCE_WEEKLY_WALKING_PIPELINE=1 to enable
+
 
 settings = Settings()
