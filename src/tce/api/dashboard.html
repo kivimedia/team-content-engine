@@ -630,8 +630,9 @@ async function renderWeek() {
   _syncWeekModeUI();
 
   // Load calendar entries for this week
+  let entries = [];
   try {
-    const entries = await api('/calendar/?start=' + fmtDate(monday) + '&end=' + fmtDate(friday));
+    entries = await api('/calendar/?start=' + fmtDate(monday) + '&end=' + fmtDate(friday));
     const byDate = {};
     entries.forEach(e => byDate[e.date] = e);
     // Cache entries by day index for runDayPipeline to use plan_context
@@ -796,7 +797,7 @@ async function renderWeek() {
   }
 
   // Render weekly walking-video panel after grid is ready
-  try { await renderWalkingVideoPanel(typeof entries !== 'undefined' ? entries : [], monday); }
+  try { await renderWalkingVideoPanel(entries, monday); }
   catch(wpErr) { if (window._tceShowErr) window._tceShowErr('Walking video panel: ' + wpErr.message); }
 
   // Resume day regen polling if active (survives page refresh)
@@ -3272,7 +3273,7 @@ function _renderScriptDetailInto(container, script, opts) {
     // operator can copy-paste a ready-to-run command instead of replacing
     // $VIDEO_PATH themselves.
     const videoArg = script.video_file_path || '$VIDEO_PATH';
-    const cliText = 'cutsense run ' + JSON.stringify(videoArg) + ' --prompt ' + JSON.stringify(script.cutsense_prompt) + ' --captions jumbo --duration ' + (script.estimated_duration_seconds || script.duration_target_seconds || 90);
+    const cliText = 'cutsense run ' + JSON.stringify(videoArg) + ' --prompt ' + JSON.stringify(script.cutsense_prompt) + ' --captions jumbo --duration ' + (script.estimated_duration_seconds || script.duration_target_seconds || 90) + ' --silence 1.0';
     const pre = document.createElement('pre');
     pre.style.cssText = 'background:var(--bg);padding:10px;border-radius:4px;font-size:11px;overflow:auto;max-height:140px;margin:0 0 8px 0;white-space:pre-wrap;word-break:break-all';
     pre.textContent = cliText;
