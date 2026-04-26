@@ -706,17 +706,26 @@ async function renderWeek() {
       window._weekMondayStr = fmtDate(monday);
     }
 
-    // Update Generate from Plan button based on package state
+    // Update Generate from Plan button based on package/script state.
+    // In videos mode, count walking_video_script_id so the button
+    // reflects the videos pipeline (was always counting post_package_id).
     const genAllBtn = document.getElementById('gen-all-btn');
     if (genAllBtn && !genAllState?.running) {
-      const allHavePackages = entries.length >= 5 && entries.every(e => e.post_package_id);
-      const someHavePackages = entries.some(e => e.post_package_id);
-      if (allHavePackages) {
-        genAllBtn.textContent = 'Regenerate All';
+      const isVideosMode = _weekMode === 'videos';
+      const isReady = e => isVideosMode ? !!e.walking_video_script_id : !!e.post_package_id;
+      const allReady = entries.length >= 5 && entries.every(isReady);
+      const someReady = entries.some(isReady);
+      const baseLabel = isVideosMode ? 'Generate All Videos' : 'Generate from Plan';
+      if (allReady) {
+        genAllBtn.textContent = isVideosMode ? 'Regenerate All Videos' : 'Regenerate All';
         genAllBtn.className = 'btn btn-dim';
-      } else if (someHavePackages) {
-        const remaining = entries.filter(e => !e.post_package_id).length;
+      } else if (someReady) {
+        const remaining = entries.filter(e => !isReady(e)).length;
         genAllBtn.textContent = 'Generate ' + remaining + ' Remaining';
+        genAllBtn.className = 'btn btn-green';
+      } else {
+        genAllBtn.textContent = baseLabel;
+        genAllBtn.className = 'btn btn-green';
       }
     }
 
@@ -740,26 +749,31 @@ async function renderWeek() {
       html += '<div class="day-angle" style="position:relative;cursor:help">' + (isVideoDay ? 'Walking video (60-120s)' : (ANGLE_LABELS[angle] || angle.replace(/_/g,' ')));
       if (!isVideoDay && tip) html += ' <span class="tip-icon" data-tip="' + esc(tip) + '">i</span>';
       html += '</div>';
-      if (entry?.topic) html += '<div class="day-topic">' + esc(entry.topic) + '</div>';
+      if (entry?.topic) {
+        html += '<div class="day-topic" style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">';
+        html += '<span style="flex:1">' + esc(entry.topic) + '</span>';
+        html += '<button class="btn btn-dim" style="padding:1px 6px;font-size:9px;flex-shrink:0;letter-spacing:0.5px" title="Show alternative topics" onclick="openTopicSwapModal(\'' + entry.id + '\')">SWAP</button>';
+        html += '</div>';
+      }
       else html += '<div class="day-topic" style="color:var(--dim);font-style:italic">No topic set</div>';
       if (entry?.is_buffer) html += '<div style="font-size:10px;color:var(--yellow);margin-bottom:4px">Buffer post</div>';
       html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto;gap:4px;flex-wrap:wrap">';
       if (entry) {
         const hasPackage = !!entry.post_package_id;
         const hasVideoScript = !!entry.walking_video_script_id;
-        let stLabel, stClass;
+        let stLabel, stClass, isReady;
         if (isVideoDay) {
-          // Video days: READY only when the walking_video_script is actually
-          // generated. A leftover post_package_id from a prior text-plan run
-          // does not count - the card would mislead operators into thinking
-          // a script exists when they've only picked a topic.
-          if (hasVideoScript) { stLabel = 'READY'; stClass = 'ready'; }
-          else { stLabel = 'PLANNED'; stClass = 'planned'; }
+          isReady = hasVideoScript;
+          stLabel = isReady ? 'READY' : 'PLANNED';
+          stClass = isReady ? 'ready' : 'planned';
         } else {
-          stLabel = hasPackage && status === 'planned' ? 'READY' : status.toUpperCase();
-          stClass = hasPackage && status === 'planned' ? 'ready' : status;
+          isReady = hasPackage && status === 'planned';
+          stLabel = isReady ? 'READY' : status.toUpperCase();
+          stClass = isReady ? 'ready' : status;
         }
-        html += '<span class="day-status day-status-' + stClass + '">' + stLabel + '</span>';
+        // Skip the READY pill - the right-side button (Package / View Script)
+        // already conveys readiness. PLANNED/APPROVED pills still render.
+        if (!isReady) html += '<span class="day-status day-status-' + stClass + '">' + stLabel + '</span>';
         if (isVideoDay) {
           // Walking video days route to Video Studio (different backend pipeline).
           // We do NOT use post_packages for walking videos - they go to walking_video_scripts.
@@ -1544,7 +1558,18 @@ async function generateFromPlan() {
       toast('No plan found for this week. Click "Plan This Week" first.', false);
       return;
     }
-    // Reconstruct approved plan from calendar entries
+    // Videos mode: loop walking-video pipeline over un-generated video days.
+    // Posts mode: reconstruct plan and call posts pipeline.
+    if (_weekMode === 'videos') {
+      const todo = withPlan.filter(e =>
+        !e.walking_video_script_id &&
+        e.plan_context?.content_format === 'walking_video'
+      );
+      if (todo.length === 0) { toast('All video scripts already generated.'); return; }
+      await generateAllWalkingVideos(todo);
+      return;
+    }
+    // Reconstruct approved plan from calendar entries (posts mode)
     const plan = {
       weekly_theme: '',
       gift_theme: '',
@@ -1564,6 +1589,31 @@ async function generateFromPlan() {
     if (giftMatch) plan.gift_theme = giftMatch[1].trim();
     generateFromApprovedPlan(plan);
   } catch (e) { toast('Error: ' + e.message, false); }
+}
+
+// Run walking-video generation over a batch of calendar entries sequentially.
+// Sequential (not parallel) so the operator can see per-day progress and so
+// the LLM/Whisper backend isn't slammed with 5 concurrent runs.
+async function generateAllWalkingVideos(entries) {
+  const btn = document.getElementById('gen-all-btn');
+  const total = entries.length;
+  let done = 0, failed = 0;
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating 0/' + total + '...'; }
+  for (const e of entries) {
+    if (btn) btn.textContent = 'Generating ' + (done + failed + 1) + '/' + total + '...';
+    const dayCard = document.querySelector('[data-day-idx="' + e.day_of_week + '"]');
+    const dayBtn = dayCard?.querySelector('button.btn-primary');
+    const scriptId = await generateWalkingVideoInline(e.id, dayBtn);
+    if (scriptId) done++; else failed++;
+  }
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = failed ? ('Done: ' + done + ' ok, ' + failed + ' failed') : 'Regenerate All Videos';
+    btn.className = failed ? 'btn btn-yellow' : 'btn btn-dim';
+  }
+  if (failed) toast(failed + ' video(s) failed - check the day cards', false);
+  else toast('All ' + done + ' videos generated.');
+  await renderWeek();
 }
 
 function getMondayOfWeek() {
@@ -1998,15 +2048,10 @@ async function renderWalkingVideoPanel(entries, monday) {
   const docxDisabled = !weeklyPlanId;
   html += '<a href="' + (weeklyPlanId ? '/api/v1/video-scripts/walking/weekly/' + weeklyPlanId + '/export-docx' : '#') + '" ' + (docxDisabled ? 'style="pointer-events:none;opacity:0.4"' : '') + ' class="btn btn-dim" download title="' + (weeklyPlanId ? 'Download all 5 scripts as DOCX' : 'Run Plan Video Week first') + '">&#128196; Download Week Scripts</a>';
 
-  // 2. Upload dropzone
-  const uploadDisabled = !weeklyPlanId;
-  html += '<label class="btn btn-dim" style="cursor:pointer;' + (uploadDisabled ? 'opacity:0.4;pointer-events:none' : '') + '" title="Upload the single long walking video for this week">';
-  html += '&#128228; Upload Recording';
-  html += '<input type="file" accept="video/*" style="display:none" ' + (uploadDisabled ? 'disabled' : '') + ' onchange="uploadWeeklyRecording(event,\'' + weeklyPlanId + '\')">';
-  html += '</label>';
-
-  // 3. Split & Edit button
-  html += '<button class="btn btn-primary" ' + (!canEdit ? 'disabled' : '') + ' title="' + (canEdit ? 'Run the full split-and-edit pipeline' : 'Upload a recording first') + '" onclick="runWeeklySplitEdit(\'' + weeklyPlanId + '\')">';
+  // 2. Split & Edit Week (single entry point: opens a modal for picking a video).
+  // Always enabled when weeklyPlanId exists - the modal handles upload + run.
+  const splitDisabled = !weeklyPlanId || isPipelineRunning;
+  html += '<button class="btn btn-primary" ' + (splitDisabled ? 'disabled' : '') + ' title="Choose a recorded video and run the split-and-edit pipeline" onclick="openSplitEditModal(\'' + weeklyPlanId + '\',' + (canEdit ? 'true' : 'false') + ',' + (isDone ? 'true' : 'false') + ')">';
   html += isPipelineRunning ? '&#9201; Running...' : (isDone ? '&#9989; Rerun Pipeline' : '&#9654; Split &amp; Edit Week');
   html += '</button>';
   html += '</div>';
@@ -2139,6 +2184,216 @@ async function runWeeklySplitEdit(weeklyPlanId) {
   } catch(err) {
     if (splitBtn) { splitBtn.disabled = false; splitBtn.textContent = 'Split & Edit Week'; }
     if (window._tceShowErr) window._tceShowErr('Failed to start pipeline: ' + err.message);
+  }
+}
+
+// Modal: pick a video file, upload it, then run the split-and-edit pipeline.
+// Single entry point for the Split & Edit Week button so the operator never
+// hits a silently-disabled state.
+function openSplitEditModal(weeklyPlanId, hasUploaded, isDone) {
+  if (!weeklyPlanId) return;
+  closeSplitEditModal();
+  const overlay = document.createElement('div');
+  overlay.id = 'split-edit-modal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.onclick = (e) => { if (e.target === overlay) closeSplitEditModal(); };
+  const stateMsg = isDone
+    ? 'A previous pipeline run is done. Choose a different video to re-run, or click "Run Pipeline Again" to re-process the existing recording.'
+    : (hasUploaded
+        ? 'A recording is already uploaded. Choose a different video to replace it, or click "Run Pipeline" to use the current upload.'
+        : 'Choose your weekly walking-video file. We will transcribe the audio, find the 5 script anchors, split the video into clips, and edit each clip with CutSense.');
+  const runLabel = isDone ? 'Run Pipeline Again' : 'Run Pipeline';
+  // Build modal as DOM nodes (avoids HTML-injection lint and lets us bind handlers cleanly)
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--card);border:1px solid var(--accent);border-radius:12px;padding:24px;max-width:540px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,0.5)';
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px';
+  const h3 = document.createElement('h3');
+  h3.textContent = 'Split & Edit Week';
+  h3.style.cssText = 'margin:0;font-size:18px;font-weight:700;color:var(--text)';
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '×';
+  closeBtn.style.cssText = 'background:none;border:none;color:var(--dim);cursor:pointer;font-size:22px;line-height:1';
+  closeBtn.onclick = closeSplitEditModal;
+  head.appendChild(h3); head.appendChild(closeBtn);
+  const desc = document.createElement('p');
+  desc.textContent = stateMsg;
+  desc.style.cssText = 'color:var(--dim);font-size:13px;line-height:1.5;margin:0 0 16px 0';
+  const file = document.createElement('input');
+  file.type = 'file'; file.accept = 'video/*'; file.id = 'split-edit-file';
+  file.style.cssText = 'width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);margin-bottom:14px';
+  const progress = document.createElement('div');
+  progress.id = 'split-edit-progress';
+  progress.style.cssText = 'display:none;margin-bottom:14px;padding:10px 12px;background:rgba(0,0,0,0.3);border-radius:6px;border-left:3px solid var(--yellow);font-size:12px;color:var(--yellow)';
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:10px;justify-content:flex-end';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn btn-dim';
+  cancel.textContent = 'Cancel';
+  cancel.onclick = closeSplitEditModal;
+  const run = document.createElement('button');
+  run.className = 'btn btn-primary';
+  run.id = 'split-edit-run';
+  run.textContent = runLabel;
+  run.onclick = () => runSplitEditFromModal(weeklyPlanId);
+  actions.appendChild(cancel); actions.appendChild(run);
+  card.appendChild(head); card.appendChild(desc); card.appendChild(file); card.appendChild(progress); card.appendChild(actions);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  setTimeout(() => file.focus(), 50);
+}
+
+function closeSplitEditModal() {
+  document.getElementById('split-edit-modal')?.remove();
+}
+
+// Topic Swap modal: fetch SlotOption rows for the entry and let the operator
+// pick a different one. Backend already persists the 3 options at plan time
+// (calendar.py: GET /{entry_id}/options + POST /{entry_id}/options/{idx}/select),
+// we just expose them post-approval.
+async function openTopicSwapModal(entryId) {
+  if (!entryId) return;
+  closeTopicSwapModal();
+  const overlay = document.createElement('div');
+  overlay.id = 'topic-swap-modal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.onclick = (e) => { if (e.target === overlay) closeTopicSwapModal(); };
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--card);border:1px solid var(--accent);border-radius:12px;padding:24px;max-width:680px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.5)';
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px';
+  const h3 = document.createElement('h3');
+  h3.textContent = 'Replace Topic';
+  h3.style.cssText = 'margin:0;font-size:18px;font-weight:700;color:var(--text)';
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '×';
+  closeBtn.style.cssText = 'background:none;border:none;color:var(--dim);cursor:pointer;font-size:22px;line-height:1';
+  closeBtn.onclick = closeTopicSwapModal;
+  head.appendChild(h3); head.appendChild(closeBtn);
+  card.appendChild(head);
+  const body = document.createElement('div');
+  body.id = 'topic-swap-body';
+  body.textContent = 'Loading alternatives...';
+  body.style.cssText = 'color:var(--dim);font-size:13px';
+  card.appendChild(body);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  try {
+    const options = await api('/calendar/' + entryId + '/options');
+    body.innerHTML = '';
+    body.style.color = '';
+    if (!options || options.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'padding:20px;text-align:center;color:var(--dim);font-size:13px';
+      empty.textContent = 'No alternatives saved for this day. Re-run "Plan Video Week" to regenerate options.';
+      body.appendChild(empty);
+      return;
+    }
+    const desc = document.createElement('div');
+    desc.style.cssText = 'color:var(--dim);font-size:12px;margin-bottom:14px';
+    desc.textContent = 'Pick a different topic for this day. The currently-selected one is highlighted.';
+    body.appendChild(desc);
+    const list = document.createElement('div');
+    list.style.cssText = 'display:flex;flex-direction:column;gap:10px';
+    options.forEach((o) => {
+      const opt = document.createElement('div');
+      const sel = !!o.is_selected;
+      opt.style.cssText = 'border:1px solid ' + (sel ? 'var(--accent)' : 'var(--border)') + ';border-radius:8px;padding:12px 14px;background:' + (sel ? 'rgba(99,102,241,0.08)' : 'var(--bg)') + ';cursor:' + (sel ? 'default' : 'pointer') + ';transition:border-color 0.15s';
+      if (!sel) opt.onmouseenter = () => { opt.style.borderColor = 'var(--accent)'; };
+      if (!sel) opt.onmouseleave = () => { opt.style.borderColor = 'var(--border)'; };
+      const hdr = document.createElement('div');
+      hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px';
+      const rank = document.createElement('span');
+      rank.textContent = sel ? 'CURRENT' : ('OPTION ' + (o.option_index + 1));
+      rank.style.cssText = 'font-size:10px;font-weight:700;letter-spacing:1px;color:' + (sel ? 'var(--accent)' : 'var(--dim)');
+      hdr.appendChild(rank);
+      if (!sel) {
+        const pickBtn = document.createElement('button');
+        pickBtn.className = 'btn btn-primary';
+        pickBtn.textContent = 'Use this topic';
+        pickBtn.style.cssText = 'padding:4px 12px;font-size:11px';
+        pickBtn.onclick = (ev) => { ev.stopPropagation(); pickTopicOption(entryId, o.option_index, pickBtn); };
+        hdr.appendChild(pickBtn);
+      }
+      opt.appendChild(hdr);
+      const topic = document.createElement('div');
+      topic.textContent = o.topic || '(no topic)';
+      topic.style.cssText = 'font-size:14px;font-weight:600;color:var(--text);line-height:1.4;margin-bottom:4px';
+      opt.appendChild(topic);
+      const thesis = (o.plan_context && o.plan_context.thesis) || '';
+      if (thesis) {
+        const t = document.createElement('div');
+        t.textContent = thesis;
+        t.style.cssText = 'font-size:12px;color:var(--dim);line-height:1.4';
+        opt.appendChild(t);
+      }
+      if (!sel) opt.onclick = () => pickTopicOption(entryId, o.option_index, opt);
+      list.appendChild(opt);
+    });
+    body.appendChild(list);
+  } catch (err) {
+    body.style.color = 'var(--red)';
+    body.textContent = 'Failed to load alternatives: ' + (err.message || err);
+  }
+}
+
+function closeTopicSwapModal() {
+  document.getElementById('topic-swap-modal')?.remove();
+}
+
+async function pickTopicOption(entryId, optionIdx, btn) {
+  if (btn && btn.tagName === 'BUTTON') { btn.disabled = true; btn.textContent = 'Switching...'; }
+  try {
+    await api('/calendar/' + entryId + '/options/' + optionIdx + '/select', { method: 'POST' });
+    toast('Topic swapped');
+    closeTopicSwapModal();
+    await renderWeek();
+  } catch (err) {
+    toast('Swap failed: ' + (err.message || err), false);
+    if (btn && btn.tagName === 'BUTTON') { btn.disabled = false; btn.textContent = 'Use this topic'; }
+  }
+}
+
+async function runSplitEditFromModal(weeklyPlanId) {
+  const fileInput = document.getElementById('split-edit-file');
+  const file = fileInput?.files?.[0];
+  const progressEl = document.getElementById('split-edit-progress');
+  const runBtn = document.getElementById('split-edit-run');
+  const setProgress = (msg, color) => {
+    if (!progressEl) return;
+    progressEl.style.display = 'block';
+    progressEl.style.borderLeftColor = color || 'var(--yellow)';
+    progressEl.style.color = color || 'var(--yellow)';
+    progressEl.textContent = msg;
+  };
+  if (runBtn) { runBtn.disabled = true; }
+  try {
+    if (file) {
+      if (runBtn) runBtn.textContent = 'Uploading...';
+      const sizeMB = (file.size / 1_048_576).toFixed(1);
+      setProgress('Uploading ' + file.name + ' (' + sizeMB + ' MB) to VPS...');
+      const uploadStart = Date.now();
+      const ticker = setInterval(() => {
+        const elapsed = ((Date.now() - uploadStart) / 1000).toFixed(0);
+        setProgress('Uploading ' + file.name + ' (' + sizeMB + ' MB)... ' + elapsed + 's elapsed');
+      }, 1000);
+      const formData = new FormData();
+      formData.append('file', file);
+      const resp = await fetch('/api/v1/video-scripts/walking/weekly/' + weeklyPlanId + '/upload-recording', {
+        method: 'POST', body: formData,
+      });
+      clearInterval(ticker);
+      if (!resp.ok) { const t = await resp.text(); throw new Error(t); }
+      setProgress('Upload complete. Starting pipeline...');
+    }
+    if (runBtn) runBtn.textContent = 'Starting pipeline...';
+    const result = await api('/video-scripts/walking/weekly/' + weeklyPlanId + '/run-split-edit', { method: 'POST' });
+    _walkingPipelineRunId = result.pipeline_run_id;
+    setProgress('Pipeline started. Watch progress on the dashboard.', 'var(--green)');
+    setTimeout(() => { closeSplitEditModal(); renderWeek(); }, 1200);
+  } catch (err) {
+    setProgress('Failed: ' + (err.message || err), 'var(--red)');
+    if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Retry'; }
   }
 }
 
@@ -2701,7 +2956,6 @@ function _updateVideoCardToReady(entryId, scriptId) {
     const btnRow = rows.length ? rows[rows.length - 1] : null;
     if (!btnRow) return;
     btnRow.innerHTML =
-      '<span class="day-status day-status-ready">READY</span>' +
       '<button class="btn btn-green" style="padding:4px 10px;font-size:11px" onclick="openWalkingScriptDetail(\'' + scriptId + '\')">Package</button>' +
       '<button class="btn btn-dim" style="padding:4px 10px;font-size:11px" onclick="regenerateWalkingVideo(\'' + entryId + '\', this)">Regenerate</button>';
     return;
