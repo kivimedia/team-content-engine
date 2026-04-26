@@ -2129,6 +2129,141 @@ function _startWalkingPipelinePoll(weeklyPlanId, entries, monday) {
   }, 3000);
 }
 
+// ============================================================================
+// Upload helpers - real progress + 3 GB cap + chunked/resumable for big files
+// ============================================================================
+//
+// uploadFileXhr(url, file, opts) - single-shot via XMLHttpRequest with real
+//   xhr.upload.onprogress events. Use for files <= 100 MB or where the
+//   destination endpoint isn't wired into the chunked uploader.
+//
+// uploadFileChunked(file, intent, targetId, opts) - resumable upload via
+//   POST /api/v1/uploads/init -> PATCH /uploads/{id} (5 MB chunks) -> POST
+//   /uploads/{id}/finalize. Survives wifi drops (each chunk is its own HTTP
+//   request, server tracks byte offset). Use for video files (typically
+//   100 MB - 3 GB).
+//
+// opts.onProgress({percent, bytesSent, totalBytes, elapsedSec, mbPerSec})
+//   fires throughout. opts.signal accepts an AbortSignal.
+
+async function uploadFileXhr(url, file, opts) {
+  opts = opts || {};
+  const onProgress = opts.onProgress || (() => {});
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(opts.method || 'POST', url);
+    xhr.responseType = 'json';
+    if (opts.headers) {
+      for (const [k, v] of Object.entries(opts.headers)) xhr.setRequestHeader(k, v);
+    }
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const elapsedSec = (Date.now() - start) / 1000;
+      onProgress({
+        percent: (e.loaded / e.total) * 100,
+        bytesSent: e.loaded,
+        totalBytes: e.total,
+        elapsedSec,
+        mbPerSec: elapsedSec > 0 ? (e.loaded / 1_048_576) / elapsedSec : 0,
+      });
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response || {});
+      } else {
+        const body = xhr.response;
+        const detail = (body && body.detail) || xhr.statusText || ('HTTP ' + xhr.status);
+        reject(new Error('HTTP ' + xhr.status + ': ' + (typeof detail === 'string' ? detail : JSON.stringify(detail))));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.onabort = () => reject(new Error('Upload aborted'));
+    if (opts.signal) {
+      opts.signal.addEventListener('abort', () => xhr.abort(), { once: true });
+    }
+    if (opts.body !== undefined) {
+      xhr.send(opts.body);
+    } else {
+      const fd = new FormData();
+      fd.append('file', file);
+      xhr.send(fd);
+    }
+  });
+}
+
+async function uploadFileChunked(file, intent, targetId, opts) {
+  opts = opts || {};
+  const onProgress = opts.onProgress || (() => {});
+  const start = Date.now();
+
+  const initResp = await fetch('/api/v1/uploads/init', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({filename: file.name, total_size: file.size, intent}),
+  });
+  if (!initResp.ok) {
+    const t = await initResp.text();
+    throw new Error('init failed: HTTP ' + initResp.status + ': ' + t.slice(0, 300));
+  }
+  const init = await initResp.json();
+  const uploadId = init.upload_id;
+  const chunkSize = init.chunk_size || 5 * 1024 * 1024;
+
+  let offset = init.next_offset || 0;
+  while (offset < file.size) {
+    if (opts.signal && opts.signal.aborted) {
+      try { await fetch('/api/v1/uploads/' + uploadId, {method: 'DELETE'}); } catch(_){}
+      throw new Error('Upload aborted');
+    }
+    const end = Math.min(offset + chunkSize, file.size);
+    const chunk = file.slice(offset, end);
+    const patchResp = await fetch('/api/v1/uploads/' + uploadId, {
+      method: 'PATCH',
+      headers: {
+        'Upload-Offset': String(offset),
+        'Content-Type': 'application/octet-stream',
+      },
+      body: chunk,
+    });
+    if (!patchResp.ok) {
+      const t = await patchResp.text();
+      throw new Error('chunk PATCH failed at offset ' + offset + ': HTTP ' + patchResp.status + ': ' + t.slice(0, 300));
+    }
+    const patch = await patchResp.json();
+    offset = patch.next_offset;
+    const elapsedSec = (Date.now() - start) / 1000;
+    onProgress({
+      percent: (offset / file.size) * 100,
+      bytesSent: offset,
+      totalBytes: file.size,
+      elapsedSec,
+      mbPerSec: elapsedSec > 0 ? (offset / 1_048_576) / elapsedSec : 0,
+    });
+  }
+
+  const finResp = await fetch('/api/v1/uploads/' + uploadId + '/finalize', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({target_id: targetId}),
+  });
+  if (!finResp.ok) {
+    const t = await finResp.text();
+    throw new Error('finalize failed: HTTP ' + finResp.status + ': ' + t.slice(0, 300));
+  }
+  return await finResp.json();
+}
+
+function _formatUploadProgress(filename, p) {
+  const sentMB = (p.bytesSent / 1_048_576).toFixed(0);
+  const totalMB = (p.totalBytes / 1_048_576).toFixed(0);
+  const pct = p.percent.toFixed(1);
+  const speed = p.mbPerSec.toFixed(1);
+  const remainSec = p.mbPerSec > 0 ? Math.round(((p.totalBytes - p.bytesSent) / 1_048_576) / p.mbPerSec) : 0;
+  const remainStr = remainSec > 60 ? Math.floor(remainSec/60) + 'm' + (remainSec%60).toString().padStart(2,'0') + 's' : remainSec + 's';
+  return 'Uploading ' + filename + ': ' + sentMB + '/' + totalMB + ' MB (' + pct + '%) @ ' + speed + ' MB/s, ~' + remainStr + ' left';
+}
+
 async function uploadWeeklyRecording(event, weeklyPlanId) {
   const file = event.target.files[0];
   if (!file || !weeklyPlanId) return;
@@ -2137,7 +2272,6 @@ async function uploadWeeklyRecording(event, weeklyPlanId) {
   const btn = event.target.closest('label');
   if (btn) { btn.style.opacity = '0.6'; btn.style.pointerEvents = 'none'; }
 
-  // Show inline upload progress immediately - 3-second rule
   let progressEl = panel ? panel.querySelector('[data-upload-progress]') : null;
   if (!progressEl && panel) {
     progressEl = document.createElement('div');
@@ -2147,28 +2281,15 @@ async function uploadWeeklyRecording(event, weeklyPlanId) {
   }
   const sizeMB = (file.size / 1_048_576).toFixed(1);
   const updateProgress = (msg) => { if (progressEl) progressEl.textContent = msg; };
-  updateProgress('Uploading ' + file.name + ' (' + sizeMB + ' MB) to VPS...');
-
-  // Show elapsed time ticker so operator sees progress
-  const uploadStart = Date.now();
-  const ticker = setInterval(() => {
-    const elapsed = ((Date.now() - uploadStart) / 1000).toFixed(0);
-    updateProgress('Uploading ' + file.name + ' (' + sizeMB + ' MB)... ' + elapsed + 's elapsed');
-  }, 1000);
-
-  const formData = new FormData();
-  formData.append('file', file);
+  updateProgress('Initializing upload of ' + file.name + ' (' + sizeMB + ' MB)...');
 
   try {
-    const resp = await fetch('/api/v1/video-scripts/walking/weekly/' + weeklyPlanId + '/upload-recording', {
-      method: 'POST', body: formData,
+    const result = await uploadFileChunked(file, 'walking_weekly', weeklyPlanId, {
+      onProgress: (p) => updateProgress(_formatUploadProgress(file.name, p)),
     });
-    clearInterval(ticker);
-    if (!resp.ok) { const t = await resp.text(); throw new Error(t); }
-    updateProgress('Upload complete. Ready to split & edit.');
+    updateProgress('Upload complete (' + sizeMB + ' MB). Ready to split & edit.');
     await renderWeek();
   } catch(err) {
-    clearInterval(ticker);
     if (progressEl) { progressEl.style.borderLeftColor = 'var(--red)'; progressEl.style.color = 'var(--red)'; progressEl.textContent = 'Upload failed: ' + err.message; }
     if (window._tceShowErr) window._tceShowErr('Upload failed: ' + err.message);
     if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
@@ -2440,19 +2561,10 @@ async function runSplitEditFromModal(weeklyPlanId) {
     if (file) {
       if (runBtn) runBtn.textContent = 'Uploading...';
       const sizeMB = (file.size / 1_048_576).toFixed(1);
-      setProgress('Uploading ' + file.name + ' (' + sizeMB + ' MB) to VPS...');
-      const uploadStart = Date.now();
-      const ticker = setInterval(() => {
-        const elapsed = ((Date.now() - uploadStart) / 1000).toFixed(0);
-        setProgress('Uploading ' + file.name + ' (' + sizeMB + ' MB)... ' + elapsed + 's elapsed');
-      }, 1000);
-      const formData = new FormData();
-      formData.append('file', file);
-      const resp = await fetch('/api/v1/video-scripts/walking/weekly/' + weeklyPlanId + '/upload-recording', {
-        method: 'POST', body: formData,
+      setProgress('Initializing upload of ' + file.name + ' (' + sizeMB + ' MB)...');
+      await uploadFileChunked(file, 'walking_weekly', weeklyPlanId, {
+        onProgress: (p) => setProgress(_formatUploadProgress(file.name, p)),
       });
-      clearInterval(ticker);
-      if (!resp.ok) { const t = await resp.text(); throw new Error(t); }
       setProgress('Upload complete. Starting pipeline...');
     }
     if (runBtn) runBtn.textContent = 'Starting pipeline...';
@@ -3515,20 +3627,24 @@ function _renderScriptDetailInto(container, script, opts) {
         const f = input.files && input.files[0];
         if (!f) return;
         const sizeMB = (f.size / 1048576).toFixed(1);
-        wrap.textContent = 'Uploading ' + sizeMB + 'MB...';
+        const useChunked = f.size > 100 * 1024 * 1024; // > 100 MB -> chunked
+        wrap.textContent = 'Uploading 0/' + sizeMB + 'MB...';
         wrap.style.pointerEvents = 'none';
+        const onProgress = (p) => {
+          wrap.textContent = (p.bytesSent / 1048576).toFixed(0) + '/' + sizeMB + 'MB (' + p.percent.toFixed(0) + '%)';
+        };
         try {
-          const fd = new FormData();
-          fd.append('file', f);
-          const res = await fetch('/api/v1/video-scripts/walking/' + script.id + '/upload-' + which, {
-            method: 'POST',
-            body: fd,
-          });
-          if (!res.ok) {
-            const txt = await res.text().catch(() => '');
-            throw new Error('HTTP ' + res.status + ': ' + txt.slice(0, 200));
+          let data;
+          if (useChunked) {
+            const intent = which === 'raw' ? 'walking_raw' : 'walking_edited';
+            data = await uploadFileChunked(f, intent, script.id, { onProgress });
+          } else {
+            data = await uploadFileXhr(
+              '/api/v1/video-scripts/walking/' + script.id + '/upload-' + which,
+              f,
+              { onProgress }
+            );
           }
-          const data = await res.json();
           toast('Uploaded ' + which + ' (' + sizeMB + 'MB). Status: ' + (data.status || setsStatus));
           _openScriptDetail(kind, script.id);
         } catch(e) {
@@ -3544,7 +3660,7 @@ function _renderScriptDetailInto(container, script, opts) {
     uploadRow.appendChild(mkUploadBtn('CutSense output', 'edited', 'edited_video_file_path', 'edited'));
     const hint = document.createElement('span');
     hint.style.cssText = 'font-size:10px;color:var(--dim);margin-left:8px;opacity:0.7';
-    hint.textContent = 'mp4/mov/m4v/webm, 1 GB max';
+    hint.textContent = 'mp4/mov/m4v/webm, 3 GB max (chunked upload for >100 MB)';
     uploadRow.appendChild(hint);
     container.appendChild(uploadRow);
   }
@@ -5389,11 +5505,11 @@ async function uploadAudio(packageId, pid, file) {
   statusEl.textContent = 'Uploading ' + file.name + '...';
   if (fileInput) fileInput.disabled = true;
   try {
-    const formData = new FormData();
-    formData.append('file', file);
-    const resp = await fetch('/api/v1/narration/scripts/' + script.id + '/upload-audio', { method: 'POST', body: formData });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.detail || 'Upload failed');
+    const data = await uploadFileXhr(
+      '/api/v1/narration/scripts/' + script.id + '/upload-audio',
+      file,
+      { onProgress: (p) => { statusEl.textContent = 'Uploading ' + file.name + ': ' + p.percent.toFixed(0) + '% (' + p.mbPerSec.toFixed(1) + ' MB/s)'; } }
+    );
     statusEl.textContent = 'Audio uploaded! ' + (data.audio_duration_sec ? data.audio_duration_sec.toFixed(1) + 's' : '') + ' (' + (data.audio_format || '') + ')';
     statusEl.style.color = 'var(--green)';
     toast('Audio uploaded successfully');
@@ -5916,21 +6032,29 @@ async function renderCorpus() {
 async function uploadFile(input) {
   const file = input.files[0];
   if (!file) return;
-  const fd = new FormData();
-  fd.append('file', file);
-  document.getElementById('upload-zone').innerHTML = '<p>Uploading ' + file.name + '...</p>';
+  const zone = document.getElementById('upload-zone');
+  // Use textContent (not innerHTML) to avoid XSS via filename
+  const setStatus = (txt) => { zone.replaceChildren(); const p = document.createElement('p'); p.textContent = txt; zone.appendChild(p); };
+  setStatus('Uploading ' + file.name + '...');
   try {
-    const r = await fetch(API + '/documents/upload?auto_analyze=true', { method: 'POST', body: fd });
-    if (!r.ok) {
-      const err = await r.text();
-      throw new Error('Server error ' + r.status + ': ' + err.slice(0, 200));
-    }
-    const d = await r.json();
+    const d = await uploadFileXhr(
+      API + '/documents/upload?auto_analyze=true',
+      file,
+      { onProgress: (p) => setStatus('Uploading ' + file.name + ': ' + p.percent.toFixed(0) + '% (' + p.mbPerSec.toFixed(1) + ' MB/s)') }
+    );
     toast('Uploaded: ' + d.file_name + ' (' + d.pages + ' pages). Analysis running in background.');
     renderCorpus();
   } catch (e) {
     toast('Upload failed: ' + e.message, false);
-    document.getElementById('upload-zone').innerHTML = '<input type="file" id="file-input" accept=".docx,.txt" style="display:none" onchange="uploadFile(this)"><div style="font-size:24px">+</div><p>Click to upload DOCX or TXT file</p><p style="font-size:11px;margin-top:4px">Auto-analyzes corpus</p>';
+    // Restore upload zone via safe DOM construction (no innerHTML)
+    zone.replaceChildren();
+    const fi = document.createElement('input');
+    fi.type = 'file'; fi.id = 'file-input'; fi.accept = '.docx,.txt'; fi.style.display = 'none';
+    fi.addEventListener('change', () => uploadFile(fi));
+    const plus = document.createElement('div'); plus.style.fontSize = '24px'; plus.textContent = '+';
+    const lbl = document.createElement('p'); lbl.textContent = 'Click to upload DOCX or TXT file';
+    const sub = document.createElement('p'); sub.style.cssText = 'font-size:11px;margin-top:4px'; sub.textContent = 'Auto-analyzes corpus';
+    zone.append(fi, plus, lbl, sub);
     renderCorpus();
   }
 }

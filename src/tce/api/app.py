@@ -36,6 +36,7 @@ from tce.api.routers import (
     repos,
     stack,
     trends,
+    uploads,
     video_scripts,
     videos,
     workspace_context,
@@ -147,6 +148,7 @@ def create_app() -> FastAPI:
     app.include_router(monthly.router, prefix=prefix)
     app.include_router(stack.router, prefix=prefix)
     app.include_router(workspace_context.router, prefix=prefix)
+    app.include_router(uploads.router, prefix=prefix)
 
     # Dashboard - no API prefix, served at root /dashboard
     app.include_router(dashboard.router)

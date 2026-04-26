@@ -265,7 +265,7 @@ async def _send_via_gws(subject: str, body: str) -> dict[str, Any]:
 
 
 _VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
-_MAX_UPLOAD_BYTES = 1_000_000_000  # 1 GB hard cap per upload
+_MAX_UPLOAD_BYTES = 3_000_000_000  # 3 GB hard cap per upload (single-shot path; chunked uploads use /api/v1/uploads/* which has its own cap)
 
 
 async def _save_upload(upload: UploadFile, dest: Path) -> int:
