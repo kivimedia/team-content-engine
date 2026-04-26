@@ -760,6 +760,230 @@ async def select_slot_option(
     return {"status": "selected", "option_index": option_idx, "topic": selected.topic}
 
 
+@router.post("/{entry_id}/regenerate-alternatives")
+async def regenerate_alternatives(
+    entry_id: uuid.UUID,
+    payload: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Generate N fresh topic alternatives for a calendar day slot.
+
+    Replaces the existing non-selected, non-packaged SlotOption rows so the
+    modal always shows a fresh batch. The selected option and any options
+    with a generated post_package_id are preserved (those represent work
+    the operator has invested in).
+
+    All prior topics on this slot are passed to the LLM as an exclusion
+    list so each click yields fresh ideas. After 3 regen cycles with no
+    fresh research, the next regen auto-runs trend_scout to seed new
+    angles ("when out of topics, go back to research").
+    """
+    payload = payload or {}
+    count = max(1, min(int(payload.get("count", 3)), 5))
+    use_fresh_research = bool(payload.get("use_fresh_research", False))
+
+    entry = await db.get(ContentCalendarEntry, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Calendar entry not found")
+
+    # Collect ALL prior topics on this slot (selected + history) so the LLM
+    # never repeats. This is the key to "give me new ones until I'm happy".
+    result = await db.execute(
+        select(SlotOption)
+        .where(SlotOption.calendar_entry_id == entry_id)
+        .order_by(SlotOption.option_index)
+    )
+    existing = list(result.scalars().all())
+    seen_topics = [o.topic for o in existing if o.topic]
+    if entry.topic and entry.topic not in seen_topics:
+        seen_topics.append(entry.topic)
+
+    pc = entry.plan_context or {}
+    weekly = pc.get("_weekly", {}) if isinstance(pc.get("_weekly"), dict) else {}
+    angle = entry.angle_type or pc.get("angle_type", "")
+    angle_desc = ANGLE_DESCRIPTIONS.get(angle, angle or "general AI/business commentary")
+    weekly_theme = weekly.get("weekly_theme", "")
+    cta = weekly.get("cta_keyword", "")
+    gift_theme = weekly.get("gift_theme") or pc.get("gift_theme") or ""
+    if isinstance(gift_theme, dict):
+        gift_theme = gift_theme.get("title", "")
+    connection_to_gift = pc.get("connection_to_gift", "")
+
+    # Track regen cycles. Auto-trigger fresh research after 3 cycles since
+    # the last research run (or if the operator explicitly asks).
+    cycles = int(pc.get("alt_regen_cycles", 0))
+    last_research_at = int(pc.get("alt_research_at_cycle", -1))
+    auto_research = (cycles - last_research_at) >= 3
+    do_research = use_fresh_research or auto_research or last_research_at < 0
+
+    fresh_trends: list[dict[str, Any]] = []
+    if do_research:
+        try:
+            from tce.agents.cost_tracker import CostTracker
+            from tce.agents.registry import get_agent_class
+
+            scout_cls = get_agent_class("trend_scout")
+            scout = scout_cls(
+                db=db,
+                settings=settings,
+                cost_tracker=CostTracker(db),
+                prompt_manager=None,
+                run_id=uuid.uuid4(),
+                progress_log=None,
+            )
+            scout_ctx = {"scan_type": "daily", "focus_areas": ["AI", "business automation"]}
+            scout_result = await scout._execute(scout_ctx)
+            fresh_trends = (scout_result.get("trend_brief") or {}).get("trends", [])[:10]
+            logger.info(
+                "calendar.alt_research_done",
+                entry_id=str(entry_id),
+                trends=len(fresh_trends),
+            )
+        except Exception as exc:
+            logger.warning("calendar.alt_research_failed", error=str(exc))
+            fresh_trends = []
+
+    # Pull strategy + portfolio so alternatives match the same standards
+    # as the planner's output (named repos, specific model versions, etc.)
+    from tce.services.strategy_loader import load_portfolio, load_strategy
+    strategy_text = load_strategy()
+    portfolio_text = load_portfolio()
+
+    import anthropic
+
+    settings_local = Settings()
+    client = anthropic.AsyncAnthropic(api_key=settings_local.anthropic_api_key)
+
+    seen_block = (
+        "\n".join(f"- {t}" for t in seen_topics) if seen_topics else "(none yet)"
+    )
+    trends_block = (
+        "\n\nFRESH TREND BRIEF (from team-wide research, last 14 days):\n"
+        + json.dumps(fresh_trends, indent=2)
+        if fresh_trends
+        else ""
+    )
+    weekly_block = f"\nWEEKLY THEME: {weekly_theme}" if weekly_theme else ""
+    gift_block = f"\nGUIDE/GIFT: {gift_theme}" if gift_theme else ""
+    cta_block = f"\nCTA KEYWORD: {cta}" if cta else ""
+    connection_block = (
+        f"\nGUIDE CONNECTION (each topic must tie back to this): {connection_to_gift}"
+        if connection_to_gift
+        else ""
+    )
+    portfolio_block = (
+        "\n\nREPO PORTFOLIO (case-study material, reference by name when fitting):\n"
+        + portfolio_text
+        if portfolio_text
+        else ""
+    )
+    strategy_block = (
+        "\n\nBUSINESS STRATEGY (alternatives must pass the same filter):\n"
+        + strategy_text[:6000]
+        if strategy_text
+        else ""
+    )
+
+    prompt = (
+        f"You are generating {count} FRESH alternative topic options for a content calendar day.\n"
+        f"\nANGLE: {angle} - {angle_desc}"
+        f"{weekly_block}{gift_block}{cta_block}{connection_block}"
+        f"{strategy_block}"
+        f"{portfolio_block}"
+        f"{trends_block}\n"
+        f"\nDO NOT REPEAT ANY OF THESE TOPICS (operator has already seen them):\n{seen_block}\n"
+        f"\nEach option must be:\n"
+        f"- Specific (real companies, tools, model versions, numbers - cite Sonnet 4.6 / Opus 4.7 / GPT-5 / Gemini 2.5 by name when relevant)\n"
+        f"- Scroll-stopping (the viewer knows the stake in 5 seconds)\n"
+        f"- Distinct from the others (don't generate {count} variations of the same idea)\n"
+        f"- Aligned with the angle and weekly theme\n"
+        f"- Where natural, tie back to a named Kivi Media repo as case-study proof (don't force it)\n"
+        f"\nOutput ONLY a JSON array of {count} objects, no markdown, no commentary. Each object:\n"
+        '{"topic": "1 sentence", "thesis": "1-2 sentences plain language", '
+        '"audience": "specific reader (e.g. agency owners $10-50K/mo)", '
+        '"desired_belief_shift": "FROM x TO y", '
+        '"evidence_requirements": ["claim to verify"], '
+        '"visual_job": "cinematic_symbolic|proof_diagram|emotional_alternate", '
+        '"connection_to_gift": "how it ties to the guide", '
+        '"platform_notes": ""}'
+    )
+
+    try:
+        response = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2400,
+            temperature=0.85,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as exc:
+        logger.exception("calendar.alt_llm_failed")
+        raise HTTPException(status_code=502, detail=f"LLM call failed: {exc}") from exc
+
+    text = response.content[0].text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    try:
+        new_options = json.loads(text)
+    except json.JSONDecodeError as exc:
+        logger.warning("calendar.alt_parse_failed", text=text[:300])
+        raise HTTPException(
+            status_code=502, detail=f"LLM returned malformed JSON: {exc}"
+        ) from exc
+
+    if not isinstance(new_options, list) or not new_options:
+        raise HTTPException(status_code=502, detail="LLM returned no options")
+
+    # Delete prior NON-SELECTED, NON-PACKAGED rows to keep the modal clean.
+    # Selected option stays. Options with a generated post_package_id stay
+    # (preserves work the operator already invested in).
+    deleted = 0
+    for o in existing:
+        if o.is_selected or o.post_package_id:
+            continue
+        await db.delete(o)
+        deleted += 1
+
+    next_idx = max((o.option_index for o in existing), default=-1) + 1
+    created_topics: list[str] = []
+    for i, opt in enumerate(new_options[:count]):
+        if not isinstance(opt, dict) or not opt.get("topic"):
+            continue
+        slot = SlotOption(
+            calendar_entry_id=entry_id,
+            option_index=next_idx + i,
+            topic=opt.get("topic", ""),
+            angle_type=angle or "",
+            plan_context=opt,
+            is_selected=False,
+        )
+        db.add(slot)
+        created_topics.append(opt.get("topic", ""))
+
+    # Update regen-cycle counters on the parent entry so the next call
+    # knows how many cycles since the last research run.
+    new_pc = dict(pc)
+    new_pc["alt_regen_cycles"] = cycles + 1
+    if do_research:
+        new_pc["alt_research_at_cycle"] = cycles + 1
+    entry.plan_context = new_pc
+
+    await db.commit()
+    logger.info(
+        "calendar.alternatives_regenerated",
+        entry_id=str(entry_id),
+        created=len(created_topics),
+        deleted=deleted,
+        used_research=do_research,
+        cycle=cycles + 1,
+    )
+    return {
+        "created": len(created_topics),
+        "deleted": deleted,
+        "used_research": do_research,
+        "cycle": cycles + 1,
+    }
+
+
 @router.post("/{entry_id}/options/{option_idx}/move")
 async def move_slot_option(
     entry_id: uuid.UUID,
