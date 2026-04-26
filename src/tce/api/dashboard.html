@@ -1000,6 +1000,10 @@ function _syncWeekModeUI() {
 function _setWeekMode(mode) {
   _weekMode = mode;
   _syncWeekModeUI();
+  // Re-render so the master Generate button label and per-day buttons
+  // reflect the new mode (videos counts walking_video_script_id, posts
+  // counts post_package_id).
+  if (typeof renderWeek === 'function') renderWeek();
 }
 
 // === AI FEEDBACK BUTTONS ===
