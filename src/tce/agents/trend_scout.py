@@ -164,26 +164,42 @@ class TrendScout(AgentBase):
                     "coaching industry disruption AI 2026",
                 ]
             else:
-                # General tech/business sources (original behavior)
+                # General tech/business + frontier-model release sources.
+                # The version-specific queries surface stories about Claude 4.7,
+                # Sonnet 4.6, Haiku 4.5, GPT-5 family, Gemini 2.5/3, etc., which
+                # the planner needs to reference by name (vague version refs
+                # read as AI slop).
                 source_queries = [
+                    "site:anthropic.com news this week",
+                    "site:openai.com blog announcement this week",
+                    "site:deepmind.google blog this week",
                     "site:techcrunch.com AI startups funding",
                     "site:theverge.com technology product launch",
-                    "site:reddit.com/r/artificial AI breakthrough",
-                    "site:news.ycombinator.com Show HN",
+                    "site:reddit.com/r/ClaudeAI new release",
+                    "site:reddit.com/r/OpenAI new release",
+                    "site:news.ycombinator.com Show HN AI",
                     "site:venturebeat.com enterprise AI automation",
-                    "site:arxiv.org large language model",
+                    "site:simonwillison.net new model release",
                     "site:semafor.com technology business",
-                    "site:platformer.news social media",
+                    "site:platformer.news AI",
                 ]
                 topical_queries = [
-                    "AI tools for small business this week",
-                    "creator economy platform news",
-                    "remote work productivity tools 2026",
-                    "SaaS startup acquisition funding",
-                    "marketing automation AI agency",
-                    "no-code low-code platform launch",
-                    "solo founder built product AI",
-                    "business automation workflow case study",
+                    # Frontier-model recency - explicitly ask by version so we
+                    # surface stories the planner can cite ("Sonnet 4.6 cut my
+                    # agent costs 40%") instead of "a recent Claude model".
+                    "Claude 4.7 release Anthropic this week",
+                    "Claude Sonnet 4.6 update changelog",
+                    "Claude Haiku 4.5 benchmark",
+                    "Anthropic announcement Claude Code Skills",
+                    "OpenAI GPT-5 release news this week",
+                    "Google Gemini 2.5 update this week",
+                    "Llama 4 DeepSeek V3 Qwen 3 open weights",
+                    "Cursor Windsurf coding agent update",
+                    # Builder + business angles (still relevant for the audience)
+                    "AI agents production case study this week",
+                    "AI tools small business owner this week",
+                    "vibe coding solo founder shipped this week",
+                    "agency owner AI agent stack this week",
                 ]
             self._report(f"Searching {len(source_queries)} sources + {len(topical_queries)} topical + {len(focus_areas)} focus areas")
             for sq in source_queries:

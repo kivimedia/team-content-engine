@@ -208,7 +208,7 @@ class WeeklyPlanner(AgentBase):
             prompt_parts.append(f"\nOPERATOR OVERRIDES:\n{json.dumps(operator_overrides)}")
 
         # === Business strategy context — always loaded, not gated on niche flag ===
-        from tce.services.strategy_loader import load_strategy
+        from tce.services.strategy_loader import load_portfolio, load_strategy
         strategy_text = load_strategy()
         if strategy_text:
             prompt_parts.append(
@@ -225,6 +225,49 @@ class WeeklyPlanner(AgentBase):
                 "\nNICHE: coaching - Target coaches who want to add AI agent teams. "
                 "All topics should be relevant to coaches scaling with AI, not generic tech."
             )
+
+        # === Repo portfolio - the case-study material the strategist reaches for ===
+        # Without this block, the planner picks generic AI news (humanoid robots,
+        # Claude Code billing rants) because it has no awareness of Ziv's actual
+        # 60+ shipped builds. With this block, topics can tie back to named
+        # repos like kmboards/kmcrm/DevCast as proof the methodology works.
+        portfolio_text = load_portfolio()
+        if portfolio_text:
+            prompt_parts.append(
+                "\nREPO PORTFOLIO — CASE STUDY MATERIAL (reference these by name when topics fit):\n"
+                "These are Ziv's actual shipped builds. They are NOT the offer (the offer is "
+                "Super Coaching for Coaches, $4-5K/month) - they are PROOF that the AI-agent "
+                "methodology being taught is real and working. Aim for 1-2 days per week "
+                "where a topic naturally ties to a named repo. Don't force it onto every day.\n\n"
+                f"{portfolio_text}\n\n"
+                "Critical: when a topic references a repo, the story should be the LEARNING "
+                "(what version 4 finally got right, why versions 1-3 were wrong, what shipping "
+                "this taught me about agent design), not a feature announcement."
+            )
+            self._report("Loaded repo portfolio for case-study grounding")
+
+        # === Current AI landscape - pin recent model versions so the planner ===
+        # === can reference them by name instead of hallucinating older releases ===
+        # The planner runs on Opus 4.7, but its training cutoff predates its own
+        # release - without this pin it won't reference Sonnet 4.6 or Claude 4.7.
+        from datetime import date as _date_cls
+        today_iso = _date_cls.today().isoformat()
+        prompt_parts.append(
+            "\nCURRENT AI LANDSCAPE (as of " + today_iso + ", cite versions by name):\n"
+            "- Anthropic Claude family is on 4.x: Opus 4.7 (most capable, reasoning-heavy), "
+            "Sonnet 4.6 (workhorse, best price/perf), Haiku 4.5 (fast/cheap). "
+            "Earlier 3.5/3.6/3.7 are deprecated paths - do NOT recommend.\n"
+            "- OpenAI: GPT-5 family is current (5, 5-mini, 5-nano variants). GPT-4 is legacy.\n"
+            "- Google: Gemini 2.5 family is current. Gemini 3 rumored.\n"
+            "- Open-weight: Llama 4, DeepSeek V3, Qwen 3 are the live options.\n"
+            "- Coding agents: Claude Code, Cursor, Windsurf are the dominant trio. "
+            "Anthropic Agent SDK + Skills + Hooks are the current Anthropic primitives.\n"
+            "- Topic rule: when a story is about Claude/GPT/Gemini, name the SPECIFIC version "
+            "(e.g., 'Sonnet 4.6 cut my agent costs 40%', not 'a recent Claude model'). "
+            "Specificity is credibility - vague version refs read as AI slop.\n"
+            "- Recency: the trend brief above is filtered to last 14 days. Prefer stories "
+            "from the last 7 days when they exist."
+        )
 
         # === Inject voice context so planner considers the team's identity ===
         founder_voice = context.get("founder_voice")

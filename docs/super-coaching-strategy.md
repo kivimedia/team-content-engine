@@ -105,7 +105,7 @@ Help coaches add AI agent teams to their coaching business so they can deliver d
 
 ### Why Alternatives Were Rejected
 - **Event industry expansion:** Niche feels tapped, referrals dried up, lower price ceiling
-- **SaaS (kmboards, Respira, etc.):** No external users, no sales page, 6-12 month journey minimum
+- **SaaS (kmboards, Respira, etc.) as the OFFER:** No external users, no sales page, 6-12 month journey minimum. **NOTE FOR CONTENT AGENTS:** SaaS isn't the *offer*, but the 60+ shipped repos (kmboards, kmcrm, DevCast, kmshake, gobo-designer, dj-hub, choirmind, etc.) ARE valuable as **credibility and case-study fuel** in content. Reference them by name as proof the AI-agent methodology works. See `docs/repo-portfolio.md` for the full catalog with story angles. The repos earn the right to teach Super Coaching - they don't replace it.
 - **AI builds as standalone:** Clients only value at 10%
 - **LinkedIn/cold outreach:** Buyers aren't there
 - **Scaling VA team:** Market told you this is declining
