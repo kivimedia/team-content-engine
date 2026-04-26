@@ -208,8 +208,15 @@ class WeeklyPlanner(AgentBase):
             prompt_parts.append(f"\nOPERATOR OVERRIDES:\n{json.dumps(operator_overrides)}")
 
         # === Business strategy context — always loaded, not gated on niche flag ===
-        from tce.services.strategy_loader import load_portfolio, load_strategy
-        strategy_text = load_strategy()
+        # Workspace-aware: per-tenant override row > global file default.
+        # When workspace_id is None (Ziv-as-default), behavior is identical to
+        # the previous file-only path.
+        from tce.services.strategy_loader import (
+            load_portfolio_for_workspace,
+            load_strategy_for_workspace,
+        )
+        ws_id = context.get("workspace_id")
+        strategy_text = await load_strategy_for_workspace(self.db, ws_id)
         if strategy_text:
             prompt_parts.append(
                 "\nBUSINESS STRATEGY — APPLY TO ALL 5 DAYS:\n"
@@ -231,7 +238,7 @@ class WeeklyPlanner(AgentBase):
         # Claude Code billing rants) because it has no awareness of Ziv's actual
         # 60+ shipped builds. With this block, topics can tie back to named
         # repos like kmboards/kmcrm/DevCast as proof the methodology works.
-        portfolio_text = load_portfolio()
+        portfolio_text = await load_portfolio_for_workspace(self.db, ws_id)
         if portfolio_text:
             prompt_parts.append(
                 "\nREPO PORTFOLIO — CASE STUDY MATERIAL (reference these by name when topics fit):\n"

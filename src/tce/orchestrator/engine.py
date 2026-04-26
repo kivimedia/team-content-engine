@@ -70,6 +70,10 @@ class PipelineOrchestrator:
             self.context.update(initial_context)
 
         self.context["run_id"] = str(self.run_id)
+        # Inject workspace_id so agents can pull per-tenant context (strategy,
+        # portfolio, trend focus). Stays None for single-tenant default runs.
+        if self.workspace_id is not None:
+            self.context["workspace_id"] = str(self.workspace_id)
 
         if resume_from_step and resume_from_step in self.steps:
             self._mark_predecessors_completed(resume_from_step)

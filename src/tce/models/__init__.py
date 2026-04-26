@@ -29,6 +29,11 @@ from tce.models.video_asset import VideoAsset
 from tce.models.video_lead_script import VideoLeadScript
 from tce.models.walking_video_script import WalkingVideoScript
 from tce.models.weekly_guide import WeeklyGuide
+from tce.models.workspace_context import (
+    WorkspacePortfolio,
+    WorkspaceStrategy,
+    WorkspaceTrendFocus,
+)
 
 __all__ = [
     "AuditLog",
@@ -60,4 +65,7 @@ __all__ = [
     "VideoLeadScript",
     "WalkingVideoScript",
     "WeeklyGuide",
+    "WorkspacePortfolio",
+    "WorkspaceStrategy",
+    "WorkspaceTrendFocus",
 ]

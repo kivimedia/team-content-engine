@@ -832,6 +832,8 @@ async def regenerate_alternatives(
                 progress_log=None,
             )
             scout_ctx = {"scan_type": "daily", "focus_areas": ["AI", "business automation"]}
+            if entry.workspace_id is not None:
+                scout_ctx["workspace_id"] = str(entry.workspace_id)
             scout_result = await scout._execute(scout_ctx)
             fresh_trends = (scout_result.get("trend_brief") or {}).get("trends", [])[:10]
             logger.info(
@@ -844,10 +846,15 @@ async def regenerate_alternatives(
             fresh_trends = []
 
     # Pull strategy + portfolio so alternatives match the same standards
-    # as the planner's output (named repos, specific model versions, etc.)
-    from tce.services.strategy_loader import load_portfolio, load_strategy
-    strategy_text = load_strategy()
-    portfolio_text = load_portfolio()
+    # as the planner's output (named repos, specific model versions, etc.).
+    # Workspace-aware: per-tenant override > file default.
+    from tce.services.strategy_loader import (
+        load_portfolio_for_workspace,
+        load_strategy_for_workspace,
+    )
+    ws_id_for_ctx = entry.workspace_id
+    strategy_text = await load_strategy_for_workspace(db, ws_id_for_ctx)
+    portfolio_text = await load_portfolio_for_workspace(db, ws_id_for_ctx)
 
     import anthropic
 

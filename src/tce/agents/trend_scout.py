@@ -139,7 +139,29 @@ class TrendScout(AgentBase):
         search_results = []
         niche = context.get("niche", "general")
 
-        if search.api_key:
+        # Workspace-aware: a tenant may override the query lists. When set,
+        # `source_queries` and `topical_queries` come from the DB; otherwise
+        # we fall through to the niche-based defaults below (existing behavior).
+        ws_override = None
+        ws_id_for_focus = context.get("workspace_id")
+        if ws_id_for_focus:
+            try:
+                from tce.services.strategy_loader import load_trend_focus_for_workspace
+                ws_override = await load_trend_focus_for_workspace(self.db, ws_id_for_focus)
+            except Exception:
+                ws_override = None
+
+        if search.api_key and ws_override and isinstance(ws_override, dict):
+            source_queries = list(ws_override.get("source_queries") or [])
+            topical_queries = list(ws_override.get("topical_queries") or [])
+            if not source_queries and not topical_queries:
+                ws_override = None  # empty override - fall through to defaults
+            else:
+                self._report(
+                    f"Using workspace trend focus override "
+                    f"({len(source_queries)} sources + {len(topical_queries)} topicals)"
+                )
+        if search.api_key and not ws_override:
             if niche == "coaching":
                 # Coaching-niche sources: topics that resonate with coaches
                 # wondering about AI agents and growing their practice

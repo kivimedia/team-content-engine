@@ -38,6 +38,7 @@ from tce.api.routers import (
     trends,
     video_scripts,
     videos,
+    workspace_context,
 )
 from tce.api.routers import (
     scheduler as scheduler_router,
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(narration.router, prefix=prefix)
     app.include_router(monthly.router, prefix=prefix)
     app.include_router(stack.router, prefix=prefix)
+    app.include_router(workspace_context.router, prefix=prefix)
 
     # Dashboard - no API prefix, served at root /dashboard
     app.include_router(dashboard.router)
