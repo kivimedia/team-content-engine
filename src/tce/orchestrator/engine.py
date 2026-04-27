@@ -288,6 +288,8 @@ class PipelineOrchestrator:
                                     for idx, g in enumerate(generated):
                                         if g.get("status") == "generated" and idx < len(updated):
                                             updated[idx]["image_url"] = g.get("image_url")
+                                            updated[idx]["image_model_used"] = g.get("fal_model_used")
+                                            updated[idx]["image_provider"] = g.get("provider", "fal_ai")
                                     pkg.image_prompts = updated
 
                                     # Also update ImageAsset records

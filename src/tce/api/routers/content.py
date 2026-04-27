@@ -335,6 +335,8 @@ async def generate_images(
                 "index": i,
                 "status": "generated",
                 "image_url": result.get("image_url"),
+                "image_model_used": result.get("fal_model_used"),
+                "image_provider": result.get("provider", "fal_ai"),
                 "time": result.get("generation_time_seconds"),
             }
         )
@@ -347,6 +349,8 @@ async def generate_images(
         idx = g["index"]
         if g["status"] == "generated" and idx < len(updated_prompts):
             updated_prompts[idx]["image_url"] = g["image_url"]
+            updated_prompts[idx]["image_model_used"] = g["image_model_used"]
+            updated_prompts[idx]["image_provider"] = g["image_provider"]
     pkg.image_prompts = updated_prompts
 
     await db.flush()
@@ -1667,6 +1671,8 @@ async def regenerate_single_image(
     if result.get("status") == "generated":
         updated = _json.loads(_json.dumps(pkg.image_prompts))
         updated[image_index]["image_url"] = result["image_url"]
+        updated[image_index]["image_model_used"] = result.get("fal_model_used")
+        updated[image_index]["image_provider"] = result.get("provider", "fal_ai")
         pkg.image_prompts = updated
         await db.flush()
         await db.refresh(pkg)

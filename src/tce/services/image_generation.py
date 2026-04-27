@@ -1,6 +1,8 @@
-"""Image generation pipeline — fal.ai integration (PRD Section 41).
+"""Image generation pipeline.
 
-Generates images from Creative Director prompts using fal.ai API.
+Dispatches to OpenAI (gpt-image-2 / gpt-image-1) or fal.ai based on the
+configured default_image_model. The default is OpenAI; fal.ai stays available
+for prompts the creative_director marks as photoreal/cinematic.
 """
 
 from __future__ import annotations
@@ -12,11 +14,13 @@ import httpx
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from tce.services.openai_image import OpenAIImageService
 from tce.settings import settings
 
 logger = structlog.get_logger()
 
-# PRD Section 41.3: Default fal.ai model
+# fal.ai fallback model. OpenAI gpt-image-2 is the default per
+# settings.default_image_model.
 DEFAULT_FAL_MODEL = "fal-ai/flux-pro/v1.1"
 DEFAULT_IMAGE_SIZE = "landscape_16_9"
 
@@ -60,18 +64,38 @@ class ImageGenerationService:
         prompt_text: str,
         negative_prompt: str | None = None,
         aspect_ratio: str | None = None,
-        model: str = DEFAULT_FAL_MODEL,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Generate a single image from a prompt.
 
+        Routes to OpenAI for gpt-image-* / dall-e-* models; falls through to
+        fal.ai for everything else. The default comes from
+        settings.default_image_model (gpt-image-2).
+
         Returns dict with image_url, generation_time, cost, etc.
         """
+        # Resolve which model to actually call. Caller can pin a model;
+        # otherwise we use the configured default.
+        resolved_model = model or settings.default_image_model or DEFAULT_FAL_MODEL
+
+        # Route to OpenAI when the model id matches their image families.
+        if OpenAIImageService.supports(resolved_model):
+            openai_svc = OpenAIImageService()
+            return await openai_svc.generate_image(
+                prompt_text=prompt_text,
+                negative_prompt=negative_prompt,
+                aspect_ratio=aspect_ratio,
+                model=resolved_model,
+            )
+
+        # fal.ai path
         if not self.api_key:
             logger.warning("image_gen.no_api_key")
             return {
                 "status": "skipped",
                 "reason": "No fal.ai API key configured",
                 "prompt_text": prompt_text,
+                "provider": "fal_ai",
             }
 
         start = time.monotonic()
@@ -97,9 +121,14 @@ class ImageGenerationService:
             "Content-Type": "application/json",
         }
 
+        # Caller's resolved_model only routes to fal here; honor it but fall
+        # back to the historical Flux Pro default if the resolved id isn't a
+        # fal.ai model (e.g. an unknown string).
+        fal_model = resolved_model if resolved_model.startswith("fal-ai/") else DEFAULT_FAL_MODEL
+
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(
-                f"{self.base_url}/{model}",
+                f"{self.base_url}/{fal_model}",
                 json=payload,
                 headers=headers,
             )
@@ -108,7 +137,7 @@ class ImageGenerationService:
                     "image_gen.http_error",
                     status=response.status_code,
                     body=response.text[:500],
-                    model=model,
+                    model=fal_model,
                     prompt=prompt_text[:100],
                 )
             response.raise_for_status()
@@ -131,8 +160,10 @@ class ImageGenerationService:
                     import uuid as _uuid
 
                     key = f"images/{_uuid.uuid4().hex}.png"
-                    s3_path = await storage.upload_from_url(image_url, key)
-                    logger.info("image_gen.s3_persisted", key=key)
+                    res = await storage.upload_from_url(image_url, key)
+                    if res and res.get("status") == "uploaded":
+                        s3_path = res.get("url")
+                        logger.info("image_gen.s3_persisted", key=key)
             except Exception:
                 logger.exception("image_gen.s3_upload_failed")
 
@@ -140,7 +171,9 @@ class ImageGenerationService:
             "status": "generated",
             "image_url": s3_path or image_url,
             "image_s3_path": s3_path,
-            "fal_model_used": model,
+            "fal_model_used": fal_model,
+            "image_model_used": fal_model,
+            "provider": "fal_ai",
             "fal_request_id": result.get("request_id"),
             "generation_time_seconds": round(elapsed, 2),
             "generation_cost_usd": 0.03,  # Flux Pro at ~$0.03/image

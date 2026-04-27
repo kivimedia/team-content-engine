@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # fal.ai
     fal_api_key: str = ""
 
+    # Image generation provider/model
+    # Default routes to OpenAI's gpt-image-2; fal.ai is the fallback for
+    # photoreal/cinematic prompts the creative_director flags as fal_ai.
+    default_image_model: str = "gpt-image-2"
+
     # Logging
     log_level: str = "INFO"
 
