@@ -39,10 +39,14 @@ def _attach_titles(packages: list[PostPackage], repos: dict, briefs: dict) -> No
             title = _repo_name_from(repos[p.source_repo_id])
         elif p.source == "topic" and p.brief_id and p.brief_id in briefs:
             title = briefs[p.brief_id].topic
-        elif p.source == "copy":
+        # Final fallback for any source without a strong title source: use the
+        # first line of the FB or LI post. Catches orphan repo packages from
+        # before source_repo_id was populated, plus the generic "copy" source.
+        if not title and (p.source in ("repo", "copy") or p.source is None):
             text = (p.facebook_post or p.linkedin_post or "").strip()
-            if text:
-                title = (text[:80] + "...") if len(text) > 80 else text
+            first_line = text.split("\n", 1)[0].strip() if text else ""
+            if first_line:
+                title = (first_line[:80] + "...") if len(first_line) > 80 else first_line
         p.title = title  # picked up by Pydantic from_attributes
 
 

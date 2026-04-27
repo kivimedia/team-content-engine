@@ -335,6 +335,14 @@ class PipelineResultSaver:
         if copy_analysis:
             quality_meta["copy_analysis"] = copy_analysis
 
+        # Source-specific links for Library titles + back-references.
+        source_repo_id = context.get("_source_repo_id") or context.get("tracked_repo_id")
+        if isinstance(source_repo_id, str):
+            try:
+                source_repo_id = uuid.UUID(source_repo_id)
+            except (ValueError, TypeError):
+                source_repo_id = None
+
         record = PostPackage(
             brief_id=brief_id,
             research_brief_id=research_brief_id,
@@ -350,6 +358,8 @@ class PipelineResultSaver:
             approval_status="draft",
             pipeline_run_id=self.run_id,
             source=context.get('_source', 'pipeline'),
+            source_repo_id=source_repo_id,
+            source_repo_angle=context.get("_source_angle"),
             proof_trail=context.get("proof_trail"),
             proof_status=context.get("proof_status"),
         )
