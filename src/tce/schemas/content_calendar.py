@@ -76,6 +76,10 @@ class PlanWeekDeepRequest(BaseModel):
 
 class PlanApproveRequest(BaseModel):
     weekly_theme: str
-    gift_theme: Any  # str or dict
+    gift_theme: Any  # str or dict; ignored when gift_skipped is True
     cta_keyword: str
     days: list[dict[str, Any]]
+    # -1 means "no gift this week" (gift_skipped also true). 0/1/2 selects
+    # the corresponding GuideOption row. Defaults to 0 for backward compat.
+    selected_guide_index: int = 0
+    gift_skipped: bool = False

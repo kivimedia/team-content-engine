@@ -561,6 +561,16 @@ async def approve_deep_plan(
         raise HTTPException(status_code=400, detail="Plan missing week_start")
 
     week_start = date.fromisoformat(week_start_str)
+
+    # Resolve the chosen guide. If skipped, gift_label is empty and downstream
+    # code (cta_agent, post writers) takes the no-asset path.
+    gift_label = ""
+    if not request.gift_skipped:
+        if isinstance(request.gift_theme, str):
+            gift_label = request.gift_theme
+        elif isinstance(request.gift_theme, dict):
+            gift_label = request.gift_theme.get("title", "")
+
     for day_plan in request.days:
         day_num = day_plan.get("day_of_week", 0)
         entry_date = week_start + timedelta(days=day_num)
@@ -573,14 +583,28 @@ async def approve_deep_plan(
             entry.topic = day_plan.get("topic", entry.topic)
             entry.plan_context = day_plan
             entry.status = "approved"
-            gift = (
-                request.gift_theme
-                if isinstance(request.gift_theme, str)
-                else request.gift_theme.get("title", "")
-            )
             entry.operator_notes = (
-                f"Weekly theme: {request.weekly_theme} | CTA: {request.cta_keyword} | Gift: {gift}"
+                f"Weekly theme: {request.weekly_theme} | CTA: {request.cta_keyword} | "
+                f"Gift: {gift_label or '(skipped)'}"
             )
+
+    # Persist the selected guide option (or clear all if skipped).
+    try:
+        plan_uuid = uuid.UUID(plan_id) if not isinstance(plan_id, uuid.UUID) else plan_id
+        siblings = await db.execute(
+            select(GuideOption)
+            .where(GuideOption.weekly_plan_id == plan_uuid)
+            .order_by(GuideOption.option_index)
+        )
+        sib_list = list(siblings.scalars().all())
+        for sib in sib_list:
+            if request.gift_skipped or request.selected_guide_index < 0:
+                sib.is_selected = False
+            else:
+                sib.is_selected = (sib.option_index == request.selected_guide_index)
+    except (ValueError, TypeError):
+        # plan_id wasn't a UUID (e.g. legacy in-memory plan); skip the FK update
+        pass
 
     await db.flush()
 
@@ -589,9 +613,11 @@ async def approve_deep_plan(
     plan_status["status"] = "approved"
     plan_status["approved_plan"] = {
         "weekly_theme": request.weekly_theme,
-        "gift_theme": request.gift_theme,
+        "gift_theme": request.gift_theme if not request.gift_skipped else "",
         "cta_keyword": request.cta_keyword,
         "days": request.days,
+        "selected_guide_index": request.selected_guide_index,
+        "gift_skipped": request.gift_skipped,
     }
     _deep_plans_cache[plan_id] = plan_status
     await _save_plan_to_db(plan_id, plan_status)
@@ -1096,3 +1122,130 @@ async def select_guide_option(
 
     await db.commit()
     return {"status": "selected", "title": option.title}
+
+
+@router.post("/regenerate-guide-options/{weekly_plan_id}")
+async def regenerate_guide_options(
+    weekly_plan_id: str,
+    payload: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Regenerate the 3 guide options for a weekly plan, with optional operator feedback.
+
+    Keeps weekly_theme and the day options intact - only the gift/guide ideas
+    get rebuilt. Replaces the GuideOption rows for the plan and returns the
+    new shape so the dashboard can swap them in place.
+    """
+    import anthropic
+
+    from tce.settings import Settings as _Settings
+
+    payload = payload or {}
+    feedback = (payload.get("operator_feedback") or "").strip()
+
+    plan_uuid = uuid.UUID(weekly_plan_id)
+    plan = await db.get(WeeklyPlan, plan_uuid)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Weekly plan not found")
+
+    # Load existing options for context (so the LLM avoids near-duplicates).
+    existing_q = await db.execute(
+        select(GuideOption)
+        .where(GuideOption.weekly_plan_id == plan_uuid)
+        .order_by(GuideOption.option_index)
+    )
+    existing = list(existing_q.scalars().all())
+    existing_titles = [g.title for g in existing if g.title]
+
+    # Pull weekly theme + brief day topics from plan_data (the full plan blob).
+    # Caller can also pass weekly_theme/cta_keyword/days in the body to override
+    # if they've edited them in the dashboard since the plan was generated.
+    plan_data = plan.plan_data or {}
+    weekly_plan_blob = plan_data.get("weekly_plan") or plan_data.get("approved_plan") or plan_data
+    weekly_theme = (
+        payload.get("weekly_theme")
+        or weekly_plan_blob.get("weekly_theme")
+        or ""
+    )
+    cta_keyword = (
+        payload.get("cta_keyword")
+        or weekly_plan_blob.get("cta_keyword")
+        or ""
+    )
+    days_input = payload.get("days") or weekly_plan_blob.get("days") or []
+    days_summary = []
+    for d in days_input[:5]:
+        topic = d.get("topic") or (d.get("options", [{}])[0].get("topic") if d.get("options") else "")
+        if topic:
+            days_summary.append(f"- {d.get('day_label', d.get('day_of_week', '?'))}: {topic}")
+    days_block = "\n".join(days_summary) if days_summary else "(day topics not yet locked)"
+
+    # Build the prompt. Keep it tight - we only need 3 options back.
+    sys_prompt = (
+        "You produce 3 distinct weekly-gift options for a B2B coaching content "
+        "plan. Each option is a guide/freebie title + 4-6 sections + 1-sentence "
+        "rationale. The 3 options must differ in angle (e.g. tactical vs strategic "
+        "vs case-study), not in surface wording. Output STRICTLY valid JSON: "
+        '{"guide_options":[{"title":"...","subtitle":"...","sections":["...","..."],"rationale":"..."}, ...]}'
+    )
+    user_prompt = (
+        f"Weekly theme: {weekly_theme}\n\n"
+        f"CTA keyword: {cta_keyword}\n\n"
+        f"This week's daily post topics:\n{days_block}\n\n"
+        f"Previous options (do NOT repeat these titles):\n"
+        + "\n".join(f"- {t}" for t in existing_titles)
+        + ("\n\nOperator feedback to apply: " + feedback if feedback else "")
+        + "\n\nReturn 3 fresh, differentiated options."
+    )
+
+    s = _Settings()
+    api_key = s.anthropic_api_key
+    if hasattr(api_key, "get_secret_value"):
+        api_key = api_key.get_secret_value()
+    client = anthropic.AsyncAnthropic(api_key=api_key)
+    resp = await client.messages.create(
+        model=getattr(s, "default_model", "claude-sonnet-4-20250514"),
+        max_tokens=1500,
+        system=sys_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    text = "".join(b.text for b in resp.content if b.type == "text").strip()
+    # Strip code fences if present
+    if text.startswith("```"):
+        text = text.split("```", 2)[1].lstrip("json").strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=502, detail="LLM returned invalid JSON")
+
+    new_options = parsed.get("guide_options", [])
+    if not isinstance(new_options, list) or len(new_options) < 1:
+        raise HTTPException(status_code=502, detail="LLM did not produce guide_options")
+
+    # Replace existing rows: delete then re-insert. Keeps option_index stable.
+    for g in existing:
+        await db.delete(g)
+    await db.flush()
+    saved = []
+    for idx, go in enumerate(new_options[:3]):
+        row = GuideOption(
+            weekly_plan_id=plan_uuid,
+            option_index=idx,
+            title=(go.get("title") or f"Option {idx + 1}")[:500],
+            subtitle=(go.get("subtitle") or "")[:500] or None,
+            sections=go.get("sections") or [],
+            rationale=go.get("rationale") or None,
+            is_selected=False,
+        )
+        db.add(row)
+        saved.append({
+            "option_index": idx,
+            "title": row.title,
+            "subtitle": row.subtitle,
+            "sections": row.sections,
+            "rationale": row.rationale,
+        })
+    await db.commit()
+    return {"status": "regenerated", "guide_options": saved}
