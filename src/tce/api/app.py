@@ -49,15 +49,59 @@ from tce.services.seed import seed_database
 from tce.utils.logging import setup_logging
 
 
+async def _mark_stale_weekly_plans_interrupted() -> None:
+    """Mark any weekly_plans rows still flagged 'running' as interrupted.
+
+    A row in this state means a `_run_deep_plan` background task was queued
+    by `plan_week_deep` but never reached completion - usually because the
+    server was restarted mid-run. Without this sweep the dashboard polls
+    those rows forever and shows a stuck spinner.
+
+    Postgres-native (jsonb merge) so it works on the VPS DB. SQLite local
+    dev tolerates this via the @compiles JSONB shim used elsewhere.
+    """
+    try:
+        from sqlalchemy import text
+        async with async_session() as db:
+            result = await db.execute(
+                text(
+                    "UPDATE weekly_plans "
+                    "SET status = 'interrupted', "
+                    "    plan_data = COALESCE(plan_data, '{}'::jsonb) || "
+                    "                '{\"status\":\"interrupted\",\"phase\":\"interrupted\","
+                    "                  \"phase_detail\":\"Server restarted during run. "
+                    "Click Generate from Plan again to retry.\","
+                    "                  \"error\":\"interrupted by server restart\"}'::jsonb "
+                    "WHERE status = 'running' "
+                    "RETURNING id"
+                )
+            )
+            ids = [row[0] for row in result.all()]
+            await db.commit()
+            if ids:
+                import structlog
+                structlog.get_logger().info(
+                    "marked_stale_weekly_plans", count=len(ids), ids=[str(i) for i in ids]
+                )
+    except Exception:
+        # Never block startup on cleanup. Worst case the stale row remains.
+        import structlog
+        structlog.get_logger().warning("mark_stale_weekly_plans.failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Seed database and start background scheduler on startup."""
+    """Seed database, sweep stale runs, and start background scheduler on startup."""
     try:
         async with async_session() as db:
             await seed_database(db)
             await db.commit()
     except Exception:
         pass  # DB may not be available yet (e.g., during tests)
+
+    # Recover from a previous restart: any plan_week_deep run still flagged
+    # 'running' is a ghost (its async task died with the previous process).
+    await _mark_stale_weekly_plans_interrupted()
 
     # Auto-start the scheduler so recurring workflows (daily_content,
     # weekly_planning, daily_backup, etc.) fire without manual intervention.
