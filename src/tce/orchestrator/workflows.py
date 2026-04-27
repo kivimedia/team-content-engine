@@ -12,12 +12,12 @@ DAILY_CONTENT_WORKFLOW = [
     PipelineStep(
         agent_name="facebook_writer",
         depends_on=["story_strategist", "research_agent"],
-        timeout_seconds=120,
+        timeout_seconds=360,
     ),
     PipelineStep(
         agent_name="linkedin_writer",
         depends_on=["story_strategist", "research_agent"],
-        timeout_seconds=120,
+        timeout_seconds=360,
     ),
     PipelineStep(agent_name="cta_agent", depends_on=["story_strategist"], timeout_seconds=60),
     PipelineStep(
@@ -110,12 +110,12 @@ DAILY_FROM_PLAN_WORKFLOW = [
     PipelineStep(
         agent_name="facebook_writer",
         depends_on=["research_agent"],
-        timeout_seconds=120,
+        timeout_seconds=360,
     ),
     PipelineStep(
         agent_name="linkedin_writer",
         depends_on=["research_agent"],
-        timeout_seconds=120,
+        timeout_seconds=360,
     ),
     PipelineStep(agent_name="cta_agent", depends_on=[], timeout_seconds=60),
     PipelineStep(
@@ -221,12 +221,12 @@ START_FROM_REPO_WORKFLOW = [
     PipelineStep(
         agent_name="facebook_writer",
         depends_on=["repo_storyteller", "research_agent"],
-        timeout_seconds=120,
+        timeout_seconds=360,
     ),
     PipelineStep(
         agent_name="linkedin_writer",
         depends_on=["repo_storyteller", "research_agent"],
-        timeout_seconds=120,
+        timeout_seconds=360,
     ),
     PipelineStep(
         agent_name="cta_agent",
@@ -285,12 +285,12 @@ WEEKLY_REPO_SPOTLIGHT_WORKFLOW = [
     PipelineStep(
         agent_name="facebook_writer",
         depends_on=["repo_storyteller", "research_agent"],
-        timeout_seconds=120,
+        timeout_seconds=360,
     ),
     PipelineStep(
         agent_name="linkedin_writer",
         depends_on=["repo_storyteller", "research_agent"],
-        timeout_seconds=120,
+        timeout_seconds=360,
     ),
     PipelineStep(
         agent_name="cta_agent",
