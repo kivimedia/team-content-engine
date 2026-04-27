@@ -106,8 +106,21 @@ class ProofChecker(AgentBase):
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Verify factual claims in generated posts and build a proof trail."""
-        facebook_post = context.get("facebook_draft", {}).get("post", "") or context.get("facebook_post", "")
-        linkedin_post = context.get("linkedin_draft", {}).get("post", "") or context.get("linkedin_post", "")
+        # platform_writer returns {"facebook_draft": {"facebook_post": "..."}}.
+        # The legacy "post" key was never written, so before this fix every
+        # run silently fell through to proof_status="skipped" with no trail.
+        fb_draft = context.get("facebook_draft", {}) or {}
+        li_draft = context.get("linkedin_draft", {}) or {}
+        facebook_post = (
+            fb_draft.get("facebook_post")
+            or fb_draft.get("post")
+            or context.get("facebook_post", "")
+        )
+        linkedin_post = (
+            li_draft.get("linkedin_post")
+            or li_draft.get("post")
+            or context.get("linkedin_post", "")
+        )
 
         if not facebook_post and not linkedin_post:
             self._report("No post content found - skipping proof check")
