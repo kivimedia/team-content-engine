@@ -88,10 +88,14 @@ async def list_packages(
         briefs = {b.id: b for b in bs.scalars()}
     # Serialize each package via the schema (handles JSON-string parsing on
     # SQLite), then merge in the computed title.
+    import sys as _sys
     items: list[dict] = []
     for p in packages:
         data = PostPackageRead.model_validate(p).model_dump(mode="json")
-        data["title"] = _compute_title(p, repos, briefs)
+        title_val = _compute_title(p, repos, briefs)
+        if p.source == "repo":
+            print(f"[debug-title] id={p.id} source={p.source} repo_id={p.source_repo_id} fb_len={len(p.facebook_post or '')} title={title_val!r}", file=_sys.stderr, flush=True)
+        data["title"] = title_val
         items.append(data)
     return items
 
