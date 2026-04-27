@@ -1689,6 +1689,55 @@ async function generateFromApprovedPlan(plan) {
 }
 
 function escHtml(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// Map proof_checker status -> human-readable label, color, icon, tooltip.
+// Used wherever we display the fact-check state on a package.
+function _proofStatusDisplay(status) {
+  const map = {
+    verified: {
+      label: 'Fact-checked',
+      icon: '✓',  // ✓
+      color: 'var(--green)',
+      tooltip: 'All factual claims in this post were verified against the research brief.',
+    },
+    partial: {
+      label: 'Partly verified',
+      icon: '∼',  // ~
+      color: 'var(--yellow)',
+      tooltip: 'Some claims in this post were verified; others are uncertain. Review before publishing.',
+    },
+    rewritten: {
+      label: 'Edited for accuracy',
+      icon: '✎',  // ✎
+      color: 'var(--accent)',
+      tooltip: 'The proof checker rewrote claims it could not verify. The post is safer but may have lost specifics.',
+    },
+    skipped: {
+      label: 'Not fact-checked',
+      icon: '⚠',  // ⚠
+      color: 'var(--yellow)',
+      tooltip: 'No claims were extracted (e.g. opinion-only post). Nothing to verify, but nothing was checked either.',
+    },
+    error: {
+      label: 'Fact-check failed',
+      icon: '✗',  // ✗
+      color: 'var(--red)',
+      tooltip: 'The proof checker errored out. Treat the post as unverified.',
+    },
+    failed: {
+      label: 'Fact-check failed',
+      icon: '✗',  // ✗
+      color: 'var(--red)',
+      tooltip: 'The proof checker could not verify the claims. Treat the post as unverified.',
+    },
+  };
+  return map[status] || {
+    label: 'Fact-check: ' + String(status || 'unknown'),
+    icon: '?',  // ?
+    color: 'var(--dim)',
+    tooltip: 'Unknown fact-check status: ' + String(status || ''),
+  };
+}
 function dismissPlanReview() { const p = document.getElementById('plan-review-panel'); if (p) p.innerHTML = ''; renderWeek(); }
 
 function editWeekPlan() {
@@ -5088,10 +5137,8 @@ function _renderPkgCard(p) {
       if (liWc) html += '<span style="color:var(--accent2);font-weight:600">LI: ' + liWc + ' words</span>';
       if (p.pipeline_run_id) html += '<span>Run: ' + p.pipeline_run_id.substring(0, 8) + '</span>';
       if (p.proof_status) {
-        const _ps = p.proof_status;
-        const _pc = _ps === 'verified' ? 'var(--green)' : _ps === 'partial' ? 'var(--yellow)' : _ps === 'rewritten' ? 'var(--accent)' : 'var(--red)';
-        const _pi = _ps === 'verified' ? '&#10003;' : _ps === 'partial' ? '~' : _ps === 'rewritten' ? '&#9998;' : '?';
-        html += '<span style="color:' + _pc + ';font-weight:600" title="Proof: ' + _ps + '">' + _pi + ' ' + _ps + '</span>';
+        const ps = _proofStatusDisplay(p.proof_status);
+        html += '<span style="color:' + ps.color + ';font-weight:600" title="' + ps.tooltip + '">' + ps.icon + ' ' + ps.label + '</span>';
       }
       const _tpl = p.quality_scores?.matched_template;
       if (_tpl?.template_name) {
@@ -7640,9 +7687,8 @@ async function loadPackageContext(pkgId, el) {
       h += '<div style="margin-bottom:12px;border-top:1px solid var(--border);padding-top:12px">';
       h += '<div style="font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;margin-bottom:6px">Proof Trail</div>';
       if (ctx.proof_status) {
-        const _ps2 = ctx.proof_status;
-        const _pc2 = _ps2 === 'verified' ? 'var(--green)' : _ps2 === 'partial' ? 'var(--yellow)' : _ps2 === 'rewritten' ? 'var(--accent)' : 'var(--red)';
-        h += '<div style="font-size:12px;margin-bottom:8px;color:' + _pc2 + ';font-weight:600">Status: ' + _ps2.toUpperCase() + '</div>';
+        const ps2 = _proofStatusDisplay(ctx.proof_status);
+        h += '<div style="font-size:12px;margin-bottom:8px;color:' + ps2.color + ';font-weight:600" title="' + ps2.tooltip + '">' + ps2.icon + ' ' + ps2.label + '</div>';
       }
       if (ctx.proof_stats) {
         const ps = ctx.proof_stats;
