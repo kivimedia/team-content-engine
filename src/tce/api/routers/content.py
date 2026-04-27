@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import get_db
 from tce.models.post_package import PostPackage
+from tce.models.story_brief import StoryBrief
+from tce.models.tracked_repo import TrackedRepo
 from tce.models.weekly_guide import WeeklyGuide
 from tce.settings import settings
 from tce.schemas.post_package import PostPackageRead, PostPackageUpdate
@@ -19,8 +21,37 @@ from tce.schemas.weekly_guide import WeeklyGuideCreate, WeeklyGuideRead
 router = APIRouter(prefix="/content", tags=["content"])
 
 
+def _repo_name_from(repo: TrackedRepo) -> str | None:
+    """Repo name for Library card titles. Prefers display_name, falls back to
+    the last segment of slug or repo_url (strips .git, trailing slashes)."""
+    if repo.display_name:
+        return repo.display_name
+    raw = (repo.slug or repo.repo_url or "").rstrip("/")
+    if raw.endswith(".git"):
+        raw = raw[:-4]
+    tail = raw.rsplit("/", 1)[-1]
+    return tail or raw or None
+
+
+def _compute_title(p: PostPackage, repos: dict, briefs: dict) -> str | None:
+    """Library card title: repo name for repo source, brief topic for topic
+    source, FB/LI first line otherwise. Returns None when nothing is usable."""
+    if p.source == "repo" and p.source_repo_id and p.source_repo_id in repos:
+        return _repo_name_from(repos[p.source_repo_id])
+    if p.source == "topic" and p.brief_id and p.brief_id in briefs:
+        return briefs[p.brief_id].topic
+    if p.source in ("repo", "copy") or p.source is None:
+        text = (p.facebook_post or p.linkedin_post or "").strip()
+        first_line = text.split("\n", 1)[0].strip() if text else ""
+        if first_line:
+            return (first_line[:80] + "...") if len(first_line) > 80 else first_line
+    return None
+
+
 # Post packages
-@router.get("/packages", response_model=list[PostPackageRead])
+# response_model omitted: we serialize via model_dump and inject the computed
+# `title` field. FastAPI's response_model would re-validate and drop our value.
+@router.get("/packages")
 async def list_packages(
     status: str | None = None,
     include_archived: bool = False,
@@ -29,7 +60,7 @@ async def list_packages(
     source: str | None = None,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
-) -> list[PostPackage]:
+) -> list[dict]:
     query = select(PostPackage).order_by(PostPackage.created_at.desc())
     if source:
         query = query.where(PostPackage.source == source)
@@ -50,7 +81,25 @@ async def list_packages(
         query = query.where(PostPackage.is_archived.is_(False))
     query = query.limit(limit)
     result = await db.execute(query)
-    return list(result.scalars().all())
+    packages = list(result.scalars().all())
+
+    # Bulk-fetch the source records once per request, then assemble titles.
+    repo_ids = {p.source_repo_id for p in packages if p.source == "repo" and p.source_repo_id}
+    brief_ids = {p.brief_id for p in packages if p.source == "topic" and p.brief_id}
+    repos: dict = {}
+    if repo_ids:
+        rs = await db.execute(select(TrackedRepo).where(TrackedRepo.id.in_(repo_ids)))
+        repos = {r.id: r for r in rs.scalars()}
+    briefs: dict = {}
+    if brief_ids:
+        bs = await db.execute(select(StoryBrief).where(StoryBrief.id.in_(brief_ids)))
+        briefs = {b.id: b for b in bs.scalars()}
+    items: list[dict] = []
+    for p in packages:
+        data = PostPackageRead.model_validate(p).model_dump(mode="json")
+        data["title"] = _compute_title(p, repos, briefs)
+        items.append(data)
+    return items
 
 
 @router.get("/packages/{package_id}", response_model=PostPackageRead)

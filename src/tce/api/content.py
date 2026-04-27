@@ -31,37 +31,29 @@ def _repo_name_from(repo: TrackedRepo) -> str | None:
     return tail or raw or None
 
 
-def _compute_title(p: PostPackage, repos: dict, briefs: dict) -> str | None:
-    """Derive a Library card title from a package's source records.
-
-    Returned as a value rather than assigned to the ORM instance because
-    SQLAlchemy's instrumentation doesn't surface ad-hoc attributes to
-    Pydantic's `from_attributes` reliably.
-    """
-    if p.source == "repo" and p.source_repo_id and p.source_repo_id in repos:
-        return _repo_name_from(repos[p.source_repo_id])
-    if p.source == "topic" and p.brief_id and p.brief_id in briefs:
-        return briefs[p.brief_id].topic
-    # Final fallback for repo (orphans without source_repo_id) and copy sources.
-    if p.source in ("repo", "copy") or p.source is None:
-        text = (p.facebook_post or p.linkedin_post or "").strip()
-        first_line = text.split("\n", 1)[0].strip() if text else ""
-        if first_line:
-            return (first_line[:80] + "...") if len(first_line) > 80 else first_line
-    return None
+def _attach_titles(packages: list[PostPackage], repos: dict, briefs: dict) -> None:
+    """Set a computed `title` attribute on each package based on its source."""
+    for p in packages:
+        title: str | None = None
+        if p.source == "repo" and p.source_repo_id and p.source_repo_id in repos:
+            title = _repo_name_from(repos[p.source_repo_id])
+        elif p.source == "topic" and p.brief_id and p.brief_id in briefs:
+            title = briefs[p.brief_id].topic
+        elif p.source == "copy":
+            text = (p.facebook_post or p.linkedin_post or "").strip()
+            if text:
+                title = (text[:80] + "...") if len(text) > 80 else text
+        p.title = title  # picked up by Pydantic from_attributes
 
 
 # Post packages
-# response_model intentionally omitted: we serialize via model_dump and inject
-# the computed `title` field. FastAPI's response_model would re-validate from
-# the SQLAlchemy ORM and drop our extra value.
-@router.get("/packages")
+@router.get("/packages", response_model=list[PostPackageRead])
 async def list_packages(
     status: str | None = None,
     include_archived: bool = False,
     pipeline_run_id: str | None = None,
     db: AsyncSession = Depends(get_db),
-) -> list[dict]:
+) -> list[PostPackage]:
     query = select(PostPackage).order_by(PostPackage.created_at.desc())
     if pipeline_run_id:
         from sqlalchemy import cast, String
@@ -86,18 +78,8 @@ async def list_packages(
     if brief_ids:
         bs = await db.execute(select(StoryBrief).where(StoryBrief.id.in_(brief_ids)))
         briefs = {b.id: b for b in bs.scalars()}
-    # Serialize each package via the schema (handles JSON-string parsing on
-    # SQLite), then merge in the computed title.
-    import sys as _sys
-    items: list[dict] = []
-    for p in packages:
-        data = PostPackageRead.model_validate(p).model_dump(mode="json")
-        title_val = _compute_title(p, repos, briefs)
-        if p.source == "repo":
-            print(f"[debug-title] id={p.id} source={p.source} repo_id={p.source_repo_id} fb_len={len(p.facebook_post or '')} title={title_val!r}", file=_sys.stderr, flush=True)
-        data["title"] = title_val
-        items.append(data)
-    return items
+    _attach_titles(packages, repos, briefs)
+    return packages
 
 
 @router.get("/packages/{package_id}", response_model=PostPackageRead)
