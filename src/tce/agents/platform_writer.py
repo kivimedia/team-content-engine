@@ -1,4 +1,10 @@
-"""Platform Writers — Facebook (engagement engine) and LinkedIn (authority engine)."""
+"""Platform Writers - Facebook (engagement engine) and LinkedIn (authority engine).
+
+Each writer runs a draft -> critique -> rewrite-once loop. The critic scores
+the draft against the 36 voice patterns + banned-vocab list in
+docs/super-coaching-strategy.md. If the score is below threshold the draft
+is rewritten once with the critic's specific violations as feedback.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +13,226 @@ from typing import Any
 
 from tce.agents.base import AgentBase
 from tce.agents.registry import register_agent
+from tce.services.strategy_loader import load_voice_patterns
+
+
+# Score below which the draft must be rewritten. The critic returns 1-10;
+# 7 means "mostly Ziv's voice, a few patterns missed". Below that triggers a
+# revision. Higher than this and we ship as-is.
+_VOICE_PASS_SCORE = 7
+
+# Maximum critic-driven rewrite attempts. The critic is a Sonnet call and the
+# rewrite is another Sonnet call, so each retry adds ~$0.05. Two attempts
+# is enough; the LLM either reaches threshold or settles into a different
+# but-still-imperfect register.
+_MAX_VOICE_REVISIONS = 1
+
+
+_VOICE_CRITIC_SYSTEM = """\
+You are the Voice Critic for Team Content Engine. You judge whether a
+draft post matches Ziv Raviv's writing voice as documented in the
+36-pattern voice spec below. You do NOT rewrite; you SCORE and FLAG.
+
+Output STRICT JSON:
+{
+  "score": 1-10 integer,
+  "verdict": "pass" | "revise",
+  "violations": [
+    {"pattern_id": "B6" | "F20" | "banned_vocab" | etc.,
+     "quote": "the exact phrase from the draft that violated",
+     "issue": "one sentence explaining why this fails",
+     "fix": "concrete rewrite suggestion - the actual replacement words"}
+  ],
+  "summary": "one sentence overall verdict"
+}
+
+SCORING RUBRIC:
+- 9-10: reads like a peer thinking out loud. No agency-speak. Hook has
+  conflict or specificity. Has paraphrased memory or anonymized hero
+  with stakes. One idea, not stacked.
+- 7-8: mostly there, but missing one or two patterns (no aphorism line,
+  missed underclaim opportunity, generic 2022-style objection).
+- 5-6: feels like an AI-generated coaching post. Multiple stacked
+  insights, generic urgency, present-tense thesis essay style.
+- 1-4: agency-speak fingerprint. "smart money", "competitive
+  landscape", "the math is compelling", "window is closing", or
+  feature-paste from a vendor doc.
+
+VERDICT: "pass" if score >= 7, "revise" otherwise.
+
+CALL OUT EVERY VIOLATION YOU SEE. The downstream writer will use your
+violations as the rewrite instruction set. Be specific with the quote
+field - paste the exact phrase from the draft, not a paraphrase. Be
+specific with the fix field - propose actual replacement words, not
+abstract guidance.
+"""
+
+
+def _build_critic_user_prompt(draft_text: str, platform: str, voice_spec: str) -> str:
+    return (
+        f"VOICE SPEC (the rules):\n{voice_spec}\n\n"
+        f"---\n\n"
+        f"DRAFT to score ({platform}):\n\n{draft_text}\n\n"
+        f"---\n\n"
+        f"Score it. Flag every violation. Be specific."
+    )
+
+
+async def _critique_voice(
+    agent, post_text: str, platform: str, voice_spec: str
+) -> dict[str, Any]:
+    """Single critic LLM call. Returns a dict with score/verdict/violations."""
+    try:
+        user = _build_critic_user_prompt(post_text, platform, voice_spec)
+        resp = await agent._call_llm(
+            messages=[{"role": "user", "content": user}],
+            system=_VOICE_CRITIC_SYSTEM,
+            max_tokens=2048,
+            temperature=0.3,
+        )
+        text = agent._extract_text(resp)
+        return agent._parse_json_response(text)
+    except Exception as e:
+        agent._report(f"  Voice critic call failed: {e}")
+        return {"score": 7, "verdict": "pass", "violations": [], "summary": "(critic skipped)"}
+
+
+async def _rewrite_for_voice(
+    agent,
+    original_post: str,
+    violations: list[dict],
+    voice_spec: str,
+    platform: str,
+    system_prompt: str,
+) -> dict[str, Any] | None:
+    """Single rewrite LLM call. Returns parsed JSON or None on failure."""
+    try:
+        user = _build_revision_user_prompt(
+            original_post, violations, voice_spec, platform
+        )
+        resp = await agent._call_llm(
+            messages=[{"role": "user", "content": user}],
+            system=system_prompt,
+            max_tokens=6144,
+            temperature=0.7,
+        )
+        text = agent._extract_text(resp)
+        return agent._parse_json_response(text)
+    except Exception as e:
+        agent._report(f"  Voice critic rewrite failed: {e}")
+        return None
+
+
+async def _run_voice_critic_loop(
+    agent,
+    result: dict[str, Any],
+    post_key: str,
+    platform: str,
+    system_prompt: str,
+) -> dict[str, Any]:
+    """Run draft -> critique -> rewrite-once. Returns possibly-updated result.
+
+    Shared by FacebookWriter and LinkedInWriter. The agent argument provides
+    _call_llm / _extract_text / _parse_json_response / _report.
+    """
+    post_text = result.get(post_key, "")
+    if not post_text:
+        return result
+
+    voice_spec = load_voice_patterns()
+    if not voice_spec:
+        agent._report("  Voice critic: spec not found - skipping")
+        return result
+
+    for attempt in range(_MAX_VOICE_REVISIONS + 1):
+        critique = await _critique_voice(agent, post_text, platform, voice_spec)
+        score = critique.get("score", 0)
+        verdict = critique.get("verdict", "")
+        violations = critique.get("violations") or []
+        summary = critique.get("summary", "")
+
+        agent._report(
+            f"  Voice critic [pass {attempt + 1}]: score={score}/10 verdict={verdict} "
+            f"({len(violations)} violation{'s' if len(violations) != 1 else ''})"
+        )
+        if summary:
+            agent._report(f"    {summary[:160]}")
+        for v in violations[:5]:
+            pid = v.get("pattern_id", "?")
+            quote = (v.get("quote") or "")[:80]
+            agent._report(f"    [{pid}] {quote}")
+
+        if verdict == "pass" or score >= _VOICE_PASS_SCORE or attempt >= _MAX_VOICE_REVISIONS:
+            if attempt >= _MAX_VOICE_REVISIONS and verdict != "pass":
+                agent._report(f"  Voice critic: shipping anyway after {attempt + 1} attempts")
+            result["voice_score"] = score
+            result["voice_verdict"] = verdict
+            result["voice_violations"] = violations
+            return result
+
+        agent._report("  Voice critic: rewriting to address violations...")
+        revised = await _rewrite_for_voice(
+            agent=agent,
+            original_post=post_text,
+            violations=violations,
+            voice_spec=voice_spec,
+            platform=platform,
+            system_prompt=system_prompt,
+        )
+        if revised:
+            if revised.get(post_key):
+                result[post_key] = _clean_dash(revised[post_key])
+                post_text = result[post_key]
+            if revised.get("rationale"):
+                result["rationale"] = _clean_dash(revised["rationale"])
+            if revised.get("hook_variants"):
+                result["hook_variants"] = [
+                    _clean_dash(h) if isinstance(h, str) else h
+                    for h in revised["hook_variants"]
+                ]
+            if revised.get("word_count"):
+                result["word_count"] = revised["word_count"]
+        else:
+            agent._report("  Voice critic: rewrite failed - keeping original")
+            result["voice_score"] = score
+            result["voice_verdict"] = verdict
+            result["voice_violations"] = violations
+            return result
+
+    return result
+
+
+def _build_revision_user_prompt(
+    original_post: str,
+    violations: list[dict],
+    voice_spec: str,
+    platform: str,
+) -> str:
+    """Build the rewrite prompt that turns critic violations into a fix-list."""
+    fix_lines = []
+    for v in violations:
+        pid = v.get("pattern_id", "?")
+        quote = v.get("quote", "")
+        issue = v.get("issue", "")
+        fix = v.get("fix", "")
+        fix_lines.append(
+            f"- [{pid}] FIX THIS PHRASE: \"{quote}\"\n  WHY: {issue}\n  REPLACE WITH (or in this style): {fix}"
+        )
+    fix_block = "\n".join(fix_lines) if fix_lines else "(no specific phrase fixes; rewrite for tone)"
+
+    return (
+        f"You wrote this {platform} post, and the voice critic flagged it. "
+        f"Rewrite it - keep the same topic, thesis, and CTA, but FIX every "
+        f"flagged violation. The voice spec is below as ground truth. Output "
+        f"the SAME JSON shape as the original draft "
+        f"(facebook_post / linkedin_post + hook_variants + word_count + rationale).\n\n"
+        f"VOICE SPEC:\n{voice_spec}\n\n"
+        f"---\n\n"
+        f"ORIGINAL DRAFT:\n{original_post}\n\n"
+        f"---\n\n"
+        f"VIOLATIONS TO FIX (each one must go):\n{fix_block}\n\n"
+        f"Rewrite now. Same JSON shape."
+    )
 
 
 def _clean_dash(s: str) -> str:
@@ -410,6 +636,15 @@ class FacebookWriter(AgentBase):
         # Clean emdashes/en dashes from all text fields
         result = _clean_writer_output(result)
 
+        # Voice critic loop: score the draft, rewrite once if it doesn't pass.
+        result = await _run_voice_critic_loop(
+            agent=self,
+            result=result,
+            post_key="facebook_post",
+            platform="facebook",
+            system_prompt=FB_SYSTEM_PROMPT + SHARED_PROMPT_SUFFIX,
+        )
+
         wc = result.get("word_count", len(result.get("facebook_post", "").split()))
         hooks = result.get("hook_variants", [])
         self._report(f"FB post drafted ({wc} words, {len(hooks)} hook variants)")
@@ -425,6 +660,7 @@ class FacebookWriter(AgentBase):
         if rationale:
             self._report(f"  Rationale: {str(rationale)[:150]}")
         return {"facebook_draft": result}
+
 
 
 @register_agent
@@ -477,6 +713,15 @@ class LinkedInWriter(AgentBase):
 
         # Clean emdashes/en dashes from all text fields
         result = _clean_writer_output(result)
+
+        # Voice critic loop: score the draft, rewrite once if it doesn't pass.
+        result = await _run_voice_critic_loop(
+            agent=self,
+            result=result,
+            post_key="linkedin_post",
+            platform="linkedin",
+            system_prompt=LI_SYSTEM_PROMPT + SHARED_PROMPT_SUFFIX,
+        )
 
         wc = result.get("word_count", len(result.get("linkedin_post", "").split()))
         hooks = result.get("hook_variants", [])

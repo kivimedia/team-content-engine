@@ -59,6 +59,33 @@ def load_strategy() -> str:
 
 
 @lru_cache(maxsize=1)
+def load_voice_patterns() -> str:
+    """Return the full ZIV'S VOICE section of the strategy doc.
+
+    The voice section sits well past the 12k char cutoff for load_strategy(),
+    so writers/critics that need ALL 36 patterns + banned vocab + meta-rule
+    must load it via this dedicated path instead of relying on the truncated
+    strategy text. Empty string if the section heading isn't found.
+    """
+    try:
+        with open(_STRATEGY_PATH, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return ""
+    marker = "## ZIV'S VOICE AND WRITING STYLE"
+    start = text.find(marker)
+    if start == -1:
+        return ""
+    # Voice section runs to EOF in the current doc; if a later top-level
+    # section is added, stop at the next "\n## " that is not the voice one.
+    rest = text[start:]
+    next_section = rest.find("\n## ", len(marker))
+    if next_section != -1:
+        return rest[:next_section].strip()
+    return rest.strip()
+
+
+@lru_cache(maxsize=1)
 def load_portfolio() -> str:
     """Return the global repo portfolio, truncated. Empty string if missing."""
     try:
