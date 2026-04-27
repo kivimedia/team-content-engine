@@ -28,7 +28,7 @@ DAILY_CONTENT_WORKFLOW = [
     PipelineStep(
         agent_name="proof_checker",
         depends_on=["facebook_writer", "linkedin_writer"],
-        timeout_seconds=180,
+        timeout_seconds=360,
     ),
     PipelineStep(
         agent_name="qa_agent",
@@ -126,7 +126,7 @@ DAILY_FROM_PLAN_WORKFLOW = [
     PipelineStep(
         agent_name="proof_checker",
         depends_on=["facebook_writer", "linkedin_writer"],
-        timeout_seconds=180,
+        timeout_seconds=360,
     ),
     PipelineStep(
         agent_name="qa_agent",
@@ -169,7 +169,7 @@ POLISH_FROM_COPY_WORKFLOW = [
     PipelineStep(
         agent_name="proof_checker",
         depends_on=["copy_polisher"],
-        timeout_seconds=180,
+        timeout_seconds=360,
     ),
     PipelineStep(
         agent_name="qa_agent",
@@ -241,7 +241,7 @@ START_FROM_REPO_WORKFLOW = [
     PipelineStep(
         agent_name="proof_checker",
         depends_on=["facebook_writer", "linkedin_writer"],
-        timeout_seconds=180,
+        timeout_seconds=360,
     ),
     PipelineStep(
         agent_name="qa_agent",
@@ -305,7 +305,7 @@ WEEKLY_REPO_SPOTLIGHT_WORKFLOW = [
     PipelineStep(
         agent_name="proof_checker",
         depends_on=["facebook_writer", "linkedin_writer"],
-        timeout_seconds=180,
+        timeout_seconds=360,
     ),
     PipelineStep(
         agent_name="qa_agent",

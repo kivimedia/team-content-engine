@@ -252,6 +252,12 @@ class PipelineOrchestrator:
                 pid = await self._saver.save_post_package(self.context)
                 if pid:
                     self.context["_post_package_id"] = pid
+                    # Commit immediately so the package is durable before the
+                    # multi-minute image-generation block below. Otherwise a
+                    # parallel step (e.g. proof_checker) raising mid-block
+                    # triggers self.db.rollback() and wipes this flush, leaving
+                    # qa_agent with a dangling FK to a non-existent package.
+                    await self.db.commit()
                     # Link package to calendar entry and update status
                     await self._link_package_to_calendar(pid)
 
