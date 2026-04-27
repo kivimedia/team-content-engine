@@ -16,8 +16,12 @@
   --text:hsl(210 20% 92%);--dim:hsl(215 12% 55%);--muted:hsl(215 16% 35%);
   --primary:hsl(174 72% 52%);--primary-fg:#000;--primary-dim:hsl(174 72% 52% / 0.1);
   --accent:hsl(38 92% 58%);--accent-dim:hsl(38 92% 58% / 0.1);
+  --accent2:hsl(174 72% 52%);
   --success:hsl(150 60% 45%);--success-dim:hsl(150 60% 45% / 0.1);
   --destructive:hsl(0 72% 55%);--destructive-dim:hsl(0 72% 55% / 0.1);
+  --green:hsl(150 60% 45%);
+  --yellow:hsl(48 96% 60%);
+  --red:hsl(0 72% 55%);
   --warning:hsl(38 92% 58%);--warning-dim:hsl(38 92% 58% / 0.1);
   --info:hsl(210 80% 58%);--info-dim:hsl(210 80% 58% / 0.1);
   --gradient-card:linear-gradient(180deg,hsl(220 18% 12%),hsl(220 18% 9%));
@@ -5556,12 +5560,14 @@ async function loadScripts(packageId, pid) {
   if (!segEl) return;
   if (_scrLoading[pid]) return;
   _scrLoading[pid] = true;
-  segEl.innerHTML = '<div style="color:var(--dim);font-size:12px">Loading script...</div>';
-  statusEl.textContent = 'Loading script...';
+  // Show the loading message once - in the segments area only. The status
+  // line gets a short marker so the user can see something is in flight,
+  // but we don't repeat the same sentence in two places.
+  segEl.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:16px;text-align:center">Loading script...</div>';
+  statusEl.textContent = 'Fetching...';
   statusEl.style.color = 'var(--dim)';
   try {
     // Auto endpoint: returns existing script or generates one on the fly
-    statusEl.textContent = 'Loading script...';
     const detail = await api('/narration/scripts/auto/' + packageId);
     _scriptCache[pid] = detail;
     const label = detail.auto_generated ? ' (just generated)' : '';
@@ -5933,12 +5939,16 @@ async function generateImages(packageId, btn) {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
       if (progressPct < 85) progressPct += (85 - progressPct) * 0.03;
       if (bar) bar.style.width = Math.round(progressPct) + '%';
-      if (timeEl) timeEl.textContent = elapsed + 's elapsed - ~15-30s per image...';
+      // OpenAI gpt-image-2 (the default) takes ~60s per image. With the
+      // batch run in parallel, total wall-clock ~= one image. Don't promise
+      // 15-30s anymore - that was the fal.ai expectation.
+      if (timeEl) timeEl.textContent = elapsed + 's elapsed - typical 60-90s for OpenAI, ~15-30s for fal.ai';
       if (statusEl) {
         if (elapsed < 5) statusEl.textContent = 'Sending to image generator...';
-        else if (elapsed < 15) statusEl.textContent = 'Generating images - AI is rendering...';
-        else if (elapsed < 30) statusEl.textContent = 'Still rendering - complex prompts take longer...';
-        else statusEl.textContent = 'Almost done - finalizing images...';
+        else if (elapsed < 30) statusEl.textContent = 'Generating images - AI is rendering...';
+        else if (elapsed < 75) statusEl.textContent = 'Still rendering - high-quality images take ~60-90s each...';
+        else if (elapsed < 120) statusEl.textContent = 'Almost done - finalizing images...';
+        else statusEl.textContent = 'Slower than expected - hold on, the model is still working...';
       }
     }, 500);
   }

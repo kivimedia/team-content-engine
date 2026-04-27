@@ -182,11 +182,17 @@ class ImageGenerationService:
         }
 
     async def generate_batch(self, prompts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Generate images for a batch of prompts (typically 3 per post)."""
-        results = []
-        for prompt in prompts:
+        """Generate images for a batch of prompts (typically 3 per post).
+
+        Runs all calls concurrently. With OpenAI gpt-image-2 at ~60s per
+        image, the difference between serial (3*60=180s) and parallel
+        (max=~60s) is the difference between "this is broken" and "fine".
+        """
+        import asyncio
+
+        async def _one(prompt: dict[str, Any]) -> dict[str, Any]:
             try:
-                result = await self.generate_image(
+                return await self.generate_image(
                     prompt_text=prompt.get(
                         "prompt_text",
                         prompt.get("detailed_prompt", ""),
@@ -194,20 +200,18 @@ class ImageGenerationService:
                     negative_prompt=prompt.get("negative_prompt"),
                     aspect_ratio=prompt.get("aspect_ratio"),
                 )
-                results.append(result)
             except Exception as e:
                 logger.exception(
                     "image_gen.failed",
                     prompt=prompt.get("prompt_name"),
                 )
-                results.append(
-                    {
-                        "status": "failed",
-                        "error": str(e),
-                        "prompt_text": prompt.get("prompt_text", ""),
-                    }
-                )
-        return results
+                return {
+                    "status": "failed",
+                    "error": str(e),
+                    "prompt_text": prompt.get("prompt_text", ""),
+                }
+
+        return await asyncio.gather(*(_one(p) for p in prompts))
 
     @staticmethod
     def get_platform_crops() -> dict[str, str]:
