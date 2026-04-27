@@ -9386,7 +9386,26 @@ async function pollRepoStatus() {
           const viewBtn = document.createElement('button');
           viewBtn.className = 'btn btn-blue';
           viewBtn.textContent = 'View generated package';
-          viewBtn.onclick = () => { currentTab = 'packages'; render(); };
+          viewBtn.onclick = async () => {
+            // Resolve the actual package created by THIS run, then jump to
+            // the focused card. Just switching tabs lands the user on a
+            // day-filtered list that hides standalone Repo packages.
+            viewBtn.disabled = true;
+            viewBtn.textContent = 'Opening...';
+            try {
+              const pkgs = await api('/content/packages?pipeline_run_id=' + encodeURIComponent(d.pipeline_run_id));
+              if (pkgs && pkgs.length) {
+                viewPackage(pkgs[0].id, null);
+                return;
+              }
+              toast('Package not found for this run yet - try the Library tab.');
+            } catch (e) {
+              toast('Could not open package: ' + (e.message || e));
+            } finally {
+              viewBtn.disabled = false;
+              viewBtn.textContent = 'View generated package';
+            }
+          };
           result.appendChild(viewBtn);
         }
       }
