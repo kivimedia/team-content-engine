@@ -52,13 +52,16 @@ def _compute_title(p: PostPackage, repos: dict, briefs: dict) -> str | None:
 
 
 # Post packages
-@router.get("/packages", response_model=list[PostPackageRead])
+# response_model intentionally omitted: we serialize via model_dump and inject
+# the computed `title` field. FastAPI's response_model would re-validate from
+# the SQLAlchemy ORM and drop our extra value.
+@router.get("/packages")
 async def list_packages(
     status: str | None = None,
     include_archived: bool = False,
     pipeline_run_id: str | None = None,
     db: AsyncSession = Depends(get_db),
-) -> list[PostPackageRead]:
+) -> list[dict]:
     query = select(PostPackage).order_by(PostPackage.created_at.desc())
     if pipeline_run_id:
         from sqlalchemy import cast, String
@@ -83,14 +86,13 @@ async def list_packages(
     if brief_ids:
         bs = await db.execute(select(StoryBrief).where(StoryBrief.id.in_(brief_ids)))
         briefs = {b.id: b for b in bs.scalars()}
-    # Build response models with the computed title set explicitly. We avoid
-    # setting p.title on the ORM instance because SQLAlchemy doesn't always
-    # surface unmapped attributes to Pydantic's `from_attributes`.
-    items: list[PostPackageRead] = []
+    # Serialize each package via the schema (handles JSON-string parsing on
+    # SQLite), then merge in the computed title.
+    items: list[dict] = []
     for p in packages:
-        item = PostPackageRead.model_validate(p)
-        item.title = _compute_title(p, repos, briefs)
-        items.append(item)
+        data = PostPackageRead.model_validate(p).model_dump(mode="json")
+        data["title"] = _compute_title(p, repos, briefs)
+        items.append(data)
     return items
 
 
