@@ -2848,19 +2848,42 @@ function viewPackage(pkgId, dayNum) {
   }
   // Clear source filter too in case it would hide this package.
   pkgSourceFilter = '';
+  // Mark this card as "keep open" so the IntersectionObserver doesn't collapse
+  // it the moment the user scrolls. expandedPkgs drives the initial expansion
+  // after re-render.
+  expandedPkgs.add(pkgId);
   // Switch to packages tab
   currentTab = 'packages';
   document.querySelectorAll('.sidebar-item').forEach(b => b.classList.toggle('active', b.dataset.tab === 'packages'));
   render();
-  // After render, scroll to the specific package card by its id attribute
-  setTimeout(() => {
-    const card = document.getElementById('pkg-' + pkgId);
-    if (card) {
-      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      card.style.outline = '2px solid var(--accent)';
-      setTimeout(() => card.style.outline = '', 3000);
+  // Poll for the filtered cache to populate (renderPackages is async; the
+  // fetch+filter writes _pkgFilteredCache when done). Bounded retry so we
+  // don't loop forever if the tab errors out.
+  const _focusOnCard = (attempt) => {
+    const cache = _pkgFilteredCache;
+    if (!cache || !cache.length) {
+      if (attempt < 20) return setTimeout(() => _focusOnCard(attempt + 1), 150);
+      return;
     }
-  }, 500);
+    const idx = cache.findIndex(x => x.id === pkgId);
+    if (idx >= 0) {
+      const targetPage = Math.floor(idx / PKG_PAGE_SIZE) + 1;
+      if (targetPage !== pkgPage) {
+        pkgPage = targetPage;
+        _renderPkgFromCache();
+      }
+    }
+    const card = document.getElementById('pkg-' + pkgId);
+    if (card && card.classList.contains('pkg-stub')) togglePkgExpand(pkgId);
+    const finalCard = document.getElementById('pkg-' + pkgId);
+    if (finalCard) {
+      finalCard.dataset.keepOpen = '1';
+      finalCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      finalCard.style.outline = '2px solid var(--accent)';
+      setTimeout(() => finalCard.style.outline = '', 3000);
+    }
+  };
+  setTimeout(() => _focusOnCard(0), 100);
 }
 
 async function runWeeklyPlanning() {
@@ -4625,8 +4648,19 @@ let pkgSourceFilter = '';
 let _pkgCache = null;
 let _pkgDayMapCache = null;
 
+// Pagination + virtualization state for the Packages tab.
+// Each card is rendered as a collapsed header by default; clicking expands it.
+// IntersectionObserver auto-collapses cards that scroll fully out of view so
+// even with many expansions the live DOM stays bounded.
+const PKG_PAGE_SIZE = 20;
+let pkgPage = 1;                      // 1-indexed
+const expandedPkgs = new Set();       // pkg IDs currently expanded
+let _pkgVisibilityObserver = null;    // IntersectionObserver instance
+let _pkgFilteredCache = [];           // last filtered list (for pagination math)
+
 function switchPkgDay(day) {
   pkgDayFilter = day;
+  pkgPage = 1;
   _renderPkgFromCache();
 }
 
@@ -4708,18 +4742,177 @@ function _renderPkgFromCache() {
 
   if (!filteredPkgs.length) { document.getElementById('pkg-list').innerHTML = '<div class="empty" style="padding:24px;text-align:center">No packages for this day.</div>'; return; }
 
+  // Cache the filtered list so togglePkgExpand and viewPackage can resolve a
+  // pkg by id without re-running every filter.
+  _pkgFilteredCache = filteredPkgs;
+
+  // Clamp page in case filters shrunk the list below the current page.
+  const totalPages = Math.max(1, Math.ceil(filteredPkgs.length / PKG_PAGE_SIZE));
+  if (pkgPage > totalPages) pkgPage = totalPages;
+  if (pkgPage < 1) pkgPage = 1;
+  const pageStart = (pkgPage - 1) * PKG_PAGE_SIZE;
+  const pageSlice = filteredPkgs.slice(pageStart, pageStart + PKG_PAGE_SIZE);
+
   let html = '<div class="packages-list">';
-  for (const p of filteredPkgs) {
+  for (const p of pageSlice) {
     const dayInfo = pkgDayMap[p.id];
     if (dayInfo) {
       const dayLabel = DAY_NAMES[dayInfo.day] || '';
       const angleLabel = ANGLE_LABELS[dayInfo.angle] || (dayInfo.angle || '').replace(/_/g, ' ');
       html += '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;display:flex;align-items:center;gap:8px"><span style="color:var(--accent2);font-weight:600">' + dayLabel + ' ' + dayInfo.date + '</span><span>' + angleLabel + '</span></div>';
     }
-    html += _renderPkgCard(p);
+    // Default: collapsed stub. If the user previously expanded this card and
+    // it scrolled into view again, expandedPkgs keeps the preference so
+    // togglePkgExpand re-runs after the DOM is in place.
+    html += _renderPkgStub(p);
   }
   html += '</div>';
+
+  // Pagination footer
+  html += _renderPkgPagination(filteredPkgs.length, totalPages);
+
   document.getElementById('pkg-list').innerHTML = html;
+
+  // Re-expand any cards the user wants kept open across re-renders.
+  for (const id of expandedPkgs) {
+    const p = pageSlice.find(x => x.id === id);
+    if (p) _expandPkgCard(p);
+  }
+
+  // Auto-collapse off-screen expanded cards to keep DOM bounded.
+  _initPkgVisibilityObserver();
+}
+
+function _renderPkgStub(p) {
+  // Compact one-line header. Click anywhere on the row toggles the card.
+  const statusTag = p.approval_status === 'approved' ? 'tag-approved' : p.approval_status === 'rejected' ? 'tag-rejected' : 'tag-draft';
+  const fbWc = (p.facebook_post || '').trim().split(/\s+/).filter(Boolean).length;
+  const liWc = (p.linkedin_post || '').trim().split(/\s+/).filter(Boolean).length;
+  const compositeRaw = p.quality_scores?.composite_score ?? p.quality_scores?.overall;
+  const composite = typeof compositeRaw === 'number' ? compositeRaw : (compositeRaw && compositeRaw.score) || null;
+  const qaColor = composite == null ? 'var(--dim)' : composite >= 7 ? 'var(--green)' : composite >= 5 ? 'var(--yellow)' : 'var(--red)';
+  const lead = (p.facebook_post || p.linkedin_post || p.title || '').replace(/\s+/g, ' ').trim().slice(0, 110);
+  const sourceBadge = p.source ? '<span style="font-size:10px;color:var(--dim);background:var(--card);border:1px solid var(--border);padding:1px 6px;border-radius:8px;margin-left:6px">' + esc(p.source) + '</span>' : '';
+  let html = '<div class="pkg-card pkg-stub" id="pkg-' + p.id + '"' + (p.is_archived ? ' style="opacity:0.5"' : '') + '>';
+  html += '<div class="pkg-stub-header" style="display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;user-select:none" onclick="togglePkgExpand(\'' + p.id + '\')">';
+  html += '<span class="pkg-chevron" style="display:inline-block;width:14px;color:var(--dim);transition:transform 0.15s">&#9656;</span>';
+  html += '<span class="tag ' + statusTag + '">' + p.approval_status + '</span>' + sourceBadge;
+  html += '<span style="flex:1;min-width:0;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(lead || '(no content)') + '</span>';
+  if (fbWc) html += '<span style="font-size:11px;color:var(--accent2);font-weight:600;white-space:nowrap">FB ' + fbWc + 'w</span>';
+  if (liWc) html += '<span style="font-size:11px;color:var(--accent2);font-weight:600;white-space:nowrap">LI ' + liWc + 'w</span>';
+  if (composite != null) html += '<span style="font-size:11px;color:' + qaColor + ';font-weight:700;white-space:nowrap">QA ' + composite.toFixed(1) + '</span>';
+  html += '<span style="font-size:11px;color:var(--dim);white-space:nowrap">' + new Date(p.created_at).toLocaleDateString('en-GB', {day:'numeric', month:'short'}) + '</span>';
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+function _renderPkgPagination(total, totalPages) {
+  if (totalPages <= 1) {
+    return '<div style="font-size:11px;color:var(--dim);text-align:center;padding:12px">' + total + ' package' + (total === 1 ? '' : 's') + '</div>';
+  }
+  const start = (pkgPage - 1) * PKG_PAGE_SIZE + 1;
+  const end = Math.min(pkgPage * PKG_PAGE_SIZE, total);
+  const btn = (label, target, disabled) =>
+    '<button class="btn btn-dim" style="font-size:12px;padding:4px 10px' + (disabled ? ';opacity:0.4;cursor:not-allowed' : '') + '"' +
+    (disabled ? ' disabled' : ' onclick="gotoPkgPage(' + target + ')"') + '>' + label + '</button>';
+  let html = '<div style="display:flex;align-items:center;justify-content:center;gap:8px;padding:16px;border-top:1px solid var(--border);margin-top:12px;flex-wrap:wrap">';
+  html += btn('&laquo; Prev', pkgPage - 1, pkgPage <= 1);
+  html += '<span style="font-size:12px;color:var(--dim);padding:0 8px">Showing ' + start + '-' + end + ' of ' + total + ' &middot; Page ' + pkgPage + ' / ' + totalPages + '</span>';
+  html += btn('Next &raquo;', pkgPage + 1, pkgPage >= totalPages);
+  html += '</div>';
+  return html;
+}
+
+function gotoPkgPage(page) {
+  pkgPage = page;
+  // Don't preserve expansions across page changes - feels surprising.
+  expandedPkgs.clear();
+  _renderPkgFromCache();
+  // Scroll to top of list so user can see the new page.
+  const list = document.getElementById('pkg-list');
+  if (list) list.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function togglePkgExpand(pkgId) {
+  const card = document.getElementById('pkg-' + pkgId);
+  if (!card) return;
+  if (card.classList.contains('pkg-stub')) {
+    const p = (_pkgFilteredCache || []).find(x => x.id === pkgId) ||
+              (_pkgCache || []).find(x => x.id === pkgId);
+    if (!p) return;
+    expandedPkgs.add(pkgId);
+    _expandPkgCard(p);
+  } else {
+    expandedPkgs.delete(pkgId);
+    _collapsePkgCard(pkgId);
+  }
+}
+
+function _expandPkgCard(p) {
+  const card = document.getElementById('pkg-' + p.id);
+  if (!card || !card.classList.contains('pkg-stub')) return;
+  // Replace the stub with the full card. _renderPkgCard returns the whole
+  // outer pkg-card div, so swap outerHTML.
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = _renderPkgCard(p);
+  const fullCard = wrapper.firstElementChild;
+  if (!fullCard) return;
+  // Stamp a "Collapse" toggle at the very top so the user can fold it again.
+  const collapseBtn = document.createElement('button');
+  collapseBtn.className = 'btn btn-dim';
+  collapseBtn.style.cssText = 'position:absolute;top:10px;right:12px;font-size:11px;padding:3px 10px;z-index:1';
+  collapseBtn.textContent = '× Collapse';
+  collapseBtn.onclick = (ev) => { ev.stopPropagation(); togglePkgExpand(p.id); };
+  fullCard.style.position = 'relative';
+  fullCard.appendChild(collapseBtn);
+  card.replaceWith(fullCard);
+  // Re-observe the new full card for off-screen auto-collapse.
+  if (_pkgVisibilityObserver) _pkgVisibilityObserver.observe(fullCard);
+}
+
+function _collapsePkgCard(pkgId) {
+  const card = document.getElementById('pkg-' + pkgId);
+  if (!card || card.classList.contains('pkg-stub')) return;
+  const p = (_pkgFilteredCache || []).find(x => x.id === pkgId) ||
+            (_pkgCache || []).find(x => x.id === pkgId);
+  if (!p) return;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = _renderPkgStub(p);
+  const stub = wrapper.firstElementChild;
+  if (!stub) return;
+  card.replaceWith(stub);
+  if (_pkgVisibilityObserver) _pkgVisibilityObserver.observe(stub);
+}
+
+function _initPkgVisibilityObserver() {
+  // IntersectionObserver auto-collapses cards that scroll fully out of view.
+  // Even with many expansions the live DOM stays bounded.
+  if (_pkgVisibilityObserver) {
+    _pkgVisibilityObserver.disconnect();
+  }
+  _pkgVisibilityObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) continue;
+      const card = entry.target;
+      if (!card.classList.contains('pkg-card') || card.classList.contains('pkg-stub')) continue;
+      const id = (card.id || '').replace(/^pkg-/, '');
+      if (!id) continue;
+      // Only auto-collapse if user didn't explicitly mark this expanded.
+      // (User-clicked stays expanded across scroll; auto-collapse only kicks
+      // in for cards we'd otherwise leave expanded across navigation.)
+      // Actually the simpler rule that matches user expectation: auto-collapse
+      // any expanded card off-screen. The user can click again to re-expand.
+      // Skip if it was just opened via a deep link (data-keep-open="1").
+      if (card.dataset.keepOpen === '1') continue;
+      expandedPkgs.delete(id);
+      _collapsePkgCard(id);
+    }
+  }, { rootMargin: '500px 0px' });  // 500px buffer so collapse happens after card is well out of view
+
+  for (const card of document.querySelectorAll('.pkg-card')) {
+    _pkgVisibilityObserver.observe(card);
+  }
 }
 
 function _renderPkgCard(p) {
@@ -5918,6 +6111,7 @@ function filterPkgStatus() {
   pkgStatusFilter = document.getElementById('pkg-status-filter')?.value || '';
   pkgQaFilter = document.getElementById('pkg-qa-filter')?.value || '';
   pkgSourceFilter = document.getElementById('pkg-source-filter')?.value || '';
+  pkgPage = 1;
   _renderPkgFromCache();
 }
 
