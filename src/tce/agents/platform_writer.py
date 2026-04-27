@@ -32,13 +32,63 @@ def _build_template_block(context: dict) -> str:
     return "\n".join(lines)
 
 
+_ANGLE_GUIDANCE = {
+    "new_features": {
+        "label": "New features (recently shipped capabilities)",
+        "lead_with": "features",
+        "instruction": (
+            "Lead the post with what was just shipped. The hook should name a "
+            "specific feature; the body should walk through what it does and why "
+            "it matters. Bug fixes are background context only - do not anchor "
+            "the post on them. The repo's architecture is irrelevant unless it "
+            "explains why the new feature was hard to build."
+        ),
+    },
+    "whole_repo": {
+        "label": "Whole repo (overview - what it does, who it's for)",
+        "lead_with": "summary",
+        "instruction": (
+            "This is a tour of the repo, not a changelog. Lead with what the "
+            "project IS and who it's for - use the Summary and Architecture "
+            "lines. Features and fixes are evidence the project is alive and "
+            "useful, not the headline. Do NOT structure the post as 'here's a "
+            "new feature' or 'here's a recent fix'. Frame: 'this is a thing "
+            "that exists, here's the shape of it, here's why it matters'."
+        ),
+    },
+    "recent_fixes": {
+        "label": "Recent fixes (bugs solved, edge cases, debugging stories)",
+        "lead_with": "fixes",
+        "instruction": (
+            "Lead with a specific bug or edge case from the Recent bug fixes "
+            "list. The hook should name the problem (what broke, what surprised "
+            "the team, what the symptom was). The body is the debugging story: "
+            "the wrong hypothesis, the actual root cause, the fix. Feature "
+            "highlights are noise here - mention them only if they directly "
+            "caused the bug. The lesson is the payload."
+        ),
+    },
+    "generic": {
+        "label": "Generic (no specific angle)",
+        "lead_with": "summary",
+        "instruction": (
+            "Pick the single most interesting thing in the brief - feature, "
+            "fix, or architectural choice - and build the post around it. "
+            "Don't try to cover all three."
+        ),
+    },
+}
+
+
 def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
     """Build a REPO CONTEXT block for repo-sourced runs.
 
     Returns (block_text, repo_url). Empty string + None if not a repo run.
     The block forces the writer to ground the post in concrete repo specifics
     (slug, summary, top features w/ commit shas, top snippets) and to close
-    with the repo URL.
+    with the repo URL. The user-selected angle (new_features / whole_repo /
+    recent_fixes) reorders the evidence sections and adds explicit framing
+    instructions so the post matches what the operator picked in the form.
     """
     if context.get("_source") != "repo":
         return "", None
@@ -51,6 +101,7 @@ def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
     summary = (repo_brief.get("summary") or "").strip()
     arch = (repo_brief.get("architecture_notes") or "").strip()
     angle = repo_brief.get("angle") or context.get("angle") or "generic"
+    angle_cfg = _ANGLE_GUIDANCE.get(angle, _ANGLE_GUIDANCE["generic"])
 
     features = repo_brief.get("feature_highlights") or []
     fixes = repo_brief.get("bug_fixes") or []
@@ -61,28 +112,49 @@ def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
         "REPO CONTEXT (this post is about a real GitHub repo - ground every claim here):",
         f"Repo: {slug or repo_url}",
         f"URL: {repo_url}",
-        f"Angle: {angle}",
+        f"Angle: {angle_cfg['label']}",
+        f"Angle instruction: {angle_cfg['instruction']}",
     ]
     if summary:
         lines.append(f"Summary: {summary}")
     if arch:
         lines.append(f"Architecture: {arch}")
 
-    if features:
-        lines.append("\nTop feature highlights (cite at least one with its commit sha):")
+    def _features_section() -> list[str]:
+        if not features:
+            return []
+        out = ["\nTop feature highlights (cite at least one with its commit sha):"]
         for f in features[:4]:
             sha = f.get("commit_sha") or ""
             title = f.get("title") or ""
             why = f.get("why_interesting") or ""
-            lines.append(f"  - {title} [{sha}] - {why}".rstrip(" -"))
+            out.append(f"  - {title} [{sha}] - {why}".rstrip(" -"))
+        return out
 
-    if fixes:
-        lines.append("\nRecent bug fixes:")
-        for f in fixes[:3]:
+    def _fixes_section() -> list[str]:
+        if not fixes:
+            return []
+        out = ["\nRecent bug fixes (cite at least one with its commit sha):"]
+        for f in fixes[:4]:
             sha = f.get("commit_sha") or ""
             title = f.get("title") or ""
             what = f.get("what_broke") or ""
-            lines.append(f"  - {title} [{sha}] - {what}".rstrip(" -"))
+            out.append(f"  - {title} [{sha}] - {what}".rstrip(" -"))
+        return out
+
+    # Reorder evidence sections so the angle's primary material reads first.
+    if angle_cfg["lead_with"] == "fixes":
+        lines.extend(_fixes_section())
+        lines.extend(_features_section())
+    elif angle_cfg["lead_with"] == "summary":
+        # Whole-repo: summary already leads at the top; features & fixes
+        # are both background evidence. Show features first (they show
+        # vitality) but don't elevate either over the architectural framing.
+        lines.extend(_features_section())
+        lines.extend(_fixes_section())
+    else:
+        lines.extend(_features_section())
+        lines.extend(_fixes_section())
 
     if snippets:
         lines.append("\nReal code snippets (reference at least one if relevant):")
@@ -103,8 +175,15 @@ def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
 
     lines.append("")
     lines.append("HARD RULES FOR THIS POST:")
-    lines.append("- The post must be recognizably about THIS repo - mention the slug or a specific feature in the first 3 lines.")
-    lines.append("- Reference at least one concrete feature, fix, or snippet by name. Generic AI/coaching commentary is NOT acceptable.")
+    lines.append("- The post must be recognizably about THIS repo - mention the slug or a specific feature/fix in the first 3 lines.")
+    if angle == "new_features":
+        lines.append("- The hook MUST name a specific feature from the 'feature highlights' list. Do not lead with a bug fix or an architectural overview.")
+    elif angle == "recent_fixes":
+        lines.append("- The hook MUST name a specific bug or symptom from the 'bug fixes' list. Do not lead with a feature announcement.")
+    elif angle == "whole_repo":
+        lines.append("- The hook MUST frame what the project IS and who it's for. Do not lead with a single feature or fix - that's a different angle.")
+    lines.append("- Reference at least one concrete commit sha by [shortsha] inline, not in a separate footer.")
+    lines.append("- Generic AI/coaching commentary is NOT acceptable.")
     if platform == "facebook":
         lines.append(f"- The CTA at the very end MUST be the repo URL on its own line: {repo_url}")
         lines.append("- Do NOT use the 'comment KEYWORD' pattern for this post - the CTA is the repo link.")
