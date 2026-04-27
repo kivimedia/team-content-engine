@@ -1690,6 +1690,93 @@ async function generateFromApprovedPlan(plan) {
 
 function escHtml(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+// Image lightbox: click an image to view it at full natural size.
+// - Esc or click backdrop closes
+// - Click the image itself toggles between fit-to-window and 1:1 (true zoom)
+// - Mouse wheel zooms in/out around the cursor
+let _lightboxState = null;
+
+function openImageLightbox(imageUrl, caption) {
+  closeImageLightbox();
+  const overlay = document.createElement('div');
+  overlay.id = 'img-lightbox';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:zoom-out;backdrop-filter:blur(4px)';
+  overlay.onclick = (e) => { if (e.target === overlay) closeImageLightbox(); };
+
+  // Top bar: caption + close button
+  const topBar = document.createElement('div');
+  topBar.style.cssText = 'position:absolute;top:0;left:0;right:0;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(180deg,rgba(0,0,0,0.7),transparent);color:#fff;pointer-events:none';
+  const captionEl = document.createElement('div');
+  captionEl.style.cssText = 'font-size:14px;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,0.8);max-width:70vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  captionEl.textContent = caption || '';
+  const closeBtn = document.createElement('button');
+  closeBtn.style.cssText = 'background:rgba(0,0,0,0.6);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;pointer-events:auto';
+  closeBtn.textContent = '× Close (Esc)';
+  closeBtn.onclick = closeImageLightbox;
+  topBar.appendChild(captionEl);
+  topBar.appendChild(closeBtn);
+  overlay.appendChild(topBar);
+
+  // Image
+  const img = document.createElement('img');
+  img.src = imageUrl;
+  img.style.cssText = 'max-width:92vw;max-height:88vh;display:block;cursor:zoom-in;transition:transform 0.15s ease;transform-origin:center center;user-select:none';
+  img.draggable = false;
+  overlay.appendChild(img);
+
+  // Hint bar
+  const hint = document.createElement('div');
+  hint.style.cssText = 'position:absolute;bottom:14px;left:0;right:0;text-align:center;color:rgba(255,255,255,0.6);font-size:12px;pointer-events:none';
+  hint.textContent = 'Click image to toggle 1:1 zoom · scroll to zoom · Esc or click backdrop to close';
+  overlay.appendChild(hint);
+
+  document.body.appendChild(overlay);
+
+  _lightboxState = { overlay, img, scale: 1, mode: 'fit', tx: 0, ty: 0 };
+
+  // Toggle between fit-to-window and 1:1 native pixels
+  img.onclick = (e) => {
+    e.stopPropagation();
+    const st = _lightboxState;
+    if (!st) return;
+    if (st.mode === 'fit') {
+      st.mode = 'native';
+      img.style.maxWidth = 'none';
+      img.style.maxHeight = 'none';
+      img.style.cursor = 'zoom-out';
+    } else {
+      st.mode = 'fit';
+      img.style.maxWidth = '92vw';
+      img.style.maxHeight = '88vh';
+      img.style.cursor = 'zoom-in';
+      st.scale = 1; st.tx = 0; st.ty = 0;
+      img.style.transform = '';
+    }
+  };
+
+  // Wheel zoom (in native mode only - in fit mode the image is already
+  // sized to the viewport so wheel is more confusing than helpful)
+  overlay.addEventListener('wheel', (e) => {
+    const st = _lightboxState;
+    if (!st || st.mode !== 'native') return;
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 1.15 : 0.87;
+    st.scale = Math.min(8, Math.max(0.2, st.scale * delta));
+    st.img.style.transform = 'scale(' + st.scale + ')';
+  }, { passive: false });
+}
+
+function closeImageLightbox() {
+  if (_lightboxState && _lightboxState.overlay) {
+    _lightboxState.overlay.remove();
+  }
+  _lightboxState = null;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && _lightboxState) closeImageLightbox();
+});
+
 // Map proof_checker status -> human-readable label, color, icon, tooltip.
 // Used wherever we display the fact-check state on a package.
 function _proofStatusDisplay(status) {
@@ -5328,10 +5415,13 @@ function _renderPkgCard(p) {
           if (ip.image_url) {
             const imgName = (ip.prompt_name || ip.visual_job || 'image').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
             html += '<div style="margin-bottom:6px;border-radius:8px;overflow:hidden;border:1px solid var(--border);position:relative">';
-            html += '<img src="' + esc(ip.image_url) + '" style="width:100%;display:block" loading="lazy">';
+            // Click image to open the lightbox at full size. Caption falls
+            // back to visual_job/prompt_name so the lightbox header is useful.
+            const captionText = (ip.prompt_name || ip.visual_job || 'image');
+            html += '<img src="' + esc(ip.image_url) + '" style="width:100%;display:block;cursor:zoom-in" loading="lazy" onclick="openImageLightbox(\'' + esc(ip.image_url).replace(/'/g, "\\'") + '\',\'' + esc(captionText).replace(/'/g, "\\'") + '\')">';
             html += '<div style="position:absolute;top:8px;right:8px;display:flex;gap:6px">';
-            html += '<a href="' + esc(ip.image_url) + '" download="' + imgName + '.jpg" style="background:rgba(0,0,0,0.75);color:#fff;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" target="_blank">Download</a>';
-            html += '<button onclick="navigator.clipboard.writeText(\'' + esc(ip.image_url).replace(/'/g, "\\'") + '\');toast(\'Image URL copied\')" style="background:rgba(0,0,0,0.75);color:#fff;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;border:none;cursor:pointer">Copy URL</button>';
+            html += '<a href="' + esc(ip.image_url) + '" download="' + imgName + '.jpg" style="background:rgba(0,0,0,0.75);color:#fff;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" target="_blank" onclick="event.stopPropagation()">Download</a>';
+            html += '<button onclick="event.stopPropagation();navigator.clipboard.writeText(\'' + esc(ip.image_url).replace(/'/g, "\\'") + '\');toast(\'Image URL copied\')" style="background:rgba(0,0,0,0.75);color:#fff;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;border:none;cursor:pointer">Copy URL</button>';
             html += '</div>';
             html += '</div>';
             // Model attribution line: which provider + model actually rendered this.
