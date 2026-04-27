@@ -63,6 +63,9 @@ class PostPackage(Base):
         ForeignKey("tracked_repos.id", ondelete="SET NULL"), nullable=True
     )
     source_repo_angle: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # The actual GitHub URL the post is grounded in. Saved even when no
+    # TrackedRepo row exists so the Library card can still render "View Repo".
+    repo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Relationships
     image_assets: Mapped[list["ImageAsset"]] = relationship(  # noqa: F821

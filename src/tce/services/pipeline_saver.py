@@ -336,12 +336,27 @@ class PipelineResultSaver:
             quality_meta["copy_analysis"] = copy_analysis
 
         # Source-specific links for Library titles + back-references.
-        source_repo_id = context.get("_source_repo_id") or context.get("tracked_repo_id")
+        # Fall back to the tracked_repo_id repo_scout stamped inside repo_brief
+        # so URL-only Start-from-Repo runs still link back to the TrackedRepo.
+        repo_brief = context.get("repo_brief") or {}
+        source_repo_id = (
+            context.get("_source_repo_id")
+            or context.get("tracked_repo_id")
+            or repo_brief.get("tracked_repo_id")
+        )
         if isinstance(source_repo_id, str):
             try:
                 source_repo_id = uuid.UUID(source_repo_id)
             except (ValueError, TypeError):
                 source_repo_id = None
+
+        # Persist the GitHub URL itself so the Library card can render
+        # "View Repo" even when source_repo_id is null.
+        repo_url = repo_brief.get("repo_url") or context.get("repo_url")
+        if isinstance(repo_url, str):
+            repo_url = repo_url.strip() or None
+        else:
+            repo_url = None
 
         record = PostPackage(
             brief_id=brief_id,
@@ -360,6 +375,7 @@ class PipelineResultSaver:
             source=context.get('_source', 'pipeline'),
             source_repo_id=source_repo_id,
             source_repo_angle=context.get("_source_angle"),
+            repo_url=repo_url,
             proof_trail=context.get("proof_trail"),
             proof_status=context.get("proof_status"),
         )

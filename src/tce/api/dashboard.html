@@ -4027,6 +4027,9 @@ async function _renderStartLibrary(container) {
       html += '<div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + shortTopic + '</div>';
       html += '<div style="font-size:11px;color:var(--dim);margin-top:3px">' + srcLabel(p.source) + ' &middot; ' + date + (qa ? ' &middot; QA <span style="color:' + qaColor(p.qa_band) + '">' + qa + '</span>' : '') + '</div>';
       html += '</div>';
+      if (p.source === 'repo' && p.repo_url) {
+        html += '<a href="' + p.repo_url + '" target="_blank" rel="noopener" class="btn btn-dim" style="font-size:11px;padding:4px 10px;white-space:nowrap;text-decoration:none" onclick="event.stopPropagation()">View Repo &#8599;</a>';
+      }
       html += '<button class="btn btn-dim" style="font-size:11px;padding:4px 10px;white-space:nowrap" onclick="event.stopPropagation();viewPackage(\'' + p.id + '\',null)">View Package</button>';
       html += '</div>';
     }

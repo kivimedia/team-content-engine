@@ -32,6 +32,89 @@ def _build_template_block(context: dict) -> str:
     return "\n".join(lines)
 
 
+def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
+    """Build a REPO CONTEXT block for repo-sourced runs.
+
+    Returns (block_text, repo_url). Empty string + None if not a repo run.
+    The block forces the writer to ground the post in concrete repo specifics
+    (slug, summary, top features w/ commit shas, top snippets) and to close
+    with the repo URL.
+    """
+    if context.get("_source") != "repo":
+        return "", None
+    repo_brief = context.get("repo_brief") or {}
+    repo_url = repo_brief.get("repo_url") or context.get("repo_url")
+    if not repo_url:
+        return "", None
+
+    slug = repo_brief.get("slug") or ""
+    summary = (repo_brief.get("summary") or "").strip()
+    arch = (repo_brief.get("architecture_notes") or "").strip()
+    angle = repo_brief.get("angle") or context.get("angle") or "generic"
+
+    features = repo_brief.get("feature_highlights") or []
+    fixes = repo_brief.get("bug_fixes") or []
+    snippets = repo_brief.get("code_snippets") or []
+    citations = context.get("repo_citations") or []
+
+    lines = [
+        "REPO CONTEXT (this post is about a real GitHub repo - ground every claim here):",
+        f"Repo: {slug or repo_url}",
+        f"URL: {repo_url}",
+        f"Angle: {angle}",
+    ]
+    if summary:
+        lines.append(f"Summary: {summary}")
+    if arch:
+        lines.append(f"Architecture: {arch}")
+
+    if features:
+        lines.append("\nTop feature highlights (cite at least one with its commit sha):")
+        for f in features[:4]:
+            sha = f.get("commit_sha") or ""
+            title = f.get("title") or ""
+            why = f.get("why_interesting") or ""
+            lines.append(f"  - {title} [{sha}] - {why}".rstrip(" -"))
+
+    if fixes:
+        lines.append("\nRecent bug fixes:")
+        for f in fixes[:3]:
+            sha = f.get("commit_sha") or ""
+            title = f.get("title") or ""
+            what = f.get("what_broke") or ""
+            lines.append(f"  - {title} [{sha}] - {what}".rstrip(" -"))
+
+    if snippets:
+        lines.append("\nReal code snippets (reference at least one if relevant):")
+        for s in snippets[:2]:
+            path = s.get("path") or s.get("file") or ""
+            subj = s.get("commit_subject") or ""
+            preview = (s.get("snippet") or s.get("preview") or "")[:240]
+            if preview:
+                lines.append(f"  - {path} ({subj}):\n    {preview}")
+
+    if citations:
+        lines.append("\nStoryteller-chosen citations:")
+        for c in citations[:3]:
+            label = c.get("label") or ""
+            sha = c.get("commit_sha") or ""
+            why = c.get("why_cite") or ""
+            lines.append(f"  - {label} [{sha}] - {why}".rstrip(" -"))
+
+    lines.append("")
+    lines.append("HARD RULES FOR THIS POST:")
+    lines.append("- The post must be recognizably about THIS repo - mention the slug or a specific feature in the first 3 lines.")
+    lines.append("- Reference at least one concrete feature, fix, or snippet by name. Generic AI/coaching commentary is NOT acceptable.")
+    if platform == "facebook":
+        lines.append(f"- The CTA at the very end MUST be the repo URL on its own line: {repo_url}")
+        lines.append("- Do NOT use the 'comment KEYWORD' pattern for this post - the CTA is the repo link.")
+    else:
+        lines.append(f"- Close the post with the repo URL on its own line: {repo_url}")
+        lines.append("- Soft CTA only: invite readers to check out the code, star the repo, or read the README.")
+
+    return "\n".join(lines), repo_url
+
+
 def _clean_writer_output(result: dict) -> dict:
     """Clean all text fields in writer output of emdashes/en dashes."""
     for key in ("facebook_post", "linkedin_post", "rationale"):
@@ -203,12 +286,20 @@ class FacebookWriter(AgentBase):
         thesis = story_brief.get("thesis", "N/A")[:60]
         self._report(f"Writing FB post - thesis: {thesis}")
 
+        repo_block, repo_url = _build_repo_block(context, platform="facebook")
+
         prompt_parts = [
             f"STORY BRIEF:\n{json.dumps(story_brief, indent=2)}",
             f"RESEARCH BRIEF:\n{json.dumps(research_brief, indent=2)}",
-            f'Weekly CTA keyword: "{weekly_keyword}"',
-            f'CTA line must end with: Comment "{weekly_keyword}" and I\'ll send it to you.',
         ]
+        if repo_block:
+            # Repo runs replace the comment-keyword CTA with a direct link.
+            prompt_parts.append(repo_block)
+        else:
+            prompt_parts.append(f'Weekly CTA keyword: "{weekly_keyword}"')
+            prompt_parts.append(
+                f'CTA line must end with: Comment "{weekly_keyword}" and I\'ll send it to you.'
+            )
 
         template_block = _build_template_block(context)
         if template_block:
@@ -220,6 +311,9 @@ class FacebookWriter(AgentBase):
         inspiration_block = _build_inspiration_block(context)
         if inspiration_block:
             prompt_parts.append(inspiration_block)
+
+        if repo_url:
+            self._report(f"Repo-sourced post - grounding in {repo_url}")
 
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
@@ -266,10 +360,14 @@ class LinkedInWriter(AgentBase):
         thesis = story_brief.get("thesis", "N/A")[:60]
         self._report(f"Writing LI post - thesis: {thesis}")
 
+        repo_block, repo_url = _build_repo_block(context, platform="linkedin")
+
         prompt_parts = [
             f"STORY BRIEF:\n{json.dumps(story_brief, indent=2)}",
             f"RESEARCH BRIEF:\n{json.dumps(research_brief, indent=2)}",
         ]
+        if repo_block:
+            prompt_parts.append(repo_block)
 
         template_block = _build_template_block(context)
         if template_block:
@@ -281,6 +379,9 @@ class LinkedInWriter(AgentBase):
         inspiration_block = _build_inspiration_block(context)
         if inspiration_block:
             prompt_parts.append(inspiration_block)
+
+        if repo_url:
+            self._report(f"Repo-sourced post - grounding in {repo_url}")
 
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],

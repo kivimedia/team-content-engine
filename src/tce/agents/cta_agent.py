@@ -66,6 +66,30 @@ class CTAAgent(AgentBase):
         weekly_keyword = context.get("weekly_keyword")  # May be pre-set
         guide_title = str(context.get("guide_title", "") or "")
 
+        # Repo-sourced runs: skip the comment-keyword pattern entirely. The
+        # CTA IS the link to the repo. No DM flow, no fulfillment checklist.
+        repo_brief = context.get("repo_brief") or {}
+        repo_url = repo_brief.get("repo_url") or context.get("repo_url")
+        if context.get("_source") == "repo" and repo_url:
+            slug = repo_brief.get("slug") or ""
+            display = slug or repo_url
+            cta_package = {
+                "weekly_keyword": None,
+                "secondary_keyword": None,
+                "fb_cta_line": f"Code's open: {repo_url}",
+                "li_cta_line": f"Repo (open source): {repo_url}",
+                "dm_flow": None,
+                "whatsapp_group_link": None,
+                "fulfillment_checklist": [],
+                "cta_type": "repo_link",
+                "repo_url": repo_url,
+            }
+            self._report("Repo-sourced run - emitting repo-link CTA (no keyword/DM flow):")
+            self._report(f"  Repo: {display}")
+            self._report(f"  FB CTA: {cta_package['fb_cta_line']}")
+            self._report(f"  LI CTA: {cta_package['li_cta_line']}")
+            return {"cta_package": cta_package}
+
         prompt_parts = []
 
         # PRD Section 18.3: Detect no-asset situation
