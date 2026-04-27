@@ -43,6 +43,12 @@ class PostPackageRead(BaseModel):
     proof_trail: list[dict] | dict | None = None
     proof_status: str | None = None
     source: str | None = None
+    source_repo_id: uuid.UUID | None = None
+    source_repo_angle: str | None = None
+    # Computed at list time: human-readable title derived from the source.
+    # For repo: the repo name (display_name or slug tail). For topic: the
+    # StoryBrief topic. For copy: a snippet of the post body. Else None.
+    title: str | None = None
     created_at: datetime
     updated_at: datetime
 

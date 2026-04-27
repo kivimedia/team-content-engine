@@ -10,11 +10,40 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import get_db
 from tce.models.post_package import PostPackage
+from tce.models.story_brief import StoryBrief
+from tce.models.tracked_repo import TrackedRepo
 from tce.models.weekly_guide import WeeklyGuide
 from tce.schemas.post_package import PostPackageRead, PostPackageUpdate
 from tce.schemas.weekly_guide import WeeklyGuideCreate, WeeklyGuideRead
 
 router = APIRouter(prefix="/content", tags=["content"])
+
+
+def _repo_name_from(repo: TrackedRepo) -> str | None:
+    """Repo name for Library card titles. Prefers display_name, falls back to
+    the last segment of the slug or repo URL (strip .git, trailing slashes)."""
+    if repo.display_name:
+        return repo.display_name
+    raw = (repo.slug or repo.repo_url or "").rstrip("/")
+    if raw.endswith(".git"):
+        raw = raw[:-4]
+    tail = raw.rsplit("/", 1)[-1]
+    return tail or raw or None
+
+
+def _attach_titles(packages: list[PostPackage], repos: dict, briefs: dict) -> None:
+    """Set a computed `title` attribute on each package based on its source."""
+    for p in packages:
+        title: str | None = None
+        if p.source == "repo" and p.source_repo_id and p.source_repo_id in repos:
+            title = _repo_name_from(repos[p.source_repo_id])
+        elif p.source == "topic" and p.brief_id and p.brief_id in briefs:
+            title = briefs[p.brief_id].topic
+        elif p.source == "copy":
+            text = (p.facebook_post or p.linkedin_post or "").strip()
+            if text:
+                title = (text[:80] + "...") if len(text) > 80 else text
+        p.title = title  # picked up by Pydantic from_attributes
 
 
 # Post packages
@@ -36,7 +65,21 @@ async def list_packages(
     if not include_archived:
         query = query.where(PostPackage.is_archived.is_(False))
     result = await db.execute(query)
-    return list(result.scalars().all())
+    packages = list(result.scalars().all())
+
+    # Bulk-fetch source records once, then compute Library card titles in Python.
+    repo_ids = {p.source_repo_id for p in packages if p.source == "repo" and p.source_repo_id}
+    brief_ids = {p.brief_id for p in packages if p.source == "topic" and p.brief_id}
+    repos: dict = {}
+    if repo_ids:
+        rs = await db.execute(select(TrackedRepo).where(TrackedRepo.id.in_(repo_ids)))
+        repos = {r.id: r for r in rs.scalars()}
+    briefs: dict = {}
+    if brief_ids:
+        bs = await db.execute(select(StoryBrief).where(StoryBrief.id.in_(brief_ids)))
+        briefs = {b.id: b for b in bs.scalars()}
+    _attach_titles(packages, repos, briefs)
+    return packages
 
 
 @router.get("/packages/{package_id}", response_model=PostPackageRead)
