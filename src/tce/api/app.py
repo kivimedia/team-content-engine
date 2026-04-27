@@ -202,6 +202,13 @@ def create_app() -> FastAPI:
     media_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/media", StaticFiles(directory=str(media_dir)), name="media")
 
+    # Serve OpenAI-generated image files written to local disk when S3 isn't
+    # configured. Mount at /api/v1/images so URLs stamped on packages are
+    # API-prefixed and stable.
+    image_dir = Path(settings.image_storage_dir)
+    image_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/api/v1/images", StaticFiles(directory=str(image_dir)), name="generated-images")
+
     return app
 
 

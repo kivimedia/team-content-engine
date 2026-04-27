@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     # photoreal/cinematic prompts the creative_director flags as fal_ai.
     default_image_model: str = "gpt-image-2"
 
+    # Local disk fallback when S3 isn't configured. OpenAI returns b64 by
+    # default; we write it here and serve via /api/v1/images/<file> so the
+    # database stays clean and the dashboard doesn't ship megabytes of
+    # base64 inline.
+    image_storage_dir: str = str(_TMPDIR / "tce-images")
+    image_public_base: str = ""  # If set (e.g. "https://tce.example.com"), prefixed; otherwise relative URL.
+
     # Logging
     log_level: str = "INFO"
 

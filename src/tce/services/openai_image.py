@@ -121,10 +121,12 @@ class OpenAIImageService:
         image_url = data.get("url")
         b64 = data.get("b64_json")
 
-        # Persist to S3 if configured. For b64, decode + upload; for URL, fetch + re-upload.
-        # Falls back to a data URL when no storage is configured so the
-        # dashboard can still display the image.
+        # Persist to S3 if configured; otherwise write to local disk and
+        # serve via /api/v1/images/<file>. Falling back to a 2-3 MB data:
+        # URL was overflowing the DB column AND making the dashboard render
+        # tens of megabytes of base64 inline.
         s3_path = None
+        local_url = None
         try:
             from tce.services.storage import StorageService
 
@@ -145,9 +147,23 @@ class OpenAIImageService:
         except Exception:
             logger.exception("openai_image.s3_upload_failed")
 
-        final_url = s3_path or image_url
-        if not final_url and b64:
-            final_url = f"data:image/png;base64,{b64}"
+        if not s3_path and b64:
+            try:
+                import os
+                from pathlib import Path as _P
+
+                store_dir = _P(settings.image_storage_dir)
+                store_dir.mkdir(parents=True, exist_ok=True)
+                fname = f"{uuid.uuid4().hex}.png"
+                fpath = store_dir / fname
+                fpath.write_bytes(base64.b64decode(b64))
+                base = (settings.image_public_base or "").rstrip("/")
+                local_url = f"{base}/api/v1/images/{fname}" if base else f"/api/v1/images/{fname}"
+                logger.info("openai_image.local_persisted", path=str(fpath), model=model)
+            except Exception:
+                logger.exception("openai_image.local_save_failed")
+
+        final_url = s3_path or local_url or image_url
 
         return {
             "status": "generated",

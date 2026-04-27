@@ -20,7 +20,10 @@ class ImageAsset(Base):
     # Generation
     fal_model_used: Mapped[str | None] = mapped_column(String(200), nullable=True)
     fal_request_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    image_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    # Text, not String(2000): OpenAI's b64 data: URL fallback can be megabytes.
+    # We also serve from local disk via /api/v1/images/<file>, but the column
+    # must accommodate the worst case so the insert never blows up.
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_s3_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     # Specs
