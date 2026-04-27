@@ -277,11 +277,37 @@ class RepoService:
         ]
         return files[:limit]
 
+    # File extensions we know are binary and must never be read as snippets.
+    # Postgres JSONB rejects U+0000 null bytes, and even when stripped these
+    # blobs aren't useful as code excerpts.
+    _BINARY_EXTS = (
+        # images
+        ".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".ico", ".tiff",
+        ".tif", ".heic", ".avif", ".svg",
+        # video
+        ".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v",
+        # audio
+        ".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac",
+        # archives + binaries
+        ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".dmg", ".iso",
+        ".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a",
+        # fonts
+        ".woff", ".woff2", ".ttf", ".otf", ".eot",
+        # documents
+        ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+        # other
+        ".pyc", ".class", ".jar",
+    )
+
     async def snippet_for_commit(
         self, path: Path, sha: str, max_lines: int = 40
     ) -> dict[str, Any] | None:
         """Grab the first interesting file touched by `sha` and return a short excerpt."""
         files = await self.files_changed(path, sha, limit=5)
+        # Skip known-binary files outright - they can't be useful snippets and
+        # break the JSONB insert with U+0000 null bytes.
+        files = [f for f in files if not f.lower().endswith(self._BINARY_EXTS)]
+
         # Prefer source files over lockfiles/docs
         def _score(f: str) -> int:
             lower = f.lower()
@@ -300,6 +326,10 @@ class RepoService:
                 content = file_path.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 continue
+            # Defense in depth: a file with no binary extension (e.g. a stray
+            # .data or .out) can still contain null bytes. Strip them before
+            # the JSONB insert sees them.
+            content = content.replace("\x00", "")
             lines = content.splitlines()[:max_lines]
             return {
                 "file": fn,

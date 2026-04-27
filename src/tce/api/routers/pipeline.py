@@ -2582,29 +2582,45 @@ async def start_from_repo(
                 result = await orchestrator.run(context)
 
             # Bookkeeping
+            step_status_map = result.get("step_status", {})
+            has_failures = any(v == "failed" for v in step_status_map.values())
+            step_errors_map = result.get("step_errors", {}) or {}
+
             async with async_session() as bk_db:
                 rr = await bk_db.get(PipelineRun, record_id)
                 if rr:
-                    has_failures = any(
-                        v == "failed" for v in result.get("step_status", {}).values()
-                    )
                     rr.status = "failed" if has_failures else "completed"
                     rr.completed_at = datetime.utcnow()
-                    rr.step_results = result.get("step_status", {})
-                    rr.step_errors = result.get("step_errors", {})
+                    rr.step_results = step_status_map
+                    rr.step_errors = step_errors_map
                     if has_failures:
-                        errors = result.get("step_errors", {})
                         rr.error_message = "; ".join(
-                            f"{k}: {v}" for k, v in errors.items()
+                            f"{k}: {v}" for k, v in step_errors_map.items()
                         )
                     await bk_db.commit()
 
             _active_runs.pop(str(pipeline_run_id), None)
 
-            status["phase"] = "completed"
-            status["phase_detail"] = "Repo package ready."
-            status["status"] = "completed"
-            status["step_status"] = result.get("step_status", {})
+            if has_failures:
+                # Don't lie to the operator: a failed step means no package
+                # was saved. Surface the first error so the UI can show why.
+                first_failed = next(
+                    (k for k, v in step_status_map.items() if v == "failed"),
+                    "pipeline",
+                )
+                first_err = step_errors_map.get(first_failed) or "step failed"
+                status["phase"] = "failed"
+                status["phase_detail"] = (
+                    f"Pipeline failed at {first_failed}. "
+                    f"No package was saved."
+                )
+                status["status"] = "failed"
+                status["error"] = f"{first_failed}: {first_err}"[:1000]
+            else:
+                status["phase"] = "completed"
+                status["phase_detail"] = "Repo package ready."
+                status["status"] = "completed"
+            status["step_status"] = step_status_map
             await _save()
 
         except Exception as e:
