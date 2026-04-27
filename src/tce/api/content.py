@@ -31,23 +31,24 @@ def _repo_name_from(repo: TrackedRepo) -> str | None:
     return tail or raw or None
 
 
-def _attach_titles(packages: list[PostPackage], repos: dict, briefs: dict) -> None:
-    """Set a computed `title` attribute on each package based on its source."""
-    for p in packages:
-        title: str | None = None
-        if p.source == "repo" and p.source_repo_id and p.source_repo_id in repos:
-            title = _repo_name_from(repos[p.source_repo_id])
-        elif p.source == "topic" and p.brief_id and p.brief_id in briefs:
-            title = briefs[p.brief_id].topic
-        # Final fallback for any source without a strong title source: use the
-        # first line of the FB or LI post. Catches orphan repo packages from
-        # before source_repo_id was populated, plus the generic "copy" source.
-        if not title and (p.source in ("repo", "copy") or p.source is None):
-            text = (p.facebook_post or p.linkedin_post or "").strip()
-            first_line = text.split("\n", 1)[0].strip() if text else ""
-            if first_line:
-                title = (first_line[:80] + "...") if len(first_line) > 80 else first_line
-        p.title = title  # picked up by Pydantic from_attributes
+def _compute_title(p: PostPackage, repos: dict, briefs: dict) -> str | None:
+    """Derive a Library card title from a package's source records.
+
+    Returned as a value rather than assigned to the ORM instance because
+    SQLAlchemy's instrumentation doesn't surface ad-hoc attributes to
+    Pydantic's `from_attributes` reliably.
+    """
+    if p.source == "repo" and p.source_repo_id and p.source_repo_id in repos:
+        return _repo_name_from(repos[p.source_repo_id])
+    if p.source == "topic" and p.brief_id and p.brief_id in briefs:
+        return briefs[p.brief_id].topic
+    # Final fallback for repo (orphans without source_repo_id) and copy sources.
+    if p.source in ("repo", "copy") or p.source is None:
+        text = (p.facebook_post or p.linkedin_post or "").strip()
+        first_line = text.split("\n", 1)[0].strip() if text else ""
+        if first_line:
+            return (first_line[:80] + "...") if len(first_line) > 80 else first_line
+    return None
 
 
 # Post packages
@@ -57,7 +58,7 @@ async def list_packages(
     include_archived: bool = False,
     pipeline_run_id: str | None = None,
     db: AsyncSession = Depends(get_db),
-) -> list[PostPackage]:
+) -> list[PostPackageRead]:
     query = select(PostPackage).order_by(PostPackage.created_at.desc())
     if pipeline_run_id:
         from sqlalchemy import cast, String
@@ -82,8 +83,15 @@ async def list_packages(
     if brief_ids:
         bs = await db.execute(select(StoryBrief).where(StoryBrief.id.in_(brief_ids)))
         briefs = {b.id: b for b in bs.scalars()}
-    _attach_titles(packages, repos, briefs)
-    return packages
+    # Build response models with the computed title set explicitly. We avoid
+    # setting p.title on the ORM instance because SQLAlchemy doesn't always
+    # surface unmapped attributes to Pydantic's `from_attributes`.
+    items: list[PostPackageRead] = []
+    for p in packages:
+        item = PostPackageRead.model_validate(p)
+        item.title = _compute_title(p, repos, briefs)
+        items.append(item)
+    return items
 
 
 @router.get("/packages/{package_id}", response_model=PostPackageRead)
