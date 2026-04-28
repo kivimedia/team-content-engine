@@ -401,6 +401,13 @@ def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
 
     lines.append("")
     lines.append("HARD RULES FOR THIS POST:")
+    lines.append(
+        "- This is the OPERATOR'S OWN repo. Write in FIRST PERSON as the builder "
+        "('I built X', 'I shipped Y', 'I ran into Z'). NEVER refer to the author "
+        "in third person ('a Windows developer', 'this developer', 'the builder', "
+        "'they shipped'). The post is from the person who wrote the code, not a "
+        "reporter covering it."
+    )
     lines.append("- The post must be recognizably about THIS repo - mention the slug or a specific feature/fix in the first 3 lines.")
     if angle == "new_features":
         lines.append("- The hook MUST name a specific feature from the 'feature highlights' list. Do not lead with a bug fix or an architectural overview.")

@@ -96,6 +96,9 @@ class RepoStoryteller(AgentBase):
             "\nBUSINESS STRATEGY CONTEXT (audience, framing, and visual_job must reflect this):\n"
             "The repo story will become a post targeting coaches/consultants burned by generic agency content.\n"
             "The audience field must name coaches or agency owners, not generic 'builders'.\n"
+            "AUTHORSHIP: This repo belongs to the operator running this pipeline. The thesis, "
+            "headline_options, and platform_notes must be phrased from the builder's first-person "
+            "POV ('I shipped...', 'I built...'), never as a third-party report on someone else's work.\n"
             f"{_strategy[:3500]}"
         ) if _strategy else ""
         if _strategy:
