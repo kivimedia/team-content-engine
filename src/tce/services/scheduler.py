@@ -129,6 +129,17 @@ class Scheduler:
             weekdays=[6],  # Sunday (0=Mon ... 6=Sun)
         )
 
+        # Competitor velocity polls — every 6 hours, every day. ScheduledJob is
+        # single-shot per day, so we register four jobs to get 6h cadence.
+        # Cheap on YouTube quota: ~3 units per creator per poll.
+        for hour in (0, 6, 12, 18):
+            self.jobs[f"competitor_velocity_poll_{hour:02d}"] = ScheduledJob(
+                name=f"competitor_velocity_poll_{hour:02d}",
+                workflow="competitor_velocity_poll",
+                run_time=time(hour, 0),
+                weekdays=[0, 1, 2, 3, 4, 5, 6],
+            )
+
     def start(self) -> None:
         """Start the scheduler background loop."""
         if not self._running:
@@ -176,6 +187,21 @@ class Scheduler:
             result = await backup.create_backup()
             logger.info("scheduler.backup_complete", result=result.get("status"))
             backup.cleanup_old_backups()
+            return
+
+        # Competitor velocity poll — snapshots tracked competitor channels
+        # so trend_scout can sort by per-post acceleration. Runs 4×/day.
+        if job.workflow == "competitor_velocity_poll":
+            try:
+                from tce.db.session import async_session
+                from tce.services.competitor_velocity import CompetitorVelocityService
+
+                async with async_session() as db:
+                    svc = CompetitorVelocityService(db)
+                    summary = await svc.poll_all_creators()
+                    logger.info("scheduler.competitor_velocity_poll", summary=summary)
+            except Exception:
+                logger.exception("scheduler.competitor_velocity_poll_failed")
             return
 
         # GAP-03: LinkedIn comment polling for CTA keyword matching

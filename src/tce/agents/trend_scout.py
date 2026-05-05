@@ -353,6 +353,33 @@ class TrendScout(AgentBase):
         else:
             self._report("YOUTUBE_API_KEY not set; skipping YouTube demand layer")
 
+        # Competitor acceleration — the strongest leading signal we have.
+        # Reads precomputed delta_views_per_hour from the snapshot table; the
+        # 6-hourly scheduler job populates it. Silently skipped if the table
+        # is empty (no snapshots yet) or db is unavailable.
+        accelerating_posts: list[dict[str, Any]] = []
+        if self.db is not None:
+            try:
+                from tce.services.competitor_velocity import CompetitorVelocityService
+                cv = CompetitorVelocityService(self.db)
+                accelerating_posts = await cv.get_accelerating_posts(
+                    hours_back=int(context.get("competitor_lookback_hours", 24)),
+                    top_n=int(context.get("competitor_top_n", 8)),
+                )
+                if accelerating_posts:
+                    self._report(
+                        f"Pulled {len(accelerating_posts)} accelerating competitor posts"
+                    )
+                    for p in accelerating_posts[:5]:
+                        self._report(
+                            f"  {p['creator_name']} [{p['delta_views_per_hour']:.0f}v/h, "
+                            f"+{p['delta_views']:,} in {p['delta_hours']:.1f}h]: "
+                            f"{(p.get('title') or '')[:70]}"
+                        )
+            except Exception:
+                self._report("Competitor velocity read failed; proceeding without it")
+                accelerating_posts = []
+
         from datetime import date as date_cls
 
         today_str = date_cls.today().isoformat()
@@ -410,7 +437,7 @@ class TrendScout(AgentBase):
                 "Skip any result that appears older than 14 days based on its age field. "
                 "Rank by the multiplicative composite formula in your instructions."
             )
-        elif not reddit_signals and not youtube_signals:
+        elif not reddit_signals and not youtube_signals and not accelerating_posts:
             prompt_parts.append(
                 f"No live search results available (no search API configured). "
                 f"Today is {today_str}. Using your knowledge, identify ONLY stories that "
@@ -455,6 +482,27 @@ class TrendScout(AgentBase):
             for fam, mult in sorted(template_multipliers.items(), key=lambda x: -x[1]):
                 tag = "↑↑" if mult >= 1.5 else "↑" if mult > 1.05 else "↓" if mult < 0.95 else "·"
                 prompt_parts.append(f"  {tag} {fam}: {mult}×")
+
+        if accelerating_posts:
+            prompt_parts.append("\n## Competitor Acceleration (last 24h, peer-velocity)\n")
+            prompt_parts.append(
+                "These are tracked peer-creator videos sorted by delta_views_per_hour "
+                "since the previous 6h snapshot. Peer acceleration is the STRONGEST "
+                "leading signal we have — when a competitor's video is gaining 1000+ "
+                "views/hour right now, the topic itself is hot. Treat each as a HIGH "
+                "priority candidate trend: set demand_velocity ≥ 8, hook_strength based "
+                "on the title's template fit, source_type='creator_post', source_url to "
+                "the video URL. The competitor's title is a battle-tested hook — quote "
+                "structural patterns, never the exact wording.\n"
+            )
+            for i, p in enumerate(accelerating_posts, 1):
+                prompt_parts.append(
+                    f"{i}. {p['creator_name']} "
+                    f"[+{p['delta_views']:,} views in {p['delta_hours']:.1f}h, "
+                    f"{p['delta_views_per_hour']:.0f}v/h]\n"
+                    f"   Title: {p.get('title') or '(no title)'}\n"
+                    f"   URL: {p['url']}"
+                )
 
         if youtube_signals:
             prompt_parts.append("\n## YouTube Demand Signals (live)\n")

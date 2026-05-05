@@ -19,6 +19,10 @@ class CreatorProfile(Base):
     voice_axes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     angle_weights: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # Set when this creator should be polled for competitor-velocity tracking.
+    # Null = no polling (most existing creator profiles are corpus-only).
+    youtube_channel_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # Relationships
     post_examples: Mapped[list["PostExample"]] = relationship(  # noqa: F821
         back_populates="creator", cascade="all, delete-orphan"
