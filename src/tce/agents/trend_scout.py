@@ -35,22 +35,37 @@ For each candidate story, provide:
   When estimating from news alone, infer from social cues:
     1-3 = quiet niche update    4-6 = active discussion in pockets
     7-9 = trending hard         10  = explosive front-page energy
-- template_fit: list of template families this story could power
+- hook_strength: 1-10 — does this trend MAP CLEANLY to one of our proven hook templates?
+  Score the strongest matching template family from this list:
+    big_shift_explainer       contrarian_diagnosis       hidden_feature_shortcut
+    tactical_workflow_guide   founder_reflection         case_study_build_story
+    second_order_implication  weekly_roundup             teardown_myth_busting
+    comment_keyword_cta_guide
+  10 = obvious template fit + naturally strong hook (e.g. a clear before/after,
+       a sharp contrarian read, a hidden capability the audience hasn't noticed).
+  5  = topic could work but the angle is muddy or the hook needs a stretch.
+  1-3 = no template gives this trend a strong hook. Trends in this band will be
+       FILTERED OUT downstream — only include them if you genuinely can't find
+       enough higher-scoring candidates.
+- template_fit: list of template families this story could power (must include the
+  family you scored hook_strength against)
 - angle_suggestions: 2-3 possible angles a writer could take
 - source_creator_overlap: boolean - is a known source creator already covering this?
 - evidence_available: how easy it is to find primary sources (easy/moderate/hard)
 
-RANK by composite_score = freshness_factor × relevance_factor × demand_factor × evidence_factor
+RANK by composite_score =
+  freshness_factor × relevance_factor × demand_factor × hook_factor × evidence_factor
 where each factor is normalized to 0.1-1.0:
   freshness_factor = max(0.1, 1 - hours/336)
   relevance_factor = relevance_score / 10
   demand_factor    = demand_velocity / 10
+  hook_factor      = hook_strength / 10
   evidence_factor  = {easy: 1.0, moderate: 0.7, hard: 0.4}
 
 This is MULTIPLICATIVE — a weakness in any single factor severely penalizes the
-topic. A 12h-old story with relevance 5 and demand 3 (composite ~0.144) loses to
-a 60h-old story with relevance 8 and demand 8 (composite ~0.524). Viral topics
-need to be strong on EVERY axis, not just one.
+topic. A 12h-old story with relevance 5, demand 3, hook 4 (composite ~0.058) loses
+to a 60h-old story with relevance 8, demand 8, hook 9 (composite ~0.472). Viral
+topics need to be strong on EVERY axis, not just one.
 
 Output a JSON object with:
 - trends: array of trend objects (minimum 15, aim for 20-25, all from the last 14 days)
@@ -385,36 +400,72 @@ class TrendScout(AgentBase):
         except json.JSONDecodeError:
             brief = {"trends": [], "summary": "Failed to parse trend brief"}
 
-        # Hard recency filter: reject any trend the LLM returned with freshness > 336h (14 days)
+        # Hard filters: reject trends that are stale, unsourced, or hookless.
+        # min_hook_strength is contextual (default 4) so workspaces in starvation
+        # mode can drop the floor temporarily.
         raw_trends = brief.get("trends", [])
+        min_hook_strength = float(context.get("min_hook_strength", 4))
         trends = []
-        rejected = 0
+        rejected_stale = 0
+        rejected_unsourced = 0
+        rejected_hookless = 0
         for t in raw_trends:
             freshness = t.get("freshness")
-            # Reject if freshness is explicitly > 14 days (336 hours)
             if freshness is not None:
                 try:
                     if float(freshness) > 336:
-                        rejected += 1
+                        rejected_stale += 1
                         continue
                 except (ValueError, TypeError):
                     pass
-            # When we have search results, reject trends without real source URLs
             if search_results and not t.get("source_url"):
-                rejected += 1
+                rejected_unsourced += 1
                 continue
+            hook_strength = t.get("hook_strength")
+            if hook_strength is not None:
+                try:
+                    if float(hook_strength) < min_hook_strength:
+                        rejected_hookless += 1
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            # Pre-compute composite_score so downstream agents (story_strategist)
+            # can sort without re-deriving the formula.
+            try:
+                f = max(0.1, 1.0 - float(freshness or 0) / 336.0)
+                r = float(t.get("relevance_score", 5)) / 10.0
+                d = float(t.get("demand_velocity", 5)) / 10.0
+                h = float(t.get("hook_strength", 5)) / 10.0
+                ev_map = {"easy": 1.0, "moderate": 0.7, "hard": 0.4}
+                e = ev_map.get(str(t.get("evidence_available", "moderate")).lower(), 0.7)
+                t["composite_score"] = round(f * r * d * h * e, 4)
+            except (ValueError, TypeError):
+                t["composite_score"] = 0.0
             trends.append(t)
+
+        # Re-sort by composite_score so the LLM's ordering can't override the formula.
+        trends.sort(key=lambda x: x.get("composite_score", 0.0), reverse=True)
         brief["trends"] = trends
+        rejected = rejected_stale + rejected_unsourced + rejected_hookless
         if rejected:
-            self._report(f"Filtered out {rejected} stale/unsourced trends (>14 days or no URL)")
+            self._report(
+                f"Filtered out {rejected} trends "
+                f"(stale:{rejected_stale}, unsourced:{rejected_unsourced}, "
+                f"hookless:{rejected_hookless}, min_hook_strength={min_hook_strength})"
+            )
 
         self._report(f"Found {len(trends)} trending stories:")
         for i, t in enumerate(trends, 1):
             headline = t.get("headline", t.get("topic", "untitled"))
             source = t.get("source_url", t.get("source_type", "no source"))
             relevance = t.get("relevance_score", "?")
+            demand = t.get("demand_velocity", "?")
+            hook = t.get("hook_strength", "?")
+            composite = t.get("composite_score", "?")
             freshness = t.get("freshness", "?")
-            self._report(f"  {i}. [{relevance}/10] {headline}")
+            self._report(
+                f"  {i}. [comp:{composite} rel:{relevance} dem:{demand} hook:{hook}] {headline}"
+            )
             self._report(f"     Source: {source} | Freshness: {freshness}h ago")
             angles = t.get("angle_suggestions", [])
             if angles:
