@@ -189,6 +189,25 @@ class TrendScout(AgentBase):
             except Exception:
                 ws_override = None
 
+        # Pull learning-loop multipliers — what template families have actually
+        # performed in the last N days. Bias hook_strength scoring toward winners.
+        template_multipliers: dict[str, float] = {}
+        if self.db is not None and context.get("apply_learning_multipliers", True):
+            try:
+                from tce.services.learning import LearningService
+                learning = LearningService(self.db)
+                template_multipliers = await learning.get_template_performance_multipliers(
+                    days=int(context.get("learning_window_days", 30))
+                )
+                if template_multipliers:
+                    self._report(
+                        f"Loaded {len(template_multipliers)} template multipliers from "
+                        f"posted-content performance: {template_multipliers}"
+                    )
+            except Exception:
+                # Don't let a learning-loop hiccup take down trend discovery.
+                template_multipliers = {}
+
         if search.api_key and ws_override and isinstance(ws_override, dict):
             source_queries = list(ws_override.get("source_queries") or [])
             topical_queries = list(ws_override.get("topical_queries") or [])
@@ -422,6 +441,21 @@ class TrendScout(AgentBase):
                     f"   Permalink: {r['permalink']}"
                 )
 
+        if template_multipliers:
+            prompt_parts.append("\n## Posted-Content Performance Multipliers (last 30d)\n")
+            prompt_parts.append(
+                "Based on actual engagement on what we've published, the audience has been "
+                "responding at these relative rates per template family (1.0 = average, "
+                ">1.0 = above average, <1.0 = below average). When you score hook_strength, "
+                "favor families that are currently working in market. Use these multipliers "
+                "as a tilt — don't blindly assign hook_strength=10 to a winning family if "
+                "the topic genuinely doesn't fit; just give the benefit of the doubt at the "
+                "margins.\n"
+            )
+            for fam, mult in sorted(template_multipliers.items(), key=lambda x: -x[1]):
+                tag = "↑↑" if mult >= 1.5 else "↑" if mult > 1.05 else "↓" if mult < 0.95 else "·"
+                prompt_parts.append(f"  {tag} {fam}: {mult}×")
+
         if youtube_signals:
             prompt_parts.append("\n## YouTube Demand Signals (live)\n")
             prompt_parts.append(
@@ -492,7 +526,20 @@ class TrendScout(AgentBase):
                 h = float(t.get("hook_strength", 5)) / 10.0
                 ev_map = {"easy": 1.0, "moderate": 0.7, "hard": 0.4}
                 e = ev_map.get(str(t.get("evidence_available", "moderate")).lower(), 0.7)
-                t["composite_score"] = round(f * r * d * h * e, 4)
+                base = f * r * d * h * e
+                # Apply learning multiplier if the matched template family is in
+                # the multipliers dict. Falls back to 1.0 (no tilt) otherwise.
+                template_fit = t.get("template_fit") or []
+                if isinstance(template_fit, str):
+                    template_fit = [template_fit]
+                family_multiplier = 1.0
+                for fam in template_fit:
+                    if fam in template_multipliers:
+                        # If multiple templates fit, pick the strongest multiplier
+                        family_multiplier = max(family_multiplier, template_multipliers[fam])
+                t["composite_score"] = round(base * family_multiplier, 4)
+                if family_multiplier != 1.0:
+                    t["learning_multiplier"] = family_multiplier
             except (ValueError, TypeError):
                 t["composite_score"] = 0.0
             trends.append(t)
