@@ -94,7 +94,7 @@ class TrendScout(AgentBase):
         # build a trend brief directly from the topic description.
         # ---------------------------------------------------------------
         if user_topic:
-            self._report(f"User-provided topic detected, skipping web search")
+            self._report("User-provided topic detected, skipping web search")
             self._report(f"Topic: {user_topic[:200]}")
 
             from datetime import date as date_cls
@@ -164,10 +164,17 @@ class TrendScout(AgentBase):
         # PRD Section 49.4: Multi-source web search for real trending stories
         from tce.services.reddit_demand import DEFAULT_SUBREDDITS, RedditDemandService
         from tce.services.web_search import WebSearchService
+        from tce.services.youtube_demand import (
+            DEFAULT_QUERIES as DEFAULT_YT_QUERIES,
+        )
+        from tce.services.youtube_demand import (
+            YouTubeDemandService,
+        )
 
         search = WebSearchService()
         search_results = []
         reddit_signals: list[dict[str, Any]] = []
+        youtube_signals: list[dict[str, Any]] = []
         niche = context.get("niche", "general")
 
         # Workspace-aware: a tenant may override the query lists. When set,
@@ -275,8 +282,10 @@ class TrendScout(AgentBase):
         # Reddit demand signals — leading indicator of viral demand, often 12-48h
         # ahead of news pickup. Runs independently of the Brave search API.
         ws_subreddits: list[str] = []
+        ws_yt_queries: list[str] = []
         if ws_override and isinstance(ws_override, dict):
             ws_subreddits = list(ws_override.get("subreddits") or [])
+            ws_yt_queries = list(ws_override.get("youtube_queries") or [])
         subreddits = ws_subreddits or DEFAULT_SUBREDDITS.get(
             niche, DEFAULT_SUBREDDITS["general"]
         )
@@ -297,6 +306,33 @@ class TrendScout(AgentBase):
         except Exception:
             self._report("Reddit demand fetch failed; proceeding without it")
             reddit_signals = []
+
+        # YouTube demand signals — view-velocity is the cleanest paid-attention
+        # signal we can measure. Skipped silently when YOUTUBE_API_KEY is unset
+        # or the daily quota is exhausted.
+        youtube = YouTubeDemandService()
+        if youtube.api_key:
+            yt_queries = ws_yt_queries or DEFAULT_YT_QUERIES.get(
+                niche, DEFAULT_YT_QUERIES["general"]
+            )
+            try:
+                youtube_signals = await youtube.fetch_demand_signals(
+                    yt_queries, days_back=7, per_query=10, max_total=15
+                )
+                self._report(
+                    f"Pulled {len(youtube_signals)} YouTube demand signals "
+                    f"from {len(yt_queries)} queries"
+                )
+                for v in youtube_signals[:5]:
+                    self._report(
+                        f"  YT [demand:{v['demand_velocity']}, "
+                        f"{v['views_per_hour']}v/h] {v['channel']}: {v['title'][:70]}"
+                    )
+            except Exception:
+                self._report("YouTube demand fetch failed; proceeding without it")
+                youtube_signals = []
+        else:
+            self._report("YOUTUBE_API_KEY not set; skipping YouTube demand layer")
 
         from datetime import date as date_cls
 
@@ -355,7 +391,7 @@ class TrendScout(AgentBase):
                 "Skip any result that appears older than 14 days based on its age field. "
                 "Rank by the multiplicative composite formula in your instructions."
             )
-        elif not reddit_signals:
+        elif not reddit_signals and not youtube_signals:
             prompt_parts.append(
                 f"No live search results available (no search API configured). "
                 f"Today is {today_str}. Using your knowledge, identify ONLY stories that "
@@ -384,6 +420,24 @@ class TrendScout(AgentBase):
                     f"{r['comments_per_hour']}c/h, {r['hours_old']}h old]\n"
                     f"   Title: {r['title']}\n"
                     f"   Permalink: {r['permalink']}"
+                )
+
+        if youtube_signals:
+            prompt_parts.append("\n## YouTube Demand Signals (live)\n")
+            prompt_parts.append(
+                "Recent niche videos sorted by demand_velocity (views_per_hour + "
+                "engagement_per_hour, normalized 1-10). View-velocity is the cleanest "
+                "'paid attention' signal — these are topics audiences are actively watching. "
+                "When adopting a YouTube signal, USE the demand_velocity verbatim, set "
+                "source_type='creator_post', and set source_url to the video URL. "
+                "The video TITLE is itself a battle-tested hook — study it for hook_strength.\n"
+            )
+            for i, v in enumerate(youtube_signals, 1):
+                prompt_parts.append(
+                    f"{i}. {v['channel']} [demand:{v['demand_velocity']}/10, "
+                    f"{v['views']:,} views in {v['hours_old']}h]\n"
+                    f"   Title: {v['title']}\n"
+                    f"   URL: {v['url']}"
                 )
 
         response = await self._call_llm(
