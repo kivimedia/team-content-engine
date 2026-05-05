@@ -27,16 +27,30 @@ For each candidate story, provide:
 - trend_id: a short unique slug
 - headline: 1-sentence summary
 - source_url: primary source (REQUIRED - must be a real URL from search results)
-- source_type: news, social, company_blog, paper, creator_post
+- source_type: news, social, company_blog, paper, creator_post, reddit
 - freshness: estimated hours since publication (MUST be under 336 for 14-day cutoff)
-- relevance_score: 1-10 based on alignment with AI/business audience interests
+- relevance_score: 1-10 based on alignment with the audience's interests
+- demand_velocity: 1-10 estimate of "how hungry is the audience for this RIGHT NOW?"
+  When the input candidate already has a demand_velocity (Reddit-sourced), USE IT VERBATIM.
+  When estimating from news alone, infer from social cues:
+    1-3 = quiet niche update    4-6 = active discussion in pockets
+    7-9 = trending hard         10  = explosive front-page energy
 - template_fit: list of template families this story could power
 - angle_suggestions: 2-3 possible angles a writer could take
 - source_creator_overlap: boolean - is a known source creator already covering this?
 - evidence_available: how easy it is to find primary sources (easy/moderate/hard)
 
-Rank stories by: freshness * 0.5 + relevance_score * 0.3 + evidence_available * 0.2
-(Freshness is the DOMINANT factor - recent stories always beat older ones.)
+RANK by composite_score = freshness_factor × relevance_factor × demand_factor × evidence_factor
+where each factor is normalized to 0.1-1.0:
+  freshness_factor = max(0.1, 1 - hours/336)
+  relevance_factor = relevance_score / 10
+  demand_factor    = demand_velocity / 10
+  evidence_factor  = {easy: 1.0, moderate: 0.7, hard: 0.4}
+
+This is MULTIPLICATIVE — a weakness in any single factor severely penalizes the
+topic. A 12h-old story with relevance 5 and demand 3 (composite ~0.144) loses to
+a 60h-old story with relevance 8 and demand 8 (composite ~0.524). Viral topics
+need to be strong on EVERY axis, not just one.
 
 Output a JSON object with:
 - trends: array of trend objects (minimum 15, aim for 20-25, all from the last 14 days)
@@ -133,15 +147,17 @@ class TrendScout(AgentBase):
         # ---------------------------------------------------------------
 
         # PRD Section 49.4: Multi-source web search for real trending stories
+        from tce.services.reddit_demand import DEFAULT_SUBREDDITS, RedditDemandService
         from tce.services.web_search import WebSearchService
 
         search = WebSearchService()
         search_results = []
+        reddit_signals: list[dict[str, Any]] = []
         niche = context.get("niche", "general")
 
         # Workspace-aware: a tenant may override the query lists. When set,
-        # `source_queries` and `topical_queries` come from the DB; otherwise
-        # we fall through to the niche-based defaults below (existing behavior).
+        # `source_queries`, `topical_queries`, and optionally `subreddits` come
+        # from the DB; otherwise we fall through to the niche-based defaults below.
         ws_override = None
         ws_id_for_focus = context.get("workspace_id")
         if ws_id_for_focus:
@@ -241,6 +257,32 @@ class TrendScout(AgentBase):
                     search_results.extend(results)
             self._report(f"Found {len(search_results)} search results from diverse sources")
 
+        # Reddit demand signals — leading indicator of viral demand, often 12-48h
+        # ahead of news pickup. Runs independently of the Brave search API.
+        ws_subreddits: list[str] = []
+        if ws_override and isinstance(ws_override, dict):
+            ws_subreddits = list(ws_override.get("subreddits") or [])
+        subreddits = ws_subreddits or DEFAULT_SUBREDDITS.get(
+            niche, DEFAULT_SUBREDDITS["general"]
+        )
+        try:
+            reddit = RedditDemandService()
+            reddit_signals = await reddit.fetch_demand_signals(
+                subreddits, per_subreddit=15, max_total=20
+            )
+            self._report(
+                f"Pulled {len(reddit_signals)} Reddit demand signals "
+                f"from {len(subreddits)} subreddits"
+            )
+            for r in reddit_signals[:5]:
+                self._report(
+                    f"  r/{r['subreddit']} [demand:{r['demand_velocity']}, "
+                    f"{r['comments_per_hour']}c/h]: {r['title'][:80]}"
+                )
+        except Exception:
+            self._report("Reddit demand fetch failed; proceeding without it")
+            reddit_signals = []
+
         from datetime import date as date_cls
 
         today_str = date_cls.today().isoformat()
@@ -296,9 +338,9 @@ class TrendScout(AgentBase):
                 "Do NOT add stories from your own knowledge or training data. "
                 "Every trend MUST have a source_url from the search results above. "
                 "Skip any result that appears older than 14 days based on its age field. "
-                "Rank by the scoring formula in your instructions (freshness is dominant)."
+                "Rank by the multiplicative composite formula in your instructions."
             )
-        else:
+        elif not reddit_signals:
             prompt_parts.append(
                 f"No live search results available (no search API configured). "
                 f"Today is {today_str}. Using your knowledge, identify ONLY stories that "
@@ -310,6 +352,24 @@ class TrendScout(AgentBase):
                 f"10 trends with uncertain dates. Set source_url to the actual article URL "
                 f"if you know it, or 'unknown' if you don't."
             )
+
+        if reddit_signals:
+            prompt_parts.append("\n## Reddit Demand Signals (live)\n")
+            prompt_parts.append(
+                "These are top-of-day posts from niche subreddits, sorted by demand_velocity "
+                "(comments_per_hour weighted 60% + score_velocity 40%, normalized 1-10). "
+                "Reddit demand often leads news pickup by 12-48h — a Reddit thread spiking "
+                "right now is a stronger viral signal than yesterday's TechCrunch headline. "
+                "When you adopt a Reddit signal as a trend, USE the demand_velocity verbatim, "
+                "set source_type='reddit', and set source_url to the permalink.\n"
+            )
+            for i, r in enumerate(reddit_signals, 1):
+                prompt_parts.append(
+                    f"{i}. r/{r['subreddit']} [demand:{r['demand_velocity']}/10, "
+                    f"{r['comments_per_hour']}c/h, {r['hours_old']}h old]\n"
+                    f"   Title: {r['title']}\n"
+                    f"   Permalink: {r['permalink']}"
+                )
 
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
