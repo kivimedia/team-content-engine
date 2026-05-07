@@ -1661,17 +1661,21 @@ async def regenerate_single_image(
     if modification:
         base_prompt = f"{base_prompt}\n\nModification: {modification}"
 
+    # Use generate_with_fallback so this respects best_platform routing and
+    # cross-provider fallback. Without it, clicking "Regen" on a diagram card
+    # tagged best_platform=gemini would route back to gpt-image-2 and time out
+    # again (the original symptom that left slot 2 empty).
     svc = ImageGenerationService()
-    result = await svc.generate_image(
-        prompt_text=base_prompt,
-        negative_prompt=prompt.get("negative_prompt"),
-        aspect_ratio=prompt.get("aspect_ratio"),
-    )
+    regen_prompt = {
+        **prompt,
+        "prompt_text": base_prompt,
+    }
+    result = await svc.generate_with_fallback(regen_prompt)
 
     if result.get("status") == "generated":
         updated = _json.loads(_json.dumps(pkg.image_prompts))
         updated[image_index]["image_url"] = result["image_url"]
-        updated[image_index]["image_model_used"] = result.get("fal_model_used")
+        updated[image_index]["image_model_used"] = result.get("image_model_used") or result.get("fal_model_used")
         updated[image_index]["image_provider"] = result.get("provider", "fal_ai")
         pkg.image_prompts = updated
         await db.flush()

@@ -47,6 +47,49 @@ PLATFORM_CROPS = {
 }
 
 
+# Creative Director tags each prompt with `best_platform`. Map that to a real
+# model id we can dispatch to. Where we don't yet have an API for the requested
+# platform (gemini, midjourney), fall back to fal.ai's Flux Pro — historically
+# the most reliable diagram-renderer we have a key for, and gpt-image-2 has
+# proven to time out on dense diagram prompts (~9 min before failing).
+_BEST_PLATFORM_TO_MODEL = {
+    "fal_ai": "fal-ai/flux-pro/v1.1",
+    "fal": "fal-ai/flux-pro/v1.1",
+    "flux": "fal-ai/flux-pro/v1.1",
+    "dall_e": "dall-e-3",
+    "dalle": "dall-e-3",
+    "openai": "gpt-image-2",
+    "gpt_image": "gpt-image-2",
+    "gpt-image-2": "gpt-image-2",
+    # Platforms we don't have direct APIs for. Flux Pro renders text overlays
+    # and clean diagrams more reliably than gpt-image-2 within our timeout.
+    "gemini": "fal-ai/flux-pro/v1.1",
+    "midjourney": "fal-ai/flux-pro/v1.1",
+}
+
+
+def _resolve_model_for(best_platform: str | None) -> str:
+    """Map a Creative Director `best_platform` value to a concrete model id.
+
+    Falls through to `settings.default_image_model` (gpt-image-2) when the tag
+    is missing or unrecognised — that's the legacy behaviour for prompts that
+    don't carry a hint.
+    """
+    key = (best_platform or "").strip().lower()
+    if key in _BEST_PLATFORM_TO_MODEL:
+        return _BEST_PLATFORM_TO_MODEL[key]
+    return settings.default_image_model or DEFAULT_FAL_MODEL
+
+
+def _alternate_model_for(model: str) -> str:
+    """Pick a different-provider fallback model for cross-provider retry."""
+    if model.startswith("fal-ai/"):
+        # fal failed — try OpenAI
+        return "gpt-image-2"
+    # OpenAI / dall-e failed — try fal.ai
+    return DEFAULT_FAL_MODEL
+
+
 class ImageGenerationService:
     """Generates images via fal.ai from Creative Director prompts."""
 
@@ -181,6 +224,18 @@ class ImageGenerationService:
             "negative_prompt": negative_prompt,
         }
 
+    async def generate_with_fallback(self, prompt: dict[str, Any]) -> dict[str, Any]:
+        """Generate one image, routing by `best_platform` and falling back to
+        the alternate provider on any failure.
+
+        This is the public entry point for both batch generation (called from
+        `generate_batch`) and single-image regeneration (called from the
+        `/regenerate-image/{idx}` route). Honoring `best_platform` here means
+        diagram prompts the Creative Director marks `gemini` go to Flux Pro
+        instead of timing out on gpt-image-2.
+        """
+        return await self._one(prompt)
+
     async def generate_batch(self, prompts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Generate images for a batch of prompts (typically 3 per post).
 
@@ -190,28 +245,90 @@ class ImageGenerationService:
         """
         import asyncio
 
-        async def _one(prompt: dict[str, Any]) -> dict[str, Any]:
-            try:
-                return await self.generate_image(
-                    prompt_text=prompt.get(
-                        "prompt_text",
-                        prompt.get("detailed_prompt", ""),
-                    ),
-                    negative_prompt=prompt.get("negative_prompt"),
-                    aspect_ratio=prompt.get("aspect_ratio"),
-                )
-            except Exception as e:
-                logger.exception(
-                    "image_gen.failed",
-                    prompt=prompt.get("prompt_name"),
-                )
-                return {
-                    "status": "failed",
-                    "error": str(e),
-                    "prompt_text": prompt.get("prompt_text", ""),
-                }
+        return await asyncio.gather(*(self._one(p) for p in prompts))
 
-        return await asyncio.gather(*(_one(p) for p in prompts))
+    async def _one(self, prompt: dict[str, Any]) -> dict[str, Any]:
+        prompt_text = prompt.get(
+            "prompt_text",
+            prompt.get("detailed_prompt", ""),
+        )
+        negative = prompt.get("negative_prompt")
+        aspect = prompt.get("aspect_ratio")
+        primary_model = _resolve_model_for(prompt.get("best_platform"))
+        attempted: list[str] = []
+
+        try:
+            attempted.append(primary_model)
+            result = await self.generate_image(
+                prompt_text=prompt_text,
+                negative_prompt=negative,
+                aspect_ratio=aspect,
+                model=primary_model,
+            )
+            if result.get("status") == "generated":
+                result["attempted_providers"] = attempted
+                return result
+            # generate_image returned a non-generated status (skipped/etc.)
+            # -> try the alternate provider before giving up.
+            logger.warning(
+                "image_gen.primary_non_generated",
+                primary=primary_model,
+                status=result.get("status"),
+                reason=result.get("reason"),
+            )
+        except Exception as e:
+            logger.warning(
+                "image_gen.primary_failed",
+                primary=primary_model,
+                prompt=prompt.get("prompt_name"),
+                error=str(e)[:200],
+            )
+
+        # Cross-provider fallback. Diagram prompts that time out on
+        # gpt-image-2 succeed on Flux Pro within ~30s; photoreal prompts
+        # that fail moderation on fal.ai often pass on OpenAI. Trying
+        # the other side is cheap and prevents an empty 3rd image slot.
+        fallback_model = _alternate_model_for(primary_model)
+        try:
+            attempted.append(fallback_model)
+            logger.info(
+                "image_gen.fallback_attempt",
+                primary=primary_model,
+                fallback=fallback_model,
+                prompt=prompt.get("prompt_name"),
+            )
+            result = await self.generate_image(
+                prompt_text=prompt_text,
+                negative_prompt=negative,
+                aspect_ratio=aspect,
+                model=fallback_model,
+            )
+            if result.get("status") == "generated":
+                result["attempted_providers"] = attempted
+                result["fallback_used"] = True
+                return result
+            return {
+                "status": "failed",
+                "error": (
+                    f"both providers returned non-generated: "
+                    f"{primary_model}, {fallback_model}->{result.get('status')}"
+                ),
+                "prompt_text": prompt_text,
+                "attempted_providers": attempted,
+            }
+        except Exception as e:
+            logger.exception(
+                "image_gen.failed",
+                prompt=prompt.get("prompt_name"),
+                primary=primary_model,
+                fallback=fallback_model,
+            )
+            return {
+                "status": "failed",
+                "error": f"both providers failed: {e!s}",
+                "prompt_text": prompt_text,
+                "attempted_providers": attempted,
+            }
 
     @staticmethod
     def get_platform_crops() -> dict[str, str]:
