@@ -4419,8 +4419,8 @@ async function renderTopic(container) {
         </div>
         <div id="topic-mode-desc" style="font-size:12px;color:var(--dim);margin-bottom:12px;padding:8px 12px;background:#0d1117;border-radius:6px">The full agent pipeline (TrendScout, StoryStrategist, Research, Writers, CTA, Creative Director, QA) will generate FB + LI posts around your topic.</div>
         <div style="margin-bottom:12px">
-          <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Topic / Brief *</label>
-          <textarea id="topic-text" rows="5" style="width:100%;resize:vertical;min-height:100px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark" placeholder="Describe your topic in detail. The more specific you are, the better the output. E.g.: Does it really matter what model you use for your agents? Practical tips on Claude Opus vs Sonnet vs Haiku..."></textarea>
+          <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Topic / Brief * <span style="color:var(--accent);font-weight:normal">— paste a URL and TCE will fetch it and study the page first</span></label>
+          <textarea id="topic-text" rows="5" style="width:100%;resize:vertical;min-height:100px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color-scheme:dark" placeholder="Describe your topic in detail. Or paste a URL (e.g. https://kmboards.co/webinar) and TCE will fetch the page, extract the content, and write from it. You can mix both: paste a URL plus a one-line angle for what to focus on."></textarea>
         </div>
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
           <div style="flex:1;min-width:250px">

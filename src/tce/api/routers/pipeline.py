@@ -1038,8 +1038,31 @@ async def start_from_topic(
     """
     from tce.models.creator_profile import CreatorProfile
     from tce.models.post_example import PostExample as PostExampleModel
+    from tce.services.url_fetcher import extract_urls, resolve_topic_links
 
     run_id = str(uuid.uuid4())
+
+    # If the operator pasted a URL into Topic/Brief, fetch the page now so the
+    # pipeline studies the actual content instead of treating the URL as opaque
+    # text. Original prose is preserved; extracted title + body are appended as
+    # REFERENCE LINK blocks that flow through context["topic"] to every agent.
+    detected_urls = extract_urls(request.topic)
+    enriched_topic = request.topic
+    link_references: list[dict[str, Any]] = []
+    if detected_urls:
+        try:
+            enriched_topic, link_references = await resolve_topic_links(request.topic)
+            ok = sum(1 for r in link_references if r.get("status") == "ok")
+            logger.info(
+                "start_from_topic.links_resolved",
+                run_id=run_id,
+                detected=len(detected_urls),
+                fetched_ok=ok,
+            )
+        except Exception as e:  # noqa: BLE001 — never block topic submission on a flaky URL
+            logger.warning("start_from_topic.link_fetch_failed", run_id=run_id, error=str(e))
+            enriched_topic = request.topic
+            link_references = []
 
     # Build the creator_inspiration context if requested
     creator_inspiration: dict[str, Any] | None = None
@@ -1106,7 +1129,7 @@ async def start_from_topic(
 
     # Build pipeline context
     context: dict[str, Any] = {
-        "topic": request.topic,
+        "topic": enriched_topic,
         "language": request.language,
         "_source": "topic",
     }
@@ -1118,18 +1141,33 @@ async def start_from_topic(
         context["operator_overrides"] = {"notes": request.notes}
     if creator_inspiration:
         context["creator_inspiration"] = creator_inspiration
+    if link_references:
+        context["link_references"] = link_references
+
+    ok_count = sum(1 for r in link_references if r.get("status") == "ok")
+    if link_references:
+        phase_detail = (
+            f"Studied {ok_count}/{len(link_references)} reference link(s) — "
+            "running daily_content pipeline..."
+        )
+    else:
+        phase_detail = "Initializing topic-based generation..."
 
     # Store status for polling
     _start_topic_runs[run_id] = {
         "run_id": run_id,
         "status": "running",
         "phase": "starting",
-        "phase_detail": "Initializing topic-based generation...",
+        "phase_detail": phase_detail,
         "pipeline_run_id": None,
         "step_status": {},
         "error": None,
         "topic": request.topic[:200],
         "inspiration": creator_inspiration.get("creator_name") if creator_inspiration else None,
+        "link_references": [
+            {"url": r["url"], "title": r.get("title", ""), "status": r.get("status", "ok")}
+            for r in link_references
+        ],
     }
     await _persist_start_topic_status(run_id, _start_topic_runs[run_id])
 
