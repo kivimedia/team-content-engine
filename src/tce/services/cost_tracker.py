@@ -1,4 +1,4 @@
-"""Cost tracking service — records and queries per-agent LLM costs (PRD Section 36)."""
+﻿"""Cost tracking service â€” records and queries per-agent LLM costs (PRD Section 36)."""
 
 from __future__ import annotations
 
@@ -20,6 +20,12 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
         "cache_write": 18.75,
     },
     "claude-opus-4-20250514": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_read": 1.5,  # 0.1x input
+        "cache_write": 18.75,  # 1.25x input
+    },
+    "claude-opus-4-8": {
         "input": 15.0,
         "output": 75.0,
         "cache_read": 1.5,  # 0.1x input

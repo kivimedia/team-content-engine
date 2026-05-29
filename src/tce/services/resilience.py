@@ -1,4 +1,4 @@
-"""Rate limiting and resilience layer (PRD Section 42).
+﻿"""Rate limiting and resilience layer (PRD Section 42).
 
 Provides circuit breaker, rate limit tracking, fallback model logic,
 and queue management for external API calls.
@@ -36,6 +36,7 @@ DEFAULT_RETRY_CONFIG = {
 FALLBACK_CHAIN: dict[str, str] = {
     "claude-opus-4-7": "claude-sonnet-4-20250514",
     "claude-opus-4-20250514": "claude-sonnet-4-20250514",
+    "claude-opus-4-8": "claude-sonnet-4-20250514",
     "claude-sonnet-4-20250514": "claude-haiku-4-5-20251001",
 }
 

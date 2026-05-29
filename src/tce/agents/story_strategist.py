@@ -1,4 +1,4 @@
-"""Story Strategist — chooses the daily angle and best-fit template (PRD Section 9.5)."""
+﻿"""Story Strategist â€” chooses the daily angle and best-fit template (PRD Section 9.5)."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ RULES:
 @register_agent
 class StoryStrategist(AgentBase):
     name = "story_strategist"
-    default_model = "claude-opus-4-7"  # Most consequential decision - worth premium
+    default_model = "claude-opus-4-8"  # Most consequential decision - worth premium
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Select today's angle and produce a StoryBrief."""
@@ -150,13 +150,13 @@ class StoryStrategist(AgentBase):
             )
             prompt_parts.append("\n".join(creator_parts))
 
-        # Business strategy context — always loaded, not gated on niche flag
+        # Business strategy context â€” always loaded, not gated on niche flag
         from tce.services.strategy_loader import load_strategy
         strategy_context = load_strategy()
         if strategy_context:
             self._report("Loaded Super Coaching strategy doc for topic selection")
             prompt_parts.append(
-                "BUSINESS STRATEGY — READ BEFORE CHOOSING ANY TOPIC:\n"
+                "BUSINESS STRATEGY â€” READ BEFORE CHOOSING ANY TOPIC:\n"
                 "The following defines who this content is for, what makes a topic pass or fail, "
                 "and what the content must make the viewer feel. Apply the topic filter, "
                 "the 5 pillars, and the emotional trigger test to every topic you pick.\n\n"
@@ -165,7 +165,7 @@ class StoryStrategist(AgentBase):
                 "teams. Every piece should leave the viewer thinking 'I need to talk to this guy.'"
             )
         else:
-            self._report("Strategy doc not found — using inline fallback context")
+            self._report("Strategy doc not found â€” using inline fallback context")
             prompt_parts.append(
                 "NICHE CONTEXT - SUPER COACHING:\n"
                 "This content is for coaches who want to add AI agent teams to their coaching business. "

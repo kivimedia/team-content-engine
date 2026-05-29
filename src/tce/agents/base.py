@@ -1,4 +1,4 @@
-"""Base agent class with LLM calling, cost tracking, and prompt resolution."""
+﻿"""Base agent class with LLM calling, cost tracking, and prompt resolution."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ logger = structlog.get_logger()
 # _call_llm below. Extend this tuple when Anthropic releases another one.
 _MODELS_WITHOUT_TEMPERATURE: tuple[str, ...] = (
     "claude-opus-4-7",
+    "claude-opus-4-8",
 )
 
 

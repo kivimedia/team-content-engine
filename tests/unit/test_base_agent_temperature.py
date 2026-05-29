@@ -1,4 +1,4 @@
-"""Regression tests for base agent's reasoning-model temperature handling.
+﻿"""Regression tests for base agent's reasoning-model temperature handling.
 
 Anthropic's reasoning-class models (Opus 4.7 onward) reject the `temperature`
 parameter. AgentBase._call_llm must silently drop it for those models and
@@ -19,6 +19,9 @@ def test_reasoning_models_reject_temperature() -> None:
     assert not _model_accepts_temperature("claude-opus-4-7")
     assert not _model_accepts_temperature("claude-opus-4-7[1m]")
     assert not _model_accepts_temperature("claude-opus-4-7-20260301")
+    assert not _model_accepts_temperature("claude-opus-4-8")
+    assert not _model_accepts_temperature("claude-opus-4-8[1m]")
+    assert not _model_accepts_temperature("claude-opus-4-8-20260301")
 
 
 def test_sampling_models_accept_temperature() -> None:

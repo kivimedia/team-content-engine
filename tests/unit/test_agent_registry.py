@@ -1,4 +1,4 @@
-"""Tests for agent registry."""
+﻿"""Tests for agent registry."""
 
 # Import all agent modules to trigger @register_agent decorators
 import tce.agents.corpus_analyst  # noqa: F401
@@ -53,7 +53,7 @@ def test_agent_default_models():
     """Check model assignments per PRD Section 37."""
     assert CorpusAnalyst.default_model == "claude-sonnet-4-20250514"
     assert EngagementScorer.default_model == "claude-haiku-4-5-20251001"
-    assert StoryStrategist.default_model == "claude-opus-4-7"
+    assert StoryStrategist.default_model == "claude-opus-4-8"
     assert FacebookWriter.default_model == "claude-sonnet-4-20250514"
     assert LinkedInWriter.default_model == "claude-sonnet-4-20250514"
     assert QAAgent.default_model == "claude-sonnet-4-20250514"

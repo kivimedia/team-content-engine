@@ -1,4 +1,4 @@
-"""Seed database with default creators, templates, and prompts from the PRD."""
+﻿"""Seed database with default creators, templates, and prompts from the PRD."""
 
 from __future__ import annotations
 
@@ -314,7 +314,7 @@ DEFAULT_TEMPLATES = [
     },
 ]
 
-# PRD Appendix E: Starter prompts (abbreviated — full prompts in agents)
+# PRD Appendix E: Starter prompts (abbreviated â€” full prompts in agents)
 DEFAULT_PROMPTS = [
     {
         "agent_name": "story_strategist",
@@ -323,7 +323,7 @@ DEFAULT_PROMPTS = [
             "Your job is the most consequential decision each day: "
             "choosing what to write about and how to frame it."
         ),
-        "model_target": "claude-opus-4-7",
+        "model_target": "claude-opus-4-8",
     },
     {
         "agent_name": "facebook_writer",

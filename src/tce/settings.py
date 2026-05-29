@@ -1,4 +1,4 @@
-"""Application settings loaded from environment variables."""
+﻿"""Application settings loaded from environment variables."""
 
 import tempfile
 from decimal import Decimal
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # Model tiers (per PRD Section 37)
     default_model: str = "claude-sonnet-4-20250514"
-    opus_model: str = "claude-opus-4-7"
+    opus_model: str = "claude-opus-4-8"
     haiku_model: str = "claude-haiku-4-5-20251001"
     script_model: str = "claude-sonnet-4-20250514"  # Model for ScriptAgent narration
 
@@ -57,9 +57,9 @@ class Settings(BaseSettings):
     # Web search (GAP-01)
     search_api_key: str = ""
 
-    # YouTube Data API v3 — viral video demand signals for trend_scout.
+    # YouTube Data API v3 â€” viral video demand signals for trend_scout.
     # Quota: 10000 units/day default, search costs 100 units, videos.list 1 unit.
-    # A typical trend_scout run uses ~600 units (6 queries × 100), so daily budget
+    # A typical trend_scout run uses ~600 units (6 queries Ã— 100), so daily budget
     # caps to roughly 16 runs/day. trend_scout fetches gracefully degrade when
     # this is unset or quota-exceeded.
     youtube_api_key: str = ""

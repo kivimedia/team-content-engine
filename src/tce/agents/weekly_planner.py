@@ -1,4 +1,4 @@
-"""Weekly Planner - coordinates the entire week's content strategy.
+﻿"""Weekly Planner - coordinates the entire week's content strategy.
 
 Runs trend_scout ONCE, then selects 5 topics (one per day) that form a
 coherent weekly narrative arc, plus a gift/guide theme that ties them together.
@@ -150,7 +150,7 @@ OUTPUT: A JSON object with:
 @register_agent
 class WeeklyPlanner(AgentBase):
     name = "weekly_planner"
-    default_model = "claude-opus-4-7"
+    default_model = "claude-opus-4-8"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Plan the entire week's content from a single trend scan."""
@@ -207,7 +207,7 @@ class WeeklyPlanner(AgentBase):
         if operator_overrides:
             prompt_parts.append(f"\nOPERATOR OVERRIDES:\n{json.dumps(operator_overrides)}")
 
-        # === Business strategy context — always loaded, not gated on niche flag ===
+        # === Business strategy context â€” always loaded, not gated on niche flag ===
         # Workspace-aware: per-tenant override row > global file default.
         # When workspace_id is None (Ziv-as-default), behavior is identical to
         # the previous file-only path.
@@ -219,7 +219,7 @@ class WeeklyPlanner(AgentBase):
         strategy_text = await load_strategy_for_workspace(self.db, ws_id)
         if strategy_text:
             prompt_parts.append(
-                "\nBUSINESS STRATEGY — APPLY TO ALL 5 DAYS:\n"
+                "\nBUSINESS STRATEGY â€” APPLY TO ALL 5 DAYS:\n"
                 "All topics MUST pass the Emotional Trigger Test from the strategy below. "
                 "Use the 5 pillars and the topic filter (pass/fail) to select topics. "
                 "Creator: Ziv Raviv (Kivi Media, 300+ clients, Super Coaching trademarked).\n\n"
@@ -241,7 +241,7 @@ class WeeklyPlanner(AgentBase):
         portfolio_text = await load_portfolio_for_workspace(self.db, ws_id)
         if portfolio_text:
             prompt_parts.append(
-                "\nREPO PORTFOLIO — CASE STUDY MATERIAL (reference these by name when topics fit):\n"
+                "\nREPO PORTFOLIO â€” CASE STUDY MATERIAL (reference these by name when topics fit):\n"
                 "These are Ziv's actual shipped builds. They are NOT the offer (the offer is "
                 "Super Coaching for Coaches, $4-5K/month) - they are PROOF that the AI-agent "
                 "methodology being taught is real and working. Aim for 1-2 days per week "
