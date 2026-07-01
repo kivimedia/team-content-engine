@@ -40,7 +40,7 @@ OUTPUT FORMAT (JSON):
 @register_agent
 class FounderVoiceExtractor(AgentBase):
     name = "founder_voice_extractor"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Extract voice profile from founder's writing."""

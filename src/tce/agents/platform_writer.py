@@ -588,7 +588,7 @@ def _build_inspiration_block(context: dict) -> str:
 @register_agent
 class FacebookWriter(AgentBase):
     name = "facebook_writer"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         story_brief = context.get("story_brief", {})
@@ -673,7 +673,7 @@ class FacebookWriter(AgentBase):
 @register_agent
 class LinkedInWriter(AgentBase):
     name = "linkedin_writer"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         story_brief = context.get("story_brief", {})

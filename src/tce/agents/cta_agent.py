@@ -57,7 +57,7 @@ OUTPUT FORMAT (JSON):
 @register_agent
 class CTAAgent(AgentBase):
     name = "cta_agent"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Generate CTA keyword and DM flow."""

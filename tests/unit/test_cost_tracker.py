@@ -6,7 +6,7 @@ from tce.services.cost_tracker import compute_cost
 def test_compute_cost_sonnet():
     """Sonnet pricing: $3/M input, $15/M output."""
     cost = compute_cost(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         input_tokens=10000,
         output_tokens=2000,
     )
@@ -28,7 +28,7 @@ def test_compute_cost_opus():
 def test_compute_cost_with_cache():
     """Cache read tokens are cheaper."""
     cost = compute_cost(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         input_tokens=5000,
         output_tokens=1000,
         cache_read_tokens=10000,

@@ -127,7 +127,7 @@ TITLE_PATTERNS = {
 @register_agent
 class VideoLeadWriter(AgentBase):
     name = "video_lead_writer"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Produce a long-form video script from story brief + research."""

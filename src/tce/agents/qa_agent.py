@@ -44,7 +44,7 @@ blocking_issues, revision_suggestions, humanitarian_flags
 @register_agent
 class QAAgent(AgentBase):
     name = "qa_agent"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Score a PostPackage on 12 QA dimensions."""

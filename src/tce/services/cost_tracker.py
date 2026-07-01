@@ -25,13 +25,7 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
         "cache_read": 1.5,  # 0.1x input
         "cache_write": 18.75,  # 1.25x input
     },
-    "claude-opus-4-8": {
-        "input": 15.0,
-        "output": 75.0,
-        "cache_read": 1.5,  # 0.1x input
-        "cache_write": 18.75,  # 1.25x input
-    },
-    "claude-sonnet-4-20250514": {
+    "claude-sonnet-5": {
         "input": 3.0,
         "output": 15.0,
         "cache_read": 0.3,
@@ -54,7 +48,7 @@ def compute_cost(
     cache_write_tokens: int = 0,
 ) -> float:
     """Compute USD cost from token counts."""
-    pricing = MODEL_PRICING.get(model, MODEL_PRICING["claude-sonnet-4-20250514"])
+    pricing = MODEL_PRICING.get(model, MODEL_PRICING["claude-sonnet-5"])
     cost = (
         (input_tokens / 1_000_000) * pricing["input"]
         + (output_tokens / 1_000_000) * pricing["output"]

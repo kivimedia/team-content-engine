@@ -79,7 +79,7 @@ class RepoStoryteller(AgentBase):
     """Turn a RepoBrief into a story_brief + template match + citations."""
 
     name = "repo_storyteller"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         repo_brief = context.get("repo_brief") or {}

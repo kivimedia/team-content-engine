@@ -77,7 +77,7 @@ EXCLUDE_PATTERNS = ["fully_booked", "other_half", "book"]
 @register_agent
 class CorpusAnalyst(AgentBase):
     name = "corpus_analyst"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Parse document content into structured post examples.

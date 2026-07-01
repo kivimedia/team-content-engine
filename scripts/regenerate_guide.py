@@ -150,7 +150,7 @@ async def main():
     print(f"  Research claims: {len(rb['verified_claims'])}")
 
     response = await client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         max_tokens=8192,
         temperature=0.5,
         system=SYSTEM_PROMPT,

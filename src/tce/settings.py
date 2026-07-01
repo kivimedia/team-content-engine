@@ -20,10 +20,10 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr = SecretStr("")
 
     # Model tiers (per PRD Section 37)
-    default_model: str = "claude-sonnet-4-20250514"
-    opus_model: str = "claude-opus-4-8"
+    default_model: str = "claude-sonnet-5"
+    opus_model: str = "claude-opus-4-7"
     haiku_model: str = "claude-haiku-4-5-20251001"
-    script_model: str = "claude-sonnet-4-20250514"  # Model for ScriptAgent narration
+    script_model: str = "claude-sonnet-5"  # Model for ScriptAgent narration
 
     # Budget controls (per PRD Section 36.5)
     daily_budget_usd: Decimal = Decimal("40.00")

@@ -38,7 +38,7 @@ Output as a JSON array of template objects.
 @register_agent
 class PatternMiner(AgentBase):
     name = "pattern_miner"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Extract templates from scored post examples."""

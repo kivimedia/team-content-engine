@@ -128,7 +128,7 @@ class ScriptAgent(AgentBase):
     """Generates voiceover narration scripts from pipeline context."""
 
     name: str = "script_agent"
-    default_model: str = "claude-sonnet-4-20250514"
+    default_model: str = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         # Override model from settings if configured

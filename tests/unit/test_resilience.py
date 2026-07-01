@@ -22,8 +22,8 @@ def test_retry_config():
 def test_fallback_chain():
     """PRD Section 42.3: Opus -> Sonnet -> Haiku."""
     assert "claude-opus-4-20250514" in FALLBACK_CHAIN
-    assert FALLBACK_CHAIN["claude-opus-4-20250514"] == "claude-sonnet-4-20250514"
-    assert FALLBACK_CHAIN["claude-sonnet-4-20250514"] == "claude-haiku-4-5-20251001"
+    assert FALLBACK_CHAIN["claude-opus-4-20250514"] == "claude-sonnet-5"
+    assert FALLBACK_CHAIN["claude-sonnet-5"] == "claude-haiku-4-5-20251001"
 
 
 def test_circuit_breaker_initial():
@@ -76,7 +76,7 @@ def test_resilience_manager():
 def test_resilience_manager_fallback():
     manager = ResilienceManager()
     fallback = manager.get_fallback_model("claude-opus-4-20250514")
-    assert fallback == "claude-sonnet-4-20250514"
+    assert fallback == "claude-sonnet-5"
     assert manager.get_fallback_model("unknown") is None
 
 

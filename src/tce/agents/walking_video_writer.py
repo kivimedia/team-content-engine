@@ -180,7 +180,7 @@ class WalkingVideoWriter(AgentBase):
     """Produces a walking-monologue video script (60-120s) from story + research briefs."""
 
     name = "walking_video_writer"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     _STOPWORDS: frozenset[str] = frozenset({
         "the", "a", "an", "and", "or", "but", "of", "in", "on", "at", "to", "for",

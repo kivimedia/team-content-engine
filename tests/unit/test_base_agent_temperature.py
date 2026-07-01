@@ -25,8 +25,8 @@ def test_reasoning_models_reject_temperature() -> None:
 
 
 def test_sampling_models_accept_temperature() -> None:
-    assert _model_accepts_temperature("claude-sonnet-4-20250514")
-    assert _model_accepts_temperature("claude-sonnet-4-6")
+    assert _model_accepts_temperature("claude-sonnet-5")
+    assert _model_accepts_temperature("claude-sonnet-5")
     assert _model_accepts_temperature("claude-haiku-4-5-20251001")
     assert _model_accepts_temperature("claude-opus-3-20240229")
 

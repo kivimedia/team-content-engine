@@ -100,7 +100,7 @@ class RepoScout(AgentBase):
     """Pulls a fresh clone + builds a structured brief from the commit log."""
 
     name = "repo_scout"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         tracked_repo_id = context.get("tracked_repo_id")

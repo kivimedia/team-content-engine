@@ -102,7 +102,7 @@ Rules:
 @register_agent
 class ProofChecker(AgentBase):
     name = "proof_checker"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Verify factual claims in generated posts and build a proof trail."""

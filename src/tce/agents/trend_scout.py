@@ -76,7 +76,7 @@ Output a JSON object with:
 @register_agent
 class TrendScout(AgentBase):
     name = "trend_scout"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Produce a trend brief from live web search results or general knowledge.

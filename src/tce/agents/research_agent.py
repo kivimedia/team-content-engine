@@ -44,7 +44,7 @@ Output a JSON object with:
 @register_agent
 class ResearchAgent(AgentBase):
     name = "research_agent"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Build a research brief for a given topic."""

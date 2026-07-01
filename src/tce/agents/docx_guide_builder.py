@@ -194,7 +194,7 @@ for flow, but the core structure must follow this order.
 @register_agent
 class DocxGuideBuilder(AgentBase):
     name = "docx_guide_builder"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Generate reader-facing guide content and DOCX file."""

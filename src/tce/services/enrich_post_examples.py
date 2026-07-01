@@ -171,7 +171,7 @@ async def enrich_creator(
     client = anthropic.AsyncAnthropic(
         api_key=settings.anthropic_api_key.get_secret_value()
     )
-    model = "claude-sonnet-4-20250514"
+    model = "claude-sonnet-5"
 
     async with async_session() as db:
         cr_result = await db.execute(

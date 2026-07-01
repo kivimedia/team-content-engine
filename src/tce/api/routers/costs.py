@@ -304,7 +304,7 @@ async def get_optimization_recommendations(
 
         # Recommendation 1: Downgrade to cheaper model where possible
         if "opus" in model and agent not in ("story_strategist", "weekly_planner"):
-            sonnet_pricing = MODEL_PRICING.get("claude-sonnet-4-20250514", {})
+            sonnet_pricing = MODEL_PRICING.get("claude-sonnet-5", {})
             opus_pricing = MODEL_PRICING.get(model, {})
             if opus_pricing and sonnet_pricing:
                 current_cost = (
@@ -322,7 +322,7 @@ async def get_optimization_recommendations(
                         "type": "model_downgrade",
                         "agent": agent,
                         "current_model": model,
-                        "suggested_model": "claude-sonnet-4-20250514",
+                        "suggested_model": "claude-sonnet-5",
                         "savings_usd": round(savings, 4),
                         "message": f"Switching {agent} from Opus to Sonnet saves ~${savings:.2f}/{days}d",
                     })

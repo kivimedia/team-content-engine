@@ -74,7 +74,7 @@ class AgentBase(ABC):
     """
 
     name: str = "base"
-    default_model: str = "claude-sonnet-4-20250514"
+    default_model: str = "claude-sonnet-5"
 
     def __init__(
         self,

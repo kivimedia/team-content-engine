@@ -11,7 +11,7 @@ def test_founder_voice_extractor_registered():
 
 
 def test_founder_voice_extractor_model():
-    assert FounderVoiceExtractor.default_model == "claude-sonnet-4-20250514"
+    assert FounderVoiceExtractor.default_model == "claude-sonnet-5"
 
 
 def test_merge_profiles_empty():

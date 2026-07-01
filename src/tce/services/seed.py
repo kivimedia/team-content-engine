@@ -332,7 +332,7 @@ DEFAULT_PROMPTS = [
             "Your job is to write a scroll-stopping, comment-triggering "
             "post that makes people engage."
         ),
-        "model_target": "claude-sonnet-4-20250514",
+        "model_target": "claude-sonnet-5",
     },
     {
         "agent_name": "qa_agent",
@@ -340,7 +340,7 @@ DEFAULT_PROMPTS = [
             "You are the QA Agent for Team Content Engine. You are the "
             "last gate before content goes to the operator for approval."
         ),
-        "model_target": "claude-sonnet-4-20250514",
+        "model_target": "claude-sonnet-5",
     },
 ]
 

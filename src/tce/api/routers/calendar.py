@@ -943,7 +943,7 @@ async def regenerate_alternatives(
 
     try:
         response = await client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-5",
             max_tokens=2400,
             temperature=0.85,
             messages=[{"role": "user", "content": prompt}],
@@ -1204,7 +1204,7 @@ async def regenerate_guide_options(
         api_key = api_key.get_secret_value()
     client = anthropic.AsyncAnthropic(api_key=api_key)
     resp = await client.messages.create(
-        model=getattr(s, "default_model", "claude-sonnet-4-20250514"),
+        model=getattr(s, "default_model", "claude-sonnet-5"),
         max_tokens=1500,
         system=sys_prompt,
         messages=[{"role": "user", "content": user_prompt}],

@@ -47,7 +47,7 @@ async def update_agent_model(agent_name: str, data: AgentModelUpdate) -> dict[st
 
     allowed_models = {
         "claude-haiku-4-5-20251001",
-        "claude-sonnet-4-20250514",
+        "claude-sonnet-5",
         "claude-opus-4-7",
         "claude-opus-4-20250514",
         "claude-opus-4-8",

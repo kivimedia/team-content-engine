@@ -59,7 +59,7 @@ OUTPUT: JSON array of 3 prompt objects.
 @register_agent
 class CreativeDirector(AgentBase):
     name = "creative_director"
-    default_model = "claude-sonnet-4-20250514"
+    default_model = "claude-sonnet-5"
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Generate 3 image prompts for a post."""
