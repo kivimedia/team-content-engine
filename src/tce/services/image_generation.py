@@ -58,9 +58,11 @@ _BEST_PLATFORM_TO_MODEL = {
     "flux": "fal-ai/flux-pro/v1.1",
     "dall_e": "dall-e-3",
     "dalle": "dall-e-3",
-    "openai": "gpt-image-2",
-    "gpt_image": "gpt-image-2",
+    "openai": "gpt-image-2.5-sunburst",
+    "gpt_image": "gpt-image-2.5-sunburst",
     "gpt-image-2": "gpt-image-2",
+        "gpt-image-2.5-sunburst": "gpt-image-2.5-sunburst",
+        "gpt-image-2.5-flare": "gpt-image-2.5-flare",
     # Platforms we don't have direct APIs for. Flux Pro renders text overlays
     # and clean diagrams more reliably than gpt-image-2 within our timeout.
     "gemini": "fal-ai/flux-pro/v1.1",
@@ -85,7 +87,7 @@ def _alternate_model_for(model: str) -> str:
     """Pick a different-provider fallback model for cross-provider retry."""
     if model.startswith("fal-ai/"):
         # fal failed — try OpenAI
-        return "gpt-image-2"
+        return "gpt-image-2.5-sunburst"
     # OpenAI / dall-e failed — try fal.ai
     return DEFAULT_FAL_MODEL
 

@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Image generation provider/model
     # Default routes to OpenAI's gpt-image-2; fal.ai is the fallback for
     # photoreal/cinematic prompts the creative_director flags as fal_ai.
-    default_image_model: str = "gpt-image-2"
+    default_image_model: str = "gpt-image-2.5-sunburst"
 
     # Local disk fallback when S3 isn't configured. OpenAI returns b64 by
     # default; we write it here and serve via /api/v1/images/<file> so the
