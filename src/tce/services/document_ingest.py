@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
-import base64
 from datetime import UTC, datetime
 from typing import Any
 
-import anthropic
 import docx
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.models.source_document import SourceDocument
-from tce.settings import settings
 
 logger = structlog.get_logger()
 
@@ -89,74 +85,20 @@ class DocumentIngestService:
         }
 
     async def _extract_images_ocr(self, doc: docx.Document) -> list[str]:
-        """Extract embedded images from DOCX and OCR them via Claude vision."""
-        if not settings.anthropic_api_key.get_secret_value():
-            return []
+        """Image OCR is disabled under the subscription-only LLM policy.
 
-        image_texts = []
-        try:
-            client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
-            for rel in doc.part.rels.values():
-                if "image" not in rel.reltype:
-                    continue
-                image_data = rel.target_part.blob
-                content_type = rel.target_part.content_type or "image/png"
-
-                # Skip very small images (likely icons/bullets)
-                if len(image_data) < 5000:
-                    continue
-
-                # Per-image try/catch so one failure doesn't skip the rest
-                try:
-                    b64 = base64.standard_b64encode(image_data).decode("utf-8")
-                    response = await asyncio.wait_for(
-                        client.messages.create(
-                            model=settings.haiku_model,
-                            max_tokens=2000,
-                            messages=[
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {
-                                            "type": "image",
-                                            "source": {
-                                                "type": "base64",
-                                                "media_type": content_type,
-                                                "data": b64,
-                                            },
-                                        },
-                                        {
-                                            "type": "text",
-                                            "text": (
-                                                "Extract ALL text from this image. "
-                                                "This may be a screenshot of a social media post. "
-                                                "Include: post text, comments count, shares count, "
-                                                "engagement metrics, author name. "
-                                                "If text is in Hebrew, transcribe it in Hebrew. "
-                                                "Return only the extracted text, no commentary."
-                                            ),
-                                        },
-                                    ],
-                                }
-                            ],
-                        ),
-                        timeout=30,
-                    )
-
-                    for block in response.content:
-                        if block.type == "text" and block.text.strip():
-                            image_texts.append(block.text.strip())
-
-                    logger.info("ocr.image_processed", size=len(image_data))
-                except TimeoutError:
-                    logger.warning("ocr.image_timeout", size=len(image_data))
-                except Exception:
-                    logger.exception("ocr.single_image_failed", size=len(image_data))
-
-        except Exception:
-            logger.exception("ocr.extraction_failed")
-
-        return image_texts
+        It used a metered vision call per embedded image. The subscription worker
+        runs text-only jobs, so embedded images are counted and logged but not
+        transcribed; paste the screenshot text into the document to include it.
+        """
+        skipped = sum(
+            1
+            for rel in doc.part.rels.values()
+            if "image" in rel.reltype and len(rel.target_part.blob) >= 5000
+        )
+        if skipped:
+            logger.info("ocr.disabled_subscription_policy", images_skipped=skipped)
+        return []
 
     async def ingest_text(self, text: str, file_name: str) -> dict[str, Any]:
         """Ingest raw text content."""

@@ -1,4 +1,4 @@
-﻿"""Base agent class with LLM calling, cost tracking, and prompt resolution."""
+"""Base agent class with LLM calling, cost tracking, and prompt resolution."""
 
 from __future__ import annotations
 
@@ -7,9 +7,17 @@ import uuid
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-import anthropic
 import structlog
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
+
+from tce.llm import LLMPolicyError, LLMRequest, LLMUnavailable, complete
+from tce.llm.provider import (
+    ShimMessage,
+    ShimUsage,
+    TextBlock,
+    flatten_system,
+    normalize_messages,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,55 +29,17 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 
-# Anthropic's reasoning-class models reject the `temperature` parameter
-# (thinking budget is the knob, not sampling entropy). Any model whose ID
-# starts with one of these prefixes gets the kwarg silently dropped inside
-# _call_llm below. Extend this tuple when Anthropic releases another one.
-_MODELS_WITHOUT_TEMPERATURE: tuple[str, ...] = (
-    "claude-opus-4-7",
-    "claude-opus-4-8",
-)
-
-
-def _model_accepts_temperature(model: str) -> bool:
-    return not model.startswith(_MODELS_WITHOUT_TEMPERATURE)
-
-
-# Kwargs we're willing to strip on-the-fly when Anthropic returns a 400
-# complaining about an unsupported or deprecated parameter. This is the
-# runtime safety net that catches the NEXT undocumented model change
-# before it kills a production pipeline. We only strip top-level kwargs
-# that are safe to drop (sampling knobs); we never strip `model`,
-# `messages`, `max_tokens`, or `system`.
-_STRIPPABLE_KWARGS: frozenset[str] = frozenset({"temperature", "top_p", "top_k"})
-
-
-def _kwarg_from_anthropic_400(error_message: str) -> str | None:
-    """Extract the name of the offending kwarg from a 400 error message.
-
-    Anthropic's error strings like `temperature is deprecated for this model`
-    or `Unexpected parameter: top_p` consistently name the parameter. We
-    intersect that with our allowed-to-strip set so we never drop anything
-    the caller actually needs.
-    """
-    lower = error_message.lower()
-    for name in _STRIPPABLE_KWARGS:
-        if name in lower and (
-            "deprecat" in lower
-            or "unsupported" in lower
-            or "unexpected" in lower
-            or "not allowed" in lower
-            or "cannot be used" in lower
-        ):
-            return name
-    return None
+# Every LLM call goes through tce.llm.complete(): a durable job run by a Claude Code
+# subscription worker on POLICY_MODEL. There is no metered client, no per-model
+# temperature handling (the worker CLI has no sampling knob), no 400-driven kwarg
+# stripping and no lower-model fallback.
 
 
 class AgentBase(ABC):
     """Abstract base for all content engine agents.
 
     Subclasses implement _execute() with agent-specific logic.
-    The base class provides LLM calling with automatic cost tracking
+    The base class provides LLM calling with automatic usage tracking
     and prompt version resolution.
     """
 
@@ -91,9 +61,6 @@ class AgentBase(ABC):
         self.prompt_manager = prompt_manager
         self.run_id = run_id or uuid.uuid4()
         self._progress_log = progress_log if progress_log is not None else []
-        self._client = anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key.get_secret_value()
-        )
 
     def _report(self, message: str) -> None:
         """Report progress to the orchestrator's live log."""
@@ -127,6 +94,9 @@ class AgentBase(ABC):
         ...
 
     @retry(
+        # Transient infrastructure errors (e.g. a DB hiccup while enqueueing) are retried.
+        # Waiting for capacity, a failed job or a policy error is final for this call.
+        retry=retry_if_not_exception_type((LLMUnavailable, LLMPolicyError)),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=60),
         reraise=True,
@@ -139,105 +109,85 @@ class AgentBase(ABC):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
-    ) -> anthropic.types.Message:
-        """Call the Anthropic API with automatic retry and cost recording."""
-        from tce.services.resilience import resilience_manager
+        output_schema: dict[str, Any] | None = None,
+    ) -> ShimMessage:
+        """Run one subscription LLM job and record its usage.
 
-        model = model or self.default_model
-
-        # Check if we should use a fallback model (PRD Section 42.3)
-        use_fallback, fallback_model = resilience_manager.should_use_fallback(model)
-        if use_fallback and fallback_model:
-            logger.warning(
-                "agent.model_fallback",
-                agent=self.name,
-                from_model=model,
-                to_model=fallback_model,
-            )
-            model = fallback_model
-
+        ``model`` is recorded as the requested model only; the job always runs on
+        the policy model. ``temperature`` is accepted for compatibility and ignored.
+        Returns an Anthropic-shaped message (``content[0].text``, ``usage.*``).
+        """
+        requested_model = model or self.default_model
         start = time.monotonic()
 
-        # Resolve system prompt from prompt library if not provided
+        prompt_version: str | None = None
         if system is None:
-            prompt_version = await self.prompt_manager.get_active(self.name)
-            if prompt_version:
-                system = prompt_version.prompt_text
+            active = await self.prompt_manager.get_active(self.name)
+            if active:
+                system = active.prompt_text
+                prompt_version = f"{self.name}:v{active.version}"
 
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "messages": messages,
-        }
-        if _model_accepts_temperature(model):
-            kwargs["temperature"] = temperature
-        elif temperature != 0.7:
-            logger.info(
-                "agent.temperature_dropped",
-                agent=self.name,
-                model=model,
-                requested_temperature=temperature,
-            )
+        system_text: str | None = None
         if system:
-            # GAP-07: Multi-segment prompt caching (PRD Section 36.8)
-            # Try to build full cached prefix with house voice, templates, etc.
+            # House voice, templates, QA rubric and founder voice ride along as
+            # extra system segments, flattened to plain text for the worker.
             try:
                 from tce.services.cache_prefix import CachePrefixBuilder
 
                 builder = CachePrefixBuilder(self.db)
-                kwargs["system"] = await builder.build_system_message(system)
+                system_text = flatten_system(await builder.build_system_message(system))
             except Exception:
-                # Fallback to single-segment caching
-                kwargs["system"] = [
-                    {
-                        "type": "text",
-                        "text": system,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ]
+                system_text = system
 
-        self._report(f"Calling {model}...")
-        try:
-            response = await self._client.messages.create(**kwargs)
-        except anthropic.BadRequestError as exc:
-            # Runtime safety net: if Anthropic 400s because a parameter is
-            # deprecated/unsupported for this model, strip it once and retry.
-            # See _kwarg_from_anthropic_400 - we only strip sampling knobs,
-            # never load-bearing args like model/messages/max_tokens.
-            offender = _kwarg_from_anthropic_400(str(exc))
-            if offender and offender in kwargs:
-                logger.warning(
-                    "agent.kwarg_stripped_on_400",
-                    agent=self.name,
-                    model=model,
-                    stripped_kwarg=offender,
-                    error=str(exc)[:200],
-                )
-                kwargs.pop(offender)
-                response = await self._client.messages.create(**kwargs)
-            else:
-                raise
+        if temperature != 0.7:
+            logger.debug(
+                "agent.temperature_ignored", agent=self.name, requested_temperature=temperature
+            )
+
+        req = LLMRequest(
+            job_type=f"agent.{self.name}",
+            agent_name=self.name,
+            messages=normalize_messages(messages),
+            system=system_text,
+            output_schema=output_schema,
+            max_tokens=max_tokens,
+            requested_model=requested_model,
+            prompt_version=prompt_version,
+            run_id=self.run_id,
+            # One agent call = one job. Re-running an agent must not replay an old answer.
+            idempotency_key=f"agent:{self.name}:{uuid.uuid4().hex}",
+        )
+
+        self._report(f"Queued LLM job for the subscription worker (requested {requested_model})")
+        result = await complete(req)
         elapsed = time.monotonic() - start
-        in_tok = response.usage.input_tokens
-        out_tok = response.usage.output_tokens
-        self._report(f"LLM responded ({in_tok}in/{out_tok}out, {elapsed:.1f}s)")
+        self._report(
+            f"LLM responded via {result.model} "
+            f"({result.input_tokens}in/{result.output_tokens}out, {elapsed:.1f}s)"
+        )
 
-        # Record cost
+        # Usage is recorded with the model that actually ran. Billing is the
+        # subscription, so no per-token dollars are attributed.
         await self.cost_tracker.record(
             run_id=self.run_id,
             agent_name=self.name,
-            model_used=model,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-            cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-            cache_write_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
+            model_used=result.model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
             wall_time_seconds=elapsed,
+            billing="subscription",
         )
 
-        return response
+        return ShimMessage(
+            content=[TextBlock(text=result.text)],
+            usage=ShimUsage(input_tokens=result.input_tokens, output_tokens=result.output_tokens),
+            model=result.model,
+            id=f"llmjob_{result.job_id.hex}",
+            job_id=result.job_id,
+        )
 
-    def _extract_text(self, response: anthropic.types.Message) -> str:
-        """Extract text content from an Anthropic response."""
+    def _extract_text(self, response: Any) -> str:
+        """Extract text content from an LLM response."""
         for block in response.content:
             if block.type == "text":
                 return block.text

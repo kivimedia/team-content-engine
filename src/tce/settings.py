@@ -133,5 +133,21 @@ class Settings(BaseSettings):
     evidence_repo_cache_dir: str = str(_TMPDIR / "tce-evidence-repos")
     evidence_upload_dir: str = str(_TMPDIR / "tce-recordings")
 
+    # Recording and production (package 4). Every step here is local or free.
+    production_max_upload_bytes: int = 4_000_000_000
+    production_allowed_media_types: str = (
+        "video/mp4,video/quicktime,video/webm,video/x-m4v,audio/mpeg,audio/mp4,"
+        "audio/x-m4a,audio/m4a,audio/wav,audio/x-wav,audio/webm,audio/ogg"
+    )
+    # Self-hosted faster-whisper worker (ws://127.0.0.1:8765/transcribe on the VPS).
+    # Empty = transcription shows as unavailable. No paid transcription fallback.
+    production_transcribe_ws_url: str = ""
+    production_transcribe_language: str = ""  # empty = auto-detect
+    production_pause_threshold_s: float = 1.2
+    # "gws" = create Google Docs with the gws CLI on this host; "off" = private .docx only
+    production_google_export: str = "off"
+    production_gws_binary: str = "gws"
+    production_doc_team_emails: str = ""  # comma list shared as writers; never link sharing
+
 
 settings = Settings()

@@ -7,7 +7,6 @@ import uuid
 from collections import Counter
 from typing import Any
 
-import anthropic
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from tce.agents.engagement_scorer import CONFIDENCE_MULTIPLIERS, EngagementScorer
 from tce.db.session import get_db
+from tce.llm import get_llm_client
 from tce.models.creator_profile import CreatorProfile
 from tce.models.pattern_template import PatternTemplate
 from tce.models.post_example import PostExample
@@ -97,10 +97,7 @@ async def _run_enrichment(db: AsyncSession) -> dict:
     """Execute all 4 enrichment phases."""
     global _enrich_status
     s = Settings()
-    api_key = s.anthropic_api_key
-    if hasattr(api_key, "get_secret_value"):
-        api_key = api_key.get_secret_value()
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = get_llm_client("template_enricher")
     tracker = CostTracker(db)
     run_id = uuid.uuid4()
 
@@ -191,7 +188,7 @@ async def _run_enrichment(db: AsyncSession) -> dict:
         await tracker.record(
             run_id=run_id,
             agent_name="template_enricher",
-            model_used=s.haiku_model,
+            model_used=resp.model,
             input_tokens=resp.usage.input_tokens,
             output_tokens=resp.usage.output_tokens,
         )
@@ -334,7 +331,7 @@ async def _run_enrichment(db: AsyncSession) -> dict:
             await tracker.record(
                 run_id=run_id,
                 agent_name="template_enricher",
-                model_used=s.haiku_model,
+                model_used=resp.model,
                 input_tokens=resp.usage.input_tokens,
                 output_tokens=resp.usage.output_tokens,
             )

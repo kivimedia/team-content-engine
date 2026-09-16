@@ -11,9 +11,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-import anthropic
-
 from tce.agents.docx_guide_builder import SYSTEM_PROMPT
+from tce.llm import get_llm_client
 from tce.utils.docx import create_guide_docx
 
 # Sample context - representative of a real weekly run
@@ -97,21 +96,9 @@ SAMPLE_CONTEXT = {
 
 
 async def main():
-    api_key = os.environ.get("TCE_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        # Read from .env
-        env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
-        if os.path.exists(env_path):
-            with open(env_path) as f:
-                for line in f:
-                    if line.startswith("TCE_ANTHROPIC_API_KEY="):
-                        api_key = line.strip().split("=", 1)[1]
-                        break
-    if not api_key:
-        print("ERROR: No API key found")
-        return
-
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    # Subscription-only policy: the call is queued as an llm_jobs row and answered by
+    # a Claude Code subscription worker (scripts/tce_llm_worker.py). No API key is used.
+    client = get_llm_client("regenerate_guide_script")
 
     # Build user prompt (same logic as DocxGuideBuilder._execute)
     ctx = SAMPLE_CONTEXT

@@ -6,9 +6,9 @@ import json
 import uuid
 from typing import Any
 
-import anthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tce.llm import get_llm_client
 from tce.services.cost_tracker import CostTracker
 
 QUALITY_THRESHOLD = 8.0
@@ -81,10 +81,7 @@ async def assess_guide_content(
     Returns dict with keys: practical, valuable, generous, accurate,
     quick_win, transformation (each {score, reason}), composite, summary.
     """
-    api_key = settings.anthropic_api_key
-    if hasattr(api_key, "get_secret_value"):
-        api_key = api_key.get_secret_value()
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = get_llm_client("guide_assessor")
 
     # Use Sonnet for more reliable calibration
     model = settings.default_model
@@ -131,7 +128,7 @@ async def assess_guide_content(
         await tracker.record(
             run_id=uuid.uuid4(),
             agent_name="guide_assessor",
-            model_used=model,
+            model_used=resp.model,
             input_tokens=resp.usage.input_tokens,
             output_tokens=resp.usage.output_tokens,
         )

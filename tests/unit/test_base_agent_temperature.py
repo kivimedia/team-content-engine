@@ -1,80 +1,152 @@
-﻿"""Regression tests for base agent's reasoning-model temperature handling.
+"""AgentBase._call_llm under the subscription-only LLM policy.
 
-Anthropic's reasoning-class models (Opus 4.7 onward) reject the `temperature`
-parameter. AgentBase._call_llm must silently drop it for those models and
-keep passing it for all others.
+This file used to cover per-model temperature stripping and the runtime
+400-driven kwarg-stripping safety net for the metered SDK client. Both are gone:
+every agent call is now one llm_jobs row run by a Claude Code subscription worker
+on POLICY_MODEL, which has no sampling knob. These tests pin the replacement
+behaviour: temperature and model are accepted for compatibility, the model is
+recorded only as the requested model, and nothing reaches a metered client.
 """
 
 from __future__ import annotations
 
-from tce.agents.base import (
-    _MODELS_WITHOUT_TEMPERATURE,
-    _STRIPPABLE_KWARGS,
-    _kwarg_from_anthropic_400,
-    _model_accepts_temperature,
-)
+import uuid
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+import tce.agents.base as base_mod
+from tce.agents.base import AgentBase
+from tce.llm import POLICY_MODEL, LLMRequest, LLMResult, LLMUnavailable
 
 
-def test_reasoning_models_reject_temperature() -> None:
-    assert not _model_accepts_temperature("claude-opus-4-7")
-    assert not _model_accepts_temperature("claude-opus-4-7[1m]")
-    assert not _model_accepts_temperature("claude-opus-4-7-20260301")
-    assert not _model_accepts_temperature("claude-opus-4-8")
-    assert not _model_accepts_temperature("claude-opus-4-8[1m]")
-    assert not _model_accepts_temperature("claude-opus-4-8-20260301")
+class _Agent(AgentBase):
+    name = "synthetic_agent"
+    default_model = "claude-sonnet-5"
+
+    async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
+        return {}
 
 
-def test_sampling_models_accept_temperature() -> None:
-    assert _model_accepts_temperature("claude-sonnet-5")
-    assert _model_accepts_temperature("claude-sonnet-5")
-    assert _model_accepts_temperature("claude-haiku-4-5-20251001")
-    assert _model_accepts_temperature("claude-opus-3-20240229")
+class _Prompts:
+    def __init__(self, active=None):
+        self.active = active
+
+    async def get_active(self, agent_name: str):
+        return self.active
 
 
-def test_deny_list_is_prefix_based() -> None:
-    for prefix in _MODELS_WITHOUT_TEMPERATURE:
-        assert not _model_accepts_temperature(prefix)
-        assert not _model_accepts_temperature(prefix + "-anything")
+class _Costs:
+    def __init__(self):
+        self.events: list[dict[str, Any]] = []
+
+    async def record(self, **kwargs):
+        self.events.append(kwargs)
 
 
-def test_empty_and_unknown_models_accept_by_default() -> None:
-    assert _model_accepts_temperature("")
-    assert _model_accepts_temperature("some-future-sampling-model")
+def _agent(active=None) -> tuple[_Agent, _Costs]:
+    costs = _Costs()
+    agent = _Agent(
+        db=None,
+        settings=SimpleNamespace(),
+        cost_tracker=costs,
+        prompt_manager=_Prompts(active),
+        run_id=uuid.uuid4(),
+    )
+    return agent, costs
 
 
-# ---------- runtime kwarg-stripping safety net ----------
+@pytest.fixture
+def captured(monkeypatch):
+    calls: list[LLMRequest] = []
+
+    async def fake_complete(req: LLMRequest, **_: Any) -> LLMResult:
+        calls.append(req)
+        return LLMResult(
+            job_id=uuid.uuid4(),
+            text="agent answer",
+            structured=None,
+            model=POLICY_MODEL,
+            input_tokens=30,
+            output_tokens=12,
+        )
+
+    monkeypatch.setattr(base_mod, "complete", fake_complete)
+    return calls
 
 
-def test_kwarg_sniffer_catches_temperature_deprecation() -> None:
-    msg = "`temperature` is deprecated for this model."
-    assert _kwarg_from_anthropic_400(msg) == "temperature"
+def test_base_module_has_no_metered_client():
+    assert not hasattr(base_mod, "anthropic")
+    agent, _ = _agent()
+    assert not hasattr(agent, "_client")
 
 
-def test_kwarg_sniffer_catches_unexpected_top_p() -> None:
-    msg = "Unexpected parameter: top_p is not allowed for this model"
-    assert _kwarg_from_anthropic_400(msg) == "top_p"
+async def test_call_llm_goes_through_complete(captured):
+    agent, costs = _agent()
+    resp = await agent._call_llm(
+        [{"role": "user", "content": "synthetic"}],
+        system="system text",
+        model="claude-opus-4-7",
+        max_tokens=321,
+        temperature=0.2,
+    )
+    assert len(captured) == 1
+    req = captured[0]
+    assert req.requested_model == "claude-opus-4-7"
+    assert req.max_tokens == 321 and req.run_id == agent.run_id
+    assert req.job_type == "agent.synthetic_agent"
+    assert req.system == "system text"  # no DB: cache-prefix builder falls back to the prompt
+    assert req.messages == [{"role": "user", "content": "synthetic"}]
+    assert not hasattr(req, "temperature")
+
+    assert agent._extract_text(resp) == "agent answer"
+    assert resp.content[0].text == "agent answer"
+    assert resp.usage.input_tokens == 30 and resp.usage.output_tokens == 12
+    assert resp.model == POLICY_MODEL
+
+    assert costs.events[0]["model_used"] == POLICY_MODEL
+    assert costs.events[0]["billing"] == "subscription"
+    assert costs.events[0]["input_tokens"] == 30
 
 
-def test_kwarg_sniffer_catches_unsupported_top_k() -> None:
-    msg = "The parameter top_k is unsupported on reasoning models"
-    assert _kwarg_from_anthropic_400(msg) == "top_k"
+async def test_temperature_is_ignored_for_every_model(captured):
+    agent, _ = _agent()
+    for model in ("claude-opus-4-7", "claude-sonnet-5", "claude-haiku-4-5-20251001", None):
+        await agent._call_llm(
+            [{"role": "user", "content": "x"}], system="s", model=model, temperature=0.9
+        )
+    assert [r.requested_model for r in captured] == [
+        "claude-opus-4-7",
+        "claude-sonnet-5",
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-5",
+    ]
 
 
-def test_kwarg_sniffer_ignores_unrelated_400s() -> None:
-    # Prompt length / tool use / other 400s must NOT be interpreted as
-    # a kwarg problem - those need to bubble up.
-    assert _kwarg_from_anthropic_400("prompt is too long") is None
-    assert _kwarg_from_anthropic_400("invalid tool definition") is None
-    assert _kwarg_from_anthropic_400("") is None
+async def test_each_agent_call_is_its_own_job(captured):
+    agent, _ = _agent()
+    for _ in range(2):
+        await agent._call_llm([{"role": "user", "content": "same"}], system="s")
+    assert captured[0].idempotency_key != captured[1].idempotency_key
 
 
-def test_kwarg_sniffer_never_strips_load_bearing_args() -> None:
-    # Make sure the sniffer doesn't pick up model/messages/max_tokens
-    # even if an error happens to mention them.
-    for load_bearing in ("model", "messages", "max_tokens", "system"):
-        assert load_bearing not in _STRIPPABLE_KWARGS
+async def test_active_prompt_used_when_system_missing(captured):
+    agent, _ = _agent(active=SimpleNamespace(prompt_text="library prompt", version=7))
+    await agent._call_llm([{"role": "user", "content": "x"}])
+    assert captured[0].system == "library prompt"
+    assert captured[0].prompt_version == "synthetic_agent:v7"
 
 
-def test_strippable_kwargs_are_only_sampling_knobs() -> None:
-    # If we ever expand this set we want a test to fail so we reconsider.
-    assert _STRIPPABLE_KWARGS == frozenset({"temperature", "top_p", "top_k"})
+async def test_unavailable_is_not_retried(monkeypatch):
+    calls = []
+
+    async def waiting(req, **_):
+        calls.append(req)
+        raise LLMUnavailable("waiting_capacity", "usage limit")
+
+    monkeypatch.setattr(base_mod, "complete", waiting)
+    agent, costs = _agent()
+    with pytest.raises(LLMUnavailable):
+        await agent._call_llm([{"role": "user", "content": "x"}], system="s")
+    assert len(calls) == 1 and costs.events == []

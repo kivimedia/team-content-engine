@@ -30,14 +30,13 @@ import asyncio
 import json
 from typing import Any
 
-import anthropic
 import structlog
 from sqlalchemy import and_, or_, select
 
 from tce.db.session import async_session
+from tce.llm import get_llm_client
 from tce.models.creator_profile import CreatorProfile
 from tce.models.post_example import PostExample
-from tce.settings import settings
 
 logger = structlog.get_logger()
 
@@ -129,7 +128,7 @@ Respond ONLY with the JSON array. No markdown fences, no commentary.
 
 
 async def _classify_batch(
-    client: anthropic.AsyncAnthropic,
+    client: Any,
     model: str,
     posts: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -168,9 +167,7 @@ async def enrich_creator(
     """Run the classifier over every non-enriched post for the named creator."""
     stats = {"total": 0, "classified": 0, "skipped": 0, "errors": 0}
 
-    client = anthropic.AsyncAnthropic(
-        api_key=settings.anthropic_api_key.get_secret_value()
-    )
+    client = get_llm_client("post_enricher")
     model = "claude-sonnet-5"
 
     async with async_session() as db:

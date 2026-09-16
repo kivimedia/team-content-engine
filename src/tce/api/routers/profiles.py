@@ -124,15 +124,9 @@ async def analyze_creator_voice(
             detail="Posts have no text content",
         )
 
-    import anthropic
+    from tce.llm import get_llm_client
 
-    from tce.settings import Settings
-
-    s = Settings()
-    api_key = s.anthropic_api_key
-    if hasattr(api_key, "get_secret_value"):
-        api_key = api_key.get_secret_value()
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = get_llm_client("profile_analyzer")
 
     resp = await client.messages.create(
         model="claude-haiku-4-5-20251001",

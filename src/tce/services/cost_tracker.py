@@ -1,4 +1,4 @@
-﻿"""Cost tracking service â€” records and queries per-agent LLM costs (PRD Section 36)."""
+"""Cost tracking service â€” records and queries per-agent LLM costs (PRD Section 36)."""
 
 from __future__ import annotations
 
@@ -75,11 +75,22 @@ class CostTracker:
         cache_write_tokens: int = 0,
         wall_time_seconds: float | None = None,
         prompt_id: uuid.UUID | None = None,
+        billing: str = "subscription",
     ) -> CostEvent:
-        """Record a single cost event."""
-        cost_usd = compute_cost(
-            model_used, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
-        )
+        """Record a single usage event.
+
+        TCE's LLM calls run on a Claude Code subscription worker (see tce.llm), so
+        the default ``billing="subscription"`` records real model + token counts
+        with ``computed_cost_usd=0``: no per-token dollars are spent or invented.
+        ``billing="metered"`` keeps the price-table estimate for any future
+        metered usage that is explicitly approved.
+        """
+        if billing == "metered":
+            cost_usd = compute_cost(
+                model_used, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+            )
+        else:
+            cost_usd = 0.0
 
         # Compute cache hit rate
         total_input = input_tokens + cache_read_tokens + cache_write_tokens
@@ -90,6 +101,7 @@ class CostTracker:
             date=date.today(),
             agent_name=agent_name,
             model_used=model_used,
+            model_version=f"billing:{billing}",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,

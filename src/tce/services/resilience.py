@@ -1,4 +1,4 @@
-﻿"""Rate limiting and resilience layer (PRD Section 42).
+"""Rate limiting and resilience layer (PRD Section 42).
 
 Provides circuit breaker, rate limit tracking, fallback model logic,
 and queue management for external API calls.
@@ -32,12 +32,10 @@ DEFAULT_RETRY_CONFIG = {
     },
 }
 
-# PRD Section 42.3: Fallback model chain
-FALLBACK_CHAIN: dict[str, str] = {
-    "claude-opus-4-7": "claude-sonnet-5",
-    "claude-opus-4-20250514": "claude-sonnet-5",
-    "claude-sonnet-5": "claude-haiku-4-5-20251001",
-}
+# PRD Section 42.3 described an Opus -> Sonnet -> Haiku fallback chain. It is retired:
+# every LLM call runs on the subscription policy model (tce.llm.POLICY_MODEL) and
+# capacity exhaustion waits (llm_jobs.waiting_capacity) instead of switching models.
+FALLBACK_CHAIN: dict[str, str] = {}
 
 # Circuit breaker thresholds
 CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
@@ -145,23 +143,11 @@ class ResilienceManager:
         return self._rate_limits[service_name]
 
     def get_fallback_model(self, model: str) -> str | None:
-        """Get the fallback model for a given model (PRD Section 42.3)."""
-        return FALLBACK_CHAIN.get(model)
+        """No model fallback exists under the subscription-only LLM policy."""
+        return None
 
     def should_use_fallback(self, model: str) -> tuple[bool, str | None]:
-        """Check if we should fall back to a cheaper model."""
-        cb = self.get_circuit_breaker(model)
-        rl = self.get_rate_limit(model)
-
-        if cb.is_open or rl.should_delay():
-            fallback = self.get_fallback_model(model)
-            if fallback:
-                logger.info(
-                    "resilience.fallback",
-                    from_model=model,
-                    to_model=fallback,
-                )
-                return True, fallback
+        """Always (False, None): a busy or failing model is waited on, never swapped."""
         return False, None
 
     def get_status(self) -> dict[str, Any]:

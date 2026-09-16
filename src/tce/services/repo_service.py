@@ -319,13 +319,16 @@ class RepoService:
 
         files = sorted(files, key=_score, reverse=True)
         for fn in files:
-            file_path = path / fn
-            if not file_path.exists() or file_path.is_dir():
-                continue
+            # Read the file AS OF `sha` (git show sha:path), never the working
+            # tree: the current file is not proof of what that commit changed,
+            # and a file deleted since then must still be citable.
             try:
-                content = file_path.read_text(encoding="utf-8", errors="replace")
+                result = await self._run_git(["show", f"{sha}:{fn}"], cwd=path, timeout=30)
             except Exception:
                 continue
+            if result.returncode != 0 or result.stdout is None:
+                continue
+            content = result.stdout
             # Defense in depth: a file with no binary extension (e.g. a stray
             # .data or .out) can still contain null bytes. Strip them before
             # the JSONB insert sees them.

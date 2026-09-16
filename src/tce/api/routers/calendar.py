@@ -120,10 +120,9 @@ ANGLE_DESCRIPTIONS = {
 async def _generate_topics(entries: list[ContentCalendarEntry], weekly_theme: str | None) -> None:
     """Use a quick LLM call to generate one-line topics for each day."""
     try:
-        import anthropic
+        from tce.llm import get_llm_client
 
-        settings = Settings()
-        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        client = get_llm_client("calendar_topics")
 
         days_info = []
         for entry in entries:
@@ -643,15 +642,11 @@ async def ai_revise_field(
     if not feedback.strip():
         raise HTTPException(status_code=400, detail="Feedback text is required")
 
-    import anthropic
-
+    from tce.llm import get_llm_client
     from tce.services.cost_tracker import CostTracker
 
     s = Settings()
-    api_key = s.anthropic_api_key
-    if hasattr(api_key, "get_secret_value"):
-        api_key = api_key.get_secret_value()
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = get_llm_client("field_reviser")
 
     # Detect if this is a full post field (needs more tokens + humanization)
     is_post_field = any(kw in field_name.lower() for kw in ("_post", "post_", "caption", "body", "content"))
@@ -707,7 +702,7 @@ async def ai_revise_field(
     await tracker.record(
         run_id=uuid.uuid4(),
         agent_name="field_reviser",
-        model_used=model,
+        model_used=resp.model,
         input_tokens=resp.usage.input_tokens,
         output_tokens=resp.usage.output_tokens,
     )
@@ -882,10 +877,10 @@ async def regenerate_alternatives(
     strategy_text = await load_strategy_for_workspace(db, ws_id_for_ctx)
     portfolio_text = await load_portfolio_for_workspace(db, ws_id_for_ctx)
 
-    import anthropic
+    from tce.llm import get_llm_client
 
     settings_local = Settings()
-    client = anthropic.AsyncAnthropic(api_key=settings_local.anthropic_api_key)
+    client = get_llm_client("calendar_planner")
 
     seen_block = (
         "\n".join(f"- {t}" for t in seen_topics) if seen_topics else "(none yet)"
@@ -1136,8 +1131,7 @@ async def regenerate_guide_options(
     get rebuilt. Replaces the GuideOption rows for the plan and returns the
     new shape so the dashboard can swap them in place.
     """
-    import anthropic
-
+    from tce.llm import get_llm_client
     from tce.settings import Settings as _Settings
 
     payload = payload or {}
@@ -1199,10 +1193,7 @@ async def regenerate_guide_options(
     )
 
     s = _Settings()
-    api_key = s.anthropic_api_key
-    if hasattr(api_key, "get_secret_value"):
-        api_key = api_key.get_secret_value()
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = get_llm_client("guide_options")
     resp = await client.messages.create(
         model=getattr(s, "default_model", "claude-sonnet-5"),
         max_tokens=1500,

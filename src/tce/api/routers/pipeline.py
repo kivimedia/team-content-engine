@@ -2109,9 +2109,10 @@ async def brainstorm(
     messages.append({"role": "user", "content": request.message})
 
     # --- Call Sonnet with tool_use ---
-    import anthropic
+    from tce.llm import get_llm_client
 
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
+    # Tools are emulated by the subscription shim (structured tool_calls), not native tool use.
+    client = get_llm_client("brainstorm")
     response = await client.messages.create(
         model=settings.default_model,
         max_tokens=2048,

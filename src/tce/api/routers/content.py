@@ -189,8 +189,7 @@ async def _regenerate_hooks_for_package(pkg: PostPackage, db: AsyncSession) -> N
     """Regenerate hook_variants from current post content via LLM."""
     import json
 
-    import anthropic
-
+    from tce.llm import get_llm_client
     from tce.services.cost_tracker import CostTracker
     from tce.services.pipeline_saver import _clean_list
     from tce.settings import Settings
@@ -199,10 +198,7 @@ async def _regenerate_hooks_for_package(pkg: PostPackage, db: AsyncSession) -> N
         return
 
     s = Settings()
-    api_key = s.anthropic_api_key
-    if hasattr(api_key, "get_secret_value"):
-        api_key = api_key.get_secret_value()
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = get_llm_client("hook_regenerator")
 
     system_prompt = (
         "You are a B2B social media content strategist. "
@@ -233,7 +229,7 @@ async def _regenerate_hooks_for_package(pkg: PostPackage, db: AsyncSession) -> N
         await tracker.record(
             run_id=uuid.uuid4(),
             agent_name="hook_regenerator",
-            model_used=s.haiku_model,
+            model_used=resp.model,
             input_tokens=resp.usage.input_tokens,
             output_tokens=resp.usage.output_tokens,
         )

@@ -19,11 +19,10 @@ def test_retry_config():
     assert DEFAULT_RETRY_CONFIG["timeout_seconds"]["fal_ai"] == 60
 
 
-def test_fallback_chain():
-    """PRD Section 42.3: Opus -> Sonnet -> Haiku."""
-    assert "claude-opus-4-20250514" in FALLBACK_CHAIN
-    assert FALLBACK_CHAIN["claude-opus-4-20250514"] == "claude-sonnet-5"
-    assert FALLBACK_CHAIN["claude-sonnet-5"] == "claude-haiku-4-5-20251001"
+def test_fallback_chain_retired():
+    """PRD Section 42.3's Opus -> Sonnet -> Haiku chain is retired: the subscription-only
+    LLM policy never swaps models, it waits for capacity instead."""
+    assert FALLBACK_CHAIN == {}
 
 
 def test_circuit_breaker_initial():
@@ -73,11 +72,13 @@ def test_resilience_manager():
     assert rl.service_name == "anthropic"
 
 
-def test_resilience_manager_fallback():
+def test_resilience_manager_never_falls_back():
     manager = ResilienceManager()
-    fallback = manager.get_fallback_model("claude-opus-4-20250514")
-    assert fallback == "claude-sonnet-5"
+    assert manager.get_fallback_model("claude-opus-4-20250514") is None
     assert manager.get_fallback_model("unknown") is None
+    for _ in range(CIRCUIT_BREAKER_FAILURE_THRESHOLD):
+        manager.get_circuit_breaker("claude-opus-5").record_failure()
+    assert manager.should_use_fallback("claude-opus-5") == (False, None)
 
 
 def test_resilience_status():

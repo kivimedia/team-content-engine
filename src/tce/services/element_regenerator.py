@@ -6,10 +6,10 @@ import json
 import uuid
 from typing import Any
 
-import anthropic
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tce.llm import get_llm_client
 from tce.models.post_package import PostPackage
 from tce.models.story_brief import StoryBrief
 from tce.settings import settings
@@ -46,10 +46,7 @@ async def regenerate_element(
                 f"Audience: {brief.audience}\n"
             )
 
-    api_key = settings.anthropic_api_key
-    if hasattr(api_key, "get_secret_value"):
-        api_key = api_key.get_secret_value()
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = get_llm_client("element_regenerator")
 
     # Store feedback history
     fb_history = pkg.element_feedback or {}
@@ -91,7 +88,7 @@ async def regenerate_element(
 
 
 async def _regen_post(
-    client: anthropic.AsyncAnthropic,
+    client: Any,
     platform: str,
     current_text: str,
     brief_context: str,
@@ -121,7 +118,7 @@ async def _regen_post(
 
 
 async def _regen_hooks(
-    client: anthropic.AsyncAnthropic,
+    client: Any,
     post_text: str,
     brief_context: str,
     feedback: str,
@@ -156,7 +153,7 @@ async def _regen_hooks(
 
 
 async def _regen_image_prompt(
-    client: anthropic.AsyncAnthropic,
+    client: Any,
     image_prompts: Any,
     index: int,
     brief_context: str,
