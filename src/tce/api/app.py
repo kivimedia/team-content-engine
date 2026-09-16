@@ -152,6 +152,32 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # A text job that is waiting for subscription capacity or failed is a clean,
+    # explained 503 - never a hung request, never a silent paid fallback.
+    from fastapi.responses import JSONResponse
+
+    from tce.llm import LLMPolicyError, LLMUnavailable
+
+    @app.exception_handler(LLMUnavailable)
+    async def _llm_unavailable(_request, exc: LLMUnavailable):  # type: ignore[no-untyped-def]
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Text generation is not available right now",
+                "llm_status": exc.status,
+                "llm_detail": exc.detail,
+                "job_id": str(exc.job_id) if exc.job_id else None,
+                "retry_at": exc.retry_at.isoformat() if exc.retry_at else None,
+            },
+        )
+
+    @app.exception_handler(LLMPolicyError)
+    async def _llm_policy(_request, exc: LLMPolicyError):  # type: ignore[no-untyped-def]
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Blocked by subscription-only LLM policy", "reason": str(exc)},
+        )
+
     # CORS (must be added before other middleware so it wraps outermost)
     app.add_middleware(
         CORSMiddleware,
