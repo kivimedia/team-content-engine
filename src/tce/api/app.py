@@ -93,6 +93,36 @@ async def _mark_stale_weekly_plans_interrupted() -> None:
         structlog.get_logger().warning("mark_stale_weekly_plans.failed", exc_info=True)
 
 
+async def _mark_stale_editorial_work_interrupted() -> None:
+    """Background evidence runs and media steps die with the process.
+
+    Without this, a restart leaves them showing "running" / "transcribing"
+    forever. Mark them as interrupted so coverage and the live panel stay true;
+    unfinished sources remain pending for the next run.
+    """
+    try:
+        from sqlalchemy import text
+
+        async with async_session() as db:
+            await db.execute(
+                text(
+                    "UPDATE evidence_collection_runs SET status = 'partial', complete = false, "
+                    "current_activity = 'Interrupted by server restart; unfinished items stay "
+                    "pending for the next run', finished_at = now() WHERE status = 'running'"
+                )
+            )
+            await db.execute(
+                text(
+                    "UPDATE recording_uploads SET status = 'failed', status_detail = "
+                    "'Interrupted by server restart; run the step again' "
+                    "WHERE status IN ('transcribing', 'rendering')"
+                )
+            )
+            await db.commit()
+    except Exception:
+        pass  # never block startup; worst case the stale row remains
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Seed database, sweep stale runs, and start background scheduler on startup."""
@@ -106,6 +136,7 @@ async def lifespan(app: FastAPI):
     # Recover from a previous restart: any plan_week_deep run still flagged
     # 'running' is a ghost (its async task died with the previous process).
     await _mark_stale_weekly_plans_interrupted()
+    await _mark_stale_editorial_work_interrupted()
 
     # Auto-start the scheduler so recurring workflows (daily_content,
     # weekly_planning, daily_backup, etc.) fire without manual intervention.
