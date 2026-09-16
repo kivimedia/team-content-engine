@@ -317,6 +317,80 @@ img{background:var(--card);border-radius:4px}
 @media(max-width:900px){.week-grid{grid-template-columns:repeat(3,1fr)}.month-grid{grid-template-columns:60px repeat(3,1fr)}}
 @media(max-width:768px){.sidebar{display:none}.search-input{width:150px}.search-input:focus{width:250px}}
 @media(max-width:600px){.week-grid{grid-template-columns:1fr}.option-cards{flex-direction:column}.guide-opt-cards{flex-direction:column}}
+/* === EDITORIAL (evidence-first recording workflow) === */
+.ed-mobile-nav{display:none;padding:8px 12px;background:var(--card);border-bottom:1px solid var(--border);gap:8px}
+.ed-mobile-nav label{font-size:12px;color:var(--dim)}
+.ed-mobile-nav select{min-height:44px;flex:1;min-width:0;background:hsl(220 18% 8%);color:var(--text)}
+@media(max-width:768px){.ed-mobile-nav{display:flex;align-items:center}}
+.ed{display:flex;flex-direction:column;gap:16px;min-width:0}
+.ed *{min-width:0}
+.ed-top{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;justify-content:space-between}
+.ed-week{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.ed-actions{display:flex;flex-wrap:wrap;gap:8px}
+.ed-layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px;align-items:start}
+@media(max-width:1100px){.ed-layout{grid-template-columns:minmax(0,1fr)}}
+.ed-side{display:flex;flex-direction:column;gap:16px}
+@media(min-width:1101px){.ed-side{position:sticky;top:0;max-height:calc(100vh - 90px);overflow-y:auto}}
+.ed-body .ed-sec .ed-sec{margin-top:12px}
+@media(max-width:1100px){.ed-side{order:-1}}
+.ed-panel{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.ed-panel h3{font-size:13px;color:var(--text);margin-bottom:8px;display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}
+.ed-sub{font-size:12px;color:var(--dim)}
+.ed-row{padding:8px 0;border-top:1px solid var(--border);font-size:13px;color:var(--text);overflow-wrap:anywhere}
+.ed-row:first-of-type{border-top:none}
+.ed-badge{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:600;line-height:1.6;white-space:nowrap;border:1px solid transparent}
+.ed-ok{background:var(--success-dim);color:hsl(150 60% 62%);border-color:hsl(150 60% 45% / .35)}
+.ed-warn{background:var(--warning-dim);color:hsl(38 92% 66%);border-color:hsl(38 92% 58% / .35)}
+.ed-bad{background:var(--destructive-dim);color:hsl(0 80% 74%);border-color:hsl(0 72% 55% / .4)}
+.ed-info{background:var(--info-dim);color:hsl(210 80% 74%);border-color:hsl(210 80% 58% / .35)}
+.ed-neutral{background:hsl(215 16% 35% / .25);color:var(--text);border-color:var(--border)}
+.ed-card{background:var(--gradient-card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.ed-card-head{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;cursor:pointer;background:none;border:none;width:100%;text-align:left;color:var(--text);font:inherit;min-height:44px}
+.ed-card-head:focus-visible{outline:2px solid var(--primary);outline-offset:-2px}
+.ed-rank{font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;color:var(--primary);flex:0 0 auto;width:34px;text-align:center}
+.ed-title{font-size:15px;font-weight:600;color:var(--text);line-height:1.35;overflow-wrap:anywhere}
+.ed-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;align-items:center}
+.ed-body{padding:0 16px 16px;display:flex;flex-direction:column;gap:14px}
+.ed-sec h4{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin-bottom:6px;font-family:'JetBrains Mono',monospace}
+.ed-sec p,.ed-sec li{font-size:14px;color:var(--text);line-height:1.55;overflow-wrap:anywhere}
+.ed-sec ul,.ed-sec ol{padding-left:20px}
+.ed-gates{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}
+.ed-gate{border:1px solid var(--border);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px}
+.ed-gate-name{font-size:12px;font-weight:600;color:var(--text)}
+.ed-gate-reason{font-size:13px;color:var(--text)}
+.ed-cite{border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;font-size:13px;color:var(--text);overflow-wrap:anywhere}
+.ed-cite a{color:var(--primary);overflow-wrap:anywhere}
+.ed-cite details{margin-top:6px}
+.ed-cite summary,.ed-details>summary{cursor:pointer;color:var(--accent);font-size:13px;min-height:36px;display:flex;align-items:center}
+.ed-private{border-left:3px solid var(--accent);padding:8px 10px;margin-top:6px;background:var(--accent-dim);white-space:pre-wrap;font-size:13px;color:var(--text)}
+.ed-btns{display:flex;flex-wrap:wrap;gap:8px}
+.ed .btn{min-height:40px;justify-content:center}
+.ed textarea,.ed input,.ed select{background:hsl(220 18% 8%);color:var(--text);max-width:100%}
+.ed select option{background:hsl(220 18% 10%);color:var(--text)}
+.ed textarea{width:100%;min-height:72px;resize:vertical;font-size:14px}
+.ed-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}
+.ed-form label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)}
+.ed-form .ed-wide{grid-column:1/-1}
+.ed-progress{height:8px;background:var(--border);border-radius:4px;overflow:hidden}
+.ed-progress>div{height:100%;background:var(--primary);width:0;transition:width .2s}
+.ed-issue{border:1px solid hsl(0 72% 55% / .5);background:var(--destructive-dim);border-radius:8px;padding:8px 10px;color:var(--text);font-size:13px;margin-top:6px}
+.ed-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+.ed-table td,.ed-table th{border-top:1px solid var(--border);padding:6px 4px;text-align:left;vertical-align:top;color:var(--text);overflow-wrap:anywhere}
+.ed-table th{color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase}
+.ed-phrases{padding-left:24px}
+.ed-phrases li{padding:4px 0;font-size:15px}
+.ed-post{white-space:pre-wrap;font-size:14px;color:var(--text);background:hsl(220 18% 8%);border:1px solid var(--border);border-radius:8px;padding:10px;overflow-wrap:anywhere}
+.ed .ed-small-btn{min-height:32px;padding:4px 10px}
+.ed-empty{padding:20px;text-align:center;color:var(--dim);font-size:14px}
+.ed-err{color:hsl(0 80% 74%);font-size:13px}
+@media(max-width:768px){
+  .ed .btn,.ed select,.ed input,.ed-card-head,.ed-cite summary,.ed-details>summary{min-height:44px}
+  .ed .btn{padding:10px 14px}
+  .ed-week,.ed-actions{width:100%}
+  .ed-actions .btn{flex:1 1 140px}
+  .ed-body{padding:0 12px 14px}
+  .ed-card-head{padding:12px}
+}
 </style>
 </head>
 <body>
@@ -333,6 +407,10 @@ img{background:var(--card);border-radius:4px}
         <button class="sidebar-item" data-tab="builder"><span class="icon">&#128296;</span><span class="label">Week Builder</span></button>
         <button class="sidebar-item" data-tab="guides"><span class="icon">&#128214;</span><span class="label">Guides</span></button>
         <button class="sidebar-item" data-tab="trends"><span class="icon">&#128200;</span><span class="label">Trends</span></button>
+      </div>
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Editorial</div>
+        <button class="sidebar-item" data-tab="editorial"><span class="icon">&#127897;</span><span class="label">Evidence to Recording</span></button>
       </div>
       <div class="sidebar-group">
         <div class="sidebar-group-label">Create</div>
@@ -378,6 +456,7 @@ img{background:var(--card);border-radius:4px}
         <div class="health-wrap"><div class="health-dot" id="health-dot"></div><span id="health-text">Checking...</span></div>
       </div>
     </div>
+    <div class="ed-mobile-nav"><label for="ed-mobile-tab">Go to</label><select id="ed-mobile-tab" onchange="switchTab(this.value)"></select></div>
     <div id="breadcrumb"></div>
     <div class="content-scroll">
       <div class="main" id="app"></div>
@@ -443,7 +522,8 @@ const TAB_LABELS = {
   agents: 'Agents', costs: 'Costs', analytics: 'Analytics',
   templates: 'Templates', prompts: 'Prompts', settings: 'Settings',
   chat: 'Chat', trends: 'Trends', help: 'Help',
-  'product-demo': 'Product Demo', 'video-lead': 'Video Lead', brands: 'Brands'
+  'product-demo': 'Product Demo', 'video-lead': 'Video Lead', brands: 'Brands',
+  editorial: 'Editorial'
 };
 
 // Sidebar toggle
@@ -5223,6 +5303,7 @@ function _renderPkgCard(p) {
       if (fbWc) html += '<span style="color:var(--accent2);font-weight:600">FB: ' + fbWc + ' words</span>';
       if (liWc) html += '<span style="color:var(--accent2);font-weight:600">LI: ' + liWc + ' words</span>';
       if (p.pipeline_run_id) html += '<span>Run: ' + p.pipeline_run_id.substring(0, 8) + '</span>';
+      html += voiceCheckBadge(p);
       if (p.proof_status) {
         const ps = _proofStatusDisplay(p.proof_status);
         html += '<span style="color:' + ps.color + ';font-weight:600" title="' + ps.tooltip + '">' + ps.icon + ' ' + ps.label + '</span>';
@@ -9966,7 +10047,7 @@ function _renderShowFailure(tab, err) {
 }
 
 function render() {
-  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, start: renderStartFromSomething, topic: renderStartFromSomething, repo: renderStartFromSomething, copy: renderStartFromSomething, 'video-studio': renderVideoStudio, 'video-lead': renderVideoStudio, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, brands: renderBrands };
+  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, start: renderStartFromSomething, topic: renderStartFromSomething, repo: renderStartFromSomething, copy: renderStartFromSomething, 'video-studio': renderVideoStudio, 'video-lead': renderVideoStudio, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, brands: renderBrands, editorial: () => renderEditorial() };
   updateBreadcrumb(null);
   const tab = currentTab;
   const fn = map[tab] || renderGenerate;
@@ -10168,6 +10249,707 @@ setInterval(() => {
 }, 1000);
 
 render();
+</script>
+<script>
+/*ED-JS-START*/
+// === EDITORIAL: evidence -> ideas -> recording packet -> recording -> edit -> receipt ===
+// Every async action reads its state back from the server, so a reload shows the truth.
+// Requests are relative /api/v1 calls only; the authenticated reverse proxy adds the editor key.
+
+const ED_GATES = {
+  small_service_business: 'Small service business',
+  coach_or_event_owner_relevance: 'Coach or event owner relevance',
+  concrete_supported_substance: 'Concrete, supported substance',
+  connects_to_ziv_work: 'Connects to Ziv work',
+};
+const ED_KIND_LABELS = { fathom_meeting: 'Meetings (Fathom)', github_commit_group: 'Code (GitHub)', moment_extraction: 'Moment extraction' };
+const ED = {
+  week: null, candidates: [], loaded: false, loadError: null, open: new Set(),
+  packets: {}, packetJobs: {}, uploads: {}, pubs: {}, exportResult: {}, uploading: {},
+  activity: null, activityError: null, activityAt: null, worker: null, workerError: null,
+  jobs: [], coverage: null, coverageError: null, pollTimer: null, lastUploadSig: '',
+};
+
+function edEsc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function edDate(s) {
+  if (!s) return null;
+  const str = String(s);
+  return new Date(/[zZ]|[+-]\d\d:\d\d$/.test(str) ? str : str + 'Z');
+}
+function edAgo(s) {
+  const d = edDate(s);
+  if (!d || isNaN(d)) return 'never';
+  const sec = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+  if (sec < 60) return sec + 's ago';
+  if (sec < 3600) return Math.round(sec / 60) + 'm ago';
+  if (sec < 86400) return Math.round(sec / 3600) + 'h ago';
+  return Math.round(sec / 86400) + 'd ago';
+}
+function edClock(s) {
+  const d = edDate(s);
+  return d && !isNaN(d) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'unknown time';
+}
+function edMmss(sec) {
+  if (sec == null || isNaN(sec)) return '?';
+  sec = Math.max(0, Math.round(Number(sec)));
+  return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+}
+async function edApi(path, opts = {}) {
+  const r = await fetch(API + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const text = await r.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+  if (!r.ok) {
+    let detail = data && data.detail ? data.detail : text.slice(0, 200);
+    if (typeof detail !== 'string') detail = JSON.stringify(detail).slice(0, 200);
+    if (r.status === 401) detail = 'Editor access key missing (the reverse proxy must add it). ' + detail;
+    if (r.status === 503) detail = 'Private access is not configured on the server. ' + detail;
+    const err = new Error(detail || ('HTTP ' + r.status));
+    err.status = r.status;
+    throw err;
+  }
+  return data;
+}
+function edBadge(text, cls) { return '<span class="ed-badge ' + cls + '">' + edEsc(text) + '</span>'; }
+function edStatusClass(st) {
+  const s = String(st || '').toLowerCase();
+  if (['complete', 'completed', 'done', 'ok', 'clean', 'exported', 'edited', 'planned', 'transcribed', 'published', 'recorded', 'selected', 'pass'].includes(s)) return 'ed-ok';
+  if (['failed', 'fail', 'blocked', 'needs_review', 'rejected', 'access_problem', 'issues', 'unavailable'].includes(s)) return 'ed-bad';
+  if (['running', 'leased', 'transcribing', 'rendering', 'uploading', 'queued'].includes(s)) return 'ed-info';
+  if (['partial', 'waiting_capacity', 'waiting', 'not_connected', 'unevaluated', 'superseded', 'proposed'].includes(s)) return 'ed-warn';
+  return 'ed-neutral';
+}
+function edHuman(s) { return String(s || '').replace(/_/g, ' '); }
+
+// "Not evaluated" is shown explicitly: a missing or failed voice critic is never a pass.
+function voiceCheckBadge(p) {
+  const qs = p.quality_scores || {};
+  const status = p.voice_evaluation_status || qs.voice_evaluation_status;
+  const verdict = p.voice_verdict || qs.voice_verdict;
+  const score = p.voice_score != null ? p.voice_score : qs.voice_score;
+  if (!verdict || verdict === 'unevaluated' || status === 'unevaluated') {
+    const why = status === 'unevaluated' || verdict === 'unevaluated'
+      ? 'The voice critic did not run or failed for this package, so there is no voice score.'
+      : 'No voice critic result is stored for this package.';
+    return '<span class="ed-badge ed-warn" title="' + edEsc(why) + '">Voice check: Not evaluated</span>';
+  }
+  return '<span class="ed-badge ' + edStatusClass(verdict) + '">Voice: ' + edEsc(verdict) + (score != null ? ' ' + edEsc(score) + '/10' : '') + '</span>';
+}
+
+function edMonday(d) {
+  d = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const day = d.getDay();
+  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+  return d;
+}
+function edIsoDate(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function edWindow() {
+  const start = ED.week + 'T00:00:00Z';
+  const e = new Date(ED.week + 'T00:00:00Z'); e.setUTCDate(e.getUTCDate() + 7);
+  return { start, end: e.toISOString().slice(0, 19) + 'Z' };
+}
+function edSetWeek(value) {
+  const parts = String(value).split('-').map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return;
+  ED.week = edIsoDate(edMonday(new Date(parts[0], parts[1] - 1, parts[2])));
+  localStorage.setItem('tce_ed_week', ED.week);
+  ED.candidates = []; ED.loaded = false; ED.open.clear(); ED.coverage = null;
+  renderEditorial();
+}
+function edShiftWeek(days) {
+  const d = new Date(ED.week + 'T00:00:00'); d.setDate(d.getDate() + days);
+  edSetWeek(edIsoDate(d));
+}
+
+function renderEditorial() {
+  if (!ED.week) ED.week = localStorage.getItem('tce_ed_week') || edIsoDate(edMonday(new Date()));
+  const app = document.getElementById('app');
+  const wk = new Date(ED.week + 'T00:00:00');
+  const wkEnd = new Date(wk); wkEnd.setDate(wkEnd.getDate() + 6);
+  const label = wk.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' to ' + wkEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  app.innerHTML = `
+  <div class="ed" id="ed-root">
+    <div class="ed-top">
+      <div>
+        <h2 style="font-size:18px;color:var(--text)">Evidence to recording</h2>
+        <div class="ed-sub">Week of ${edEsc(label)}. Ideas come from your meetings and code, never from a guess.</div>
+      </div>
+      <div class="ed-week">
+        <button class="btn btn-dim" onclick="edShiftWeek(-7)" aria-label="Previous week">Prev week</button>
+        <input type="date" id="ed-week-input" value="${edEsc(ED.week)}" onchange="edSetWeek(this.value)" aria-label="Week starting">
+        <button class="btn btn-dim" onclick="edSetWeek(edIsoDate(new Date()))">This week</button>
+        <button class="btn btn-dim" onclick="edShiftWeek(7)" aria-label="Next week">Next week</button>
+      </div>
+    </div>
+    <div class="ed-actions">
+      <button class="btn btn-blue" id="ed-collect-btn" onclick="edCollect()">Collect week</button>
+      <button class="btn btn-blue" id="ed-extract-btn" onclick="edExtract()">Extract moments</button>
+      <button class="btn btn-primary" id="ed-select-btn" onclick="edSelect()">Select ideas</button>
+    </div>
+    <div class="ed-layout">
+      <div id="ed-candidates"><div class="ed-empty">Loading ideas for this week...</div></div>
+      <div class="ed-side">
+        <div class="ed-panel" id="ed-activity"><h3>Live activity</h3><div class="ed-sub">Connecting to the activity feed...</div></div>
+        <div class="ed-panel" id="ed-coverage"><h3>Coverage</h3><div class="ed-sub">Loading source coverage for this week...</div></div>
+      </div>
+    </div>
+  </div>`;
+  edLoadCandidates();
+  edLoadCoverage();
+  edPoll();
+  edStartPolling();
+}
+
+function edStartPolling() {
+  if (ED.pollTimer) clearInterval(ED.pollTimer);
+  ED.pollTimer = setInterval(() => {
+    if (currentTab !== 'editorial' || !document.getElementById('ed-root')) { clearInterval(ED.pollTimer); ED.pollTimer = null; return; }
+    if (document.hidden) return;
+    edPoll();
+  }, 3000);
+}
+
+async function edPoll() {
+  const [act, worker, jobs] = await Promise.allSettled([
+    edApi('/production/activity?limit=15'),
+    edApi('/llm-jobs/worker-status'),
+    edApi('/editorial/jobs'),
+  ]);
+  if (act.status === 'fulfilled') { ED.activity = act.value; ED.activityError = null; ED.activityAt = new Date(); }
+  else ED.activityError = act.reason.message;
+  if (worker.status === 'fulfilled') { ED.worker = worker.value; ED.workerError = null; } else ED.workerError = worker.reason.message;
+  if (jobs.status === 'fulfilled') ED.jobs = jobs.value.jobs || [];
+  edRenderActivity();
+  edSyncFromActivity();
+}
+
+// Refresh open cards whose server-side state moved (upload status, packet job).
+function edSyncFromActivity() {
+  if (!ED.activity) return;
+  const sig = (ED.activity.uploads || []).map(u => u.id + ':' + u.status + ':' + u.status_detail).join('|');
+  if (sig !== ED.lastUploadSig) {
+    ED.lastUploadSig = sig;
+    for (const u of ED.activity.uploads || []) if (ED.open.has(u.candidate_id)) edLoadRecordings(u.candidate_id);
+  }
+  for (const j of ED.jobs) {
+    if (j.kind === 'packet' && ED.open.has(j.key)) {
+      const prev = ED.packetJobs[j.key];
+      ED.packetJobs[j.key] = j;
+      if (!prev || prev.state !== j.state || prev.current_activity !== j.current_activity) {
+        if (prev && prev.state === 'running' && j.state !== 'running') edLoadPackets(j.key);
+        else edRenderPacket(j.key);
+      }
+    }
+    if (j.kind === 'select' && j.key === ED.week && j.state !== 'running' && ED._selecting) {
+      ED._selecting = false; edLoadCandidates();
+    }
+  }
+}
+
+function edRenderActivity() {
+  const el = document.getElementById('ed-activity');
+  if (!el) return;
+  let h = '<h3><span>Live activity</span><span class="ed-sub">' + (ED.activityAt ? 'updated ' + ED.activityAt.toLocaleTimeString() : '') + '</span></h3>';
+  if (ED.activityError) h += '<div class="ed-err">Activity feed unavailable: ' + edEsc(ED.activityError) + '</div>';
+  // Subscription worker
+  const w = ED.worker && ED.worker.latest;
+  h += '<div class="ed-row"><div style="font-weight:600">Subscription worker</div>';
+  if (ED.workerError) h += '<div class="ed-err">' + edEsc(ED.workerError) + '</div>';
+  else if (!w) h += '<div>No worker has reported yet. Jobs will wait in the queue until one checks in.</div>';
+  else {
+    const models = Array.isArray(w.models) ? w.models.join(', ') : (w.model || w.policy_model || 'model not reported');
+    h += '<div>' + edBadge(w.ok === false ? 'not ready' : 'ready', w.ok === false ? 'ed-bad' : 'ed-ok') + ' ' + edEsc(w.worker_id || 'worker') + (w.worker_host ? ' on ' + edEsc(w.worker_host) : '') + '</div>';
+    h += '<div class="ed-sub">Model: ' + edEsc(models) + '. Auth: ' + edEsc(w.auth_method || 'not reported') + (w.subscription_type ? ' (' + edEsc(w.subscription_type) + ')' : '') + '. Last seen ' + edEsc(edAgo(w.received_at || w.checked_at)) + '.</div>';
+    if (w.state) h += '<div class="ed-sub">State: ' + edEsc(edHuman(w.state)) + (w.current_job_id ? ', job ' + edEsc(String(w.current_job_id).slice(0, 8)) : '') + '</div>';
+    if (w.reason) h += '<div class="ed-sub">' + edEsc(w.reason) + '</div>';
+  }
+  h += '</div>';
+  const busy = [];
+  for (const j of ED.jobs) {
+    if (j.state === 'running' || j.state === 'waiting' || j.state === 'failed') busy.push('<div class="ed-row">' + edBadge(edHuman(j.state), edStatusClass(j.state)) + ' <strong>' + edEsc(j.kind === 'select' ? 'Idea selection' : j.kind === 'packet' ? 'Recording packet' : j.kind) + '</strong><div>' + edEsc(j.current_activity || '') + '</div>' + (j.detail ? '<div class="ed-sub">' + edEsc(j.detail) + '</div>' : '') + '<div class="ed-sub">updated ' + edEsc(edAgo(j.updated_at)) + '</div></div>');
+  }
+  const a = ED.activity || {};
+  const live = new Set(['queued', 'leased', 'waiting_capacity', 'running']);
+  const jobs = (a.llm_jobs || []);
+  const activeJobs = jobs.filter(j => live.has(j.status));
+  for (const j of activeJobs) {
+    const rc = j.receipt || {};
+    busy.push('<div class="ed-row">' + edBadge(edHuman(j.status), edStatusClass(j.status)) + ' <strong>' + edEsc(edHuman(j.job_type)) + '</strong> <span class="ed-sub">(' + edEsc(j.agent_name) + ')</span><div>' + edEsc(j.current_activity) + '</div>' + (j.status === 'waiting_capacity' && j.retry_at ? '<div class="ed-sub">Your time: retry at ' + edEsc(edClock(j.retry_at)) + '</div>' : '') + (rc.models ? '<div class="ed-sub">Receipt: ' + edEsc(rc.models.join(', ')) + (rc.auth_method ? ', ' + edEsc(rc.auth_method) : '') + '</div>' : '') + '</div>');
+  }
+  for (const r of (a.collection_runs || []).filter(r => r.status === 'running')) {
+    const c = r.counts || {};
+    busy.push('<div class="ed-row">' + edBadge('running', 'ed-info') + ' <strong>' + edEsc(ED_KIND_LABELS[r.source_kind] || r.source_kind) + '</strong><div>' + edEsc(r.current_activity || 'Starting') + '</div><div class="ed-sub">' + edEsc(Object.entries(c).map(([k, v]) => k + ' ' + v).join(', ')) + '</div></div>');
+  }
+  for (const u of (a.uploads || []).filter(u => ['transcribing', 'rendering'].includes(u.status))) {
+    busy.push('<div class="ed-row">' + edBadge(u.status, 'ed-info') + ' <strong>' + edEsc(u.original_filename) + '</strong><div>' + edEsc(u.status_detail || '') + '</div><div class="ed-sub">updated ' + edEsc(edAgo(u.updated_at)) + '</div></div>');
+  }
+  h += '<div class="ed-row"><div style="font-weight:600">Happening now</div>' + (busy.length ? '' : '<div>Nothing is running. Start with Collect week, then Extract moments, then Select ideas.</div>') + '</div>' + busy.join('');
+  const recent = jobs.filter(j => !live.has(j.status)).slice(0, 4);
+  if (recent.length) {
+    h += '<details class="ed-details"><summary>Recent subscription jobs (' + recent.length + ')</summary>';
+    for (const j of recent) h += '<div class="ed-row">' + edBadge(edHuman(j.status), edStatusClass(j.status)) + ' ' + edEsc(edHuman(j.job_type)) + ' <span class="ed-sub">attempt ' + edEsc(j.attempt) + (j.error_code ? ', error ' + edEsc(j.error_code) : '') + ', ' + edEsc(edAgo(j.updated_at)) + '</span></div>';
+    h += '</details>';
+  }
+  el.innerHTML = h;
+}
+
+async function edLoadCoverage() {
+  const el = document.getElementById('ed-coverage');
+  if (!el) return;
+  const w = edWindow();
+  try {
+    ED.coverage = await edApi('/evidence/coverage?window_start=' + encodeURIComponent(w.start) + '&window_end=' + encodeURIComponent(w.end));
+    ED.coverageError = null;
+  } catch (e) { ED.coverageError = e.message; }
+  let h = '<h3><span>Coverage</span><button class="btn btn-dim ed-small-btn" onclick="edLoadCoverage()">Refresh</button></h3>';
+  if (ED.coverageError) h += '<div class="ed-err">Coverage unavailable: ' + edEsc(ED.coverageError) + '</div>';
+  const cov = (ED.coverage && ED.coverage.coverage) || {};
+  const kinds = Object.keys(cov);
+  if (!ED.coverageError && !kinds.length) h += '<div class="ed-sub">No sources have been collected for this week.</div>';
+  for (const k of kinds) {
+    const r = cov[k];
+    h += '<div class="ed-row"><strong>' + edEsc(ED_KIND_LABELS[k] || k) + '</strong> ';
+    if (!r) { h += edBadge('not collected', 'ed-neutral') + '</div>'; continue; }
+    const state = r.status === 'complete' && r.complete ? 'complete' : r.status;
+    h += edBadge(edHuman(state), edStatusClass(state));
+    const c = r.counts || {};
+    const parts = Object.entries(c).filter(([, v]) => v).map(([kk, v]) => edHuman(kk) + ' ' + v);
+    if (parts.length) h += '<div class="ed-sub">' + edEsc(parts.join(', ')) + '</div>';
+    if (r.current_activity && r.status === 'running') h += '<div>' + edEsc(r.current_activity) + '</div>';
+    const failed = (r.items || []).filter(i => ['failed', 'unavailable'].includes(i.state));
+    if (failed.length) {
+      h += '<div class="ed-issue"><strong>' + failed.length + ' item' + (failed.length === 1 ? '' : 's') + ' not covered</strong><ul style="padding-left:18px;margin-top:4px">';
+      for (const i of failed.slice(0, 20)) h += '<li>' + edEsc(i.external_id) + ': ' + edEsc(edHuman(i.state)) + (i.reason ? ' (' + edEsc(i.reason) + ')' : '') + '</li>';
+      h += '</ul></div>';
+    }
+    for (const err of (r.errors || []).slice(0, 3)) h += '<div class="ed-err">' + edEsc(typeof err === 'string' ? err : (err.message || err.error || JSON.stringify(err))) + '</div>';
+    h += '<div class="ed-sub">Last run ' + edEsc(edAgo(r.finished_at || r.started_at)) + '</div></div>';
+  }
+  el.innerHTML = h;
+}
+
+async function edRunAction(btnId, label, fn) {
+  const btn = document.getElementById(btnId);
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = label; }
+  try { await fn(); } catch (e) { toast(e.message, false); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = old; } }
+}
+function edCollect() {
+  const w = edWindow();
+  edRunAction('ed-collect-btn', 'Starting collection...', async () => {
+    const r = await edApi('/evidence/collect', { method: 'POST', body: JSON.stringify({ kinds: ['fathom', 'github'], window_start: w.start, window_end: w.end }) });
+    toast('Collection started: ' + (r.run_ids || []).length + ' source runs. Watch Live activity.');
+    edPoll(); setTimeout(edLoadCoverage, 1500);
+  });
+}
+function edExtract() {
+  const w = edWindow();
+  edRunAction('ed-extract-btn', 'Starting extraction...', async () => {
+    const r = await edApi('/evidence/extract', { method: 'POST', body: JSON.stringify({ window_start: w.start, window_end: w.end }) });
+    toast(r.started ? 'Extracting moments from ' + r.sources + ' sources' : 'Every source this week already has current moments');
+    edPoll();
+  });
+}
+function edSelect() {
+  edRunAction('ed-select-btn', 'Starting selection...', async () => {
+    await edApi('/editorial/select', { method: 'POST', body: JSON.stringify({ week_start: ED.week, max_candidates: 6 }) });
+    ED._selecting = true;
+    toast('Selecting ideas. Live activity shows each step.');
+    edPoll();
+  });
+}
+
+async function edLoadCandidates() {
+  const el = document.getElementById('ed-candidates');
+  try {
+    const r = await edApi('/editorial/candidates?week_start=' + ED.week);
+    ED.candidates = r.candidates || []; ED.loadError = null;
+  } catch (e) { ED.loadError = e.message; ED.candidates = []; }
+  ED.loaded = true;
+  if (!el) return;
+  if (ED.loadError) { el.innerHTML = '<div class="ed-panel"><div class="ed-err">Could not load ideas: ' + edEsc(ED.loadError) + '</div></div>'; return; }
+  if (!ED.candidates.length) { el.innerHTML = '<div class="ed-panel ed-empty">No ideas for this week yet. Collect the week, extract moments, then select ideas. Zero ideas is a valid result when the evidence is thin.</div>'; return; }
+  el.innerHTML = '<div style="display:flex;flex-direction:column;gap:12px">' + ED.candidates.map(edCardHtml).join('') + '</div>';
+  for (const c of ED.candidates) if (ED.open.has(c.id)) edLoadCardData(c.id);
+}
+
+function edCandidate(id) { return ED.candidates.find(c => c.id === id); }
+
+function edCardHtml(c) {
+  const open = ED.open.has(c.id);
+  const gates = c.gates || {};
+  const gateVals = Object.values(gates);
+  const passed = gateVals.filter(g => g && g.pass).length;
+  let h = '<div class="ed-card" id="ed-card-' + c.id + '">';
+  h += '<button class="ed-card-head" aria-expanded="' + open + '" onclick="edToggle(\'' + c.id + '\')">';
+  h += '<span class="ed-rank">' + edEsc(c.rank != null ? '#' + c.rank : '-') + '</span><span style="flex:1">';
+  h += '<span class="ed-title" style="display:block">' + edEsc(c.title) + '</span><span class="ed-meta">';
+  h += edBadge(edHuman(c.status), edStatusClass(c.status)) + edBadge('For ' + edHuman(c.audience), 'ed-neutral');
+  h += edBadge(passed + ' of ' + (gateVals.length || 4) + ' gates passed', passed === gateVals.length && gateVals.length ? 'ed-ok' : 'ed-warn');
+  h += edBadge((c.citations_private || []).length + ' citations', 'ed-neutral');
+  if (c.freshness_role === 'news') h += edBadge('News: verify claims', 'ed-warn');
+  h += '</span></span><span class="ed-sub" aria-hidden="true">' + (open ? 'Hide' : 'Open') + '</span></button>';
+  if (open) h += edCardBody(c);
+  h += '</div>';
+  return h;
+}
+
+function edCardBody(c) {
+  let h = '<div class="ed-body">';
+  h += '<div class="ed-sec"><h4>Lesson</h4><p>' + edEsc(c.lesson) + '</p></div>';
+  if ((c.reasons_to_care || []).length) h += '<div class="ed-sec"><h4>Why they will care</h4><ul>' + c.reasons_to_care.map(r => '<li>' + edEsc(r) + '</li>').join('') + '</ul></div>';
+  h += '<div class="ed-sec"><h4>Public-safe angle</h4><p>' + edEsc(c.public_angle) + '</p></div>';
+  h += '<div class="ed-sec"><h4>Public safety notes</h4><p>' + edEsc(c.public_safety_notes || 'None recorded') + '</p></div>';
+  // Gates
+  h += '<div class="ed-sec"><h4>Gates</h4><div class="ed-gates">';
+  for (const [key, label] of Object.entries(ED_GATES)) {
+    const g = (c.gates || {})[key];
+    const verdict = !g ? edBadge('not evaluated', 'ed-warn') : g.pass ? edBadge('pass', 'ed-ok') : edBadge('fail', 'ed-bad');
+    h += '<div class="ed-gate"><div class="ed-gate-name">' + edEsc(label) + ' ' + verdict + '</div><div class="ed-gate-reason">' + edEsc(g ? g.reason : 'No verdict stored') + '</div>';
+    h += '<button class="btn btn-red" onclick="edFeedback(\'' + c.id + '\',\'gate_reject\',null,\'' + key + '\')">Reject on this gate</button></div>';
+  }
+  h += '</div></div>';
+  // Citations
+  const cites = c.citations_private || [];
+  h += '<div class="ed-sec"><h4>Evidence (' + cites.length + ')</h4>';
+  if (!cites.length) h += '<p class="ed-err">No citations. An idea without evidence should not be recorded.</p>';
+  cites.forEach((ct, i) => { h += edCitationHtml(ct, i); });
+  h += '</div>';
+  // Feedback
+  const fb = c.feedback || [];
+  h += '<div class="ed-sec"><h4>Your call</h4><div class="ed-btns">';
+  h += '<button class="btn btn-green" onclick="edFeedback(\'' + c.id + '\',\'approve\',\'publish\')">Yes, I would publish this</button>';
+  h += '<button class="btn btn-amber" onclick="edFeedback(\'' + c.id + '\',\'angle\',\'change_angle\')">Right source, change the angle</button>';
+  h += '<button class="btn btn-red" onclick="edFeedback(\'' + c.id + '\',\'note\',\'not_for_me\')">No, this is not for me</button>';
+  h += '<button class="btn btn-dim" onclick="edFeedback(\'' + c.id + '\',\'wording\',null)">The wording is off</button>';
+  h += '</div>';
+  if (fb.length) {
+    const last = fb[fb.length - 1];
+    h += '<div class="ed-sub" style="margin-top:6px" id="ed-fb-last-' + c.id + '">' + fb.length + ' feedback item' + (fb.length === 1 ? '' : 's') + '. Latest: ' + edEsc(edHuman(last.kind)) + (last.rating ? ' (' + edEsc(edHuman(last.rating)) + ')' : '') + (last.gate ? ' on ' + edEsc(ED_GATES[last.gate] || last.gate) : '') + ', ' + edEsc(edAgo(last.created_at)) + '</div>';
+  } else h += '<div class="ed-sub" style="margin-top:6px" id="ed-fb-last-' + c.id + '">No feedback yet.</div>';
+  h += '<label class="ed-sub" for="ed-notes-' + c.id + '" style="display:block;margin-top:10px">Notes (saved on the idea and sent with gate or wording feedback)</label>';
+  h += '<textarea id="ed-notes-' + c.id + '" placeholder="What would make this worth recording?">' + edEsc(c.editor_notes || '') + '</textarea>';
+  h += '<div class="ed-btns" style="margin-top:6px"><button class="btn btn-dim" onclick="edSaveNotes(\'' + c.id + '\')">Save notes</button><span class="ed-sub" id="ed-notes-state-' + c.id + '" style="align-self:center"></span></div>';
+  h += '</div>';
+  h += '<div class="ed-sec" id="ed-pk-' + c.id + '"><h4>Recording packet</h4><div class="ed-sub">Loading packet state...</div></div>';
+  h += '<div class="ed-sec" id="ed-rec-' + c.id + '"><h4>Recording</h4><div class="ed-sub">Loading recordings...</div></div>';
+  h += '<div class="ed-sec" id="ed-pub-' + c.id + '"><h4>Publication receipt</h4><div class="ed-sub">Loading receipts...</div></div>';
+  h += '</div>';
+  return h;
+}
+
+function edCitationHtml(ct, i) {
+  let h = '<div class="ed-cite"><div><strong>' + edEsc(ct.source_title || ct.title || 'Untitled source') + '</strong></div><div class="ed-meta">';
+  if (ct.occurred_at) h += edBadge(new Date(edDate(ct.occurred_at)).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }), 'ed-neutral');
+  if (ct.span_start_s != null) h += edBadge(edMmss(ct.span_start_s) + '-' + edMmss(ct.span_end_s), 'ed-info');
+  if (ct.claim_type) h += edBadge(ct.claim_type, ct.claim_type === 'inferred' ? 'ed-warn' : 'ed-neutral');
+  if (ct.speaker) h += edBadge(ct.speaker + ' (' + (ct.speaker_confidence || 'unknown') + ' confidence)', ct.speaker_confidence === 'low' ? 'ed-warn' : 'ed-neutral');
+  if (ct.translation_label) h += edBadge(ct.translation_label, 'ed-warn');
+  h += '</div>';
+  for (const ref of ct.code_refs || []) {
+    const text = (ref.repo || 'repo') + '@' + String(ref.sha || '').slice(0, 7) + '/' + (ref.path || '');
+    h += '<div>' + (ref.url_at_sha ? '<a href="' + edEsc(ref.url_at_sha) + '" target="_blank" rel="noopener noreferrer">' + edEsc(text) + '</a>' : edEsc(text)) + '</div>';
+  }
+  if (ct.url_private) h += '<div><a href="' + edEsc(ct.url_private) + '" target="_blank" rel="noopener noreferrer">Open source (private link)</a></div>';
+  if (ct.excerpt_private) h += '<details><summary>Private - editor only: show excerpt</summary><div class="ed-private">' + edEsc(ct.excerpt_private) + '</div></details>';
+  h += '</div>';
+  return h;
+}
+
+function edToggle(id) {
+  if (ED.open.has(id)) ED.open.delete(id); else ED.open.add(id);
+  const c = edCandidate(id);
+  const card = document.getElementById('ed-card-' + id);
+  if (c && card) card.outerHTML = edCardHtml(c);
+  if (ED.open.has(id)) edLoadCardData(id);
+}
+function edLoadCardData(id) { edLoadPackets(id); edLoadRecordings(id); edLoadPublications(id); }
+
+async function edFeedback(id, kind, rating, gate) {
+  const notes = document.getElementById('ed-notes-' + id);
+  const note = notes && notes.value.trim() ? notes.value.trim() : null;
+  if ((kind === 'wording') && !note) { toast('Write what is off about the wording in the notes box first', false); if (notes) notes.focus(); return; }
+  try {
+    const row = await edApi('/editorial/candidates/' + id + '/feedback', { method: 'POST', body: JSON.stringify({ kind, rating, gate: gate || null, note }) });
+    const c = edCandidate(id);
+    if (c) { c.feedback = (c.feedback || []).concat([row]); }
+    const fresh = await edApi('/editorial/candidates/' + id).catch(() => null);
+    if (fresh && c) Object.assign(c, fresh);
+    toast('Feedback saved: ' + edHuman(kind) + (rating ? ' (' + edHuman(rating) + ')' : ''));
+    const card = document.getElementById('ed-card-' + id);
+    if (c && card) { card.outerHTML = edCardHtml(c); edLoadCardData(id); }
+  } catch (e) { toast('Feedback not saved: ' + e.message, false); }
+}
+
+async function edSaveNotes(id) {
+  const notes = document.getElementById('ed-notes-' + id);
+  const state = document.getElementById('ed-notes-state-' + id);
+  if (state) state.textContent = 'Saving...';
+  try {
+    const row = await edApi('/editorial/candidates/' + id, { method: 'PATCH', body: JSON.stringify({ editor_notes: notes.value }) });
+    const c = edCandidate(id); if (c) c.editor_notes = row && row.editor_notes != null ? row.editor_notes : notes.value;
+    if (state) state.textContent = 'Saved at ' + new Date().toLocaleTimeString();
+  } catch (e) { if (state) state.textContent = ''; toast('Notes not saved: ' + e.message, false); }
+}
+
+// --- Packets ---
+async function edLoadPackets(id) {
+  try {
+    const [pk, st] = await Promise.all([
+      edApi('/editorial/candidates/' + id + '/packets'),
+      edApi('/editorial/candidates/' + id + '/packet-status').catch(() => null),
+    ]);
+    const list = (pk && pk.packets) || [];
+    list.sort((a, b) => (b.version || 0) - (a.version || 0));
+    ED.packets[id] = list[0] || null;
+    if (st && st.job) ED.packetJobs[id] = st.job;
+  } catch (e) { ED.packets[id] = { _error: e.message }; }
+  edRenderPacket(id);
+}
+function edRenderPacket(id) {
+  const el = document.getElementById('ed-pk-' + id);
+  if (!el) return;
+  const p = ED.packets[id];
+  const job = ED.packetJobs[id];
+  let h = '<h4>Recording packet</h4>';
+  if (job && job.state && job.state !== 'idle') {
+    h += '<div class="ed-row">' + edBadge(edHuman(job.state), edStatusClass(job.state)) + ' ' + edEsc(job.current_activity || '') + (job.detail ? '<div class="ed-sub">' + edEsc(job.detail) + '</div>' : '') + '<div class="ed-sub">updated ' + edEsc(edAgo(job.updated_at)) + '</div></div>';
+  }
+  if (p && p._error) h += '<div class="ed-err">Could not load packets: ' + edEsc(p._error) + '</div>';
+  const running = job && job.state === 'running';
+  h += '<div class="ed-btns"><button class="btn btn-primary" ' + (running ? 'disabled' : '') + ' onclick="edBuildPacket(\'' + id + '\')">' + (running ? 'Writing packet...' : (p && !p._error ? 'Rebuild recording packet' : 'Build recording packet')) + '</button>';
+  if (p && !p._error) h += '<button class="btn btn-blue" id="ed-export-' + id + '" onclick="edExport(\'' + id + '\',\'' + p.id + '\')">Export to Google Doc</button>';
+  h += '</div>';
+  if (p && !p._error) {
+    const ps = p.public_safety || {};
+    h += '<div class="ed-meta" style="margin-top:8px">' + edBadge('Version ' + p.version, 'ed-neutral') + edBadge('Public safety: ' + edHuman(ps.status || 'unevaluated'), edStatusClass(ps.status || 'unevaluated')) + edBadge(edHuman(p.status), edStatusClass(p.status)) + '</div>';
+    for (const issue of ps.issues || []) h += '<div class="ed-issue">' + edEsc(typeof issue === 'string' ? issue : (issue.detail || issue.issue || JSON.stringify(issue))) + '</div>';
+    h += '<div class="ed-sec" style="margin-top:10px"><h4>Walking bullets (' + (p.bullets || []).length + ')</h4><ul>' + (p.bullets || []).map(b => '<li>' + edEsc(b) + '</li>').join('') + '</ul></div>';
+    h += '<div class="ed-sec"><h4>Script, one phrase per line</h4><ol class="ed-phrases">' + (p.script_phrases || []).map(s => '<li>' + edEsc(s) + '</li>').join('') + '</ol></div>';
+    if (p.facebook_post) h += '<details class="ed-details"><summary>Facebook adaptation</summary><div class="ed-post">' + edEsc(p.facebook_post) + '</div></details>';
+    if (p.linkedin_post) h += '<details class="ed-details"><summary>LinkedIn adaptation</summary><div class="ed-post">' + edEsc(p.linkedin_post) + '</div></details>';
+    h += edExportStateHtml(id, p);
+  } else if (!p && !running) h += '<div class="ed-sub" style="margin-top:6px">No packet yet. Building one runs a single subscription job.</div>';
+  el.innerHTML = h;
+}
+function edExportStateHtml(id, p) {
+  const r = ED.exportResult[id];
+  const acc = (r && r.access) || p.google_doc_access;
+  if (!acc && !p.google_doc_url) return '';
+  let h = '<div class="ed-row" id="ed-export-state-' + id + '"><strong>Recording doc</strong> ';
+  const status = (r && r.status) || (acc && acc.status) || (p.google_doc_url ? 'exported' : 'unknown');
+  h += edBadge(status === 'not_connected' ? 'Google not connected' : edHuman(status), edStatusClass(status));
+  const url = (r && r.google_doc_url) || p.google_doc_url;
+  if (url) h += '<div><a style="color:var(--primary)" href="' + edEsc(url) + '" target="_blank" rel="noopener noreferrer">Open Google Doc</a></div>';
+  const docx = (r && r.docx_url) || (acc && acc.docx_url);
+  if (docx && status === 'not_connected') h += '<div><a style="color:var(--primary)" href="' + edEsc(docx) + '">Download private .docx</a></div>';
+  if (acc) h += '<div class="ed-sub">Intended access: ' + edEsc(acc.intended || 'not recorded') + '. Verified: ' + (acc.verified ? 'yes' : 'no') + '.</div><div class="ed-sub">' + edEsc(acc.detail || '') + '</div>';
+  return h + '</div>';
+}
+async function edBuildPacket(id) {
+  try {
+    await edApi('/editorial/candidates/' + id + '/packet', { method: 'POST' });
+    ED.packetJobs[id] = { state: 'running', current_activity: 'Queued packet', updated_at: new Date().toISOString() };
+    edRenderPacket(id); edPoll();
+  } catch (e) { toast('Packet not started: ' + e.message, false); }
+}
+async function edExport(id, packetId) {
+  const btn = document.getElementById('ed-export-' + id);
+  if (btn) { btn.disabled = true; btn.textContent = 'Exporting...'; }
+  try {
+    ED.exportResult[id] = await edApi('/production/packets/' + packetId + '/export', { method: 'POST' });
+    const r = ED.exportResult[id];
+    toast(r.status === 'exported' ? 'Google Doc created with restricted access' : r.status === 'not_connected' ? 'Google is not connected. A private .docx was generated.' : 'Doc created but access could not be verified', r.status === 'exported' || r.status === 'not_connected');
+    await edLoadPackets(id);
+  } catch (e) {
+    toast('Export failed: ' + e.message, false);
+    if (btn) { btn.disabled = false; btn.textContent = 'Export to Google Doc'; }
+  }
+}
+
+// --- Recordings ---
+async function edLoadRecordings(id) {
+  try { ED.uploads[id] = (await edApi('/production/candidates/' + id + '/recordings')).uploads || []; }
+  catch (e) { ED.uploads[id] = { _error: e.message }; }
+  edRenderRecordings(id);
+}
+function edRenderRecordings(id) {
+  const el = document.getElementById('ed-rec-' + id);
+  if (!el) return;
+  const ups = ED.uploads[id];
+  let h = '<h4>Recording</h4>';
+  if (ups && ups._error) { el.innerHTML = h + '<div class="ed-err">Could not load recordings: ' + edEsc(ups._error) + '</div>'; return; }
+  const list = Array.isArray(ups) ? ups : [];
+  const current = list.find(u => u.status !== 'superseded');
+  const up = ED.uploading[id];
+  h += '<div class="ed-sub">One file per idea. A new upload replaces the current one as a retake set and keeps the old one in history. Nothing runs until you click.</div>';
+  h += '<div class="ed-btns" style="margin-top:8px"><label class="btn btn-dim" for="ed-file-' + id + '" style="cursor:pointer">Choose recording</label>';
+  h += '<input type="file" id="ed-file-' + id + '" accept="video/*,audio/*" style="position:absolute;width:1px;height:1px;opacity:0" onchange="edUpload(\'' + id + '\', this)"></div>';
+  if (up) {
+    h += '<div class="ed-row"><div>' + edEsc(up.text) + '</div><div class="ed-progress" role="progressbar" aria-valuenow="' + Math.round(up.pct) + '" aria-valuemin="0" aria-valuemax="100"><div style="width:' + up.pct.toFixed(1) + '%"></div></div></div>';
+  }
+  if (current) h += edUploadHtml(id, current);
+  const old = list.filter(u => u.status === 'superseded');
+  if (old.length) {
+    h += '<details class="ed-details"><summary>Earlier retake sets (' + old.length + ')</summary>';
+    for (const u of old) h += '<div class="ed-row">' + edEsc(u.original_filename) + ' <span class="ed-sub">' + edEsc(u.status_detail || '') + '</span></div>';
+    h += '</details>';
+  }
+  el.innerHTML = h;
+}
+function edUploadHtml(cid, u) {
+  let h = '<div class="ed-row"><div><strong>' + edEsc(u.original_filename) + '</strong> ' + edBadge(edHuman(u.status), edStatusClass(u.status)) + (u.duration_s ? ' <span class="ed-sub">' + edEsc(edMmss(u.duration_s)) + '</span>' : '') + '</div>';
+  h += '<div>' + edEsc(u.status_detail || '') + '</div><div class="ed-sub">updated ' + edEsc(edAgo(u.updated_at)) + '</div>';
+  const busy = ['transcribing', 'rendering'].includes(u.status);
+  const plan = u.edit_plan;
+  const blocked = plan && plan.meaning_check && plan.meaning_check.status === 'blocked';
+  h += '<div class="ed-btns" style="margin-top:8px">';
+  h += '<button class="btn btn-blue" ' + (busy ? 'disabled' : '') + ' onclick="edUploadStep(\'' + cid + '\',\'' + u.id + '\',\'transcribe\')">' + (u.has_transcript ? 'Transcribe again' : 'Transcribe') + '</button>';
+  h += '<button class="btn btn-blue" ' + (busy || !u.has_transcript ? 'disabled title="Transcribe first"' : '') + ' onclick="edUploadStep(\'' + cid + '\',\'' + u.id + '\',\'plan-edit\')">Plan edit</button>';
+  if (!blocked) h += '<button class="btn btn-primary" ' + (busy || !plan ? 'disabled title="Plan the edit first"' : '') + ' onclick="edUploadStep(\'' + cid + '\',\'' + u.id + '\',\'render\')">Render edit</button>';
+  if (blocked && !busy) h += '<button class="btn btn-red" onclick="edRenderAnyway(\'' + cid + '\',\'' + u.id + '\')">I reviewed the issues, render anyway</button>';
+  if (u.edited_url) h += '<a class="btn btn-green" href="' + edEsc(u.edited_url) + '">Download edited file</a>';
+  h += '</div>';
+  if (plan) h += edPlanHtml(u, plan);
+  return h + '</div>';
+}
+function edPlanHtml(u, plan) {
+  const mc = plan.meaning_check || {};
+  const st = plan.stats || {};
+  let h = '<details class="ed-details" open><summary>Edit plan: keep ' + (plan.keep || []).length + ' ranges, ' + edEsc(edMmss(st.kept_seconds)) + ' kept</summary>';
+  h += '<div class="ed-meta">' + edBadge('Meaning check: ' + (mc.status === 'blocked' ? 'needs review' : 'passed'), mc.status === 'blocked' ? 'ed-bad' : 'ed-ok');
+  if (st.script_phrases) h += edBadge(st.script_phrases_covered + ' of ' + st.script_phrases + ' script phrases covered', st.script_phrases_covered === st.script_phrases ? 'ed-ok' : 'ed-warn');
+  h += '</div>';
+  for (const i of mc.issues || []) h += '<div class="ed-issue"><strong>' + edEsc(edHuman(i.kind)) + '</strong>: ' + edEsc(i.detail) + '</div>';
+  h += '<div class="ed-sub" style="margin-top:6px">Kept: ' + edEsc((plan.keep || []).map(r => edMmss(r[0]) + '-' + edMmss(r[1])).join(', ') || 'nothing') + '</div>';
+  const dropped = plan.dropped || [];
+  if (dropped.length) {
+    h += '<table class="ed-table" style="margin-top:6px"><thead><tr><th style="width:92px">Time</th><th style="width:88px">Reason</th><th>What was said</th></tr></thead><tbody>';
+    for (const d of dropped) h += '<tr><td>' + edEsc(edMmss(d.start) + '-' + edMmss(d.end)) + '</td><td>' + edEsc(edHuman(d.reason)) + '</td><td>' + edEsc(d.text || '(silence)') + '</td></tr>';
+    h += '</tbody></table>';
+  }
+  if (u.captions_srt_url) h += '<div class="ed-btns" style="margin-top:8px"><a class="btn btn-dim" href="' + edEsc(u.captions_srt_url) + '">Captions (SRT)</a><a class="btn btn-dim" href="' + edEsc(u.captions_vtt_url) + '">Captions (VTT)</a></div>';
+  return h + '</details>';
+}
+function edUpload(cid, input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const mb = (file.size / 1e6).toFixed(1);
+  ED.uploading[cid] = { pct: 0, text: 'Uploading ' + file.name + ': 0 of ' + mb + ' MB' };
+  edRenderRecordings(cid);
+  const fd = new FormData();
+  fd.append('file', file);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', API + '/production/candidates/' + cid + '/recording');
+  xhr.upload.onprogress = e => {
+    if (!e.lengthComputable) return;
+    ED.uploading[cid] = { pct: (e.loaded / e.total) * 100, text: 'Uploading ' + file.name + ': ' + (e.loaded / 1e6).toFixed(1) + ' of ' + mb + ' MB' };
+    const bar = document.querySelector('#ed-rec-' + cid + ' .ed-progress>div');
+    if (bar) { bar.style.width = ED.uploading[cid].pct.toFixed(1) + '%'; bar.parentElement.previousElementSibling.textContent = ED.uploading[cid].text; }
+  };
+  xhr.upload.onload = () => { ED.uploading[cid] = { pct: 100, text: 'Upload sent. Server is hashing and storing ' + file.name + '...' }; edRenderRecordings(cid); };
+  xhr.onload = () => {
+    delete ED.uploading[cid];
+    let body = null; try { body = JSON.parse(xhr.responseText); } catch (e) { body = null; }
+    if (xhr.status >= 200 && xhr.status < 300) {
+      toast(body && body.deduplicated ? 'This exact file was already uploaded for this idea' : 'Recording stored. Click Transcribe when ready.');
+      const c = edCandidate(cid); if (c && c.status !== 'published') c.status = 'recorded';
+    } else toast('Upload failed: ' + ((body && body.detail) || ('HTTP ' + xhr.status)), false);
+    edLoadRecordings(cid);
+  };
+  xhr.onerror = () => { delete ED.uploading[cid]; toast('Upload failed: network error', false); edLoadRecordings(cid); };
+  xhr.send(fd);
+}
+function edRenderAnyway(cid, uid) {
+  if (confirm('The meaning check found issues in this plan. Render it anyway?')) edUploadStep(cid, uid, 'render', true);
+}
+async function edUploadStep(cid, uid, step, override) {
+  try {
+    const body = step === 'render' ? JSON.stringify({ override_meaning_check: !!override }) : undefined;
+    const u = await edApi('/production/uploads/' + uid + '/' + step, { method: 'POST', body });
+    toast(edHuman(u.status) + ': ' + (u.status_detail || ''), u.status !== 'failed' && u.status !== 'unavailable');
+  } catch (e) { toast(e.message, false); }
+  edLoadRecordings(cid); edPoll();
+}
+
+// --- Publication receipts ---
+async function edLoadPublications(id) {
+  try { ED.pubs[id] = (await edApi('/production/candidates/' + id + '/publications')).publications || []; }
+  catch (e) { ED.pubs[id] = { _error: e.message }; }
+  edRenderPublications(id);
+}
+function edRenderPublications(id) {
+  const el = document.getElementById('ed-pub-' + id);
+  if (!el) return;
+  const pubs = ED.pubs[id];
+  let h = '<h4>Publication receipt</h4><div class="ed-sub">Record a post you already published. This form never publishes anything.</div>';
+  if (pubs && pubs._error) h += '<div class="ed-err">Could not load receipts: ' + edEsc(pubs._error) + '</div>';
+  for (const p of Array.isArray(pubs) ? pubs : []) {
+    const o = p.outcome || {};
+    h += '<div class="ed-row"><div>' + edBadge(p.platform, 'ed-ok') + ' ' + edEsc(p.external_post_id) + (p.url ? ' <a style="color:var(--primary)" href="' + edEsc(p.url) + '" target="_blank" rel="noopener noreferrer">View post</a>' : '') + '</div>';
+    h += '<div class="ed-sub">Published ' + edEsc(p.published_at ? edDate(p.published_at).toLocaleString() : 'date not recorded') + '</div>';
+    h += '<div class="ed-form" style="margin-top:6px">';
+    h += '<label>Qualified conversations<input type="number" min="0" id="ed-o-qc-' + p.id + '" value="' + edEsc(o.qualified_conversations ?? '') + '"></label>';
+    h += '<label>Strategy sessions booked<input type="number" min="0" id="ed-o-ss-' + p.id + '" value="' + edEsc(o.strategy_sessions_booked ?? '') + '"></label>';
+    h += '<label class="ed-wide">Mentions (comma separated)<input type="text" id="ed-o-m-' + p.id + '" value="' + edEsc((o.mentions || []).join(', ')) + '"></label>';
+    h += '<label class="ed-wide">Outcome notes<textarea id="ed-o-n-' + p.id + '">' + edEsc(o.notes || '') + '</textarea></label>';
+    h += '</div><div class="ed-btns" style="margin-top:6px"><button class="btn btn-dim" onclick="edSaveOutcome(\'' + id + '\',\'' + p.id + '\')">Save outcome</button>' + (o.updated_at ? '<span class="ed-sub" style="align-self:center">Saved ' + edEsc(edAgo(o.updated_at)) + '</span>' : '') + '</div></div>';
+  }
+  h += '<details class="ed-details"' + (Array.isArray(pubs) && pubs.length ? '' : ' open') + '><summary>Add a receipt</summary><div class="ed-form">';
+  h += '<label>Platform<select id="ed-p-platform-' + id + '"><option value="linkedin">LinkedIn</option><option value="facebook">Facebook</option><option value="instagram">Instagram</option><option value="youtube">YouTube</option><option value="tiktok">TikTok</option><option value="newsletter">Newsletter</option><option value="other">Other</option></select></label>';
+  h += '<label>Post id<input type="text" id="ed-p-ext-' + id + '" placeholder="The id from the post URL"></label>';
+  h += '<label class="ed-wide">Post URL<input type="url" id="ed-p-url-' + id + '" placeholder="https://"></label>';
+  h += '<label>Published at<input type="datetime-local" id="ed-p-at-' + id + '"></label>';
+  h += '<label class="ed-wide">Final text as published<textarea id="ed-p-text-' + id + '"></textarea></label>';
+  h += '</div><div class="ed-btns" style="margin-top:6px"><button class="btn btn-primary" onclick="edAddReceipt(\'' + id + '\')">Record receipt</button></div></details>';
+  el.innerHTML = h;
+}
+async function edAddReceipt(id) {
+  const val = k => (document.getElementById('ed-p-' + k + '-' + id) || {}).value || '';
+  if (!val('ext').trim()) { toast('Post id is required', false); return; }
+  const at = val('at');
+  const pk = ED.packets[id];
+  const body = { platform: val('platform'), external_post_id: val('ext').trim(), url: val('url') || null, published_at: at ? new Date(at).toISOString() : null, final_text: val('text') || null, packet_id: pk && !pk._error ? pk.id : null };
+  try {
+    const r = await edApi('/production/candidates/' + id + '/publications', { method: 'POST', body: JSON.stringify(body) });
+    toast(r.duplicate ? 'That post was already recorded. Showing the existing receipt.' : 'Receipt recorded');
+    const c = edCandidate(id); if (c) c.status = 'published';
+    edLoadPublications(id);
+  } catch (e) { toast('Receipt not saved: ' + e.message, false); }
+}
+async function edSaveOutcome(cid, pid) {
+  const v = k => (document.getElementById('ed-o-' + k + '-' + pid) || {}).value;
+  const num = x => (x === '' || x == null ? null : Math.max(0, parseInt(x, 10)));
+  const outcome = { qualified_conversations: num(v('qc')), strategy_sessions_booked: num(v('ss')), mentions: (v('m') || '').split(',').map(s => s.trim()).filter(Boolean), notes: v('n') || null };
+  try {
+    await edApi('/production/publications/' + pid, { method: 'PATCH', body: JSON.stringify({ outcome }) });
+    toast('Outcome saved'); edLoadPublications(cid);
+  } catch (e) { toast('Outcome not saved: ' + e.message, false); }
+}
+
+// Mobile navigation (the sidebar is hidden on phones) and #editorial deep link.
+(function edInitNav() {
+  const sel = document.getElementById('ed-mobile-tab');
+  if (sel) {
+    const seen = new Set();
+    let opts = '';
+    document.querySelectorAll('.sidebar-item[data-tab]').forEach(b => {
+      if (seen.has(b.dataset.tab)) return; seen.add(b.dataset.tab);
+      opts += '<option value="' + edEsc(b.dataset.tab) + '">' + edEsc(TAB_LABELS[b.dataset.tab] || b.dataset.tab) + '</option>';
+    });
+    sel.innerHTML = opts;
+    sel.value = currentTab;
+    const orig = window.switchTab;
+    window.switchTab = function (t) { const r = orig(t); if (sel.value !== t) sel.value = t; if (t === 'editorial') history.replaceState(null, '', '#editorial'); return r; };
+    document.querySelectorAll('.sidebar-item[data-tab]').forEach(b => b.addEventListener('click', () => { sel.value = b.dataset.tab; }));
+  }
+  if (location.hash === '#editorial') switchTab('editorial');
+})();
+
+/*ED-JS-END*/
 </script>
 </body>
 </html>

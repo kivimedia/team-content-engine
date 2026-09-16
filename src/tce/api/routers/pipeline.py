@@ -166,6 +166,10 @@ class WeekGenerationRequest(BaseModel):
     approved_plan: dict[str, Any] | None = None
 
 
+# Workflows whose downstream services call a model outside the subscription queue.
+_UNVERIFIED_LLM_WORKFLOWS = frozenset({"weekly_walking_split_edit"})
+
+
 @router.post("/run", response_model=PipelineRunResponse)
 async def trigger_pipeline(
     request: PipelineRunRequest,
@@ -176,6 +180,19 @@ async def trigger_pipeline(
         raise HTTPException(
             status_code=400,
             detail=f"Unknown workflow: {request.workflow}. Available: {list(WORKFLOWS.keys())}",
+        )
+
+    if request.workflow in _UNVERIFIED_LLM_WORKFLOWS:
+        # CutSense's understand/edit layer calls a model outside the subscription
+        # job queue, and its billing has not been verified. It stays blocked,
+        # whatever the legacy feature flag says, until that path is proven.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Workflow {request.workflow} is disabled: its CutSense edit step uses "
+                "an LLM outside the subscription-only policy. Use the Editorial "
+                "recording flow (local transcription and ffmpeg) instead."
+            ),
         )
 
     steps = WORKFLOWS[request.workflow]

@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from pydantic import SecretStr
 
 from tce.api import private_access
+from tce.api.routers import pipeline
 from tce.db.workspace_filter import set_workspace_context
 from tce.evidence.fathom import FathomClient
 from tce.evidence.moments import validate_meeting_moment
@@ -61,6 +62,28 @@ async def test_proxy_authenticated_editor_cannot_choose_another_workspace(monkey
             )
     finally:
         set_workspace_context(None)
+
+
+@pytest.mark.parametrize("legacy_feature_enabled", [False, True])
+async def test_unverified_cutsense_pipeline_cannot_bypass_subscription_policy(
+    monkeypatch, legacy_feature_enabled
+):
+    monkeypatch.setattr(pipeline.settings, "llm_provider", "subscription")
+    monkeypatch.setattr(pipeline.settings, "weekly_walking_pipeline", legacy_feature_enabled)
+
+    def discard_background(coroutine):
+        coroutine.close()
+        return None
+
+    monkeypatch.setattr(pipeline.asyncio, "create_task", discard_background)
+    try:
+        await pipeline.trigger_pipeline(
+            pipeline.PipelineRunRequest(workflow="weekly_walking_split_edit"), db=None
+        )
+    except HTTPException as exc:
+        assert exc.status_code in {403, 409, 503}
+    else:
+        pytest.fail("The legacy pipeline admitted unverified downstream CutSense LLM use")
 
 
 @pytest.mark.parametrize("delete_working_file", [False, True])
@@ -179,6 +202,37 @@ async def test_reusing_a_job_key_with_changed_input_reports_a_conflict(editorial
     except (LLMPolicyError, queue.QueueError, ValueError):
         return
     pytest.fail("Changed input silently reused an earlier request instead of reporting a conflict")
+
+
+async def test_enqueue_recovers_when_another_request_wins_the_insert_race(
+    editorial_sessionmaker, monkeypatch
+):
+    request = LLMRequest(
+        job_type="packet",
+        agent_name="review",
+        workspace_id=uuid.uuid4(),
+        messages=[{"role": "user", "content": "One shared request"}],
+    )
+    async with editorial_sessionmaker() as first_session:
+        first = await queue.enqueue(first_session, request)
+        await first_session.commit()
+        winner_id = first.id
+
+    original_lookup = queue._get_by_key
+    first_read = True
+
+    async def initially_missing(session, key):
+        nonlocal first_read
+        if first_read:
+            # Simulate the first read happening just before the other request commits.
+            first_read = False
+            return None
+        return await original_lookup(session, key)
+
+    monkeypatch.setattr(queue, "_get_by_key", initially_missing)
+    async with editorial_sessionmaker() as second_session:
+        reused = await queue.enqueue(second_session, request)
+        assert reused.id == winner_id
 
 
 @pytest.mark.parametrize("model", [EvidenceSource, EvidenceMoment, TopicCandidate, RecordingPacket])

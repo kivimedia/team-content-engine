@@ -148,13 +148,16 @@ async def enqueue(
             attempt_count=0,
             max_attempts=3,
         )
-        session.add(job)
         try:
             async with session.begin_nested():
+                session.add(job)
                 await session.flush()
             return job
         except IntegrityError:
-            # Lost an insert race on the idempotency key: use the winner's row.
+            # Lost an insert race on the idempotency key: drop our pending row so
+            # the lookup cannot autoflush it again, then use the winner's row.
+            if job in session:
+                session.expunge(job)
             existing = await _get_by_key(session, key)
             if existing is None:
                 raise
