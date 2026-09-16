@@ -46,6 +46,8 @@ class CollectRequest(BaseModel):
 class ExtractRequest(BaseModel):
     window_start: datetime
     window_end: datetime
+    # Optional: limit to "fathom_meeting" and/or "github_commit_group"
+    source_kinds: list[str] | None = None
 
 
 def _check_window(start: datetime, end: datetime) -> tuple[datetime, datetime]:
@@ -149,9 +151,12 @@ async def _run_extraction(
     start: datetime,
     end: datetime,
     run_id: uuid.UUID,
+    source_kinds: list[str] | None = None,
 ) -> None:
     try:
-        await moments_mod.extract_moments(sessionmaker, ws, start, end, run_id=run_id)
+        await moments_mod.extract_moments(
+            sessionmaker, ws, start, end, run_id=run_id, source_kinds=source_kinds
+        )
     except Exception as exc:
         logger.error("evidence.extract.crashed", error_type=type(exc).__name__)
 
@@ -295,14 +300,18 @@ async def start_extraction(
 ) -> dict[str, Any]:
     start, end = _check_window(body.window_start, body.window_end)
     async with sessionmaker() as session:
-        pending = await moments_mod.sources_needing_extraction(session, ws, start, end)
+        pending = await moments_mod.sources_needing_extraction(
+            session, ws, start, end, body.source_kinds
+        )
     pending = [s for s in pending if moments_mod.skip_reason(s) is None]
     if not pending:
         return {"started": False, "run_id": None, "job_ids": [], "sources": 0}
     run_id = await collect_mod.RunLedger.create_run(
         sessionmaker, ws, moments_mod.EXTRACTION_RUN_KIND, start, end
     )
-    background.add_task(_run_extraction, sessionmaker, ws, start, end, run_id)
+    background.add_task(
+        _run_extraction, sessionmaker, ws, start, end, run_id, body.source_kinds
+    )
     # LLM job ids are created as the background run reaches each source; they appear in
     # GET /evidence/runs/{run_id} items[].job_ids and /api/v1/llm-jobs.
     return {"started": True, "run_id": str(run_id), "job_ids": [], "sources": len(pending)}

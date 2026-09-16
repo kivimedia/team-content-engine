@@ -208,3 +208,23 @@ def test_code_cannot_be_measured(claim):
             {"path": "a.py", "blob_url_at_sha": "u"}]}]},
     )
     assert fields is None and reason == "code cannot support a measured claim"
+
+
+async def test_sources_needing_extraction_can_be_limited_by_kind(editorial_session):
+    import uuid as _uuid
+    from datetime import datetime as _dt
+
+    from tce.evidence.moments import sources_needing_extraction
+    from tce.models.editorial import EvidenceSource as _Src
+
+    ws = _uuid.uuid4()
+    for kind, ext in (("fathom_meeting", "m-1"), ("github_commit_group", "g-1")):
+        editorial_session.add(_Src(
+            workspace_id=ws, source_kind=kind, external_id=ext, version_hash=ext * 8,
+            payload_private={}, occurred_at=_dt(2026, 9, 8),
+        ))
+    await editorial_session.commit()
+    only = await sources_needing_extraction(editorial_session, ws, None, None, ["fathom_meeting"])
+    both = await sources_needing_extraction(editorial_session, ws, None, None)
+    assert [s.external_id for s in only] == ["m-1"]
+    assert len(both) == 2
