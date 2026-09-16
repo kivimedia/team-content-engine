@@ -256,6 +256,7 @@ async def seed() -> dict:
     rec_dir.mkdir(parents=True, exist_ok=True)
     media_path = rec_dir / "synthetic.mp4"
     media_path.write_bytes(b"synthetic media placeholder")
+    (rec_dir / "x.m4a").write_bytes(b"synthetic audio placeholder")
     transcript = [
         {"start_s": 0.0, "end_s": 3.0, "text": "Most small studios lose leads in the first hour."},
         {"start_s": 3.4, "end_s": 4.2, "text": "Answer every new"},
@@ -395,7 +396,11 @@ async def seed() -> dict:
     async with session_mod.async_session() as s:
         s.add_all(rows)
         await s.commit()
-    return {"week": week.date().isoformat(), "candidate": str(cands[0].id)}
+    return {
+        "week": week.date().isoformat(),
+        "candidate": str(cands[0].id),
+        "candidate2": str(cands[1].id),
+    }
 
 
 def build_app():
@@ -527,6 +532,8 @@ def drive(base: str, out: Path, seeded: dict) -> dict:
             page.screenshot(path=str(out / f"{name}-3-packet.png"))
             page.click(f"#ed-export-{cid}")
             page.wait_for_selector(f"#ed-pk-{cid} :text('Google not connected')", timeout=15000)
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(700)  # the packet section re-renders once after export
             page.locator(
                 f"#ed-pk-{cid} .ed-row:has-text('Recording doc')"
             ).scroll_into_view_if_needed()
@@ -559,6 +566,136 @@ def drive(base: str, out: Path, seeded: dict) -> dict:
     return report
 
 
+def drive_links(base: str, out: Path, seeded: dict) -> dict:
+    """?week= deep link (valid, non-Monday, invalid), honest 503 text, interrupted upload."""
+    from playwright.sync_api import sync_playwright
+
+    result: dict = {}
+    llm_503 = json.dumps(
+        {
+            "detail": "Text generation is not available right now",
+            "llm_status": "waiting_capacity",
+            "llm_detail": "Synthetic: subscription capacity window closed",
+            "job_id": str(uuid.uuid4()),
+            "retry_at": None,
+        }
+    )
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+
+        def page_for(ctx_errors):
+            ctx = browser.new_context(viewport={"width": 1440, "height": 900})
+            page = ctx.new_page()
+            page.on("pageerror", lambda e: ctx_errors.append("pageerror: " + str(e)))
+            page.route("**/fonts.googleapis.com/**", lambda r: r.abort())
+            page.route("**/fonts.gstatic.com/**", lambda r: r.abort())
+            return ctx, page
+
+        errors: list[str] = []
+        ctx, page = page_for(errors)
+        page.goto(base + f"/?week={seeded['week']}#editorial", wait_until="domcontentloaded")
+        page.wait_for_selector(".ed-card", timeout=20000)
+        result["valid"] = {
+            "url": page.url,
+            "input": page.input_value("#ed-week-input"),
+            "cards": page.locator(".ed-card").count(),
+            "stored": page.evaluate("localStorage.getItem('tce_ed_week')"),
+        }
+        cid = seeded["candidate2"]
+        page.click(f"#ed-card-{cid} .ed-card-head")
+        page.wait_for_selector(f"#ed-rec-{cid} .ed-badge:has-text('interrupted')", timeout=20000)
+        result["interrupted_upload"] = page.inner_text(f"#ed-rec-{cid}")[:400]
+        page.wait_for_selector("#ed-activity .ed-badge:has-text('interrupted')", timeout=20000)
+        page.locator(f"#ed-rec-{cid}").scroll_into_view_if_needed()
+        page.screenshot(path=str(out / "links-1-interrupted-upload.png"))
+        cid1 = seeded["candidate"]
+        page.click(f"#ed-card-{cid1} .ed-card-head")
+        page.wait_for_selector(
+            f"#ed-rec-{cid1} button:has-text('Render uncut with captions')", timeout=20000
+        )
+        page.locator(f"#ed-rec-{cid1} .ed-details").first.scroll_into_view_if_needed()
+        page.screenshot(path=str(out / "links-2-plan-timing-uncut.png"))
+        result["plan_panel"] = page.inner_text(f"#ed-rec-{cid1}")[:900]
+        ctx.close()
+
+        ctx, page = page_for(errors)
+        page.goto(base + "/?week=2026-09-07#editorial", wait_until="domcontentloaded")
+        page.wait_for_selector("#ed-candidates .ed-empty, #ed-candidates .ed-card", timeout=20000)
+        result["pilot_week"] = {
+            "url": page.url,
+            "input": page.input_value("#ed-week-input"),
+            "header": page.inner_text(".ed-top .ed-sub"),
+        }
+        ctx.close()
+
+        for label, raw in (
+            ("non_monday", "2026-09-09"),
+            ("invalid", "2026-02-30"),
+            ("junk", "%3Cscript%3E"),
+        ):
+            ctx, page = page_for(errors)
+            page.goto(base + f"/?week={raw}#editorial", wait_until="domcontentloaded")
+            page.wait_for_selector("#ed-week-notice", timeout=20000)
+            result[label] = {
+                "url": page.url,
+                "input": page.input_value("#ed-week-input"),
+                "notice": page.inner_text("#ed-week-notice"),
+                "script_injected": page.evaluate(
+                    "document.querySelectorAll('#ed-root script').length"
+                ),
+            }
+            if label == "invalid":
+                page.screenshot(path=str(out / "links-3-invalid-week.png"))
+            ctx.close()
+
+        ctx, page = page_for(errors)
+        page.route(
+            "**/api/v1/editorial/candidates?*",
+            lambda r: r.fulfill(status=503, content_type="application/json", body=llm_503),
+        )
+        page.goto(base + f"/?week={seeded['week']}#editorial", wait_until="domcontentloaded")
+        page.wait_for_selector("#ed-candidates .ed-err", timeout=20000)
+        result["llm_503"] = page.inner_text("#ed-candidates .ed-err")
+        page.screenshot(path=str(out / "links-4-subscription-503.png"))
+        ctx.close()
+
+        ctx, page = page_for(errors)
+        page.route(
+            "**/api/v1/editorial/candidates?*",
+            lambda r: r.fulfill(
+                status=503,
+                content_type="application/json",
+                body=json.dumps({"detail": "Private access is not configured"}),
+            ),
+        )
+        page.goto(base + f"/?week={seeded['week']}#editorial", wait_until="domcontentloaded")
+        page.wait_for_selector("#ed-candidates .ed-err", timeout=20000)
+        result["private_access_503"] = page.inner_text("#ed-candidates .ed-err")
+        ctx.close()
+        browser.close()
+    result["page_errors"] = errors
+    checks = [
+        result["valid"]["input"] == seeded["week"] and result["valid"]["cards"] > 0,
+        "week=" + seeded["week"] in result["valid"]["url"]
+        and result["valid"]["url"].endswith("#editorial"),
+        result["pilot_week"]["input"] == "2026-09-07" and "Sep 7" in result["pilot_week"]["header"],
+        result["non_monday"]["input"] == "2026-09-07"
+        and "not a Monday" in result["non_monday"]["notice"],
+        "not a valid date" in result["invalid"]["notice"]
+        and "2026-02-30" not in result["invalid"]["url"],
+        result["junk"]["script_injected"] == 0 and "not a valid date" in result["junk"]["notice"],
+        "Private access" not in result["llm_503"]
+        and "subscription job waiting capacity" in result["llm_503"],
+        "Private access is not configured on the server" in result["private_access_503"],
+        "Click Transcribe to retry" in result["interrupted_upload"],
+        "Timing: whole seconds" in result["plan_panel"]
+        or "Timing: as supplied" in result["plan_panel"],
+        not errors,
+    ]
+    result["failed_checks"] = [i for i, ok in enumerate(checks) if not ok]
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(WORK / "screens"))
@@ -587,7 +724,9 @@ def main() -> int:
     )
     urllib.request.urlopen(req, timeout=10).read()
     report = drive(f"http://127.0.0.1:{args.port}", Path(args.out), seeded)
+    links = drive_links(f"http://127.0.0.1:{args.port}", Path(args.out), seeded)
     print(json.dumps(report, indent=2))
+    print(json.dumps({"links": links}, indent=2))
     problems = 0
     for name, r in report.items():
         for step, c in r["checks"].items():
@@ -597,7 +736,8 @@ def main() -> int:
                 )
     print(f"screenshots: {args.out}")
     print(f"layout problems: {problems}")
-    return 1 if problems else 0
+    print(f"link/error checks failed: {links['failed_checks']}")
+    return 1 if problems or links["failed_checks"] else 0
 
 
 if __name__ == "__main__":

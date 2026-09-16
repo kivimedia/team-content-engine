@@ -1,6 +1,15 @@
 """Deterministic edit planning: retakes, pauses, meaning check, captions. Synthetic text only."""
 
-from tce.production.retakes import build_cues, negations_in, plan_edit, to_srt, to_vtt
+from tce.production.retakes import (
+    PRECISION_WHOLE_SECOND,
+    build_cues,
+    negations_in,
+    plan_edit,
+    timing_precision,
+    to_srt,
+    to_vtt,
+    uncut_plan,
+)
 
 SCRIPT = [
     "Most small studios lose leads in the first hour.",
@@ -132,3 +141,101 @@ def test_distinct_complete_sentence_is_flagged_not_silently_dropped():
     assert mc["status"] == "blocked"
     issue = next(i for i in mc["issues"] if i["kind"] == "content_dropped")
     assert "decisions" in issue["detail"] and "make" in issue["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Whole-second input from the local faster-whisper worker: floored starts, inferred ends
+
+
+def whole(start, end, text):
+    return {"start_s": start, "end_s": end, "text": text, "precision": PRECISION_WHOLE_SECOND}
+
+
+def _covered_by(keep, s, e):
+    """Seconds of [s, e] that are inside the kept ranges."""
+    return sum(max(0.0, min(e, ke) - max(s, ks)) for ks, ke in keep)
+
+
+def test_whole_second_cut_moves_edges_inward_and_blocks_for_a_listen():
+    timings = [
+        whole(0, 3, "This is a synthetic recording test."),
+        whole(3, 8, "I do not promise instant results."),
+        whole(8, 12, "I do not promise instant results."),
+        whole(12, 16, "First solve a real problem."),
+    ]
+    plan = plan_edit(timings, ["I do not promise instant results."], duration_s=16.0)
+    assert plan["timing"]["precision"] == PRECISION_WHOLE_SECOND
+    assert plan["timing"]["exact_cuts"] is False and plan["timing"]["pauses_trimmed"] is False
+    assert plan["keep"] == [[0.0, 4.0], [7.0, 16.0]]
+    assert plan["dropped"] == [
+        {
+            "start": 4.0,
+            "end": 7.0,
+            "text": "I do not promise instant results.",
+            "reason": "retake",
+            "boundary": "uncertain",
+        }
+    ]
+    mc = plan["meaning_check"]
+    assert mc["status"] == "blocked"
+    assert [i["kind"] for i in mc["issues"]] == ["uncertain_cut_boundary"]
+    # Every kept unit keeps a full second of margin on both sides of its reported span
+    for u in plan["units"]:
+        if u["kept"]:
+            s, e = max(0.0, u["start"] - 1), min(16.0, u["end"] + 1)
+            assert abs(_covered_by(plan["keep"], s, e) - (e - s)) < 1e-6, u
+
+
+def test_whole_second_short_false_start_stays_in_with_adjacent_negation_intact():
+    timings = [
+        whole(0, 2, "Never send a price list first."),
+        whole(2, 4, "Answer every new"),  # false start, too short to cut safely
+        whole(4, 7, "Answer every new inquiry within ten minutes."),
+        whole(7, 10, "Do not wait for the weekend."),
+    ]
+    plan = plan_edit(timings, SCRIPT, duration_s=10.0)
+    assert plan["keep"] == [[0.0, 10.0]]  # nothing removed
+    assert all(u["kept"] for u in plan["units"])
+    assert plan["dropped"] == []
+    mc = plan["meaning_check"]
+    assert mc["negations_full"] == mc["negations_kept"] == 2
+    assert [n["kind"] for n in mc["notes"]] == ["retake_not_removed"]
+    text = " ".join(" ".join(c["lines"]) for c in build_cues(plan))
+    assert "Never send a price list first." in text and "Do not wait for the weekend." in text
+
+
+def test_whole_second_dropped_negation_still_blocks():
+    timings = [
+        whole(0, 4, "Do not send a price list before the first call."),
+        whole(4, 9, "Do send a price list before the first call."),
+        whole(9, 12, "Answer every new inquiry within ten minutes."),
+    ]
+    plan = plan_edit(timings, SCRIPT, duration_s=12.0)
+    kinds = {i["kind"] for i in plan["meaning_check"]["issues"]}
+    assert "negation_dropped" in kinds and "uncertain_cut_boundary" in kinds
+
+
+def test_stored_transcript_without_label_is_recognised_as_whole_second():
+    rows = [seg(0.0, 3.0, "One."), seg(3.0, 8.0, "Two."), seg(8.0, 9.5, "Three.")]
+    assert timing_precision(rows) == PRECISION_WHOLE_SECOND
+    assert timing_precision([seg(0.0, 2.7, "One."), seg(3.1, 8.0, "Two.")]) == "as_provided"
+    assert plan_edit(rows, [])["timing"]["precision"] == PRECISION_WHOLE_SECOND
+
+
+def test_supplied_timings_never_claim_exact_cuts():
+    plan = plan_edit([seg(0.2, 2.7, "Answer every new inquiry within ten minutes.")], SCRIPT)
+    assert plan["timing"]["precision"] == "as_provided"
+    assert plan["timing"]["exact_cuts"] is False
+
+
+def test_uncut_plan_keeps_everything_and_captions_every_unit():
+    timings = [
+        whole(0, 3, "Answer every new inquiry within ten minutes."),
+        whole(3, 8, "Answer every new inquiry within ten minutes."),
+    ]
+    plan = plan_edit(timings, SCRIPT, duration_s=8.0)
+    full = uncut_plan(plan, 8.0)
+    assert full["keep"] == [[0.0, 8.0]]
+    cues = build_cues(full)
+    assert [c["start"] for c in cues] == [0.0, 3.0]
+    assert cues[-1]["end"] == 8.0

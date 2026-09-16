@@ -10302,15 +10302,29 @@ async function edApi(path, opts = {}) {
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
   if (!r.ok) {
-    let detail = data && data.detail ? data.detail : text.slice(0, 200);
-    if (typeof detail !== 'string') detail = JSON.stringify(detail).slice(0, 200);
-    if (r.status === 401) detail = 'Editor access key missing (the reverse proxy must add it). ' + detail;
-    if (r.status === 503) detail = 'Private access is not configured on the server. ' + detail;
-    const err = new Error(detail || ('HTTP ' + r.status));
+    const err = new Error(edErrorText(r.status, data, text));
     err.status = r.status;
     throw err;
   }
   return data;
+}
+// One 503 is not another: missing private access, a subscription job waiting or failing,
+// and a proxy timeout each say what actually happened.
+const ED_PRIVATE_ACCESS_DETAIL = 'Private access is not configured';
+function edErrorText(status, data, text) {
+  let detail = data && data.detail != null ? data.detail : '';
+  if (typeof detail !== 'string') detail = JSON.stringify(detail).slice(0, 200);
+  if (!detail && !data) detail = String(text || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+  if (status === 401) return 'Editor access key missing (the reverse proxy must add it). ' + detail;
+  if (status === 503 && detail === ED_PRIVATE_ACCESS_DETAIL) return 'Private access is not configured on the server (TCE_PRIVATE_ACCESS_KEY is empty).';
+  if (data && data.llm_status) {
+    let msg = (detail || 'Text generation is not available right now') + ' (subscription job ' + edHuman(data.llm_status) + (data.retry_at ? ', retry at ' + edClock(data.retry_at) : '') + ')';
+    if (data.llm_detail) msg += '. ' + String(data.llm_detail).slice(0, 200);
+    return msg;
+  }
+  if (status === 504 || (status === 502 && !data)) return 'The server did not answer in time (HTTP ' + status + '). The step may still be running; check Live activity before retrying.' + (detail ? ' ' + detail : '');
+  if (status === 503) return (detail || 'Service unavailable') + ' (HTTP 503)';
+  return detail || ('HTTP ' + status);
 }
 function edBadge(text, cls) { return '<span class="ed-badge ' + cls + '">' + edEsc(text) + '</span>'; }
 function edStatusClass(st) {
@@ -10318,7 +10332,7 @@ function edStatusClass(st) {
   if (['complete', 'completed', 'done', 'ok', 'clean', 'exported', 'edited', 'planned', 'transcribed', 'published', 'recorded', 'selected', 'pass'].includes(s)) return 'ed-ok';
   if (['failed', 'fail', 'blocked', 'needs_review', 'rejected', 'access_problem', 'issues', 'unavailable'].includes(s)) return 'ed-bad';
   if (['running', 'leased', 'transcribing', 'rendering', 'uploading', 'queued'].includes(s)) return 'ed-info';
-  if (['partial', 'waiting_capacity', 'waiting', 'not_connected', 'unevaluated', 'superseded', 'proposed'].includes(s)) return 'ed-warn';
+  if (['partial', 'waiting_capacity', 'waiting', 'not_connected', 'unevaluated', 'superseded', 'proposed', 'interrupted'].includes(s)) return 'ed-warn';
   return 'ed-neutral';
 }
 function edHuman(s) { return String(s || '').replace(/_/g, ' '); }
@@ -10350,10 +10364,42 @@ function edWindow() {
   const e = new Date(ED.week + 'T00:00:00Z'); e.setUTCDate(e.getUTCDate() + 7);
   return { start, end: e.toISOString().slice(0, 19) + 'Z' };
 }
+// Strict YYYY-MM-DD that is a real calendar date in a sane range; anything else is null.
+function edParseWeek(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value == null ? '' : value).trim());
+  if (!m) return null;
+  const y = +m[1], mo = +m[2], d = +m[3];
+  const dt = new Date(y, mo - 1, d);
+  if (y < 2000 || y > 2100 || dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  return edIsoDate(edMonday(dt));
+}
+// ?week=YYYY-MM-DD deep link. Read once, on the first Editorial render.
+function edWeekFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has('week')) return null;
+  const raw = params.get('week');
+  const week = edParseWeek(raw);
+  if (!week) {
+    params.delete('week');
+    const q = params.toString();
+    history.replaceState(null, '', location.pathname + (q ? '?' + q : '') + location.hash);
+    ED.weekNotice = 'The link asked for week "' + String(raw).slice(0, 40) + '", which is not a valid date (use YYYY-MM-DD). Showing the week you last viewed (or this week) instead.';
+    return null;
+  }
+  if (week !== raw) ED.weekNotice = 'The link date ' + raw + ' is not a Monday, so the week starting ' + week + ' is shown.';
+  return week;
+}
+function edSyncWeekUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('week') === ED.week) return;
+  params.set('week', ED.week);
+  history.replaceState(null, '', location.pathname + '?' + params.toString() + location.hash);
+}
 function edSetWeek(value) {
-  const parts = String(value).split('-').map(Number);
-  if (parts.length !== 3 || parts.some(isNaN)) return;
-  ED.week = edIsoDate(edMonday(new Date(parts[0], parts[1] - 1, parts[2])));
+  const week = edParseWeek(value);
+  if (!week) { toast('Not a valid date: use YYYY-MM-DD', false); return; }
+  ED.week = week;
+  ED.weekNotice = null;
   localStorage.setItem('tce_ed_week', ED.week);
   ED.candidates = []; ED.loaded = false; ED.open.clear(); ED.coverage = null;
   renderEditorial();
@@ -10364,7 +10410,12 @@ function edShiftWeek(days) {
 }
 
 function renderEditorial() {
-  if (!ED.week) ED.week = localStorage.getItem('tce_ed_week') || edIsoDate(edMonday(new Date()));
+  if (!ED.week) {
+    const linked = edWeekFromUrl();
+    if (linked) localStorage.setItem('tce_ed_week', linked);
+    ED.week = linked || edParseWeek(localStorage.getItem('tce_ed_week')) || edIsoDate(edMonday(new Date()));
+  }
+  edSyncWeekUrl();
   const app = document.getElementById('app');
   const wk = new Date(ED.week + 'T00:00:00');
   const wkEnd = new Date(wk); wkEnd.setDate(wkEnd.getDate() + 6);
@@ -10375,6 +10426,7 @@ function renderEditorial() {
       <div>
         <h2 style="font-size:18px;color:var(--text)">Evidence to recording</h2>
         <div class="ed-sub">Week of ${edEsc(label)}. Ideas come from your meetings and code, never from a guess.</div>
+        ${ED.weekNotice ? '<div class="ed-issue" id="ed-week-notice" role="status">' + edEsc(ED.weekNotice) + '</div>' : ''}
       </div>
       <div class="ed-week">
         <button class="btn btn-dim" onclick="edShiftWeek(-7)" aria-label="Previous week">Prev week</button>
@@ -10486,6 +10538,9 @@ function edRenderActivity() {
     busy.push('<div class="ed-row">' + edBadge(u.status, 'ed-info') + ' <strong>' + edEsc(u.original_filename) + '</strong><div>' + edEsc(u.status_detail || '') + '</div><div class="ed-sub">updated ' + edEsc(edAgo(u.updated_at)) + '</div></div>');
   }
   h += '<div class="ed-row"><div style="font-weight:600">Happening now</div>' + (busy.length ? '' : '<div>Nothing is running. Start with Collect week, then Extract moments, then Select ideas.</div>') + '</div>' + busy.join('');
+  for (const u of (a.uploads || []).filter(u => u.status === 'interrupted')) {
+    h += '<div class="ed-row">' + edBadge('interrupted', 'ed-warn') + ' <strong>' + edEsc(u.original_filename) + '</strong><div>' + edEsc(u.status_detail || '') + '</div><div class="ed-sub">updated ' + edEsc(edAgo(u.updated_at)) + '</div></div>';
+  }
   const recent = jobs.filter(j => !live.has(j.status)).slice(0, 4);
   if (recent.length) {
     h += '<details class="ed-details"><summary>Recent subscription jobs (' + recent.length + ')</summary>';
@@ -10810,8 +10865,9 @@ function edUploadHtml(cid, u) {
   h += '<button class="btn btn-blue" ' + (busy ? 'disabled' : '') + ' onclick="edUploadStep(\'' + cid + '\',\'' + u.id + '\',\'transcribe\')">' + (u.has_transcript ? 'Transcribe again' : 'Transcribe') + '</button>';
   h += '<button class="btn btn-blue" ' + (busy || !u.has_transcript ? 'disabled title="Transcribe first"' : '') + ' onclick="edUploadStep(\'' + cid + '\',\'' + u.id + '\',\'plan-edit\')">Plan edit</button>';
   if (!blocked) h += '<button class="btn btn-primary" ' + (busy || !plan ? 'disabled title="Plan the edit first"' : '') + ' onclick="edUploadStep(\'' + cid + '\',\'' + u.id + '\',\'render\')">Render edit</button>';
-  if (blocked && !busy) h += '<button class="btn btn-red" onclick="edRenderAnyway(\'' + cid + '\',\'' + u.id + '\')">I reviewed the issues, render anyway</button>';
-  if (u.edited_url) h += '<a class="btn btn-green" href="' + edEsc(u.edited_url) + '">Download edited file</a>';
+  if (blocked && !busy) h += '<button class="btn btn-red" onclick="edRenderAnyway(\'' + cid + '\',\'' + u.id + '\')">I listened to the cuts, render them</button>';
+  if (plan) h += '<button class="btn btn-dim" ' + (busy ? 'disabled' : '') + ' title="Keeps the whole recording and only adds captions" onclick="edUploadStep(\'' + cid + '\',\'' + u.id + '\',\'render\',false,\'uncut\')">Render uncut with captions</button>';
+  if (u.edited_url) h += '<a class="btn btn-green" href="' + edEsc(u.edited_url) + '">Download captioned MP4</a>';
   h += '</div>';
   if (plan) h += edPlanHtml(u, plan);
   return h + '</div>';
@@ -10822,8 +10878,13 @@ function edPlanHtml(u, plan) {
   let h = '<details class="ed-details" open><summary>Edit plan: keep ' + (plan.keep || []).length + ' ranges, ' + edEsc(edMmss(st.kept_seconds)) + ' kept</summary>';
   h += '<div class="ed-meta">' + edBadge('Meaning check: ' + (mc.status === 'blocked' ? 'needs review' : 'passed'), mc.status === 'blocked' ? 'ed-bad' : 'ed-ok');
   if (st.script_phrases) h += edBadge(st.script_phrases_covered + ' of ' + st.script_phrases + ' script phrases covered', st.script_phrases_covered === st.script_phrases ? 'ed-ok' : 'ed-warn');
+  const timing = plan.timing || {};
+  if (timing.precision === 'whole_second_start_inferred_end') h += edBadge('Timing: whole seconds, cuts approximate', 'ed-warn');
+  else if (timing.precision) h += edBadge('Timing: as supplied, not verified', 'ed-neutral');
   h += '</div>';
+  if (timing.summary) h += '<div class="ed-sub" style="margin-top:4px">' + edEsc(timing.summary) + '.</div>';
   for (const i of mc.issues || []) h += '<div class="ed-issue"><strong>' + edEsc(edHuman(i.kind)) + '</strong>: ' + edEsc(i.detail) + '</div>';
+  for (const n of mc.notes || []) h += '<div class="ed-sub" style="margin-top:4px"><strong>' + edEsc(edHuman(n.kind)) + '</strong>: ' + edEsc(n.detail) + '</div>';
   h += '<div class="ed-sub" style="margin-top:6px">Kept: ' + edEsc((plan.keep || []).map(r => edMmss(r[0]) + '-' + edMmss(r[1])).join(', ') || 'nothing') + '</div>';
   const dropped = plan.dropped || [];
   if (dropped.length) {
@@ -10864,11 +10925,11 @@ function edUpload(cid, input) {
   xhr.send(fd);
 }
 function edRenderAnyway(cid, uid) {
-  if (confirm('The meaning check found issues in this plan. Render it anyway?')) edUploadStep(cid, uid, 'render', true);
+  if (confirm('The plan needs review (see the issues above). Render the cuts anyway?')) edUploadStep(cid, uid, 'render', true);
 }
-async function edUploadStep(cid, uid, step, override) {
+async function edUploadStep(cid, uid, step, override, mode) {
   try {
-    const body = step === 'render' ? JSON.stringify({ override_meaning_check: !!override }) : undefined;
+    const body = step === 'render' ? JSON.stringify({ override_meaning_check: !!override, mode: mode || 'cut' }) : undefined;
     const u = await edApi('/production/uploads/' + uid + '/' + step, { method: 'POST', body });
     toast(edHuman(u.status) + ': ' + (u.status_detail || ''), u.status !== 'failed' && u.status !== 'unavailable');
   } catch (e) { toast(e.message, false); }
@@ -10943,7 +11004,7 @@ async function edSaveOutcome(cid, pid) {
     sel.innerHTML = opts;
     sel.value = currentTab;
     const orig = window.switchTab;
-    window.switchTab = function (t) { const r = orig(t); if (sel.value !== t) sel.value = t; if (t === 'editorial') history.replaceState(null, '', '#editorial'); return r; };
+    window.switchTab = function (t) { const r = orig(t); if (sel.value !== t) sel.value = t; if (t === 'editorial') history.replaceState(null, '', location.pathname + location.search + '#editorial'); return r; };
     document.querySelectorAll('.sidebar-item[data-tab]').forEach(b => b.addEventListener('click', () => { sel.value = b.dataset.tab; }));
   }
   if (location.hash === '#editorial') switchTab('editorial');

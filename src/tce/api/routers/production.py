@@ -8,6 +8,11 @@ Nothing here publishes, posts or calls a metered API:
 - transcription: local faster-whisper worker, else `unavailable` with the reason
 - render: local ffmpeg, else `unavailable`
 - steps never auto-run after upload; the editor starts each one
+- a running transcribe/render step holds a lease in `job_ids` (attempt, owning process,
+  heartbeat). A step whose process died (restart, crash) is marked `interrupted` once
+  its lease is provably dead: never while this process still runs it, and never while
+  another process keeps heartbeating it. The original upload is kept and the editor
+  retries with the same button. A superseded attempt can no longer write its result.
 
 Publication receipts dedupe on (workspace, platform, external_post_id): a repeat POST
 returns HTTP 200 with `{"duplicate": true, "publication": <existing row>}`; a new
@@ -19,10 +24,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import socket
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
@@ -42,7 +48,15 @@ from tce.models.editorial import (
 from tce.models.llm_job import LLMJob
 from tce.production import media
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet
-from tce.production.retakes import build_cues, fmt_ts, plan_edit, to_srt, to_vtt
+from tce.production.retakes import (
+    build_cues,
+    fmt_ts,
+    plan_edit,
+    to_ass,
+    to_srt,
+    to_vtt,
+    uncut_plan,
+)
 from tce.settings import settings
 
 router = APIRouter(prefix="/production", tags=["production"])
@@ -50,6 +64,17 @@ router = APIRouter(prefix="/production", tags=["production"])
 PLATFORMS = ("facebook", "linkedin", "instagram", "youtube", "tiktok", "newsletter", "other")
 _CHUNK = 1024 * 1024
 _background: set[asyncio.Task] = set()
+
+BUSY_STATUSES = ("transcribing", "rendering")
+PROCESS_OWNER = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+LEASE_PREFIX = "media-lease|"
+LEASE_HEARTBEAT_S = 20.0
+LEASE_TTL_S = 120.0
+_active_attempts: set[str] = set()  # attempts running in THIS process
+_STEP_LABEL = {
+    "transcribing": ("transcription", "Transcribe"),
+    "rendering": ("the render", "Render edit"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +99,109 @@ def _utcnow() -> datetime:
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() + "Z" if dt else None
+
+
+# ---------------------------------------------------------------------------
+# Step leases and restart recovery
+
+
+def _lease_entry(step: str, attempt: str, at: datetime) -> str:
+    return f"{LEASE_PREFIX}{step}|{attempt}|{PROCESS_OWNER}|{at.isoformat()}"
+
+
+def parse_lease(job_ids: list[Any] | None) -> dict[str, Any] | None:
+    for entry in reversed(job_ids or []):
+        if isinstance(entry, str) and entry.startswith(LEASE_PREFIX):
+            try:
+                step, attempt, owner, at = entry[len(LEASE_PREFIX) :].split("|")
+                return {
+                    "step": step,
+                    "attempt": attempt,
+                    "owner": owner,
+                    "heartbeat_at": datetime.fromisoformat(at),
+                }
+            except ValueError:
+                return None
+    return None
+
+
+def _with_lease(job_ids: list[Any] | None, entry: str | None) -> list[Any]:
+    kept = [j for j in job_ids or [] if not (isinstance(j, str) and j.startswith(LEASE_PREFIX))]
+    return kept + ([entry] if entry else [])
+
+
+def _lease_is_dead(row: RecordingUpload, now: datetime, *, startup: bool) -> bool:
+    lease = parse_lease(row.job_ids)
+    if lease is None:
+        # Started before leases existed. At startup no process can still own it (the
+        # previous server is gone); later, only a long silence proves it.
+        if startup:
+            return True
+        return row.updated_at is not None and now - row.updated_at > timedelta(seconds=LEASE_TTL_S)
+    if lease["attempt"] in _active_attempts:
+        return False
+    if lease["owner"] == PROCESS_OWNER:
+        return True  # this process started it and no longer runs it
+    return now - lease["heartbeat_at"] > timedelta(seconds=LEASE_TTL_S)
+
+
+def _remove_partial_render(row: RecordingUpload) -> None:
+    src = Path(row.storage_path)
+    for part in src.parent.glob(f".{src.stem}-edited.rendering*"):
+        part.unlink(missing_ok=True)
+
+
+async def reconcile_interrupted_uploads(
+    db: AsyncSession, ws: uuid.UUID | None = None, *, startup: bool = False
+) -> list[uuid.UUID]:
+    """Turn busy uploads whose step died into a visible, retryable `interrupted` state."""
+    now = _utcnow()
+    stmt = select(RecordingUpload).where(RecordingUpload.status.in_(BUSY_STATUSES))
+    if ws is not None:
+        stmt = stmt.where(RecordingUpload.workspace_id == ws)
+    changed: list[uuid.UUID] = []
+    for row in (await db.execute(stmt)).scalars().all():
+        if not _lease_is_dead(row, now, startup=startup):
+            continue
+        lease = parse_lease(row.job_ids)
+        what, button = _STEP_LABEL.get(row.status, ("the step", "the step button"))
+        if row.status == "rendering":
+            _remove_partial_render(row)
+        beat = f" (last heartbeat {lease['heartbeat_at']:%H:%M} UTC)" if lease else ""
+        if Path(row.storage_path).exists():
+            row.status = "interrupted"
+            row.status_detail = (
+                f"Interrupted: {what} stopped when the server restarted{beat}. "
+                f"The original upload is kept. Click {button} to retry."
+            )[:500]
+        else:
+            row.status = "failed"
+            row.status_detail = (
+                f"Interrupted: {what} stopped when the server restarted{beat}, and the "
+                "original upload is missing from storage. Upload the file again."
+            )[:500]
+        row.job_ids = _with_lease(row.job_ids, None)
+        changed.append(row.id)
+    if changed:
+        await db.commit()
+    return changed
+
+
+async def recover_media_on_startup() -> None:
+    """Startup wiring: sweep now, then once more after a lease can have expired."""
+    import structlog
+
+    log = structlog.get_logger()
+    for delay, startup in ((0.0, True), (LEASE_TTL_S + 5, False)):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            async with session_factory()() as db:
+                ids = await reconcile_interrupted_uploads(db, startup=startup)
+            if ids:
+                log.info("production.media_interrupted", count=len(ids), ids=[str(i) for i in ids])
+        except Exception:
+            log.warning("production.media_recovery_failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +500,7 @@ async def list_recordings(
     db: AsyncSession = Depends(get_db),
 ):
     await _candidate(db, ws, candidate_id)
+    await reconcile_interrupted_uploads(db, ws)
     rows = (
         (
             await db.execute(
@@ -394,6 +523,7 @@ async def get_upload(
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
+    await reconcile_interrupted_uploads(db, ws)
     return upload_json(await _upload(db, ws, upload_id))
 
 
@@ -407,34 +537,75 @@ def _spawn(coro) -> None:
     task.add_done_callback(_background.discard)
 
 
-async def _set_status(upload_id: uuid.UUID, ws: uuid.UUID, status: str | None, detail: str) -> None:
-    async with session_factory()() as s:
-        row = (
-            await s.execute(
-                select(RecordingUpload).where(
-                    RecordingUpload.id == upload_id, RecordingUpload.workspace_id == ws
-                )
+async def _load(s: AsyncSession, upload_id: uuid.UUID, ws: uuid.UUID) -> RecordingUpload:
+    return (
+        await s.execute(
+            select(RecordingUpload).where(
+                RecordingUpload.id == upload_id, RecordingUpload.workspace_id == ws
             )
-        ).scalar_one()
+        )
+    ).scalar_one()
+
+
+def _owns(row: RecordingUpload, attempt: str) -> bool:
+    lease = parse_lease(row.job_ids)
+    return lease is not None and lease["attempt"] == attempt and row.status in BUSY_STATUSES
+
+
+async def _set_status(
+    upload_id: uuid.UUID, ws: uuid.UUID, status: str | None, detail: str, attempt: str
+) -> bool:
+    """Write progress or an outcome only while this attempt still holds the lease."""
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        if not _owns(row, attempt):
+            return False
         if status:
             row.status = status
         row.status_detail = detail[:500]
+        if status not in BUSY_STATUSES:
+            row.job_ids = _with_lease(row.job_ids, None)
         await s.commit()
+        return True
 
 
-async def _run_transcription(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
+async def _heartbeat(upload_id: uuid.UUID, ws: uuid.UUID, step: str, attempt: str) -> None:
+    while True:
+        await asyncio.sleep(LEASE_HEARTBEAT_S)
+        async with session_factory()() as s:
+            row = await _load(s, upload_id, ws)
+            if not _owns(row, attempt):
+                return
+            row.job_ids = _with_lease(row.job_ids, _lease_entry(step, attempt, _utcnow()))
+            await s.commit()
+
+
+def _claim(row: RecordingUpload, status: str, detail: str) -> str:
+    attempt = uuid.uuid4().hex[:12]
+    _active_attempts.add(attempt)  # before commit: a concurrent read must see it as alive
+    row.status = status
+    row.status_detail = detail
+    row.job_ids = _with_lease(row.job_ids, _lease_entry(status, attempt, _utcnow()))
+    return attempt
+
+
+async def _run_leased(upload_id: uuid.UUID, ws: uuid.UUID, step: str, attempt: str, work) -> None:
+    # `work` is a factory, so a step that never starts leaves no unawaited coroutine
+    beat = asyncio.create_task(_heartbeat(upload_id, ws, step, attempt))
+    try:
+        await work()
+    finally:
+        beat.cancel()
+        _active_attempts.discard(attempt)
+
+
+async def _run_transcription(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str) -> None:
     async def report(text: str) -> None:
-        await _set_status(upload_id, ws, "transcribing", text)
+        await _set_status(upload_id, ws, "transcribing", text, attempt)
 
     try:
         async with session_factory()() as s:
-            row = (
-                await s.execute(
-                    select(RecordingUpload).where(
-                        RecordingUpload.id == upload_id, RecordingUpload.workspace_id == ws
-                    )
-                )
-            ).scalar_one()
+            row = await _load(s, upload_id, ws)
             path, duration = row.storage_path, row.duration_s
         timings = await media.transcribe_local(
             path,
@@ -444,24 +615,24 @@ async def _run_transcription(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             on_status=report,
         )
         async with session_factory()() as s:
-            row = (
-                await s.execute(
-                    select(RecordingUpload).where(
-                        RecordingUpload.id == upload_id, RecordingUpload.workspace_id == ws
-                    )
-                )
-            ).scalar_one()
+            row = await _load(s, upload_id, ws)
+            if not _owns(row, attempt):
+                return  # superseded by a retry; its result is the one that counts
             row.transcript = timings
             row.status = "transcribed"
             row.status_detail = (
-                f"Transcribed {len(timings)} segments locally. "
-                "Click Plan edit to find retakes and pauses."
+                f"Transcribed {len(timings)} segments locally. Timing is whole-second "
+                "segment starts, so any cut will be approximate. "
+                "Click Plan edit to find retakes."
             )
+            row.job_ids = _with_lease(row.job_ids, None)
             await s.commit()
     except media.StepUnavailableError as exc:
-        await _set_status(upload_id, ws, "unavailable", str(exc))
+        await _set_status(upload_id, ws, "unavailable", str(exc), attempt)
     except Exception as exc:
-        await _set_status(upload_id, ws, "failed", f"Transcription failed: {str(exc)[:400]}")
+        await _set_status(
+            upload_id, ws, "failed", f"Transcription failed: {str(exc)[:400]}", attempt
+        )
 
 
 @router.post("/uploads/{upload_id}/transcribe", status_code=202)
@@ -470,9 +641,14 @@ async def transcribe_upload(
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
+    await reconcile_interrupted_uploads(db, ws)
     row = await _upload(db, ws, upload_id)
-    if row.status in ("transcribing", "rendering"):
+    if row.status in BUSY_STATUSES:
         return upload_json(row)
+    if not Path(row.storage_path).exists():
+        raise HTTPException(
+            status_code=409, detail="The original upload is missing from storage; upload it again"
+        )
     if not settings.production_transcribe_ws_url:
         row.status = "unavailable"
         row.status_detail = (
@@ -483,13 +659,22 @@ async def transcribe_upload(
         await db.commit()
         await db.refresh(row)
         return upload_json(row)
-    row.status = "transcribing"
-    row.status_detail = (
-        f"Queued for local transcription ({media.fmt_duration(row.duration_s)} file)"
+    attempt = _claim(
+        row,
+        "transcribing",
+        f"Queued for local transcription ({media.fmt_duration(row.duration_s)} file)",
     )
-    await db.commit()
+    try:
+        await db.commit()
+    except BaseException:
+        _active_attempts.discard(attempt)
+        raise
     await db.refresh(row)
-    _spawn(_run_transcription(row.id, ws))
+    _spawn(
+        _run_leased(
+            row.id, ws, "transcribing", attempt, lambda: _run_transcription(row.id, ws, attempt)
+        )
+    )
     return upload_json(row)
 
 
@@ -543,7 +728,8 @@ async def plan_edit_route(
         row.status = "planned"
         row.status_detail = (
             f"Plan ready: keep {len(plan['keep'])} ranges ({plan['stats']['kept_seconds']:.0f}s), "
-            f"drop {len(drops)} retakes and {len(pauses)} pauses. Meaning check passed."
+            f"drop {len(drops)} retakes and {len(pauses)} pauses. Meaning check passed. "
+            f"{plan['timing']['summary']}."
         )
     await db.commit()
     await db.refresh(row)
@@ -575,52 +761,67 @@ async def captions(
     )
 
 
-async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
+async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str) -> None:
     async def report(text: str) -> None:
-        await _set_status(upload_id, ws, "rendering", text)
+        await _set_status(upload_id, ws, "rendering", text, attempt)
 
     try:
         async with session_factory()() as s:
-            row = (
-                await s.execute(
-                    select(RecordingUpload).where(
-                        RecordingUpload.id == upload_id, RecordingUpload.workspace_id == ws
-                    )
-                )
-            ).scalar_one()
-            src, plan = Path(row.storage_path), dict(row.edit_plan or {})
-        out = src.with_name(f"{src.stem}-edited{src.suffix}")
-        await media.render_edit(src, plan.get("keep") or [], out, on_status=report)
+            row = await _load(s, upload_id, ws)
+            src, plan, duration = Path(row.storage_path), dict(row.edit_plan or {}), row.duration_s
+        if mode == "uncut":
+            if not duration:
+                duration = await media.probe_duration(src)
+            plan = uncut_plan(plan, duration)
+        keep = plan.get("keep") or []
         cues = build_cues(plan)
+        audio_only = src.suffix.lower() in media.AUDIO_EXTS
+        size = media.AUDIO_ONLY_CANVAS if audio_only else await media.probe_video_size(src)
+        if size is None:
+            raise RuntimeError("could not read the video frame size with ffprobe")
+        srt_text = to_srt(cues)
+        out = src.with_name(f"{src.stem}-edited.mp4")
+        await media.render_edit(
+            src,
+            keep,
+            out,
+            on_status=report,
+            ass_text=to_ass(cues, *size),
+            srt_text=srt_text,
+        )
         srt = src.with_name(f"{src.stem}-edited.srt")
-        srt.write_text(to_srt(cues), encoding="utf-8")
+        srt.write_text(srt_text, encoding="utf-8")
         src.with_name(f"{src.stem}-edited.vtt").write_text(to_vtt(cues), encoding="utf-8")
         async with session_factory()() as s:
-            row = (
-                await s.execute(
-                    select(RecordingUpload).where(
-                        RecordingUpload.id == upload_id, RecordingUpload.workspace_id == ws
-                    )
-                )
-            ).scalar_one()
+            row = await _load(s, upload_id, ws)
+            if not _owns(row, attempt):
+                return
             row.edited_path = str(out)
             row.captions_path = str(srt)
             row.status = "edited"
-            row.status_detail = (
-                f"Edited file ready: {len(plan.get('keep') or [])} ranges, "
-                f"{fmt_ts(plan.get('stats', {}).get('kept_seconds', 0))} long, "
-                "captions as SRT and VTT sidecars"
+            kept_s = sum(e - b for b, e in keep)
+            what = (
+                "Uncut captioned MP4 ready (nothing removed)"
+                if mode == "uncut"
+                else f"Captioned MP4 ready: {len(keep)} ranges"
             )
+            row.status_detail = (
+                f"{what}, {fmt_ts(kept_s)} long, {len(cues)} captions burned in and "
+                "as a subtitle track, plus SRT and VTT sidecars"
+            )
+            row.job_ids = _with_lease(row.job_ids, None)
             await s.commit()
     except media.StepUnavailableError as exc:
-        await _set_status(upload_id, ws, "unavailable", str(exc))
+        await _set_status(upload_id, ws, "unavailable", str(exc), attempt)
     except Exception as exc:
-        await _set_status(upload_id, ws, "failed", f"Render failed: {str(exc)[:400]}")
+        await _set_status(upload_id, ws, "failed", f"Render failed: {str(exc)[:400]}", attempt)
 
 
 class RenderRequest(BaseModel):
     # The editor must explicitly accept a plan the meaning check blocked
     override_meaning_check: bool = False
+    # "uncut" keeps the whole recording and only adds captions; it never needs an override
+    mode: Literal["cut", "uncut"] = "cut"
 
 
 @router.post("/uploads/{upload_id}/render", status_code=202)
@@ -630,31 +831,52 @@ async def render_upload(
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
+    await reconcile_interrupted_uploads(db, ws)
     row = await _upload(db, ws, upload_id)
     body = body or RenderRequest()
     if not row.edit_plan:
         raise HTTPException(status_code=409, detail="Plan the edit before rendering")
     if (
-        row.edit_plan.get("meaning_check", {}).get("status") == "blocked"
+        body.mode == "cut"
+        and row.edit_plan.get("meaning_check", {}).get("status") == "blocked"
         and not body.override_meaning_check
     ):
         raise HTTPException(
             status_code=409,
-            detail="The meaning check blocked this plan. Review the issues before rendering.",
+            detail=(
+                "The meaning check blocked this plan. Review the issues before rendering, "
+                "or render uncut with captions."
+            ),
         )
-    if row.status == "rendering":
+    if row.status in BUSY_STATUSES:
         return upload_json(row)
+    if not Path(row.storage_path).exists():
+        raise HTTPException(
+            status_code=409, detail="The original upload is missing from storage; upload it again"
+        )
     if not media.ffmpeg_path():
         row.status = "unavailable"
         row.status_detail = "Render unavailable: ffmpeg is not installed on this server"
         await db.commit()
         await db.refresh(row)
         return upload_json(row)
-    row.status = "rendering"
-    row.status_detail = f"Queued: cutting {len(row.edit_plan.get('keep') or [])} ranges with ffmpeg"
-    await db.commit()
+    detail = (
+        "Queued: captioning the whole recording with ffmpeg (nothing removed)"
+        if body.mode == "uncut"
+        else f"Queued: cutting {len(row.edit_plan.get('keep') or [])} ranges with ffmpeg"
+    )
+    attempt = _claim(row, "rendering", detail)
+    try:
+        await db.commit()
+    except BaseException:
+        _active_attempts.discard(attempt)
+        raise
     await db.refresh(row)
-    _spawn(_run_render(row.id, ws))
+    _spawn(
+        _run_leased(
+            row.id, ws, "rendering", attempt, lambda: _run_render(row.id, ws, attempt, body.mode)
+        )
+    )
     return upload_json(row)
 
 
@@ -667,7 +889,9 @@ async def edited_file(
     row = await _upload(db, ws, upload_id)
     if not row.edited_path or not Path(row.edited_path).exists():
         raise HTTPException(status_code=404, detail="No edited file yet")
-    return FileResponse(row.edited_path, filename=Path(row.edited_path).name)
+    return FileResponse(
+        row.edited_path, media_type="video/mp4", filename=Path(row.edited_path).name
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -847,6 +1071,7 @@ async def activity(
     db: AsyncSession = Depends(get_db),
 ):
     limit = max(1, min(limit, 100))
+    await reconcile_interrupted_uploads(db, ws)
     now = _utcnow()
     jobs = (
         (

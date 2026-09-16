@@ -3,8 +3,10 @@
 The HTML was extracted from the original inline Python string to avoid
 escape sequence corruption. Edit dashboard.html directly for changes.
 """
+
 from pathlib import Path
-from fastapi import APIRouter
+
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 router = APIRouter(tags=["dashboard"])
@@ -21,8 +23,11 @@ def _load_html() -> str:
 
 
 @router.get("/", include_in_schema=False)
-async def root_redirect():
-    return RedirectResponse(url="/dashboard")
+async def root_redirect(request: Request):
+    # Keep the query (e.g. ?week=2026-09-07) so deep links survive; the page validates it.
+    # The path is fixed, so the query can never redirect anywhere else.
+    query = request.url.query
+    return RedirectResponse(url="/dashboard" + (f"?{query}" if query else ""))
 
 
 @router.get("/dashboard", response_class=HTMLResponse)

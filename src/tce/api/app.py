@@ -94,11 +94,12 @@ async def _mark_stale_weekly_plans_interrupted() -> None:
 
 
 async def _mark_stale_editorial_work_interrupted() -> None:
-    """Background evidence runs and media steps die with the process.
+    """Background evidence runs die with the process.
 
-    Without this, a restart leaves them showing "running" / "transcribing"
-    forever. Mark them as interrupted so coverage and the live panel stay true;
-    unfinished sources remain pending for the next run.
+    Without this, a restart leaves them showing "running" forever. Mark them as
+    interrupted so coverage and the live panel stay true; unfinished sources remain
+    pending for the next run. Recording uploads are NOT reset here: their steps hold
+    leases, and `production.recover_media_on_startup` interrupts only dead ones.
     """
     try:
         from sqlalchemy import text
@@ -109,13 +110,6 @@ async def _mark_stale_editorial_work_interrupted() -> None:
                     "UPDATE evidence_collection_runs SET status = 'partial', complete = false, "
                     "current_activity = 'Interrupted by server restart; unfinished items stay "
                     "pending for the next run', finished_at = now() WHERE status = 'running'"
-                )
-            )
-            await db.execute(
-                text(
-                    "UPDATE recording_uploads SET status = 'failed', status_detail = "
-                    "'Interrupted by server restart; run the step again' "
-                    "WHERE status IN ('transcribing', 'rendering')"
                 )
             )
             await db.commit()
@@ -138,6 +132,12 @@ async def lifespan(app: FastAPI):
     await _mark_stale_weekly_plans_interrupted()
     await _mark_stale_editorial_work_interrupted()
 
+    # Recordings left transcribing/rendering by the previous process become a visible,
+    # retryable 'interrupted' state once their step lease is provably dead.
+    import asyncio
+
+    media_recovery = asyncio.create_task(production.recover_media_on_startup())
+
     # Auto-start the scheduler so recurring workflows (daily_content,
     # weekly_planning, daily_backup, etc.) fire without manual intervention.
     # Tests skip this via the TCE_DISABLE_SCHEDULER env var.
@@ -155,6 +155,8 @@ async def lifespan(app: FastAPI):
             pass
 
     yield
+
+    media_recovery.cancel()
 
     # Stop the scheduler on shutdown so tests/restarts don't leave
     # orphaned background tasks.

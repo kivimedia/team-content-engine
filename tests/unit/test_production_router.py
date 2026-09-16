@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -20,6 +22,7 @@ from tce.models.editorial import (
     TopicCandidate,
 )
 from tce.models.llm_job import LLMJob
+from tce.production import media
 from tce.settings import settings
 
 KEY = "test-editor-key"
@@ -436,3 +439,188 @@ async def test_activity_is_workspace_scoped(client, editorial_sessionmaker):
     assert "never-shown" not in str(body)
     assert [r["source_kind"] for r in body["collection_runs"]] == ["fathom_meeting"]
     assert body["uploads"] == []
+
+
+# ---------------------------------------------------------------------------
+# Restart recovery and captioned render
+
+
+def _busy_upload(cand, tmp_path, status, job_ids, name="walk.mp4"):
+    src = tmp_path / f"{uuid.uuid4()}{Path(name).suffix}"
+    src.write_bytes(b"synthetic original upload")
+    return RecordingUpload(
+        id=uuid.uuid4(),
+        workspace_id=WS,
+        candidate_id=cand.id,
+        original_filename=name,
+        storage_path=str(src),
+        sha256=uuid.uuid4().hex + uuid.uuid4().hex[:32],
+        duration_s=6.0,
+        status=status,
+        status_detail="Transcribing 6s file with local faster-whisper",
+        job_ids=job_ids,
+    )
+
+
+def _foreign_lease(step, minutes_ago):
+    at = prod._utcnow() - timedelta(minutes=minutes_ago)
+    return f"{prod.LEASE_PREFIX}{step}|a1b2c3|other-host:4242:deadbeef|{at.isoformat()}"
+
+
+async def _row(sessionmaker, upload_id):
+    async with sessionmaker() as s:
+        return (
+            await s.execute(select(RecordingUpload).where(RecordingUpload.id == upload_id))
+        ).scalar_one()
+
+
+async def test_live_foreign_lease_is_left_alone_and_expired_one_becomes_retryable(
+    client, editorial_sessionmaker, monkeypatch, tmp_path
+):
+    cand = _candidate()
+    live = _busy_upload(cand, tmp_path, "transcribing", [_foreign_lease("transcribing", 0.5)])
+    dead = _busy_upload(cand, tmp_path, "transcribing", [_foreign_lease("transcribing", 10)])
+    await _seed(editorial_sessionmaker, cand, live, dead)
+
+    r = await client.get(f"/api/v1/production/uploads/{live.id}", headers=AUTH)
+    assert r.json()["status"] == "transcribing"  # another process is still heartbeating it
+    r = await client.get(f"/api/v1/production/uploads/{dead.id}", headers=AUTH)
+    body = r.json()
+    assert body["status"] == "interrupted"
+    assert "original upload is kept" in body["status_detail"]
+    assert "Click Transcribe to retry" in body["status_detail"]
+    assert Path(dead.storage_path).read_bytes() == b"synthetic original upload"
+
+    spawned = []
+    monkeypatch.setattr(prod, "_spawn", lambda coro: (spawned.append(coro), coro.close()))
+    monkeypatch.setattr(settings, "production_transcribe_ws_url", "ws://127.0.0.1:9/none")
+    retry = await client.post(f"/api/v1/production/uploads/{dead.id}/transcribe", headers=AUTH)
+    assert retry.status_code == 202 and retry.json()["status"] == "transcribing"
+    assert len(spawned) == 1
+    lease = prod.parse_lease((await _row(editorial_sessionmaker, dead.id)).job_ids)
+    assert lease["owner"] == prod.PROCESS_OWNER and lease["step"] == "transcribing"
+    prod._active_attempts.discard(lease["attempt"])
+
+
+async def test_startup_sweep_interrupts_pre_lease_rows_and_removes_partial_render(
+    editorial_sessionmaker, tmp_path
+):
+    cand = _candidate()
+    legacy = _busy_upload(cand, tmp_path, "transcribing", [])
+    render = _busy_upload(cand, tmp_path, "rendering", [])
+    src = Path(render.storage_path)
+    partial = src.with_name(f".{src.stem}-edited.rendering.mp4")
+    partial.write_bytes(b"half a file")
+    gone = _busy_upload(cand, tmp_path, "rendering", [])
+    Path(gone.storage_path).unlink()
+    await _seed(editorial_sessionmaker, cand, legacy, render, gone)
+
+    async with editorial_sessionmaker() as s:
+        # A normal read does not touch lease-less rows that were just updated
+        assert await prod.reconcile_interrupted_uploads(s, WS) == []
+        changed = await prod.reconcile_interrupted_uploads(s, startup=True)
+    assert set(changed) == {legacy.id, render.id, gone.id}
+    assert (await _row(editorial_sessionmaker, legacy.id)).status == "interrupted"
+    rendered = await _row(editorial_sessionmaker, render.id)
+    assert rendered.status == "interrupted"
+    assert "Click Render edit to retry" in rendered.status_detail
+    assert not partial.exists() and src.exists()
+    missing = await _row(editorial_sessionmaker, gone.id)
+    assert missing.status == "failed" and "missing from storage" in missing.status_detail
+
+
+async def test_own_process_lease_alive_while_running_dead_after(
+    editorial_sessionmaker, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(prod, "session_factory", lambda: editorial_sessionmaker)
+    cand = _candidate()
+    entry = prod._lease_entry("rendering", "mine123", prod._utcnow())
+    row = _busy_upload(cand, tmp_path, "rendering", [entry])
+    await _seed(editorial_sessionmaker, cand, row)
+    prod._active_attempts.add("mine123")
+    try:
+        async with editorial_sessionmaker() as s:
+            assert await prod.reconcile_interrupted_uploads(s, WS, startup=True) == []
+    finally:
+        prod._active_attempts.discard("mine123")
+    async with editorial_sessionmaker() as s:
+        assert await prod.reconcile_interrupted_uploads(s, WS) == [row.id]
+    # The dead attempt can no longer write its late result
+    assert not await prod._set_status(row.id, WS, "edited", "late result", "mine123")
+    assert (await _row(editorial_sessionmaker, row.id)).status == "interrupted"
+
+
+@pytest.mark.skipif(not media.ffmpeg_path(), reason="ffmpeg not installed")
+async def test_blocked_plan_renders_uncut_captioned_mp4_with_sidecars(
+    client, editorial_sessionmaker, monkeypatch, tmp_path
+):
+    cand = _candidate()
+    src = tmp_path / "walk.mp4"
+    subprocess.run(
+        [
+            media.ffmpeg_path(),
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=360x640:r=25:d=6",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=330:duration=6",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(src),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    whole = "whole_second_start_inferred_end"
+    text = "I do not promise instant results."
+    transcript = [
+        {"start_s": 0.0, "end_s": 3.0, "text": text, "precision": whole},
+        {"start_s": 3.0, "end_s": 6.0, "text": text, "precision": whole},
+    ]
+    plan = prod.plan_edit(transcript, [text], duration_s=6.0)
+    assert plan["meaning_check"]["status"] == "blocked"
+    row = RecordingUpload(
+        id=uuid.uuid4(),
+        workspace_id=WS,
+        candidate_id=cand.id,
+        original_filename="walk.mp4",
+        storage_path=str(src),
+        sha256="e" * 64,
+        duration_s=6.0,
+        transcript=transcript,
+        edit_plan=plan,
+        status="needs_review",
+        status_detail="Needs review",
+        job_ids=[],
+    )
+    await _seed(editorial_sessionmaker, cand, row)
+    spawned = []
+    monkeypatch.setattr(prod, "_spawn", lambda coro: spawned.append(coro))
+
+    cut = await client.post(f"/api/v1/production/uploads/{row.id}/render", headers=AUTH)
+    assert cut.status_code == 409 and "render uncut" in cut.json()["detail"]
+    r = await client.post(
+        f"/api/v1/production/uploads/{row.id}/render", headers=AUTH, json={"mode": "uncut"}
+    )
+    assert r.status_code == 202 and r.json()["status"] == "rendering"
+    await spawned[0]  # run the leased render to completion
+    body = (await client.get(f"/api/v1/production/uploads/{row.id}", headers=AUTH)).json()
+    assert body["status"] == "edited", body["status_detail"]
+    assert "Uncut captioned MP4" in body["status_detail"]
+    out = tmp_path / "walk-edited.mp4"
+    assert out.exists() and abs((await media.probe_duration(out)) - 6.0) < 0.2
+    assert (tmp_path / "walk-edited.srt").read_text(encoding="utf-8").count("-->") == 2
+    assert (tmp_path / "walk-edited.vtt").read_text(encoding="utf-8").startswith("WEBVTT")
+    assert prod.parse_lease((await _row(editorial_sessionmaker, row.id)).job_ids) is None
+    assert not prod._active_attempts
+    edited = await client.get(f"/api/v1/production/uploads/{row.id}/edited", headers=AUTH)
+    assert edited.status_code == 200 and edited.headers["content-type"] == "video/mp4"
