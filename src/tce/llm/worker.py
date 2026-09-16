@@ -460,6 +460,10 @@ class ApiClient:
                 return exc.code, json.loads(raw)
             except ValueError:
                 return exc.code, {"detail": raw[:500]}
+        except (urllib.error.URLError, OSError) as exc:
+            # Transport failure (reset tunnel, restart, timeout): status 0, never a crash.
+            # The caller backs off; an unfinished job's lease simply expires and is reclaimed.
+            return 0, {"detail": f"transport error: {type(exc).__name__}"}
 
 
 # --- job execution ----------------------------------------------------------------
@@ -679,9 +683,13 @@ class Worker:
             if delay:
                 time.sleep(delay)
             try:
-                return self.api.post(path, outcome.body)
+                code, body = self.api.post(path, outcome.body)
             except Exception as exc:
                 self.log(f"submit {outcome.kind} failed ({type(exc).__name__}); retrying")
+                continue
+            if code != 0:
+                return code, body
+            self.log(f"submit {outcome.kind} failed (transport); retrying")
         return 0, None
 
     def run(

@@ -444,3 +444,18 @@ def test_run_once_leases_executes_and_completes():
     assert complete[0]["attempt_id"] == job()["attempt_id"]
     assert complete[0]["receipt"]["models"][POLICY_MODEL]["output_tokens"] == 9
     assert "someone@example.com" not in json.dumps(api.posts)
+
+
+def test_transport_reset_is_status_zero_not_a_crash(monkeypatch):
+    import urllib.request
+
+    from tce.llm import worker as worker_mod
+
+    def boom(*_a, **_k):
+        raise ConnectionResetError(10054, "connection reset")
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    client = worker_mod.ApiClient("http://127.0.0.1:1", "synthetic-key", timeout=1)
+    status, body = client.post("/lease", {"worker_id": "w"})
+    assert status == 0
+    assert "transport error" in body["detail"]
