@@ -126,3 +126,41 @@ async def test_collect_returns_run_ids_and_runs_in_background(client, monkeypatc
         headers=h(WS_A),
     )
     assert bad.status_code == 422
+
+
+async def test_coverage_matches_overlapping_runs_not_only_exact_windows(
+    editorial_sessionmaker, monkeypatch
+):
+    """A week collected with Israel-time bounds must show for a naive-date query."""
+    import uuid as _uuid
+    from datetime import datetime as _dt
+
+    from httpx import ASGITransport, AsyncClient
+
+    from tce.api.app import create_app
+    from tce.api.routers import evidence as ev
+    from tce.models.editorial import EvidenceCollectionRun
+    from tce.settings import settings as _settings
+
+    ws = _uuid.uuid4()
+    monkeypatch.setattr(_settings, "private_access_key", type(_settings.private_access_key)("k"))
+    monkeypatch.setattr(_settings, "editor_default_workspace_id", str(ws))
+    async with editorial_sessionmaker() as s:
+        s.add(EvidenceCollectionRun(
+            workspace_id=ws, source_kind="fathom_meeting",
+            window_start=_dt(2026, 9, 6, 21), window_end=_dt(2026, 9, 13, 21),
+            status="complete", complete=True, counts={"processed": 33}, items=[], errors=[],
+            started_at=_dt(2026, 9, 16, 13),
+        ))
+        await s.commit()
+
+    app = create_app()
+    app.dependency_overrides[ev.get_evidence_sessionmaker] = lambda: editorial_sessionmaker
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        r = await client.get(
+            "/api/v1/evidence/coverage",
+            params={"window_start": "2026-09-07T00:00:00", "window_end": "2026-09-14T00:00:00"},
+            headers={"X-TCE-Editor-Key": "k"},
+        )
+    assert r.status_code == 200
+    assert r.json()["coverage"]["fathom_meeting"]["status"] == "complete"

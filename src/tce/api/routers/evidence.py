@@ -238,8 +238,12 @@ async def coverage(
                     .where(
                         EvidenceCollectionRun.workspace_id == ws,
                         EvidenceCollectionRun.source_kind == kind,
-                        EvidenceCollectionRun.window_start == to_db(start),
-                        EvidenceCollectionRun.window_end == to_db(end),
+                        # Overlap, not equality: the caller's week bounds (e.g. naive
+                        # local dates from the dashboard) rarely match the exact
+                        # instants a run stored, and an exact match reported a fully
+                        # collected week as "not collected".
+                        EvidenceCollectionRun.window_start < to_db(end),
+                        EvidenceCollectionRun.window_end > to_db(start),
                     )
                     .order_by(EvidenceCollectionRun.started_at.desc())
                     .limit(1)
