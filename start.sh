@@ -9,4 +9,7 @@
 # so pm2 waits for the drain instead of SIGKILL'ing at the default 1.6s.
 cd /home/ziv/team-content-engine
 export PYTHONPATH=/home/ziv/team-content-engine/src
-exec python3 -m uvicorn tce.api.app:app --host 0.0.0.0 --port 8200 --timeout-graceful-shutdown 10
+# Localhost only: km-worker calls http://localhost:8200, and the dashboard is
+# reached through the authenticated nginx vhost. Private evidence must never be
+# served on a public port. Override with TCE_BIND_HOST only behind a proxy.
+exec python3 -m uvicorn tce.api.app:app --host "${TCE_BIND_HOST:-127.0.0.1}" --port 8200 --timeout-graceful-shutdown 10

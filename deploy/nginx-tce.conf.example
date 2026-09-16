@@ -1,0 +1,25 @@
+# TCE editor vhost. Basic auth protects the whole site; after auth, nginx injects
+# the private editor key so the dashboard never holds it. Replace the
+# placeholders on the server; never commit real values.
+server {
+    server_name tce.example.sslip.io;
+
+    auth_basic "TCE editor";
+    auth_basic_user_file /etc/nginx/tce.htpasswd;
+    client_max_body_size 2g;
+
+    location / {
+        proxy_pass http://127.0.0.1:8200;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-TCE-Editor-Key "<TCE_PRIVATE_ACCESS_KEY>";
+        proxy_set_header Authorization "";
+        proxy_read_timeout 300s;
+        proxy_request_buffering off;
+    }
+
+    listen 443 ssl;
+    ssl_certificate /etc/letsencrypt/live/<cert>/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/<cert>/privkey.pem;
+}
