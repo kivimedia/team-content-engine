@@ -27,7 +27,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tce.db.base import Base
@@ -45,7 +45,15 @@ REJECTION_GATES = (
 FEEDBACK_KINDS = ("approve", "source", "angle", "wording", "gate_reject", "note")
 
 
-class EvidenceSource(Base):
+class _PrivateWorkspaceMixin:
+    """Private evidence always belongs to exactly one workspace (NOT NULL in the DB)."""
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+
+
+class EvidenceSource(_PrivateWorkspaceMixin, Base):
     """One external source item (a meeting, or a group of related commits)."""
 
     __tablename__ = "evidence_sources"
@@ -79,7 +87,7 @@ class EvidenceSource(Base):
     last_collection_run_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
 
 
-class EvidenceCollectionRun(Base):
+class EvidenceCollectionRun(_PrivateWorkspaceMixin, Base):
     """Durable per-source coverage ledger for one bounded collection window."""
 
     __tablename__ = "evidence_collection_runs"
@@ -103,7 +111,7 @@ class EvidenceCollectionRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class EvidenceMoment(Base):
+class EvidenceMoment(_PrivateWorkspaceMixin, Base):
     """A specific, citable span inside a source that could support a lesson."""
 
     __tablename__ = "evidence_moments"
@@ -135,7 +143,7 @@ class EvidenceMoment(Base):
     extraction_job_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
 
 
-class TopicCandidate(Base):
+class TopicCandidate(_PrivateWorkspaceMixin, Base):
     __tablename__ = "topic_candidates"
 
     week_start: Mapped[datetime] = mapped_column(DateTime, index=True)
@@ -165,7 +173,7 @@ class TopicCandidate(Base):
     origin: Mapped[str] = mapped_column(String(30), default="selector")
 
 
-class EditorialFeedback(Base):
+class EditorialFeedback(_PrivateWorkspaceMixin, Base):
     """Versioned editor preference. One rejection never silently bans a subject."""
 
     __tablename__ = "editorial_feedback"
@@ -183,7 +191,7 @@ class EditorialFeedback(Base):
     created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
-class RecordingPacket(Base):
+class RecordingPacket(_PrivateWorkspaceMixin, Base):
     __tablename__ = "recording_packets"
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(
@@ -208,7 +216,7 @@ class RecordingPacket(Base):
     job_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
 
 
-class RecordingUpload(Base):
+class RecordingUpload(_PrivateWorkspaceMixin, Base):
     """One uploaded file per idea; edits keep meaning and captions."""
 
     __tablename__ = "recording_uploads"
@@ -239,7 +247,7 @@ class RecordingUpload(Base):
     job_ids: Mapped[list[str]] = mapped_column(JSONType, default=list)
 
 
-class PublicationReceipt(Base):
+class PublicationReceipt(_PrivateWorkspaceMixin, Base):
     """Recorded after a human-authorised publication. TCE never publishes by itself here."""
 
     __tablename__ = "publication_receipts"
