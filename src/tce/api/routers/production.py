@@ -933,6 +933,12 @@ async def create_publication(
         raise HTTPException(
             status_code=422, detail=f"platform must be one of {', '.join(PLATFORMS)}"
         )
+    if body.packet_id is not None:
+        # A receipt cites the packet the post came from; another candidate's (or another
+        # workspace's) packet would attribute the publication to work that never fed it.
+        packet = await _packet(db, ws, body.packet_id)
+        if packet.candidate_id != candidate.id:
+            raise HTTPException(status_code=422, detail="packet_id belongs to a different idea")
     ext_id = body.external_post_id.strip()
     existing = (
         await db.execute(

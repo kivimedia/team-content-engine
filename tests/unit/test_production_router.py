@@ -624,3 +624,22 @@ async def test_blocked_plan_renders_uncut_captioned_mp4_with_sidecars(
     assert not prod._active_attempts
     edited = await client.get(f"/api/v1/production/uploads/{row.id}/edited", headers=AUTH)
     assert edited.status_code == 200 and edited.headers["content-type"] == "video/mp4"
+
+
+async def test_receipt_rejects_a_packet_from_another_idea(client, editorial_sessionmaker):
+    mine, theirs = _candidate(), _candidate(title="A different idea")
+    other_packet = _packet(theirs)
+    await _seed(editorial_sessionmaker, mine, theirs, other_packet)
+    body = {
+        "platform": "linkedin",
+        "external_post_id": "synthetic-cross-packet",
+        "packet_id": str(other_packet.id),
+    }
+    r = await client.post(
+        f"/api/v1/production/candidates/{mine.id}/publications", headers=AUTH, json=body
+    )
+    assert r.status_code == 422 and "different idea" in r.json()["detail"]
+    ok = await client.post(
+        f"/api/v1/production/candidates/{theirs.id}/publications", headers=AUTH, json=body
+    )
+    assert ok.status_code == 201 and ok.json()["publication"]["packet_id"] == str(other_packet.id)
