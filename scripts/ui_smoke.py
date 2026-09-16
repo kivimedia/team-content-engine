@@ -393,6 +393,87 @@ async def seed() -> dict:
             started_at=now - timedelta(minutes=3),
         ),
     ]
+    from tce.editorial.packets import validate_packet_output
+
+    sel_run = uuid.uuid4()
+    week_label = week.date().isoformat()
+
+    def sel_prompt(shard):
+        return (
+            f"WEEK STARTING: {week_label}\nSELECTION SHARD: {shard}/2\n"
+            "RETURN AT MOST 6 candidates from this shard. Synthetic smoke prompt."
+        )
+
+    written = {
+        "bullets": [
+            "Synthetic bullet one",
+            "Synthetic bullet two",
+            "Synthetic bullet three",
+            "Synthetic bullet four",
+            "Synthetic bullet five",
+        ],
+        "script_phrases": [
+            "One question moves a lead.",
+            "Ask it in the first reply.",
+            "Name the next step.",
+            "Keep the reply short.",
+            "Answer inside ten minutes.",
+            "Book a strategy session if you want help with this.",
+        ],
+        "facebook_post": "Synthetic Facebook draft.",
+        "linkedin_post": "Synthetic LinkedIn draft.",
+        "interviewer_prompt": "Synthetic interviewer prompt.",
+    }
+    validate_packet_output(written)  # the durable view only offers Resume for valid output
+    rows += [
+        LLMJob(
+            workspace_id=WS,
+            job_type="editorial_selection",
+            agent_name="editorial_selector",
+            idempotency_key="smoke-sel-1",
+            request_json={"messages": [{"role": "user", "content": sel_prompt(1)}]},
+            policy_model="claude-opus-5",
+            input_hash="hs1",
+            run_id=sel_run,
+            status="succeeded",
+            attempt_count=1,
+            completed_at=now - timedelta(minutes=6),
+            result_json={"candidates": [{"title": "Synthetic shard result"}], "rejections": []},
+        ),
+        LLMJob(
+            workspace_id=WS,
+            job_type="editorial_selection",
+            agent_name="editorial_selector",
+            idempotency_key="smoke-sel-2",
+            request_json={"messages": [{"role": "user", "content": sel_prompt(2)}]},
+            policy_model="claude-opus-5",
+            input_hash="hs2",
+            run_id=sel_run,
+            status="queued",
+            attempt_count=0,
+        ),
+        LLMJob(
+            workspace_id=WS,
+            job_type="recording_packet",
+            agent_name="packet_writer",
+            idempotency_key="smoke-pk-1",
+            request_json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"PACKET REQUEST: {uuid.uuid4()}\nSynthetic packet prompt.",
+                    }
+                ]
+            },
+            policy_model="claude-opus-5",
+            input_hash="hp1",
+            run_id=cands[2].id,
+            status="succeeded",
+            attempt_count=1,
+            completed_at=now - timedelta(minutes=4),
+            result_json=written,
+        ),
+    ]
     async with session_mod.async_session() as s:
         s.add_all(rows)
         await s.commit()
@@ -400,6 +481,7 @@ async def seed() -> dict:
         "week": week.date().isoformat(),
         "candidate": str(cands[0].id),
         "candidate2": str(cands[1].id),
+        "candidate3": str(cands[2].id),
     }
 
 
@@ -696,6 +778,102 @@ def drive_links(base: str, out: Path, seeded: dict) -> dict:
     return result
 
 
+def drive_durable(base: str, out: Path, seeded: dict) -> dict:
+    """Registry lost (fresh process), durable jobs on record: the UI must say so and offer Resume."""
+    from playwright.sync_api import sync_playwright
+
+    result: dict = {"posts": []}
+    errors: list[str] = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        ctx = browser.new_context(viewport={"width": 1440, "height": 900})
+        page = ctx.new_page()
+        page.on("pageerror", lambda e: errors.append("pageerror: " + str(e)))
+        page.route("**/fonts.googleapis.com/**", lambda r: r.abort())
+        page.route("**/fonts.gstatic.com/**", lambda r: r.abort())
+
+        def fake_post(route, body):
+            result["posts"].append({"url": route.request.url, "body": route.request.post_data})
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+        # Never start real jobs from the smoke run: answer POSTs the way the server does on resume
+        page.route(
+            "**/api/v1/editorial/select",
+            lambda r: (
+                fake_post(
+                    r,
+                    {
+                        "selection_run_id": "x",
+                        "resumed": True,
+                        "status": "running",
+                        "candidates": [],
+                        "rejected": [],
+                    },
+                )
+                if r.request.method == "POST"
+                else r.continue_()
+            ),
+        )
+        page.route(
+            "**/api/v1/editorial/candidates/*/packet",
+            lambda r: (
+                fake_post(
+                    r, {"status": "running", "resumed": True, "candidate_id": seeded["candidate3"]}
+                )
+                if r.request.method == "POST"
+                else r.continue_()
+            ),
+        )
+        page.goto(base + f"/?week={seeded['week']}#editorial", wait_until="domcontentloaded")
+        page.wait_for_selector("#ed-select-state-panel", timeout=20000)
+        page.wait_for_selector("#ed-activity .ed-durable-job", timeout=20000)
+        page.wait_for_timeout(500)
+        result["select_button"] = page.inner_text("#ed-select-btn")
+        result["select_panel"] = page.inner_text("#ed-select-state-panel")
+        result["durable_rows"] = page.locator("#ed-activity .ed-durable-job").count()
+        result["activity"] = page.inner_text("#ed-activity")
+        page.locator("#ed-select-state-panel").scroll_into_view_if_needed()
+        page.screenshot(path=str(out / "durable-1-selection-resume.png"))
+        cid = seeded["candidate3"]
+        page.click(f"#ed-card-{cid} .ed-card-head")
+        page.wait_for_selector(f"#ed-packet-btn-{cid}", timeout=20000)
+        page.wait_for_selector(f"#ed-packet-state-{cid}", timeout=20000)
+        result["packet_button"] = page.inner_text(f"#ed-packet-btn-{cid}")
+        result["packet_state"] = page.inner_text(f"#ed-packet-state-{cid}")
+        page.locator(f"#ed-pk-{cid}").scroll_into_view_if_needed()
+        page.screenshot(path=str(out / "durable-2-packet-resume.png"))
+        page.click(f"#ed-packet-btn-{cid}")
+        page.wait_for_selector("text=Resumed the interrupted packet job", timeout=10000)
+        page.locator("#ed-select-btn").scroll_into_view_if_needed()
+        page.click("#ed-select-btn")
+        page.wait_for_selector("text=Resumed the interrupted selection run", timeout=10000)
+        page.screenshot(path=str(out / "durable-3-resumed-toast.png"))
+        ctx.close()
+        browser.close()
+    result["page_errors"] = errors
+    sel_posts = [x for x in result["posts"] if x["url"].endswith("/editorial/select")]
+    checks = [
+        result["select_button"].startswith("Resume selection (1 job still queued or running)"),
+        all(
+            t in result["select_panel"]
+            for t in ("interrupted", "resumable", "Shard 1 of 2", "Shard 2 of 2")
+        ),
+        result["durable_rows"] == 2,  # the queued shard and the packet job waiting for capacity
+        result["activity"].count("Idea selection, week of") == 1,
+        # the same job is not also listed as a generic subscription job row
+        result["activity"].count("Queued for the subscription worker: editorial selection") == 1,
+        "No request in this server process is waiting on it" in result["activity"],
+        result["packet_button"] == "Resume: save the written packet",
+        "written but never saved" in result["packet_state"],
+        len(sel_posts) == 1
+        and json.loads(sel_posts[0]["body"]) == {"week_start": seeded["week"], "max_candidates": 6},
+        len(result["posts"]) == 2,
+        not errors,
+    ]
+    result["failed_checks"] = [i for i, ok in enumerate(checks) if not ok]
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(WORK / "screens"))
@@ -725,8 +903,10 @@ def main() -> int:
     urllib.request.urlopen(req, timeout=10).read()
     report = drive(f"http://127.0.0.1:{args.port}", Path(args.out), seeded)
     links = drive_links(f"http://127.0.0.1:{args.port}", Path(args.out), seeded)
+    durable = drive_durable(f"http://127.0.0.1:{args.port}", Path(args.out), seeded)
     print(json.dumps(report, indent=2))
     print(json.dumps({"links": links}, indent=2))
+    print(json.dumps({"durable": durable}, indent=2))
     problems = 0
     for name, r in report.items():
         for step, c in r["checks"].items():
@@ -737,7 +917,8 @@ def main() -> int:
     print(f"screenshots: {args.out}")
     print(f"layout problems: {problems}")
     print(f"link/error checks failed: {links['failed_checks']}")
-    return 1 if problems or links["failed_checks"] else 0
+    print(f"durable status checks failed: {durable['failed_checks']}")
+    return 1 if problems or links["failed_checks"] or durable["failed_checks"] else 0
 
 
 if __name__ == "__main__":

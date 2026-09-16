@@ -10268,6 +10268,7 @@ const ED = {
   packets: {}, packetJobs: {}, uploads: {}, pubs: {}, exportResult: {}, uploading: {},
   activity: null, activityError: null, activityAt: null, worker: null, workerError: null,
   jobs: [], coverage: null, coverageError: null, pollTimer: null, lastUploadSig: '',
+  inFlight: [], inFlightSig: '', selectStatus: null, selectStatusError: null, selectStatusAt: 0,
 };
 
 function edEsc(v) {
@@ -10329,7 +10330,7 @@ function edErrorText(status, data, text) {
 function edBadge(text, cls) { return '<span class="ed-badge ' + cls + '">' + edEsc(text) + '</span>'; }
 function edStatusClass(st) {
   const s = String(st || '').toLowerCase();
-  if (['complete', 'completed', 'done', 'ok', 'clean', 'exported', 'edited', 'planned', 'transcribed', 'published', 'recorded', 'selected', 'pass'].includes(s)) return 'ed-ok';
+  if (['complete', 'completed', 'succeeded', 'done', 'ok', 'clean', 'exported', 'edited', 'planned', 'transcribed', 'published', 'recorded', 'selected', 'pass'].includes(s)) return 'ed-ok';
   if (['failed', 'fail', 'blocked', 'needs_review', 'rejected', 'access_problem', 'issues', 'unavailable'].includes(s)) return 'ed-bad';
   if (['running', 'leased', 'transcribing', 'rendering', 'uploading', 'queued'].includes(s)) return 'ed-info';
   if (['partial', 'waiting_capacity', 'waiting', 'not_connected', 'unevaluated', 'superseded', 'proposed', 'interrupted'].includes(s)) return 'ed-warn';
@@ -10401,7 +10402,7 @@ function edSetWeek(value) {
   ED.week = week;
   ED.weekNotice = null;
   localStorage.setItem('tce_ed_week', ED.week);
-  ED.candidates = []; ED.loaded = false; ED.open.clear(); ED.coverage = null;
+  ED.candidates = []; ED.loaded = false; ED.open.clear(); ED.coverage = null; ED.selectStatus = null; ED.selectStatusError = null;
   renderEditorial();
 }
 function edShiftWeek(days) {
@@ -10440,6 +10441,7 @@ function renderEditorial() {
       <button class="btn btn-blue" id="ed-extract-btn" onclick="edExtract()">Extract moments</button>
       <button class="btn btn-primary" id="ed-select-btn" onclick="edSelect()">Select ideas</button>
     </div>
+    <div id="ed-select-state" aria-live="polite"></div>
     <div class="ed-layout">
       <div id="ed-candidates"><div class="ed-empty">Loading ideas for this week...</div></div>
       <div class="ed-side">
@@ -10450,6 +10452,7 @@ function renderEditorial() {
   </div>`;
   edLoadCandidates();
   edLoadCoverage();
+  edLoadSelectStatus();
   edPoll();
   edStartPolling();
 }
@@ -10472,7 +10475,7 @@ async function edPoll() {
   if (act.status === 'fulfilled') { ED.activity = act.value; ED.activityError = null; ED.activityAt = new Date(); }
   else ED.activityError = act.reason.message;
   if (worker.status === 'fulfilled') { ED.worker = worker.value; ED.workerError = null; } else ED.workerError = worker.reason.message;
-  if (jobs.status === 'fulfilled') ED.jobs = jobs.value.jobs || [];
+  if (jobs.status === 'fulfilled') { ED.jobs = jobs.value.jobs || []; ED.inFlight = jobs.value.in_flight || []; }
   edRenderActivity();
   edSyncFromActivity();
 }
@@ -10495,9 +10498,106 @@ function edSyncFromActivity() {
       }
     }
     if (j.kind === 'select' && j.key === ED.week && j.state !== 'running' && ED._selecting) {
-      ED._selecting = false; edLoadCandidates();
+      ED._selecting = false; edLoadCandidates(); edLoadSelectStatus();
     }
   }
+  // Durable jobs (they outlive this server process): reload the affected views when they move.
+  const flightSig = ED.inFlight.map(j => j.job_id + ':' + j.status + ':' + (j.attempt_count || 0)).join('|');
+  if (flightSig !== ED.inFlightSig) {
+    const before = ED.inFlightSig;
+    ED.inFlightSig = flightSig;
+    if (before !== '' || flightSig !== '') {
+      edLoadSelectStatus();
+      const keys = new Set(ED.inFlight.filter(j => j.kind === 'packet').map(j => j.key));
+      for (const id of ED.open) if (keys.has(id) || (ED.packetJobs[id] && ED.packetJobs[id].source === 'durable')) edLoadPackets(id);
+    }
+  }
+  const st = ED.selectStatus && ED.selectStatus.job;
+  const unsettled = st && ['running', 'waiting', 'interrupted'].includes(st.state);
+  if (unsettled && Date.now() - ED.selectStatusAt > 15000) edLoadSelectStatus();
+}
+
+// --- Durable editorial state -------------------------------------------------
+// The server's in-process registry is lost on restart; select-status, packet-status and
+// /editorial/jobs in_flight are rebuilt from llm_jobs. These helpers turn that record into
+// honest labels, and a Resume action only where the server says it will re-attach.
+const ED_IN_FLIGHT = ['queued', 'leased', 'waiting_capacity'];
+function edCount(counts, names) { return names.reduce((n, k) => n + ((counts || {})[k] || 0), 0); }
+function edJobLabel(row) {
+  if (!row) return 'Job';
+  if (row.stage === 'rank' || row.stage === 'global_rank') return 'Global ranking';
+  if (row.stage) return edHuman(row.stage);
+  if (row.shards && row.shards > 1) return 'Shard ' + (row.shard || 1) + ' of ' + row.shards;
+  return row.kind === 'packet' ? 'Packet job' : 'Selection job';
+}
+function edSelectAction(job, maxCandidates) {
+  if (job && job.state === 'running') return { label: 'Selecting...', disabled: true, resume: false, note: '' };
+  if (!job || job.source !== 'durable') return { label: 'Select ideas', disabled: false, resume: false, note: '' };
+  if (job.state === 'done') return { label: 'Select ideas again', disabled: false, resume: false, note: 'Starts a new selection run.' };
+  if (!job.resumable) return { label: 'Start new selection', disabled: false, resume: false, note: 'The last run cannot be resumed; a new run starts fresh jobs.' };
+  if (job.max_candidates != null && job.max_candidates !== maxCandidates) {
+    return { label: 'Start new selection', disabled: false, resume: false, note: 'The interrupted run asked for ' + job.max_candidates + ' ideas, so it cannot be resumed with ' + maxCandidates + '.' };
+  }
+  const counts = job.job_counts || {};
+  const failed = edCount(counts, ['failed', 'cancelled']);
+  const flying = edCount(counts, ED_IN_FLIGHT);
+  if (failed) return { label: 'Retry ' + failed + ' failed selection job' + (failed === 1 ? '' : 's'), disabled: false, resume: true, note: 'Re-queues the failed job' + (failed === 1 ? '' : 's') + ' once and reuses the finished ones. No duplicate run.' };
+  if (flying) {
+    const waiting = edCount(counts, ['waiting_capacity']);
+    return { label: 'Resume selection (' + flying + ' job' + (flying === 1 ? '' : 's') + ' still ' + (waiting ? 'waiting for capacity' : 'queued or running') + ')', disabled: false, resume: true, note: 'Re-attaches to the same jobs and saves the result when they finish. No new jobs are created.' };
+  }
+  return { label: 'Resume: save the finished selection', disabled: false, resume: true, note: 'Every job already finished; this saves the result without new model calls.' };
+}
+function edPacketAction(job, hasPacket) {
+  if (job && job.state === 'running') return { label: 'Writing packet...', disabled: true, resume: false, note: '' };
+  if (job && job.source === 'durable' && job.resumable) {
+    const st = (job.job && job.job.status) || '';
+    if (ED_IN_FLIGHT.includes(st)) return { label: 'Resume packet job (' + edHuman(st) + ')', disabled: false, resume: true, note: 'Re-attaches to the same job and saves the packet when it finishes. No new job.' };
+    return { label: 'Resume: save the written packet', disabled: false, resume: true, note: 'The packet was written but never saved; this saves it without a new model call.' };
+  }
+  return { label: hasPacket ? 'Rebuild recording packet' : 'Build recording packet', disabled: false, resume: false, note: '' };
+}
+
+async function edLoadSelectStatus() {
+  const week = ED.week;
+  ED.selectStatusAt = Date.now();
+  try {
+    const r = await edApi('/editorial/select-status?week_start=' + encodeURIComponent(week));
+    if (week !== ED.week) return;
+    ED.selectStatus = r; ED.selectStatusError = null;
+  } catch (e) { ED.selectStatusError = e.message; }
+  edRenderSelectState();
+}
+function edRenderSelectState() {
+  const el = document.getElementById('ed-select-state');
+  const btn = document.getElementById('ed-select-btn');
+  const job = ED.selectStatus && ED.selectStatus.job;
+  const action = edSelectAction(job, 6);
+  if (btn && !btn.dataset.busy) {
+    btn.textContent = action.label;
+    btn.disabled = action.disabled;
+    btn.title = action.note;
+    btn.dataset.resume = action.resume ? '1' : '';
+  }
+  if (!el) return;
+  if (ED.selectStatusError) { el.innerHTML = '<div class="ed-panel"><div class="ed-err">Selection status unavailable: ' + edEsc(ED.selectStatusError) + '</div></div>'; return; }
+  if (!job || job.state === 'idle') { el.innerHTML = ''; return; }
+  let h = '<div class="ed-panel" id="ed-select-state-panel"><div class="ed-row"><strong>Idea selection</strong> ' + edBadge(edHuman(job.state), edStatusClass(job.state));
+  if (job.source === 'durable') h += ' ' + edBadge(job.resumable ? 'resumable' : (job.state === 'done' ? 'saved' : 'not resumable'), job.resumable ? 'ed-warn' : 'ed-neutral');
+  h += '<div>' + edEsc(job.current_activity || '') + '</div>';
+  if (job.detail) h += '<div class="ed-sub">' + edEsc(job.detail) + '</div>';
+  if (action.note && job.source === 'durable') h += '<div class="ed-sub">' + edEsc(action.note) + '</div>';
+  const rows = [...(job.shards || []), ...(job.rank ? [Object.assign({ stage: 'rank' }, job.rank)] : [])];
+  if (rows.length) {
+    h += '<table class="ed-table" style="margin-top:6px"><thead><tr><th>Step</th><th>Job status</th><th>Attempts</th><th>Detail</th></tr></thead><tbody>';
+    for (const r of rows) {
+      const detail = r.status === 'waiting_capacity' && r.retry_at ? 'retry at ' + edClock(r.retry_at) : (r.error_code ? r.error_code + (r.error_detail ? ': ' + String(r.error_detail).slice(0, 120) : '') : (r.moments ? r.moments + ' moments' : ''));
+      h += '<tr><td>' + edEsc(edJobLabel(r)) + '</td><td>' + edBadge(edHuman(r.status), edStatusClass(r.status)) + '</td><td>' + edEsc(r.attempt_count != null ? r.attempt_count : '') + '</td><td>' + edEsc(detail) + '</td></tr>';
+    }
+    h += '</tbody></table>';
+  }
+  if (job.last_request && job.last_request.state) h += '<div class="ed-sub">Last request from this page: ' + edEsc(edHuman(job.last_request.state)) + (job.last_request.current_activity ? ', ' + edEsc(job.last_request.current_activity) : '') + '</div>';
+  el.innerHTML = h + '</div></div>';
 }
 
 function edRenderActivity() {
@@ -10525,7 +10625,23 @@ function edRenderActivity() {
   const a = ED.activity || {};
   const live = new Set(['queued', 'leased', 'waiting_capacity', 'running']);
   const jobs = (a.llm_jobs || []);
-  const activeJobs = jobs.filter(j => live.has(j.status));
+  const attended = new Set(ED.jobs.filter(j => j.state === 'running').map(j => j.kind + ':' + j.key));
+  const byId = new Map(jobs.map(j => [j.id, j]));
+  const durableIds = new Set();
+  for (const d of ED.inFlight) {
+    durableIds.add(d.job_id);
+    const g = byId.get(d.job_id);
+    const what = d.kind === 'select'
+      ? 'Idea selection' + (d.key ? ', week of ' + d.key : '') + ' (' + edJobLabel(d) + ')'
+      : 'Recording packet' + ((edCandidate(d.key) || {}).title ? ': ' + edCandidate(d.key).title : '');
+    const owner = attended.has(d.kind + ':' + d.key)
+      ? 'This server is waiting on it and will save the result.'
+      : !d.key
+        ? 'No request in this server process is waiting on it, and it carries no week or idea on record, so it can only be watched here.'
+        : 'No request in this server process is waiting on it (for example after a restart). Use ' + (d.kind === 'select' ? 'Resume selection' : 'Resume packet job on the idea') + ' to save the result when it finishes.';
+    busy.push('<div class="ed-row ed-durable-job" data-job="' + edEsc(d.job_id) + '">' + edBadge(edHuman(d.status), edStatusClass(d.status)) + ' <strong>' + edEsc(what) + '</strong><div>' + edEsc(g ? g.current_activity : 'Attempt ' + (d.attempt_count || 0)) + '</div>' + (d.status === 'waiting_capacity' && d.retry_at ? '<div class="ed-sub">Your time: retry at ' + edEsc(edClock(d.retry_at)) + '</div>' : '') + '<div class="ed-sub">' + edEsc(owner) + '</div></div>');
+  }
+  const activeJobs = jobs.filter(j => live.has(j.status) && !durableIds.has(j.id));
   for (const j of activeJobs) {
     const rc = j.receipt || {};
     busy.push('<div class="ed-row">' + edBadge(edHuman(j.status), edStatusClass(j.status)) + ' <strong>' + edEsc(edHuman(j.job_type)) + '</strong> <span class="ed-sub">(' + edEsc(j.agent_name) + ')</span><div>' + edEsc(j.current_activity) + '</div>' + (j.status === 'waiting_capacity' && j.retry_at ? '<div class="ed-sub">Your time: retry at ' + edEsc(edClock(j.retry_at)) + '</div>' : '') + (rc.models ? '<div class="ed-sub">Receipt: ' + edEsc(rc.models.join(', ')) + (rc.auth_method ? ', ' + edEsc(rc.auth_method) : '') + '</div>' : '') + '</div>');
@@ -10609,12 +10725,15 @@ function edExtract() {
   });
 }
 function edSelect() {
-  edRunAction('ed-select-btn', 'Starting selection...', async () => {
-    await edApi('/editorial/select', { method: 'POST', body: JSON.stringify({ week_start: ED.week, max_candidates: 6 }) });
+  const btn = document.getElementById('ed-select-btn');
+  const resuming = !!(btn && btn.dataset.resume);
+  if (btn) btn.dataset.busy = '1';
+  edRunAction('ed-select-btn', resuming ? 'Resuming selection...' : 'Starting selection...', async () => {
+    const r = await edApi('/editorial/select', { method: 'POST', body: JSON.stringify({ week_start: ED.week, max_candidates: 6 }) });
     ED._selecting = true;
-    toast('Selecting ideas. Live activity shows each step.');
+    toast(r && r.resumed ? 'Resumed the interrupted selection run. Its existing jobs are reused, none duplicated.' : 'Selecting ideas. Live activity shows each step.');
     edPoll();
-  });
+  }).finally(() => { if (btn) delete btn.dataset.busy; edLoadSelectStatus(); });
 }
 
 async function edLoadCandidates() {
@@ -10770,12 +10889,15 @@ function edRenderPacket(id) {
   const p = ED.packets[id];
   const job = ED.packetJobs[id];
   let h = '<h4>Recording packet</h4>';
-  if (job && job.state && job.state !== 'idle') {
-    h += '<div class="ed-row">' + edBadge(edHuman(job.state), edStatusClass(job.state)) + ' ' + edEsc(job.current_activity || '') + (job.detail ? '<div class="ed-sub">' + edEsc(job.detail) + '</div>' : '') + '<div class="ed-sub">updated ' + edEsc(edAgo(job.updated_at)) + '</div></div>';
+  if (job && job.state && job.state !== 'idle' && !(job.source === 'durable' && job.state === 'done')) {
+    const jb = job.job || {};
+    const when = job.updated_at || jb.completed_at || jb.created_at;
+    h += '<div class="ed-row" id="ed-packet-state-' + id + '">' + edBadge(edHuman(job.state), edStatusClass(job.state)) + (job.source === 'durable' && jb.status ? ' ' + edBadge('job ' + edHuman(jb.status), edStatusClass(jb.status)) : '') + ' ' + edEsc(job.current_activity || '') + (job.detail ? '<div class="ed-sub">' + edEsc(job.detail) + '</div>' : '') + (when ? '<div class="ed-sub">updated ' + edEsc(edAgo(when)) + '</div>' : '') + '</div>';
   }
   if (p && p._error) h += '<div class="ed-err">Could not load packets: ' + edEsc(p._error) + '</div>';
   const running = job && job.state === 'running';
-  h += '<div class="ed-btns"><button class="btn btn-primary" ' + (running ? 'disabled' : '') + ' onclick="edBuildPacket(\'' + id + '\')">' + (running ? 'Writing packet...' : (p && !p._error ? 'Rebuild recording packet' : 'Build recording packet')) + '</button>';
+  const pa = edPacketAction(job, !!(p && !p._error));
+  h += '<div class="ed-btns"><button class="btn ' + (pa.resume ? 'btn-blue' : 'btn-primary') + '" id="ed-packet-btn-' + id + '" ' + (pa.disabled ? 'disabled' : '') + ' title="' + edEsc(pa.note) + '" onclick="edBuildPacket(\'' + id + '\')">' + edEsc(pa.label) + '</button>';
   if (p && !p._error) h += '<button class="btn btn-blue" id="ed-export-' + id + '" onclick="edExport(\'' + id + '\',\'' + p.id + '\')">Export to Google Doc</button>';
   h += '</div>';
   if (p && !p._error) {
@@ -10806,8 +10928,10 @@ function edExportStateHtml(id, p) {
 }
 async function edBuildPacket(id) {
   try {
-    await edApi('/editorial/candidates/' + id + '/packet', { method: 'POST' });
-    ED.packetJobs[id] = { state: 'running', current_activity: 'Queued packet', updated_at: new Date().toISOString() };
+    const r = await edApi('/editorial/candidates/' + id + '/packet', { method: 'POST' });
+    const resumed = !!(r && r.resumed);
+    ED.packetJobs[id] = { state: 'running', current_activity: resumed ? 'Resuming interrupted packet' : 'Queued packet', updated_at: new Date().toISOString() };
+    toast(resumed ? 'Resumed the interrupted packet job. No new job was created.' : 'Packet job queued.');
     edRenderPacket(id); edPoll();
   } catch (e) { toast('Packet not started: ' + e.message, false); }
 }

@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -23,9 +24,24 @@ def _function(source: str, name: str) -> str:
 
 def run_js(expr: str):
     source = HTML.read_text(encoding="utf-8")
-    names = ("edHuman", "edDate", "edClock", "edMonday", "edIsoDate", "edParseWeek", "edErrorText")
-    const = re.search(r"^const ED_PRIVATE_ACCESS_DETAIL = .*$", source, re.M).group(0)
-    script = "\n".join([const, *(_function(source, n) for n in names)])
+    names = (
+        "edHuman",
+        "edDate",
+        "edClock",
+        "edMonday",
+        "edIsoDate",
+        "edParseWeek",
+        "edErrorText",
+        "edCount",
+        "edJobLabel",
+        "edSelectAction",
+        "edPacketAction",
+    )
+    consts = [
+        re.search(rf"^const {c} = .*$", source, re.M).group(0)
+        for c in ("ED_PRIVATE_ACCESS_DETAIL", "ED_IN_FLIGHT")
+    ]
+    script = "\n".join([*consts, *(_function(source, n) for n in names)])
     script += f"\nprocess.stdout.write(JSON.stringify({expr}));"
     out = subprocess.run(
         [NODE, "-e", script], check=True, capture_output=True, text=True, timeout=30
@@ -84,3 +100,83 @@ async def test_root_redirect_keeps_the_week_query():
         assert bare.headers["location"] == "/dashboard"
         evil = await c.get("/?week=//evil.example")
         assert evil.headers["location"].startswith("/dashboard?")
+
+
+def test_dashboard_script_blocks_parse():
+    """A duplicate declaration anywhere in the page kills the whole Editorial area."""
+    source = HTML.read_text(encoding="utf-8")
+    blocks = re.findall(r"<script>(.*?)</script>", source, re.S)
+    assert blocks, "no inline script blocks found"
+    with tempfile.TemporaryDirectory() as tmp:
+        js = Path(tmp) / "dashboard-inline.js"
+        js.write_text("\n".join(blocks), encoding="utf-8")  # the page holds non-ASCII copy
+        out = subprocess.run([NODE, "--check", str(js)], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr[-600:]
+
+
+def test_resume_labels_name_what_the_server_will_do():
+    idle = run_js("edSelectAction(null, 6)")
+    assert idle["label"] == "Select ideas" and idle["resume"] is False
+    queued = run_js(
+        "edSelectAction({source:'durable', state:'interrupted', resumable:true,"
+        " job_counts:{succeeded:1, queued:1}, max_candidates:6}, 6)"
+    )
+    assert queued["label"] == "Resume selection (1 job still queued or running)"
+    assert queued["resume"] is True and "No new jobs are created" in queued["note"]
+    waiting = run_js(
+        "edSelectAction({source:'durable', state:'waiting', resumable:true,"
+        " job_counts:{waiting_capacity:2}, max_candidates:6}, 6)"
+    )
+    assert waiting["label"] == "Resume selection (2 jobs still waiting for capacity)"
+    unsaved = run_js(
+        "edSelectAction({source:'durable', state:'interrupted', resumable:true,"
+        " job_counts:{succeeded:2}, max_candidates:null}, 6)"
+    )
+    assert unsaved["label"] == "Resume: save the finished selection"
+    assert "without new model calls" in unsaved["note"]
+    failed = run_js(
+        "edSelectAction({source:'durable', state:'failed', resumable:true,"
+        " job_counts:{succeeded:1, failed:1}, max_candidates:6}, 6)"
+    )
+    assert failed["label"] == "Retry 1 failed selection job"
+    dead = run_js("edSelectAction({source:'durable', state:'failed', resumable:false}, 6)")
+    assert dead["label"] == "Start new selection" and dead["resume"] is False
+    # A run of a different size cannot be resumed by the server, so it is not offered
+    other = run_js(
+        "edSelectAction({source:'durable', state:'interrupted', resumable:true,"
+        " job_counts:{queued:1}, max_candidates:4}, 6)"
+    )
+    assert other["label"] == "Start new selection" and "asked for 4 ideas" in other["note"]
+    done = run_js("edSelectAction({source:'durable', state:'done', resumable:false}, 6)")
+    assert done["label"] == "Select ideas again"
+    running = run_js("edSelectAction({state:'running', current_activity:'x'}, 6)")
+    assert running["disabled"] is True
+
+
+def test_packet_resume_labels():
+    assert run_js("edPacketAction(null, false)")["label"] == "Build recording packet"
+    assert run_js("edPacketAction(null, true)")["label"] == "Rebuild recording packet"
+    written = run_js(
+        "edPacketAction({source:'durable', state:'interrupted', resumable:true,"
+        " job:{status:'succeeded'}}, false)"
+    )
+    assert written["label"] == "Resume: save the written packet" and written["resume"] is True
+    queued = run_js(
+        "edPacketAction({source:'durable', state:'interrupted', resumable:true,"
+        " job:{status:'waiting_capacity'}}, false)"
+    )
+    assert queued["label"] == "Resume packet job (waiting capacity)"
+    not_resumable = run_js(
+        "edPacketAction({source:'durable', state:'failed', resumable:false,"
+        " job:{status:'failed'}}, true)"
+    )
+    assert not_resumable["label"] == "Rebuild recording packet"
+
+
+def test_durable_job_row_labels():
+    assert run_js("edJobLabel({kind:'select', shard:2, shards:3})") == "Shard 2 of 3"
+    assert run_js("edJobLabel({kind:'select', shards:1})") == "Selection job"
+    assert run_js("edJobLabel({kind:'packet'})") == "Packet job"
+    # The editorial worker's global rank job is labelled, not shown as a bare shard
+    assert run_js("edJobLabel({kind:'select', stage:'rank'})") == "Global ranking"
+    assert run_js("edJobLabel({kind:'select', stage:'merge_shards'})") == "merge shards"
