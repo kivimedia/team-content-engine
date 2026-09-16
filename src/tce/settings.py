@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     # Recurring generation schedules. Off by default so a restart can never spend.
     scheduler_enabled: bool = False
 
+    # Read by start.sh (uvicorn --host). Declared so .env validation accepts it.
+    bind_host: str = "127.0.0.1"
+
     # Subscription-only LLM policy. "subscription" is the only accepted value;
     # anything else fails closed. Jobs run on a Claude Code worker, never a metered API.
     llm_provider: str = "subscription"
