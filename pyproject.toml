@@ -21,6 +21,8 @@ dependencies = [
     "structlog>=24.1",
     "tenacity>=8.2",
     "python-multipart>=0.0.9",
+    "jsonschema>=4.20",
+    "aiohttp>=3.9",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +33,7 @@ dev = [
     "factory-boy>=3.3",
     "ruff>=0.4",
     "mypy>=1.9",
+    "aiosqlite>=0.19",
 ]
 
 [tool.hatch.build.targets.wheel]
