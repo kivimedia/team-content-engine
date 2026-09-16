@@ -544,6 +544,8 @@ def job_to_dict(job: LLMJob, *, include_request: bool = False, include_result: b
         "created_at": _iso(job.created_at),
         "completed_at": _iso(job.completed_at),
         "receipt": job.receipt_json,
+        "input_hash": job.input_hash,
+        "output_hash": job.output_hash,
     }
     if include_request:
         data["request_json"] = job.request_json
