@@ -15,6 +15,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tce.evidence import fathom as fathom_mod
@@ -124,16 +125,24 @@ async def upsert_source(
     data: dict[str, Any],
     run_id: uuid.UUID,
 ) -> tuple[str, EvidenceSource]:
-    """Reconcile one source. Returns ("processed"|"updated"|"unchanged", row)."""
-    row = (
-        await session.execute(
-            select(EvidenceSource).where(
-                EvidenceSource.workspace_id == workspace_id,
-                EvidenceSource.source_kind == source_kind,
-                EvidenceSource.external_id == data["external_id"],
+    """Reconcile one source. Returns ("processed"|"updated"|"unchanged", row).
+
+    Concurrent runs may insert the same source between our lookup and insert; the
+    unique identity then rejects ours and we reconcile against the winner's row.
+    """
+
+    async def _lookup() -> EvidenceSource | None:
+        return (
+            await session.execute(
+                select(EvidenceSource).where(
+                    EvidenceSource.workspace_id == workspace_id,
+                    EvidenceSource.source_kind == source_kind,
+                    EvidenceSource.external_id == data["external_id"],
+                )
             )
-        )
-    ).scalar_one_or_none()
+        ).scalar_one_or_none()
+
+    row = await _lookup()
     now = to_db(_now())
     if row is None:
         row = EvidenceSource(
@@ -154,9 +163,17 @@ async def upsert_source(
             meta=data.get("meta"),
             last_collection_run_id=run_id,
         )
-        session.add(row)
-        await session.flush()
-        return "processed", row
+        try:
+            async with session.begin_nested():
+                session.add(row)
+                await session.flush()
+            return "processed", row
+        except IntegrityError:
+            if row in session:
+                session.expunge(row)
+            row = await _lookup()
+            if row is None:
+                raise
 
     row.fetched_at = now
     row.last_collection_run_id = run_id
