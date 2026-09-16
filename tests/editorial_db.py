@@ -1,8 +1,6 @@
 """Shared in-memory SQLite database for evidence/editorial/LLM-job tests.
 
-Usage in a test module:
-
-    from tests.editorial_db import editorial_session  # noqa: F401  (fixture)
+Registered for every test via `pytest_plugins` in tests/conftest.py:
 
     async def test_x(editorial_session):
         editorial_session.add(...)

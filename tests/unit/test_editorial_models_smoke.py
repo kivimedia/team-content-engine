@@ -5,7 +5,6 @@ from sqlalchemy import select
 
 from tce.models.editorial import EvidenceSource, TopicCandidate
 from tce.models.llm_job import LLMJob
-from tests.editorial_db import editorial_session, editorial_sessionmaker  # noqa: F401
 
 
 async def test_tables_roundtrip(editorial_session):

@@ -2,6 +2,9 @@
 
 import pytest
 
+# editorial_session / editorial_sessionmaker fixtures for the new evidence tables
+pytest_plugins = ["tests.editorial_db"]
+
 
 @pytest.fixture
 def sample_post_example() -> dict:
