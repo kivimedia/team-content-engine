@@ -57,7 +57,10 @@ h1,h2,h3,h4,h5,h6,.font-display{font-family:'JetBrains Mono',monospace}
 
 /* Header bar */
 .header-bar{height:var(--header-h);background:var(--card);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
-.header-title{font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:600}
+.header-title{font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* On a phone the search box takes the row; a title underneath it would paint over
+   the input, so it is hidden rather than clipped. The tab picker names the page. */
+@media (max-width:640px){.header-title{display:none}.search-input{width:150px}.search-input:focus{width:190px}}
 .header-actions{display:flex;align-items:center;gap:16px}
 .search-input{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px 8px 36px;color:var(--text);font-size:13px;width:200px;transition:width 0.3s ease-out,border-color 0.2s;font-family:'Inter',sans-serif}
 .search-input:focus{width:350px;outline:none;border-color:var(--primary)}
