@@ -1,4 +1,4 @@
-﻿"""Application settings loaded from environment variables."""
+"""Application settings loaded from environment variables."""
 
 import tempfile
 from decimal import Decimal
@@ -113,6 +113,25 @@ class Settings(BaseSettings):
 
     # Feature flags
     weekly_walking_pipeline: bool = False  # TCE_WEEKLY_WALKING_PIPELINE=1 to enable
+
+    # Recurring generation schedules. Off by default so a restart can never spend.
+    scheduler_enabled: bool = False
+
+    # Subscription-only LLM policy. "subscription" is the only accepted value;
+    # anything else fails closed. Jobs run on a Claude Code worker, never a metered API.
+    llm_provider: str = "subscription"
+    llm_job_wait_timeout_s: float = 900.0
+    llm_job_lease_seconds: int = 600
+
+    # Private evidence / editorial / production routes (see api/private_access.py)
+    private_access_key: SecretStr = SecretStr("")
+    editor_default_workspace_id: str = ""
+
+    # Evidence intake
+    fathom_api_key: SecretStr = SecretStr("")
+    fathom_api_base: str = "https://api.fathom.ai/external/v1"
+    evidence_repo_cache_dir: str = str(_TMPDIR / "tce-evidence-repos")
+    evidence_upload_dir: str = str(_TMPDIR / "tce-recordings")
 
 
 settings = Settings()

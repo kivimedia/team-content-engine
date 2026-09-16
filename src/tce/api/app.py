@@ -19,9 +19,12 @@ from tce.api.routers import (
     costs,
     dm_fulfillment,
     documents,
+    editorial,
+    evidence,
     experiments,
     feedback,
     health,
+    llm_jobs,
     monthly,
     narration,
     notifications,
@@ -29,6 +32,7 @@ from tce.api.routers import (
     operator_controls,
     patterns,
     pipeline,
+    production,
     profiles,
     prompts,
     qa,
@@ -106,9 +110,11 @@ async def lifespan(app: FastAPI):
     # Auto-start the scheduler so recurring workflows (daily_content,
     # weekly_planning, daily_backup, etc.) fire without manual intervention.
     # Tests skip this via the TCE_DISABLE_SCHEDULER env var.
+    # Schedules are OFF unless TCE_SCHEDULER_ENABLED=true: a restart must never
+    # start spending on its own. TCE_DISABLE_SCHEDULER=1 still forces off.
     import os
 
-    if os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
+    if settings.scheduler_enabled and os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
         try:
             from tce.services.scheduler import scheduler
 
@@ -193,6 +199,11 @@ def create_app() -> FastAPI:
     app.include_router(stack.router, prefix=prefix)
     app.include_router(workspace_context.router, prefix=prefix)
     app.include_router(uploads.router, prefix=prefix)
+    # Evidence-first editorial system (private, fail-closed access per router)
+    app.include_router(llm_jobs.router, prefix=prefix)
+    app.include_router(evidence.router, prefix=prefix)
+    app.include_router(editorial.router, prefix=prefix)
+    app.include_router(production.router, prefix=prefix)
 
     # Dashboard - no API prefix, served at root /dashboard
     app.include_router(dashboard.router)

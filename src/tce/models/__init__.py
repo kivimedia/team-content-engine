@@ -7,9 +7,20 @@ from tce.models.content_calendar import ContentCalendarEntry
 from tce.models.cost_event import CostEvent
 from tce.models.creator_profile import CreatorProfile
 from tce.models.dm_fulfillment import DMFulfillmentLog
+from tce.models.editorial import (
+    EditorialFeedback,
+    EvidenceCollectionRun,
+    EvidenceMoment,
+    EvidenceSource,
+    PublicationReceipt,
+    RecordingPacket,
+    RecordingUpload,
+    TopicCandidate,
+)
 from tce.models.founder_voice_profile import FounderVoiceProfile
 from tce.models.image_asset import ImageAsset
 from tce.models.learning_event import LearningEvent
+from tce.models.llm_job import LLMJob
 from tce.models.narration_script import NarrationScript
 from tce.models.notification import Notification
 from tce.models.operator_feedback import OperatorFeedback
@@ -44,16 +55,24 @@ __all__ = [
     "CostEvent",
     "CreatorProfile",
     "DMFulfillmentLog",
+    "EditorialFeedback",
+    "EvidenceCollectionRun",
+    "EvidenceMoment",
+    "EvidenceSource",
     "FounderVoiceProfile",
     "ImageAsset",
     "LearningEvent",
+    "LLMJob",
     "Notification",
     "OperatorFeedback",
     "PatternTemplate",
     "PostExample",
     "PostPackage",
     "PromptVersion",
+    "PublicationReceipt",
     "QAScorecard",
+    "RecordingPacket",
+    "RecordingUpload",
     "NarrationScript",
     "RenderQueueJob",
     "RepoBrief",
@@ -61,6 +80,7 @@ __all__ = [
     "SourceDocument",
     "StoryBrief",
     "SystemVersion",
+    "TopicCandidate",
     "TrackedRepo",
     "TrendBrief",
     "VideoAsset",

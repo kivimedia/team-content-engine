@@ -81,7 +81,11 @@ def _build_critic_user_prompt(draft_text: str, platform: str, voice_spec: str) -
 async def _critique_voice(
     agent, post_text: str, platform: str, voice_spec: str
 ) -> dict[str, Any]:
-    """Single critic LLM call. Returns a dict with score/verdict/violations."""
+    """Single critic LLM call. Returns a dict with score/verdict/violations.
+
+    A critic that crashed, was capped, or returned unusable output is reported
+    as `unevaluated` with no score. A skipped check must never earn a pass.
+    """
     try:
         user = _build_critic_user_prompt(post_text, platform, voice_spec)
         resp = await agent._call_llm(
@@ -91,10 +95,21 @@ async def _critique_voice(
             temperature=0.3,
         )
         text = agent._extract_text(resp)
-        return agent._parse_json_response(text)
+        parsed = agent._parse_json_response(text)
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("score"), (int, float)):
+            raise ValueError("critic returned no numeric score")
+        parsed["evaluation_status"] = "evaluated"
+        return parsed
     except Exception as e:
-        agent._report(f"  Voice critic call failed: {e}")
-        return {"score": 7, "verdict": "pass", "violations": [], "summary": "(critic skipped)"}
+        agent._report(f"  Voice critic NOT evaluated: {e}")
+        return {
+            "score": None,
+            "verdict": "unevaluated",
+            "violations": [],
+            "summary": "Voice critic did not run successfully - not evaluated",
+            "evaluation_status": "unevaluated",
+            "error": str(e)[:300],
+        }
 
 
 async def _rewrite_for_voice(
@@ -146,6 +161,14 @@ async def _run_voice_critic_loop(
 
     for attempt in range(_MAX_VOICE_REVISIONS + 1):
         critique = await _critique_voice(agent, post_text, platform, voice_spec)
+        if critique.get("evaluation_status") == "unevaluated":
+            agent._report("  Voice critic: not evaluated - keeping draft, flagged for review")
+            result["voice_score"] = None
+            result["voice_verdict"] = "unevaluated"
+            result["voice_violations"] = []
+            result["voice_evaluation_status"] = "unevaluated"
+            result["voice_evaluation_error"] = critique.get("error") or "critic failed"
+            return result
         score = critique.get("score", 0)
         verdict = critique.get("verdict", "")
         violations = critique.get("violations") or []
@@ -168,6 +191,7 @@ async def _run_voice_critic_loop(
             result["voice_score"] = score
             result["voice_verdict"] = verdict
             result["voice_violations"] = violations
+            result["voice_evaluation_status"] = "evaluated"
             return result
 
         agent._report("  Voice critic: rewriting to address violations...")
@@ -197,6 +221,7 @@ async def _run_voice_critic_loop(
             result["voice_score"] = score
             result["voice_verdict"] = verdict
             result["voice_violations"] = violations
+            result["voice_evaluation_status"] = "evaluated"
             return result
 
     return result

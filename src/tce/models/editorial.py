@@ -1,0 +1,263 @@
+"""Evidence-first editorial records.
+
+SourceRecord -> EvidenceMoment -> TopicCandidate -> RecordingPacket -> Publication
+
+Tenant rule: every row here carries a NON-NULL workspace_id and is read with an
+explicit `workspace_id == ws` filter. The legacy "NULL workspace is visible to
+everyone" behaviour of the global filter must never apply to private evidence.
+
+Privacy rule: raw transcripts, diffs and exact quotes live only in the
+`*_private` columns. Anything named `public_*` must be safe to show outside the
+editor view (no client names, customer words, credentials or money figures).
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+
+from tce.db.base import Base
+
+JSONType = JSON().with_variant(JSONB(), "postgresql")
+
+SOURCE_KINDS = ("fathom_meeting", "github_commit_group")
+CLAIM_TYPES = ("quoted", "paraphrased", "inferred", "demonstrated", "measured")
+REJECTION_GATES = (
+    "small_service_business",
+    "coach_or_event_owner_relevance",
+    "concrete_supported_substance",
+    "connects_to_ziv_work",
+)
+FEEDBACK_KINDS = ("approve", "source", "angle", "wording", "gate_reject", "note")
+
+
+class EvidenceSource(Base):
+    """One external source item (a meeting, or a group of related commits)."""
+
+    __tablename__ = "evidence_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "source_kind", "external_id", name="uq_evidence_source_identity"
+        ),
+    )
+
+    source_kind: Mapped[str] = mapped_column(String(40))
+    external_id: Mapped[str] = mapped_column(String(300))
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # sha256 of the normalized private payload; changes when a transcript is edited
+    version_hash: Mapped[str] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    # ok | partial (e.g. transcript missing) | failed | unavailable | excluded
+    fetch_status: Mapped[str] = mapped_column(String(20), default="ok")
+    fetch_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    language: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Private editor-only link (Fathom share URL, GitHub commit URL)
+    url_private: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    # Private raw payload: transcript turns [{speaker, speaker_email?, start_s, end_s, text,
+    # speaker_confidence, language}] or commits [{sha, repo, message, files:[{path,
+    # patch_excerpt, blob_url_at_sha}], reverted_by?, reverts?}]
+    payload_private: Mapped[dict[str, Any]] = mapped_column(JSONType)
+    # Non-content metadata: participants count, repo full_name, commit shas, etc.
+    meta: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    last_collection_run_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+
+
+class EvidenceCollectionRun(Base):
+    """Durable per-source coverage ledger for one bounded collection window."""
+
+    __tablename__ = "evidence_collection_runs"
+
+    source_kind: Mapped[str] = mapped_column(String(40))
+    window_start: Mapped[datetime] = mapped_column(DateTime)
+    window_end: Mapped[datetime] = mapped_column(DateTime)
+    # running | complete | partial | failed
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    # {"listed": n, "in_window": n, "processed": n, "unchanged": n, "updated": n,
+    #  "excluded": n, "failed": n, "unavailable": n, "pages": n}
+    counts: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    # [{"external_id", "state": processed|unchanged|updated|excluded|failed|unavailable,
+    #   "reason"}]
+    items: Mapped[list[dict[str, Any]]] = mapped_column(JSONType, default=list)
+    errors: Mapped[list[dict[str, Any]]] = mapped_column(JSONType, default=list)
+    # True only when pagination finished and no item is failed
+    complete: Mapped[bool] = mapped_column(default=False)
+    current_activity: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class EvidenceMoment(Base):
+    """A specific, citable span inside a source that could support a lesson."""
+
+    __tablename__ = "evidence_moments"
+
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evidence_sources.id", ondelete="CASCADE"), index=True
+    )
+    source_version_hash: Mapped[str] = mapped_column(String(64))
+    # meetings: seconds; commits: null
+    span_start_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    span_end_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # commits: [{"repo", "sha", "path", "url_at_sha"}]
+    code_refs: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONType, nullable=True)
+    speaker: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # high | medium | low | unknown - low when turns look interleaved or mislabeled
+    speaker_confidence: Mapped[str] = mapped_column(String(10), default="unknown")
+    language: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # null when original language is used; otherwise e.g. "English adaptation from Hebrew"
+    translation_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    language_uncertain: Mapped[bool] = mapped_column(default=False)
+    excerpt_private: Mapped[str] = mapped_column(Text)
+    context_private: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lesson_summary: Mapped[str] = mapped_column(Text)
+    claim_type: Mapped[str] = mapped_column(String(20))
+    # ["client_identity", "customer_words", "health", "money", "credential", ...]
+    sensitivity_flags: Mapped[list[str]] = mapped_column(JSONType, default=list)
+    # active | stale (source edited after extraction) | discarded
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    extraction_job_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+
+
+class TopicCandidate(Base):
+    __tablename__ = "topic_candidates"
+
+    week_start: Mapped[datetime] = mapped_column(DateTime, index=True)
+    selection_run_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True, index=True)
+    moment_ids: Mapped[list[str]] = mapped_column(JSONType)
+    title: Mapped[str] = mapped_column(String(300))
+    lesson: Mapped[str] = mapped_column(Text)
+    # coaches | event_owners | both
+    audience: Mapped[str] = mapped_column(String(20))
+    reasons_to_care: Mapped[list[str]] = mapped_column(JSONType, default=list)
+    public_angle: Mapped[str] = mapped_column(Text)
+    public_safety_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # {gate_name: {"pass": bool, "reason": str}} for all REJECTION_GATES
+    gates: Mapped[dict[str, Any]] = mapped_column(JSONType)
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rank_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # evergreen (freshness is a bonus) | news (claims need current verification)
+    freshness_role: Mapped[str] = mapped_column(String(20), default="evergreen")
+    # [{"moment_id", "source_kind", "title", "span", "url_private", "claim_type"}]
+    citations_private: Mapped[list[dict[str, Any]]] = mapped_column(JSONType, default=list)
+    # proposed | selected | rejected | recorded | published | withdrawn
+    status: Mapped[str] = mapped_column(String(20), default="proposed", index=True)
+    editor_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    # Calibration rows (e.g. manually accepted sample ideas) are labelled here
+    origin: Mapped[str] = mapped_column(String(30), default="selector")
+
+
+class EditorialFeedback(Base):
+    """Versioned editor preference. One rejection never silently bans a subject."""
+
+    __tablename__ = "editorial_feedback"
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("topic_candidates.id", ondelete="CASCADE"), index=True
+    )
+    # approve | source | angle | wording | gate_reject | note
+    kind: Mapped[str] = mapped_column(String(20))
+    gate: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    # publish | change_angle | not_for_me | null
+    rating: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preference_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class RecordingPacket(Base):
+    __tablename__ = "recording_packets"
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("topic_candidates.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    bullets: Mapped[list[str]] = mapped_column(JSONType)  # 5-7 walking bullets
+    script_phrases: Mapped[list[str]] = mapped_column(JSONType)  # one phrase per line
+    facebook_post: Mapped[str | None] = mapped_column(Text, nullable=True)
+    linkedin_post: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interviewer_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    citations_private: Mapped[list[dict[str, Any]]] = mapped_column(JSONType, default=list)
+    # {"checked": bool, "issues": [...], "status": "clean"|"issues"|"unevaluated"}
+    public_safety: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    google_doc_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    google_doc_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # {"intended": "...", "verified": bool, "detail": "..."}
+    google_doc_access: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    # draft | ready | exported | superseded
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+
+
+class RecordingUpload(Base):
+    """One uploaded file per idea; edits keep meaning and captions."""
+
+    __tablename__ = "recording_uploads"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "sha256", name="uq_recording_upload_sha"),
+    )
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("topic_candidates.id", ondelete="CASCADE"), index=True
+    )
+    packet_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("recording_packets.id", ondelete="SET NULL"), nullable=True
+    )
+    original_filename: Mapped[str] = mapped_column(String(300))
+    storage_path: Mapped[str] = mapped_column(String(1000))
+    sha256: Mapped[str] = mapped_column(String(64))
+    duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # [{"start_s","end_s","text"}] word/phrase timings from transcription
+    transcript: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONType, nullable=True)
+    # {"keep": [[start,end],...], "dropped": [{"start","end","text","reason"}],
+    #  "meaning_check": {"status": "ok"|"blocked", "issues": [...]}}
+    edit_plan: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    captions_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    edited_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    # uploaded | transcribing | planned | needs_review | edited | failed
+    status: Mapped[str] = mapped_column(String(20), default="uploaded")
+    status_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    job_ids: Mapped[list[str]] = mapped_column(JSONType, default=list)
+
+
+class PublicationReceipt(Base):
+    """Recorded after a human-authorised publication. TCE never publishes by itself here."""
+
+    __tablename__ = "publication_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "platform", "external_post_id", name="uq_publication_receipt"
+        ),
+    )
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("topic_candidates.id", ondelete="CASCADE"), index=True
+    )
+    packet_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    platform: Mapped[str] = mapped_column(String(30))
+    external_post_id: Mapped[str] = mapped_column(String(300))
+    url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    final_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # {"qualified_conversations": n, "strategy_sessions": n, "mentions": [...], ...}
+    outcome: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    recorded_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
