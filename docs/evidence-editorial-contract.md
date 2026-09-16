@@ -69,6 +69,26 @@ elsewhere.
 - `GET /strategy` -> effective strategy text + where each part came from (file, DB override,
   prompt version)
 
+Week: `week_start` is a Monday calendar label and stays stored as that naive date. Evidence
+belongs to the week by Asia/Jerusalem time (Monday 00:00 to Monday 00:00, DST-aware), e.g.
+week 2026-09-07 = `2026-09-06T21:00Z <= occurred_at < 2026-09-13T21:00Z`.
+
+Coverage (`editorial_selection.v2`): every eligible week moment is sent to the model, in
+shards of at most 40 (one job per shard, sources kept whole). The evergreen reserve is at
+most 30 moments, round robin across sources. The selection result carries `coverage{window,
+week_moments, reserve{eligible, included, omitted, policy}, shards[{shard, moments, job_id,
+status, accounted, unaccounted}], considered, unaccounted_moment_ids, complete}`. If any
+shard does not finish, nothing is saved or superseded. Moments the model skipped are listed,
+never turned into rejections.
+
+Durable status: `GET /select-status` and `GET /candidates/{id}/packet-status` return `job`
+(the live in-process entry while running, otherwise the durable view rebuilt from llm_jobs
+and saved rows) and `durable{state: done|waiting|failed|interrupted, resumable,
+current_activity, job_ids, shards?}`. `GET /jobs` adds `in_flight` (queued, leased or
+waiting editorial jobs on record). `POST /select` and `POST /candidates/{id}/packet` resume
+a resumable run under its own job keys (`resumed: true`), so no job is enqueued twice and
+a run is saved once.
+
 Candidate JSON: `id, rank, rank_score, title, lesson, audience, reasons_to_care[],
 public_angle, public_safety_notes, gates{gate:{pass,reason}}, freshness_role, status,
 editor_notes, citations_private[{moment_id, source_kind, source_title, occurred_at,

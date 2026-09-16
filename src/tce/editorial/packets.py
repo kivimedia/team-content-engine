@@ -19,10 +19,21 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
-from tce.editorial.common import SessionSource, coerce_uuid, open_session, packet_to_json
+from tce.editorial.common import (
+    SessionSource,
+    coerce_uuid,
+    job_can_requeue,
+    job_prompt_text,
+    open_session,
+    packet_key_text,
+    packet_to_json,
+    parse_packet_header,
+    replay_request,
+)
 from tce.editorial.safety import scan_public_text
 from tce.llm import LLMRequest, LLMUnavailable
 from tce.models.editorial import EvidenceSource, RecordingPacket, TopicCandidate
+from tce.models.llm_job import LLMJob
 from tce.services.strategy_loader import load_effective_strategy
 
 PROMPT_VERSION = "recording_packet.v1"
@@ -257,7 +268,10 @@ async def build_packet(
     candidate_id: uuid.UUID | str,
     *,
     on_activity: Any = None,
+    resume_job_id: uuid.UUID | str | None = None,
 ) -> PacketOutcome:
+    """Write one packet. `resume_job_id` re-attaches to an earlier request's job (after a
+    restart) by replaying its stored request, so no second job is enqueued."""
     ws = coerce_uuid(workspace_id)
 
     def activity(msg: str, **kw: Any) -> None:
@@ -278,27 +292,53 @@ async def build_packet(
         if cand.status in ("rejected", "withdrawn"):
             return PacketOutcome(status="invalid", detail=f"candidate is {cand.status}")
 
-        strategy = await load_effective_strategy(session, ws)
-        activity("Waiting for subscription packet job")
-        try:
-            llm = await _llm.complete(
-                LLMRequest(
-                    job_type=JOB_TYPE,
-                    agent_name=AGENT_NAME,
-                    messages=[
-                        {"role": "user", "content": build_packet_prompt(strategy.text, cand)}
-                    ],
-                    system=SYSTEM_PROMPT,
-                    output_schema=OUTPUT_SCHEMA,
-                    max_tokens=6000,
-                    prompt_version=PROMPT_VERSION,
-                    workspace_id=ws,
-                    run_id=cand.id,
-                    # one job per build request: regenerating must not replay an earlier
-                    # (possibly rejected) output
-                    idempotency_key=f"recording_packet:{ws}:{uuid.uuid4()}",
+        request: LLMRequest | None = None
+        requeue = False
+        if resume_job_id is not None:
+            job = (
+                await session.execute(
+                    select(LLMJob).where(
+                        LLMJob.id == coerce_uuid(resume_job_id),
+                        LLMJob.workspace_id == ws,
+                        LLMJob.job_type == JOB_TYPE,
+                        LLMJob.run_id == cand.id,
+                    )
                 )
+            ).scalar_one_or_none()
+            nonce = parse_packet_header(job_prompt_text(job.request_json)) if job else None
+            request = replay_request(job, packet_key_text(ws, nonce)) if nonce else None
+            if request is None:
+                return PacketOutcome(
+                    status="failed",
+                    job_id=job.id if job else None,
+                    detail="the interrupted packet job could not be resumed; request a new packet",
+                )
+            requeue = job_can_requeue(job)
+        else:
+            strategy = await load_effective_strategy(session, ws)
+            nonce = str(uuid.uuid4())
+            # The header line lets a restarted process rebuild this job's key.
+            prompt = f"PACKET REQUEST: {nonce}\n\n" + build_packet_prompt(strategy.text, cand)
+            request = LLMRequest(
+                job_type=JOB_TYPE,
+                agent_name=AGENT_NAME,
+                messages=[{"role": "user", "content": prompt}],
+                system=SYSTEM_PROMPT,
+                output_schema=OUTPUT_SCHEMA,
+                max_tokens=6000,
+                prompt_version=PROMPT_VERSION,
+                workspace_id=ws,
+                run_id=cand.id,
+                # one job per build request: regenerating must not replay an earlier
+                # (possibly rejected) output
+                idempotency_key=packet_key_text(ws, nonce),
             )
+        activity("Waiting for subscription packet job" + (" (resumed)" if resume_job_id else ""))
+        try:
+            if requeue:
+                llm = await _llm.complete(request, requeue_failed=True)
+            else:
+                llm = await _llm.complete(request)
         except LLMUnavailable as exc:
             return PacketOutcome(
                 status=exc.status, job_id=exc.job_id, detail=exc.detail, retry_at=exc.retry_at
@@ -334,6 +374,25 @@ async def build_packet(
                 "error": type(exc).__name__,
             }
         safety["model_self_check"] = clean["self_check"]
+
+        # A job's output is saved once, even if two requests resumed the same job.
+        already = (
+            await session.execute(
+                select(RecordingPacket).where(
+                    RecordingPacket.workspace_id == ws,
+                    RecordingPacket.candidate_id == cand.id,
+                    RecordingPacket.job_id == llm.job_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if already is not None:
+            clean_before = (already.public_safety or {}).get("status") == "clean"
+            return PacketOutcome(
+                status="ready" if clean_before else "issues",
+                packet=packet_to_json(already),
+                job_id=llm.job_id,
+                detail="this packet job was already saved",
+            )
 
         current_max = (
             await session.execute(

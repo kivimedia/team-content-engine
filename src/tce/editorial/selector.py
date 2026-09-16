@@ -1,11 +1,18 @@
 """Editorial selector: evidence moments -> ranked, gated topic candidates.
 
-Pool: active moments of this workspace from the week, plus an evergreen reserve of
-earlier moments no selected/recorded/published candidate has used yet. Sources that
+Pool: EVERY active moment of this workspace from the week (Monday to Monday in Israel
+time), plus a bounded evergreen reserve of earlier moments no selected/recorded/published
+candidate has used yet (round robin across sources, omitted count reported). Sources that
 are excluded, failed, unavailable, reverted or low-signal never enter the pool, and
 neither do stale moments.
 
-One subscription LLM job proposes candidates and explicit rejections. Code then
+The pool is split into bounded shards (sources kept together), one subscription LLM job
+per shard, so a busy late-week source can never push earlier evidence out of view. Each
+shard must account for every moment it was shown; moments the model skipped are reported
+as unaccounted, never invented into rejections. If any shard does not finish, nothing is
+saved and every shard's state is reported; retrying the same run resumes the same jobs.
+
+Each job proposes candidates and explicit rejections. Code then
 enforces what the model cannot be trusted to: all four gates with reasons, citations
 that exist in this workspace's pool, no measured outcome without a measured moment,
 uncertainty carried as public-safety notes, and no quota padding. Rejections are
@@ -14,6 +21,8 @@ persisted as `status=rejected, origin=selector_rejected` rows for later sampling
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -27,11 +36,18 @@ from tce import llm as _llm
 from tce.editorial.common import (
     ORIGIN_SELECTOR,
     ORIGIN_SELECTOR_REJECTED,
+    WEEK_TIMEZONE,
     SessionSource,
     candidate_to_json,
     coerce_uuid,
+    job_can_requeue,
+    job_prompt_text,
     open_session,
+    parse_selection_header,
+    replay_request,
+    selection_key_text,
     week_bounds,
+    week_source_window,
 )
 from tce.editorial.feedback import summarize_feedback
 from tce.llm import LLMRequest, LLMUnavailable
@@ -41,13 +57,18 @@ from tce.models.editorial import (
     EvidenceSource,
     TopicCandidate,
 )
+from tce.models.llm_job import LLMJob
 from tce.services.strategy_loader import load_effective_strategy
 
-PROMPT_VERSION = "editorial_selection.v1"
+# v2: sharded full-week coverage with explicit per-moment accounting
+PROMPT_VERSION = "editorial_selection.v2"
 JOB_TYPE = "editorial_selection"
 AGENT_NAME = "editorial_selector"
 MAX_CANDIDATES_CAP = 6
-WEEK_POOL_LIMIT = 60
+# Week moments are never capped; they are split into jobs of at most SHARD_SIZE moments.
+SHARD_SIZE = 40
+# Above this many jobs a run is refused with an explanation instead of silently trimmed.
+MAX_SHARDS = 30
 RESERVE_POOL_LIMIT = 30
 EXCERPT_CHARS = 600
 
@@ -179,6 +200,16 @@ class PoolMoment:
 
 
 @dataclass
+class PoolPlan:
+    moments: list[PoolMoment]  # week moments (oldest first) then the picked reserve
+    week_total: int
+    reserve_eligible: int
+    reserve_included: int
+    window_start: datetime  # naive UTC
+    window_end: datetime
+
+
+@dataclass
 class SelectionResult:
     selection_run_id: uuid.UUID
     status: str  # complete | no_evidence | waiting_capacity | failed | timeout | cancelled
@@ -191,11 +222,19 @@ class SelectionResult:
     superseded: int = 0
     detail: str | None = None
     retry_at: datetime | None = None
+    job_ids: list[uuid.UUID] = field(default_factory=list)
+    coverage: dict[str, Any] = field(default_factory=dict)
+    resumed: bool = False
+    max_candidates: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "selection_run_id": str(self.selection_run_id),
             "status": self.status,
+            "resumed": self.resumed,
+            "max_candidates": self.max_candidates,
+            "job_ids": [str(j) for j in self.job_ids],
+            "coverage": self.coverage,
             "candidates": self.candidates,
             "rejected": self.rejected,
             "pool": {
@@ -230,10 +269,37 @@ def _moment_time(pm_source: EvidenceSource, moment: EvidenceMoment) -> datetime 
     return pm_source.occurred_at or moment.created_at
 
 
-async def build_pool(
+def _pm_sort_key(pm: PoolMoment) -> tuple[datetime, str]:
+    return (_moment_time(pm.source, pm.moment) or datetime.min, pm.id)
+
+
+def _pick_reserve(reserve: list[PoolMoment], limit: int) -> list[PoolMoment]:
+    """Newest-first round robin across sources, so one busy source cannot fill the
+    whole reserve. Deterministic for a given pool."""
+    by_source: dict[str, list[PoolMoment]] = {}
+    for pm in sorted(reserve, key=_pm_sort_key, reverse=True):
+        by_source.setdefault(str(pm.source.id), []).append(pm)
+    queues = sorted(by_source.values(), key=lambda q: _pm_sort_key(q[0]), reverse=True)
+    picked: list[PoolMoment] = []
+    depth = 0
+    while len(picked) < limit and any(depth < len(q) for q in queues):
+        for q in queues:
+            if depth < len(q) and len(picked) < limit:
+                picked.append(q[depth])
+        depth += 1
+    return picked
+
+
+async def collect_pool(
     session: AsyncSession, workspace_id: uuid.UUID, week_start: date | datetime | str
-) -> list[PoolMoment]:
-    start, end = week_bounds(week_start)
+) -> PoolPlan:
+    """Every eligible moment of the week, plus a bounded evergreen reserve.
+
+    The week is the Israel-time window of the label (see `week_source_window`). Week
+    moments are never capped here: coverage is achieved by sharding the model jobs.
+    """
+    label_start, _ = week_bounds(week_start)
+    start, end = week_source_window(week_start)
     rows = (
         await session.execute(
             select(EvidenceMoment, EvidenceSource)
@@ -253,7 +319,7 @@ async def build_pool(
             select(TopicCandidate.moment_ids).where(
                 TopicCandidate.workspace_id == workspace_id,
                 TopicCandidate.status.in_(USED_STATUSES),
-                TopicCandidate.week_start < start,
+                TopicCandidate.week_start < label_start,
             )
         )
     ).scalars()
@@ -274,12 +340,48 @@ async def build_pool(
         elif when is not None and when < start and str(moment.id) not in used:
             reserve.append(PoolMoment(moment, source, False))
 
-    def sort_key(pm: PoolMoment) -> datetime:
-        return _moment_time(pm.source, pm.moment) or datetime.min
+    week.sort(key=_pm_sort_key)
+    picked = _pick_reserve(reserve, RESERVE_POOL_LIMIT)
+    return PoolPlan(
+        moments=week + picked,
+        week_total=len(week),
+        reserve_eligible=len(reserve),
+        reserve_included=len(picked),
+        window_start=start,
+        window_end=end,
+    )
 
-    week.sort(key=sort_key, reverse=True)
-    reserve.sort(key=sort_key, reverse=True)
-    return week[:WEEK_POOL_LIMIT] + reserve[:RESERVE_POOL_LIMIT]
+
+async def build_pool(
+    session: AsyncSession, workspace_id: uuid.UUID, week_start: date | datetime | str
+) -> list[PoolMoment]:
+    return (await collect_pool(session, workspace_id, week_start)).moments
+
+
+def plan_shards(pool: list[PoolMoment], shard_size: int | None = None) -> list[list[PoolMoment]]:
+    """Split the pool into bounded shards without dropping anything.
+
+    Moments of one source stay together (a meeting is judged as a whole) unless the
+    source alone exceeds a shard. Shards are balanced so the last one is not a stub.
+    """
+    size = max(1, shard_size or SHARD_SIZE)
+    if not pool:
+        return []
+    groups: dict[str, list[PoolMoment]] = {}
+    for pm in sorted(pool, key=_pm_sort_key):
+        groups.setdefault(str(pm.source.id), []).append(pm)
+    ordered = sorted(groups.values(), key=lambda g: (not g[0].in_week, _pm_sort_key(g[0])))
+    n = -(-len(pool) // size)
+    target = -(-len(pool) // n)
+    shards: list[list[PoolMoment]] = [[]]
+    for group in ordered:
+        for i in range(0, len(group), size):
+            chunk = group[i : i + size]
+            # chunk <= size and target <= size, so a chunk always fits a fresh shard
+            if shards[-1] and len(shards[-1]) + len(chunk) > target:
+                shards.append([])
+            shards[-1].extend(chunk)
+    return [s for s in shards if s]
 
 
 def _pool_prompt_item(pm: PoolMoment) -> dict[str, Any]:
@@ -305,16 +407,30 @@ def build_selection_prompt(
     pool: list[PoolMoment],
     max_candidates: int,
     week_start: datetime,
+    *,
+    shard: int = 1,
+    shards: int = 1,
+    total_moments: int | None = None,
 ) -> str:
     import json
 
+    total = len(pool) if total_moments is None else total_moments
+    # The first three lines are durable headers parsed by tce.editorial.common.
     return "\n\n".join(
         [
-            f"WEEK STARTING: {week_start.date().isoformat()}",
+            f"WEEK STARTING: {week_start.date().isoformat()}\n"
+            f"SELECTION SHARD: {shard}/{shards}\n"
+            f"RETURN AT MOST {max_candidates} candidates from this shard. Fewer or zero is "
+            "correct when the evidence does not support more. Three strong ideas is the "
+            "usual target for the whole week.",
             "STRATEGY (effective for this workspace):\n" + (strategy_text or "(none)"),
             feedback_text,
-            f"RETURN AT MOST {max_candidates} candidates. Fewer or zero is correct when the "
-            "evidence does not support more. Three strong ideas is the usual target.",
+            f"COVERAGE: this is shard {shard} of {shards}. The week's pool has {total} "
+            f"moments; this shard holds {len(pool)} of them and other shards are judged "
+            "separately with the same instructions, so judge these on their own merit.",
+            "ACCOUNTING: every moment_id below must appear in your answer exactly once: in "
+            "a candidate's moment_ids, or in a rejection with the gate it failed and a "
+            "reason. Do not leave any moment out.",
             "EVIDENCE POOL (private; excerpts are for your judgment, never for quoting "
             "customers):\n" + json.dumps([_pool_prompt_item(pm) for pm in pool], indent=1),
         ]
@@ -555,6 +671,72 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def _iso_z(dt: datetime | None) -> str | None:
+    return dt.isoformat() + "Z" if dt else None
+
+
+@dataclass
+class ShardSpec:
+    shard: int
+    shards: int
+    request: LLMRequest
+    moment_ids: list[str]
+    requeue_failed: bool = False
+    job_status: str | None = None  # stored job status when resuming
+
+
+async def _stored_shard_specs(
+    session: AsyncSession, ws: uuid.UUID, run_id: uuid.UUID
+) -> tuple[list[ShardSpec], str | None]:
+    """Rebuild the exact requests of a run that already has jobs. Returns (specs, problem)."""
+    jobs = (
+        (
+            await session.execute(
+                select(LLMJob).where(
+                    LLMJob.workspace_id == ws,
+                    LLMJob.job_type == JOB_TYPE,
+                    LLMJob.run_id == run_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not jobs:
+        return [], None
+    specs: list[ShardSpec] = []
+    expected = None
+    for job in jobs:
+        meta = parse_selection_header(job_prompt_text(job.request_json))
+        if meta is None:
+            return [], f"job {job.id} has no selection header; start a new selection"
+        key = selection_key_text(ws, run_id, meta["shard"], meta["shards"])
+        req = replay_request(job, key)
+        if req is None:
+            return [], f"job {job.id} could not be rebuilt exactly; start a new selection"
+        expected = meta["shards"]
+        specs.append(
+            ShardSpec(
+                shard=meta["shard"] or 1,
+                shards=meta["shards"],
+                request=req,
+                moment_ids=meta["moment_ids"],
+                requeue_failed=job_can_requeue(job),
+                job_status=job.status,
+            )
+        )
+    specs.sort(key=lambda s: s.shard)
+    if expected is None or len(specs) != expected or len({s.shard for s in specs}) != expected:
+        return specs, (
+            f"run has {len(specs)} of {expected} shard jobs (interrupted while enqueueing); "
+            "start a new selection"
+        )
+    return specs, None
+
+
+_FAILURE_ORDER = ("failed", "invalid_output", "cancelled", "waiting_capacity", "timeout")
+
+
 async def select_candidates(
     sessionmaker_or_session: SessionSource,
     workspace_id: uuid.UUID | str,
@@ -564,6 +746,12 @@ async def select_candidates(
     selection_run_id: uuid.UUID | None = None,
     on_activity: Any = None,
 ) -> SelectionResult:
+    """Run (or resume) one selection for a week.
+
+    Passing the `selection_run_id` of a run whose jobs already exist resumes it: the
+    stored requests are replayed under the same idempotency keys, so the queue returns
+    the existing jobs (finished ones immediately) and nothing is enqueued twice.
+    """
     ws = coerce_uuid(workspace_id)
     start, _end = week_bounds(week_start)
     max_candidates = max(0, min(int(max_candidates), MAX_CANDIDATES_CAP))
@@ -575,90 +763,306 @@ async def select_candidates(
 
     async with open_session(sessionmaker_or_session) as session:
         activity("Building evidence pool")
-        pool = await build_pool(session, ws, start)
-        week_n = sum(1 for pm in pool if pm.in_week)
+        plan = await collect_pool(session, ws, start)
         result = SelectionResult(
             selection_run_id=run_id,
             status="complete",
-            pool_size=len(pool),
-            week_pool=week_n,
-            reserve_pool=len(pool) - week_n,
+            pool_size=len(plan.moments),
+            week_pool=plan.week_total,
+            reserve_pool=plan.reserve_included,
+            max_candidates=max_candidates,
         )
+        coverage: dict[str, Any] = {
+            "window": {
+                "timezone": WEEK_TIMEZONE,
+                "start_utc": _iso_z(plan.window_start),
+                "end_utc": _iso_z(plan.window_end),
+            },
+            "week_moments": plan.week_total,
+            "reserve": {
+                "eligible": plan.reserve_eligible,
+                "included": plan.reserve_included,
+                "omitted": plan.reserve_eligible - plan.reserve_included,
+                "policy": f"evergreen reserve: at most {RESERVE_POOL_LIMIT} unused earlier "
+                "moments, newest first, round robin across sources",
+            },
+            "shards": [],
+            "considered": 0,
+            "unaccounted_moment_ids": [],
+            "not_in_this_run_moment_ids": [],
+            "no_longer_eligible_moment_ids": [],
+            "complete": False,
+        }
+        result.coverage = coverage
+
+        specs, problem = await _stored_shard_specs(session, ws, run_id)
+        if problem:
+            result.status = "failed"
+            result.detail = problem
+            return result
+        pool_by_id = {pm.id: pm for pm in plan.moments}
+        if specs:
+            result.resumed = True
+            stored_max = parse_selection_header(specs[0].request.messages[0]["content"])
+            if stored_max and stored_max["max_candidates"] is not None:
+                max_candidates = result.max_candidates = stored_max["max_candidates"]
+            in_run = {i for s in specs for i in s.moment_ids}
+            coverage["not_in_this_run_moment_ids"] = [
+                pm.id for pm in plan.moments if pm.in_week and pm.id not in in_run
+            ]
+            coverage["no_longer_eligible_moment_ids"] = sorted(
+                i for i in in_run if i not in pool_by_id
+            )
+        elif plan.moments and max_candidates > 0:
+            shards = plan_shards(plan.moments)
+            if len(shards) > MAX_SHARDS:
+                result.status = "failed"
+                result.detail = (
+                    f"{len(plan.moments)} moments need {len(shards)} selection jobs, above the "
+                    f"limit of {MAX_SHARDS}; nothing was sent or saved. Narrow the evidence "
+                    "(exclude low-signal sources) and retry."
+                )
+                return result
+            activity(f"Loading strategy and feedback ({len(plan.moments)} moments in pool)")
+            strategy = await load_effective_strategy(session, ws)
+            feedback = await summarize_feedback(session, ws)
+            feedback_text = feedback.to_prompt_text()
+            for i, shard in enumerate(shards, start=1):
+                prompt = build_selection_prompt(
+                    strategy.text,
+                    feedback_text,
+                    shard,
+                    max_candidates,
+                    start,
+                    shard=i,
+                    shards=len(shards),
+                    total_moments=len(plan.moments),
+                )
+                specs.append(
+                    ShardSpec(
+                        shard=i,
+                        shards=len(shards),
+                        moment_ids=[pm.id for pm in shard],
+                        request=LLMRequest(
+                            job_type=JOB_TYPE,
+                            agent_name=AGENT_NAME,
+                            messages=[{"role": "user", "content": prompt}],
+                            system=SYSTEM_PROMPT,
+                            output_schema=OUTPUT_SCHEMA,
+                            max_tokens=8192,
+                            prompt_version=PROMPT_VERSION,
+                            workspace_id=ws,
+                            run_id=run_id,
+                            # one job per shard of this run: a new run is a fresh
+                            # selection, a resumed run replays the same keys
+                            idempotency_key=selection_key_text(ws, run_id, i, len(shards)),
+                        ),
+                    )
+                )
 
         accepted: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
-        job_id: uuid.UUID | None = None
 
-        if not pool or max_candidates == 0:
-            result.status = "no_evidence" if not pool else "complete"
-            result.detail = "No eligible evidence moments for this week" if not pool else None
+        if not specs:
+            result.status = "no_evidence" if not plan.moments else "complete"
+            if not plan.moments:
+                result.detail = "No eligible evidence moments for this week"
+            # max_candidates=0 asks for nothing: say so rather than claim coverage
+            coverage["complete"] = not plan.moments
         else:
-            activity(f"Loading strategy and feedback ({len(pool)} moments in pool)")
-            strategy = await load_effective_strategy(session, ws)
-            feedback = await summarize_feedback(session, ws)
-            prompt = build_selection_prompt(
-                strategy.text, feedback.to_prompt_text(), pool, max_candidates, start
+            n_moments = sum(len(s.moment_ids) for s in specs)
+            done = {"n": 0}
+            activity(
+                f"Waiting for {len(specs)} subscription selection job(s) covering "
+                f"{n_moments} moments" + (" (resumed)" if result.resumed else "")
             )
-            activity(f"Waiting for subscription selection job ({len(pool)} moments)")
-            try:
-                llm = await _llm.complete(
-                    LLMRequest(
-                        job_type=JOB_TYPE,
-                        agent_name=AGENT_NAME,
-                        messages=[{"role": "user", "content": prompt}],
-                        system=SYSTEM_PROMPT,
-                        output_schema=OUTPUT_SCHEMA,
-                        max_tokens=8192,
-                        prompt_version=PROMPT_VERSION,
-                        workspace_id=ws,
-                        run_id=run_id,
-                        # one job per selection run: a rerun is a fresh selection, not a
-                        # cached replay of the previous one
-                        idempotency_key=f"editorial_selection:{ws}:{run_id}",
-                    )
-                )
-            except LLMUnavailable as exc:
-                # Persist nothing, supersede nothing: prior candidates stay as they were.
-                result.status = exc.status
-                result.detail = exc.detail
-                result.job_id = exc.job_id
-                result.retry_at = exc.retry_at
-                return result
-            job_id = llm.job_id
-            result.job_id = job_id
-            activity("Selection job returned; enforcing gates", job_id=job_id)
-            data = llm.structured if isinstance(llm.structured, dict) else None
-            if data is None:
-                import json
 
+            async def run_shard(spec: ShardSpec) -> tuple[ShardSpec, Any, Any]:
                 try:
-                    data = json.loads(llm.text)
-                except (TypeError, ValueError):
-                    result.status = "failed"
-                    result.detail = "selection job returned no valid JSON"
-                    return result
-            raw_candidates = data.get("candidates") or []
+                    if spec.requeue_failed:
+                        llm = await _llm.complete(spec.request, requeue_failed=True)
+                    else:
+                        llm = await _llm.complete(spec.request)
+                    outcome: tuple[ShardSpec, Any, Any] = (spec, llm, None)
+                except LLMUnavailable as exc:
+                    outcome = (spec, None, exc)
+                done["n"] += 1
+                activity(
+                    f"Selection shard {spec.shard}/{spec.shards} "
+                    f"{'returned' if outcome[1] else outcome[2].status} "
+                    f"({done['n']} of {len(specs)} finished)",
+                    job_id=outcome[1].job_id if outcome[1] else outcome[2].job_id,
+                )
+                return outcome
+
+            outcomes = await asyncio.gather(*(run_shard(s) for s in specs))
+
+            shard_rows: list[dict[str, Any]] = []
+            parsed: list[tuple[ShardSpec, uuid.UUID, dict[str, Any]]] = []
+            for spec, llm, exc in outcomes:
+                row: dict[str, Any] = {
+                    "shard": spec.shard,
+                    "shards": spec.shards,
+                    "moments": len(spec.moment_ids),
+                    "job_id": None,
+                    "status": None,
+                    "detail": None,
+                    "retry_at": None,
+                }
+                if exc is not None:
+                    row.update(
+                        job_id=str(exc.job_id) if exc.job_id else None,
+                        status=exc.status,
+                        detail=exc.detail,
+                        retry_at=exc.retry_at.isoformat() if exc.retry_at else None,
+                    )
+                    if exc.job_id:
+                        result.job_ids.append(exc.job_id)
+                    if exc.retry_at and (result.retry_at is None or exc.retry_at > result.retry_at):
+                        result.retry_at = exc.retry_at
+                else:
+                    result.job_ids.append(llm.job_id)
+                    row["job_id"] = str(llm.job_id)
+                    data = llm.structured if isinstance(llm.structured, dict) else None
+                    if data is None:
+                        try:
+                            data = json.loads(llm.text)
+                        except (TypeError, ValueError):
+                            data = None
+                    if not isinstance(data, dict):
+                        row.update(status="invalid_output", detail="job returned no valid JSON")
+                    else:
+                        row["status"] = "succeeded"
+                        parsed.append((spec, llm.job_id, data))
+                shard_rows.append(row)
+            coverage["shards"] = shard_rows
+            result.job_id = result.job_ids[0] if result.job_ids else None
+
+            bad = [r for r in shard_rows if r["status"] != "succeeded"]
+            if bad:
+                # A shard that did not finish is NOT evidence that its moments were weak:
+                # save nothing, supersede nothing, report every shard's state.
+                statuses = {r["status"] for r in bad}
+                worst = next((s for s in _FAILURE_ORDER if s in statuses), "failed")
+                result.status = "failed" if worst == "invalid_output" else worst
+                result.detail = (
+                    "; ".join(
+                        f"shard {r['shard']}/{r['shards']} {r['status']}"
+                        + (f": {r['detail']}" if r["detail"] else "")
+                        for r in bad
+                    )
+                    + f". {len(shard_rows) - len(bad)} of {len(shard_rows)} shard(s) finished; "
+                    "nothing was saved and earlier candidates are untouched. Retrying resumes "
+                    "the same jobs."
+                )
+                return result
+
             all_cited = [
                 str(i)
-                for c in raw_candidates
+                for _spec, _job, data in parsed
+                for c in (data.get("candidates") or [])
                 if isinstance(c, dict)
                 for i in (c.get("moment_ids") or [])
             ]
             ws_ids = await _workspace_moment_ids(session, ws, all_cited)
-            accepted, rejected = enforce_candidates(raw_candidates, pool, ws_ids)
-            for r in data.get("rejections") or []:
-                if not isinstance(r, dict):
-                    continue
-                gate = r.get("gate") if r.get("gate") in REJECTION_GATES else None
-                rejected.append(
-                    _reject(
-                        r,
-                        [str(i) for i in (r.get("moment_ids") or [])],
-                        gate or "unspecified",
-                        "model_rejected",
-                        str(r.get("reason") or ""),
+            unaccounted: list[str] = []
+            for spec, job_id, data in parsed:
+                shard_ids = set(spec.moment_ids)
+                shard_pool = [pool_by_id[i] for i in spec.moment_ids if i in pool_by_id]
+                raw_candidates = data.get("candidates") or []
+                acc, rej = enforce_candidates(raw_candidates, shard_pool, ws_ids)
+                accounted = {
+                    str(i)
+                    for c in raw_candidates
+                    if isinstance(c, dict)
+                    for i in (c.get("moment_ids") or [])
+                }
+                dropped_rejections = 0
+                for r in data.get("rejections") or []:
+                    if not isinstance(r, dict):
+                        continue
+                    ids = [str(i) for i in (r.get("moment_ids") or [])]
+                    kept = [i for i in ids if i in shard_ids]
+                    if ids and not kept:
+                        # cites nothing this shard was shown (another tenant, a guess):
+                        # not persisted, only counted
+                        dropped_rejections += 1
+                        continue
+                    accounted.update(kept)
+                    gate = r.get("gate") if r.get("gate") in REJECTION_GATES else None
+                    rej.append(
+                        _reject(
+                            r,
+                            kept,
+                            gate or "unspecified",
+                            "model_rejected",
+                            str(r.get("reason") or ""),
+                        )
+                    )
+                for item in acc + rej:
+                    item["job_id"] = job_id
+                accepted.extend(acc)
+                rejected.extend(rej)
+                missing = [i for i in spec.moment_ids if i not in accounted]
+                unaccounted.extend(missing)
+                for row in shard_rows:
+                    if row["shard"] == spec.shard:
+                        row.update(
+                            accounted=len(shard_ids) - len(missing),
+                            unaccounted=len(missing),
+                            rejections_dropped=dropped_rejections,
+                        )
+            coverage["considered"] = sum(len(s.moment_ids) for s in specs)
+            coverage["unaccounted_moment_ids"] = unaccounted
+            coverage["complete"] = not unaccounted and not coverage["not_in_this_run_moment_ids"]
+            notes = []
+            if unaccounted:
+                notes.append(
+                    f"{len(unaccounted)} of {coverage['considered']} moments were not accounted "
+                    "for by the model (coverage.unaccounted_moment_ids); they are not recorded "
+                    "as rejections."
+                )
+            if coverage["not_in_this_run_moment_ids"]:
+                notes.append(
+                    f"{len(coverage['not_in_this_run_moment_ids'])} week moments arrived after "
+                    "this resumed run started and were not judged "
+                    "(coverage.not_in_this_run_moment_ids); run a new selection to include them."
+                )
+            result.detail = " ".join(notes) or None
+
+        # A run is saved once. A second request resuming an already saved run (double
+        # click, two processes) returns what was saved instead of writing it again.
+        saved = (
+            (
+                await session.execute(
+                    select(TopicCandidate).where(
+                        TopicCandidate.workspace_id == ws,
+                        TopicCandidate.selection_run_id == run_id,
                     )
                 )
+            )
+            .scalars()
+            .all()
+        )
+        if saved:
+            result.candidates = [
+                candidate_to_json(r)
+                for r in sorted(saved, key=lambda r: r.rank or 0)
+                if r.origin == ORIGIN_SELECTOR
+            ]
+            result.rejected = [
+                {
+                    "moment_ids": list(r.moment_ids or []),
+                    "gate": (r.gates or {}).get("_rejection", {}).get("gate"),
+                    "code": (r.gates or {}).get("_rejection", {}).get("code"),
+                    "reason": r.editor_notes,
+                    "title": r.title,
+                }
+                for r in saved
+                if r.origin == ORIGIN_SELECTOR_REJECTED
+            ]
+            result.detail = "this selection run was already saved; returning the saved rows"
+            return result
 
         # Existing week rows: supersede proposed + prior selector rejections; never touch
         # selected/recorded/published/editor-rejected/calibration rows.
@@ -689,28 +1093,28 @@ async def select_candidates(
         deduped = []
         for cand in accepted:
             if frozenset(cand["moment_ids"]) in kept_sets:
-                rejected.append(
-                    _reject(
-                        cand,
-                        cand["moment_ids"],
-                        "unspecified",
-                        "already_selected",
-                        "the same evidence is already selected this week",
-                    )
+                dup = _reject(
+                    cand,
+                    cand["moment_ids"],
+                    "unspecified",
+                    "already_selected",
+                    "the same evidence is already selected this week",
                 )
+                dup["job_id"] = cand.get("job_id")
+                rejected.append(dup)
             else:
                 deduped.append(cand)
         deduped.sort(key=lambda c: c["rank_score"], reverse=True)
         for extra in deduped[max_candidates:]:
-            rejected.append(
-                _reject(
-                    extra,
-                    extra["moment_ids"],
-                    "unspecified",
-                    "below_cut",
-                    f"ranked below the top {max_candidates}",
-                )
+            cut = _reject(
+                extra,
+                extra["moment_ids"],
+                "unspecified",
+                "below_cut",
+                f"ranked below the top {max_candidates}",
             )
+            cut["job_id"] = extra.get("job_id")
+            rejected.append(cut)
         final = deduped[:max_candidates]
 
         now = _now()
@@ -734,7 +1138,7 @@ async def select_candidates(
                 citations_private=cand["citations_private"],
                 status="proposed",
                 prompt_version=PROMPT_VERSION,
-                job_id=job_id,
+                job_id=cand.get("job_id"),
                 origin=ORIGIN_SELECTOR,
                 created_at=now,
                 updated_at=now,
@@ -767,7 +1171,7 @@ async def select_candidates(
                     status="rejected",
                     editor_notes=rej["reason"],
                     prompt_version=PROMPT_VERSION,
-                    job_id=job_id,
+                    job_id=rej.get("job_id"),
                     origin=ORIGIN_SELECTOR_REJECTED,
                     created_at=now,
                     updated_at=now,

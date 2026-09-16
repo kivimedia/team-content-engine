@@ -23,6 +23,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "jsonschema>=4.20",
     "aiohttp>=3.9",
+    "tzdata>=2024.1",  # editorial week = Asia/Jerusalem; slim images may lack zoneinfo
 ]
 
 [project.optional-dependencies]

@@ -394,7 +394,7 @@ async def test_request_uses_contract_fields(editorial_sessionmaker, fake_llm):
     req = fake_llm["calls"][0]
     assert req.job_type == "editorial_selection"
     assert req.agent_name == "editorial_selector"
-    assert req.prompt_version == "editorial_selection.v1"
+    assert req.prompt_version == "editorial_selection.v2"
     assert req.workspace_id == ws and req.output_schema
     prompt = req.messages[0]["content"]
     assert "EVIDENCE POOL" in prompt and "strategy session" in prompt.lower()

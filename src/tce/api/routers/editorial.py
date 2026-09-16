@@ -104,6 +104,7 @@ async def _get_candidate(db, ws: uuid.UUID, candidate_id: str) -> TopicCandidate
 async def _run_selection(
     sm: Any, ws: uuid.UUID, week_start: date, max_candidates: int, run_id: uuid.UUID
 ) -> None:
+    """Run or resume one selection. A run_id whose jobs already exist is resumed."""
     key = week_start.isoformat()
 
     def on_activity(msg: str, **kw: Any) -> None:
@@ -159,13 +160,29 @@ async def start_selection(
     key = body.week_start.isoformat()
     if job_status.is_running(ws, "select", key):
         raise HTTPException(status_code=409, detail="selection already running for this week")
-    run_id = uuid.uuid4()
+    async with open_session(sm) as db:
+        previous = await job_status.latest_selection_run(db, ws, key)
+    # An interrupted run (restart, timeout, capacity wait, failed job that may be re-queued)
+    # is resumed under its own run id, so its jobs are reused rather than duplicated.
+    resume = bool(
+        previous
+        and previous["resumable"]
+        and previous["max_candidates"] in (None, body.max_candidates)
+    )
+    run_id = uuid.UUID(previous["selection_run_id"]) if resume and previous else uuid.uuid4()
     job_status.start(
-        ws, "select", key, "Queued selection", selection_run_id=str(run_id), week_start=key
+        ws,
+        "select",
+        key,
+        "Resuming interrupted selection" if resume else "Queued selection",
+        selection_run_id=str(run_id),
+        week_start=key,
+        resumed=resume,
     )
     background.add_task(_run_selection, sm, ws, body.week_start, body.max_candidates, run_id)
     return {
         "selection_run_id": str(run_id),
+        "resumed": resume,
         "status": "running",
         "candidates": [],
         "rejected": [],
@@ -189,6 +206,7 @@ async def selection_status(
                 )
             )
         ).all()
+        durable = await job_status.latest_selection_run(db, ws, key)
     counts: dict[str, int] = {}
     for st, origin in rows:
         label = "selector_rejected" if origin == ORIGIN_SELECTOR_REJECTED else st
@@ -196,15 +214,44 @@ async def selection_status(
     entry = job_status.get(ws, "select", key)
     return {
         "week_start": key,
-        "job": entry
-        or {"state": "idle", "current_activity": "No selection running", "job_ids": []},
+        "job": _pick_status(entry, durable, "No selection on record"),
+        "durable": durable,
         "persisted_counts": counts,
     }
 
 
+def _pick_status(
+    entry: dict[str, Any] | None, durable: dict[str, Any] | None, idle: str
+) -> dict[str, Any]:
+    """This process's live entry while it runs. Otherwise the database decides: a request
+    that ended (timeout, restart) says nothing about whether its jobs later finished, so
+    the durable view wins, carrying the ended request's entry as `last_request` when it
+    was about the same job."""
+    if entry and entry["state"] == "running":
+        return entry
+    if durable:
+        same = bool(durable["job_ids"]) and durable["job_ids"][0] in (entry or {}).get(
+            "job_ids", []
+        )
+        return durable | {"last_request": entry if same else None}
+    if entry:
+        return entry
+    return {"state": "idle", "current_activity": idle, "job_ids": []}
+
+
 @router.get("/jobs")
-async def editorial_jobs(ws: uuid.UUID = Depends(require_private_workspace)) -> dict[str, Any]:
-    return {"jobs": job_status.list_for_workspace(ws)}
+async def editorial_jobs(
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    async with open_session(sm) as db:
+        in_flight = await job_status.unattended_jobs(db, ws)
+    return {
+        "jobs": job_status.list_for_workspace(ws),
+        # queued/leased/waiting editorial jobs on record, whether or not this process
+        # is awaiting them
+        "in_flight": in_flight,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -340,14 +387,18 @@ async def feedback_summary(
 # ---------------------------------------------------------------------------
 
 
-async def _run_packet(sm: Any, ws: uuid.UUID, candidate_id: uuid.UUID) -> None:
+async def _run_packet(
+    sm: Any, ws: uuid.UUID, candidate_id: uuid.UUID, resume_job_id: uuid.UUID | None = None
+) -> None:
     key = str(candidate_id)
 
     def on_activity(msg: str, **kw: Any) -> None:
         job_status.update(ws, "packet", key, current_activity=msg, job_id=kw.get("job_id"))
 
     try:
-        outcome = await build_packet(sm, ws, candidate_id, on_activity=on_activity)
+        outcome = await build_packet(
+            sm, ws, candidate_id, on_activity=on_activity, resume_job_id=resume_job_id
+        )
     except Exception as exc:
         logger.exception("editorial.packet_failed", workspace_id=str(ws), candidate_id=key)
         job_status.update(
@@ -391,12 +442,26 @@ async def start_packet(
         if cand.status in ("rejected", "withdrawn"):
             raise HTTPException(status_code=409, detail=f"candidate is {cand.status}")
         cid = cand.id
-    if job_status.is_running(ws, "packet", str(cid)):
-        raise HTTPException(status_code=409, detail="packet already being written")
-    job_status.start(ws, "packet", str(cid), "Queued packet", candidate_id=str(cid))
-    background.add_task(_run_packet, sm, ws, cid)
+        if job_status.is_running(ws, "packet", str(cid)):
+            raise HTTPException(status_code=409, detail="packet already being written")
+        previous = await job_status.latest_packet_job(db, ws, cid)
+    # An interrupted packet job (restart, timeout, capacity wait, written but unsaved) is
+    # resumed; a finished or failed one is regenerated with a fresh job as before.
+    resume_job_id = (
+        uuid.UUID(previous["job_ids"][0]) if previous and previous["resumable"] else None
+    )
+    job_status.start(
+        ws,
+        "packet",
+        str(cid),
+        "Resuming interrupted packet" if resume_job_id else "Queued packet",
+        candidate_id=str(cid),
+        resumed_job_id=str(resume_job_id) if resume_job_id else None,
+    )
+    background.add_task(_run_packet, sm, ws, cid, resume_job_id)
     return {
         "status": "running",
+        "resumed": resume_job_id is not None,
         "candidate_id": str(cid),
         "status_url": f"/api/v1/editorial/candidates/{cid}/packet-status",
     }
@@ -410,11 +475,12 @@ async def packet_status(
 ) -> dict[str, Any]:
     async with open_session(sm) as db:
         cand = await _get_candidate(db, ws, candidate_id)
+        durable = await job_status.latest_packet_job(db, ws, cand.id)
     entry = job_status.get(ws, "packet", str(cand.id))
     return {
         "candidate_id": str(cand.id),
-        "job": entry
-        or {"state": "idle", "current_activity": "No packet job running", "job_ids": []},
+        "job": _pick_status(entry, durable, "No packet job on record"),
+        "durable": durable,
     }
 
 
