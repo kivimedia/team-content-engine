@@ -186,28 +186,55 @@ class GwsDocsClient:
         )
 
 
+# Drive roles that let a team member edit the Doc.
+EDITOR_ROLES = frozenset({"writer", "organizer", "fileOrganizer", "owner"})
+
+
 def verify_restricted(
     permissions: list[dict[str, Any]], team_emails: list[str]
 ) -> tuple[bool, str]:
-    allowed = {e.lower() for e in team_emails}
+    """True only when the read-back permissions are exactly what was intended.
+
+    Intended = one owner, every configured team email as an editor, nobody else, no
+    `anyone`/`domain` access. An empty team list means owner only, and says so.
+    """
+    intended = {e.strip().lower() for e in team_emails if e and e.strip()}
     problems = []
+    editors: set[str] = set()
     for perm in permissions:
         ptype = perm.get("type")
+        role = perm.get("role")
+        email = (perm.get("emailAddress") or "").lower()
         if ptype in {"anyone", "domain"}:
-            problems.append(f"{ptype} permission present ({perm.get('role')})")
-        elif ptype in {"user", "group"} and perm.get("role") != "owner":
-            email = (perm.get("emailAddress") or "").lower()
-            if email not in allowed:
-                problems.append(f"unexpected {ptype} permission ({perm.get('role')})")
+            problems.append(f"{ptype} permission present ({role})")
+        elif role == "owner":
+            continue
+        elif ptype in {"user", "group"} and email in intended:
+            if role in EDITOR_ROLES:
+                editors.add(email)
+            else:
+                problems.append(f"team member has {role} access, not editor")
+        else:
+            problems.append(f"unexpected {ptype} permission ({role})")
     owners = [p for p in permissions if p.get("role") == "owner"]
     if not owners:
         problems.append("no owner permission returned")
+    missing = intended - editors
+    if missing:
+        problems.append(
+            f"{len(missing)} of {len(intended)} configured team editor(s) have no editor access"
+        )
     if problems:
         return False, "; ".join(problems)
-    shared = len([p for p in permissions if p.get("role") != "owner"])
-    return True, f"Read back {len(permissions)} permission(s): owner only" + (
-        f" plus {shared} team member(s)" if shared else ""
-    ) + "; no link sharing"
+    if not intended:
+        return True, (
+            f"Read back {len(permissions)} permission(s): owner only (no team editors are "
+            "configured); no link sharing"
+        )
+    return True, (
+        f"Read back {len(permissions)} permission(s): owner plus all {len(intended)} configured "
+        "team editor(s); no link sharing"
+    )
 
 
 async def export_packet(
@@ -221,7 +248,11 @@ async def export_packet(
 ) -> dict[str, Any]:
     """Export and return a result dict. Mutates packet google_doc_* fields."""
     team_emails = [e.strip() for e in (team_emails or []) if e.strip()]
-    intended = "restricted: owner" + (" and team" if team_emails else " only") + ", no link sharing"
+    intended = (
+        f"restricted: owner and {len(team_emails)} team editor(s)"
+        if team_emails
+        else "restricted: owner only (no team editors configured)"
+    ) + ", no link sharing"
     blocks = packet_blocks(packet, candidate)
 
     reason = "No Google connection is configured for the TCE server"
@@ -242,7 +273,9 @@ async def export_packet(
                 "detail": vdetail,
                 "status": "exported" if verified else "access_problem",
             }
-            packet.status = "exported"
+            if verified:
+                # an unverified Doc is not an export: the packet keeps its prior status
+                packet.status = "exported"
             return {
                 "status": "exported" if verified else "access_problem",
                 "google_doc_id": doc["id"],
