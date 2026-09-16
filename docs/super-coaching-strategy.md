@@ -1,585 +1,191 @@
-# Super Coaching Growth Plan - Strategic Session
+# Super Coaching - Content Positioning (public default)
 
-**Date:** April 6, 2026
-**Goal:** $33K/month -> $50K/month ($600K/year)
-**Timeline:** 90 days
-
----
-
-## CURRENT STATE
-
-### Revenue
-- **Current:** ~$33K/month (17 clients)
-- **Peak:** $44-47K/month (6 months ago, 24 clients)
-- **2025 actual:** $560K
-- **2024 actual:** $477K
-- **2023 actual:** $430K
-- **2026 projection (current path):** $415K
-- **2026 target:** $600K
-
-### Why Revenue Dropped
-- 6 clients out of 24 didn't renew
-- Reasons: AI quality expectations surpassing human VA team output (typos, slowness, mistakes); some clients felt AI tools made managed services unnecessary
-- Core insight: clients are benchmarking human team output against AI quality - and AI is winning on consistency and speed
-
-### Current Offer
-- $1,500-$2,500/month per client
-- Weekly coaching + unlimited marketing (designers, copywriters, developers) + AI/vibe-code builds
-- Client value split: 50% coaching, 40% marketing execution, 10% AI builds
-- Ziv is the coach (bottleneck)
-
-### Team
-- 13 people in the Philippines
-- ~14.25 team members allocated across clients (0.25 to 2 per client)
-- Team cost: ~$96K/year
-- Gross margin: ~$320K after team costs
-
-### Time Allocation (50 hrs/week)
-- 20 hrs: Client delivery (14 coaching + 4 council + 2 training)
-- 10 hrs: Content (FB posts/videos -> LinkedIn/Instagram)
-- 20 hrs: R&D, tool-building, vibe coding
-
-### Channels
-- Current: 100% referrals (tapped out)
-- Content produces 0 clients currently
-- Past: 80% podcast + FB groups, 20% referrals (3 years ago)
-- FB groups organic reach is dead (~0.5% exposure)
-- Previous podcast season didn't perform well
-- Cold email outreach has worked in the past
-
-### Client Profile
-- 80-90% event industry (magicians, balloon decorators, DJs)
-- 10-20% coaches
-- Historically made 20-30% extra revenue from coaching coaches
-
-### Assets
-- Published book: "The Fully Booked Coach" (Amazon)
-- "Super Coaching" trademark pending
-- 300+ past clients
-- 50+ podcast interviewees (~90% coaches, have all emails)
-- Splinter video script ready
-- kmboards.co with 150+ agents
-- 10 podcasts produced
-- New podcast: 3 episodes live
-- vibecodingdeals.co (just launched)
-- Strategy session as conversion tool (proven, comfortable with it)
+This is the public default strategy that TCE agents read. It carries positioning and
+editorial rules only. Private business context (numbers, client details, pipeline notes)
+belongs in a workspace strategy override stored in the database, never in this file.
 
 ---
 
-## PHASE 1 CONCLUSION: FASTEST PATH
+## WHO THIS CONTENT IS FOR
 
-### ONE Offer: "Super Coaching" for Coaches
-Help coaches add AI agent teams to their coaching business so they can deliver done-for-you services without hiring a VA team.
+1. **Coaches first.** Independent coaches and small coaching businesses who run their own
+   delivery, sales and marketing with a small team.
+2. **Event-industry business owners second.** Owners of small service businesses in the
+   events world (entertainment, decor, florals, rentals, venues) who run the day-to-day work
+   themselves.
 
-**What it is:**
-- 1-on-1 coaching at $4,000-$5,000/month
-- Teach coaches to build and maintain their own AI agent teams
-- Clients bring their own API keys (low cost to deliver)
-- Based on 6 years of proven Super Coaching methodology with 300+ clients
-- Evolution: instead of teaching coaches to hire VAs, teach them to use AI agents
+A topic must be useful to one of these owners in their ordinary working week. Content for
+enterprise buyers, developers, investors or general "AI news" audiences is out of scope.
 
-**Why this offer:**
-1. You've done this for 300+ clients - not theoretical
-2. Coaches understand coaching value (they sell it) - easier to charge $4-5K
-3. Coaches have higher margins than event industry - can afford premium
-4. You only need 4-5 new clients to close the $17K/month gap
-5. Your book, trademark, and methodology all align
-6. AI agent delivery solves the exact quality problem that lost you 6 clients
-7. The 20 hrs/week of R&D becomes the product, not a cost center
+## THE OFFER
 
-### ONE Primary Channel: Warm outreach to 45+ podcast interviewees -> Strategy sessions
-- 45 coaches you already have relationships with
-- All emails available
-- Podcast interview = relationship builder (introvert-friendly)
-- Strategy session = proven conversion mechanism
-- $0 acquisition cost for first clients
-- Webinar + Meta ads as scalable channel starting month 2
+**Super Coaching:** Ziv is the business coach whose human team and AI team become yours.
+The work is coaching plus AI integration inside the client's business. It is not a one-off
+software build, a template pack or a course about tools.
 
-**Webinar funnel economics (validated from past experience):**
-- $20 per registrant
-- 25% show-up rate = $88 per attendee
-- 1 in 5 books a call = $440-$880 per strategy session
-- 1 in 3 closes = $1,320-$2,640 per client
-- At $4,500/month x 6-month retention = $27,000 LTV
-- ROI: 1:10 (conservative) to 1:20 (optimistic)
+- **The only call to action:** book a strategy session.
+- No forced giveaway, guide, lead magnet or comment keyword.
+- No software sale and no product pitch.
+- **Never publish prices**, packages, fees, discounts or revenue figures.
 
-### Why Alternatives Were Rejected
-- **Event industry expansion:** Niche feels tapped, referrals dried up, lower price ceiling
-- **SaaS (kmboards, Respira, etc.) as the OFFER:** No external users, no sales page, 6-12 month journey minimum. **NOTE FOR CONTENT AGENTS:** SaaS isn't the *offer*, but the 60+ shipped repos (kmboards, kmcrm, DevCast, kmshake, gobo-designer, dj-hub, choirmind, etc.) ARE valuable as **credibility and case-study fuel** in content. Reference them by name as proof the AI-agent methodology works. See `docs/repo-portfolio.md` for the full catalog with story angles. The repos earn the right to teach Super Coaching - they don't replace it.
-- **AI builds as standalone:** Clients only value at 10%
-- **LinkedIn/cold outreach:** Buyers aren't there
-- **Scaling VA team:** Market told you this is declining
-- **Vibe coders market:** Zero validation, too early - park for 90 days
-- **FB groups organic:** Dead at 0.5% exposure
-- **Podcast relaunch:** Previous season didn't perform
+## WHAT A GOOD IDEA IS
 
-### Biggest Risks
-1. Ziv is the coaching bottleneck - caps at ~25 clients
-2. Must shift time from R&D to sales (currently 0 hours on sales)
-3. "Not bold enough to ask" pattern must be broken
-4. Coaching coaches is competitive - differentiation through AI agents is critical
+An idea is worth recording when all four are true:
 
----
+1. **Small service business:** it applies to a small owner-led service business.
+2. **Owner relevance:** a coach or event-business owner would use it in day-to-day work.
+3. **Concrete, supported substance:** it comes from something Ziv actually did, saw or
+   explained (a call, a build, a decision) and the evidence supports what the idea claims.
+4. **Connects to Ziv's work:** it grows out of his coaching or his team's delivery.
 
-## PHASE 2 CONCLUSION: WHO TO MODEL
+Rules that follow from this:
 
-### The Person: Troy Dean
-Founder of Agency Mavericks (formerly WP Elevation). Coached 2,500+ agency owners. Hosts The Agency Hour podcast.
+- **One lesson per idea.** If a draft teaches two things, split it or drop one.
+- **Keep coaching lessons that do not mention AI.** Selling, course design, delegation,
+  client communication and management lessons are core material. Do not turn every idea
+  into AI commentary, and do not position Ziv as an AI-news commentator.
+- **A product release is evidence, not the idea.** The publishable idea is the decision
+  behind it, the owner problem it solves, and something the reader can use.
+- **Evergreen beats news.** Recent news is optional context. A news claim must be verified
+  as current before it is stated. Freshness is a small bonus, never the reason to pick a topic.
+- **Fewer is fine.** Three strong original ideas a week is the recommended launch. Return
+  fewer rather than padding with weaker angles.
 
-### Why Troy Dean
-1. Started as a WordPress/web services guy who productized his agency offer
-2. Coaches service providers to systematize and scale
-3. Primary sales channel is his podcast - interviews prospects, builds relationships, converts
-4. Charges high-ticket ($5K+) to a niche audience
-5. Introvert who sells through content and conversations, not events
-6. Built a book + podcast + community flywheel
-7. Went from "doing the work" to "teaching the system"
+## CLAIMS DISCIPLINE
 
-### What to Copy
-- **Podcast-as-funnel:** Interview target buyers, provide value, offer strategy session
-- **"Blueprint" offer framing:** Sell a named system/methodology, not generic coaching
-- **Niche authority positioning:** Own "AI agent teams for coaches" completely
-- **Community as retention:** Peer community keeps clients longer
+Say exactly what the evidence supports. Keep these separate:
 
-### What NOT to Copy
-- His niche (WordPress agencies) is declining
-- His scale (2,500 clients, big team) - stay at 20-25 high-ticket
-- Course/membership model - 1-on-1 at $4-5K is better for your goal
-- His content production pace - stay lean
+- **Built:** code or a process exists.
+- **Tested:** it was exercised and checked.
+- **Deployed:** it is live for someone.
+- **Used:** real people rely on it.
+- **Measured:** a result was observed and counted.
 
-### Others Considered
-- **Alex Hormozi:** Too mass-market, volume-based, doesn't match introvert style
-- **Russell Brunson:** Funnel empire approach requires too much infrastructure
-- **Rich Litvin:** Philosophy is right (high-ticket, deep relationships, strategy sessions) but distribution model (networking events, in-person) doesn't work for an introvert
-- **Greg Hickman (AltAgency):** Close fit on productized services but less relevant to coaching-coaches niche
+Never state an outcome (saved time, more clients, more revenue, fewer errors) unless a
+measured result supports it. A merged change is not a business result. A plan is not
+completed work. A proposal on a call is not a result.
 
----
+## PUBLIC SAFETY (editorial redaction)
 
-## PHASE 3: THE 90-DAY PLAN
+Public drafts never contain:
 
-### WEEKS 1-2: PACKAGE & ARM
-**Objective:** Get the offer ready and start warm outreach.
+- credentials, tokens, private links or internal IDs
+- client or customer names, their customers' words, recordings or data
+- money figures, prices, revenue or percentages tied to someone's business
+- identifying sensitive stories (health, family, legal, conflicts) even with names removed
+- absolute guarantees ("always works", "guaranteed")
 
-**Week 1:**
-- Day 1: Write reconnect email to 45 coaches. Send first 10.
-- Day 2-3: Send remaining 35 in batches of 10-15/day
-- Day 4-5: Create one-page offer doc (Google Doc). Includes: what Super Coaching is, who it's for, what they get, price ($4,500/month), 3-month minimum, 300+ client track record
-- Day 5-7: Record splinter video from existing script. Post it. Use as follow-up for non-responders.
+Keep the general lesson and tell it from Ziv's own experience. When a transcript is
+translated or the speaker attribution is uncertain, paraphrase the lesson and do not quote.
 
-**Week 2:**
-- Run strategy sessions with responders (target: 5-10 calls)
-- Follow up with non-responders (one follow-up email)
-- Refine pitch based on objections heard on calls
-- **Goal: 1 paying client or 2-3 hot prospects**
+## DELIVERY: WALKING RECORDINGS
 
-### WEEKS 3-4: CLOSE & BUILD WEBINAR
-**Objective:** Close first clients. Start building webinar funnel.
+- Ziv records one file per idea, walking, phone in hand.
+- Scripts are broken into short phrases, one phrase per line: read a phrase, look up, say
+  it, pause, repeat if needed. Editing removes pauses and retakes.
+- Each idea comes with 5-7 walking bullets (for recording from bullets) and a full
+  phrase-broken script, plus Facebook and LinkedIn text adaptations.
+- Beats are flexible around the one lesson. There is no fixed four-part or seven-part shape.
+- Open with the owner's situation or the question Ziv was asked, not with a statistic, a
+  company name or a crisis.
+- No forced company names, no invented statistics, no crisis or fear hooks.
+- Close with the strategy-session invitation, stated plainly.
+- The creator reference corpus (hooks, pacing) informs delivery only. It never decides
+  identity, positioning or topic choice.
 
-- Continue strategy sessions from warm outreach
-- Outline webinar: "How Coaches Are Using AI Agent Teams to Deliver Done-For-You Services Without Hiring a Team"
-- Set up webinar funnel (landing page + registration + email sequence)
-- Record 2-3 new podcast episodes - invite coaches who are ideal buyer profile (new prospects)
-- **Goal: 2 paying clients, webinar draft complete**
+## TIME BUDGET
 
-### WEEKS 5-6: LAUNCH WEBINAR + ADS
-**Objective:** Turn on paid acquisition.
-
-- Run first live webinar to warm audience (past interviewees + any email list)
-- Analyze: show-up rate, engagement, call bookings
-- Fix presentation issues
-- Run webinar again with $500 in Meta ads
-- Test ad creative and audiences (coaches, business coaches, life coaches - test separately)
-- **Goal: 3 paying clients total, first ad-driven strategy sessions booked**
-
-### WEEKS 7-8: OPTIMIZE
-**Objective:** Find winning ad/webinar combination.
-
-- Run webinar weekly or bi-weekly
-- Scale ads to $750-1,000/month if cost per strategy session < $500
-- Kill non-converting ad sets
-- Continue podcast (1 new episode/week), each guest gets splinter video + book chapter + webinar invite
-- **Goal: 4 paying clients, predictable pipeline of 2-3 strategy sessions/week**
-
-### WEEKS 9-12: SCALE & SYSTEMATIZE
-**Objective:** Hit $45-50K/month run rate.
-
-- Continue weekly webinars
-- Scale ads if ROI holds ($1,500-2,000/month)
-- Build onboarding system for new coaching clients
-- Document AI agent setup process for client self-service
-- Reduce event industry council/training to minimum (2 hrs/week)
-- **Goal: 5-6 new coaching clients = ~$20-25K/month new revenue, total ~$50-55K/month**
+Up to 90 minutes of Ziv's time a week: review the previous batch, pick ideas, record. The
+team handles editing, captions and text adaptations. Silence is not approval, and this
+system publishes nothing by itself.
 
 ---
 
-## WHAT TO DO TODAY
+## ZIV'S VOICE AND WRITING STYLE (observed patterns, apply to all content)
 
-1. Write the reconnect email to 45 coaches
-2. Send the first 10
-3. Block 5 strategy session slots on calendar for next week
-
-## WHAT TO AVOID
-
-- Do NOT build a course, membership, or group program. Sell 1-on-1 at $4-5K first.
-- Do NOT spend more than 2 hours on a landing page. Google Doc offer page is enough for warm outreach.
-- Do NOT keep spending 20 hrs/week on R&D tool-building. Cut to 10. Redirect 10 to sales.
-- Do NOT pursue vibe coders as a market right now. Park for 90 days.
-- Do NOT automate the webinar. Live converts 3-5x better for high-ticket.
-- Do NOT wait until the offer is "perfect." 300 clients and a published book ARE the credibility.
-
-## KEY SUCCESS METRICS
-
-| Metric | Week 4 | Week 8 | Week 12 |
-|--------|--------|--------|---------|
-| Outreach emails sent | 45+ | 60+ | 80+ |
-| Strategy sessions booked | 8-10 | 20+ | 35+ |
-| Paying clients (new) | 2 | 4 | 5-6 |
-| New MRR added | $8-10K | $16-20K | $20-25K |
-| Ad spend | $0 | $500-1,000 | $1,500-2,000 |
-| Webinars run | 0 | 3-4 | 7-8 |
-
-## DECISION CHECKPOINTS
-
-**End of Week 2:** If zero strategy sessions from 45 emails - messaging is wrong. Rewrite with stronger hook. Consider calling instead.
-
-**End of Week 4:** If zero clients from 8+ strategy sessions - offer or price is off. Test $3,000/month. Or wrong coaches on calls.
-
-**End of Week 6:** If webinar show-up < 20% or zero calls booked - topic isn't compelling. Test different angle. May be audience targeting issue on Meta.
-
-**End of Week 8:** If ad cost per strategy session > $600 - pause ads, double down on podcast-as-funnel.
-
-**End of Week 12:** If 3+ new clients and pipeline flowing - plan to scale to 8-10 by month 6. If 0-1 clients - offer needs fundamental rethink. Consider returning to event industry at higher prices with AI delivery.
-
----
-
-## CONTENT STRATEGY
-
-### The One Job Every Piece of Content Has
-
-Every video, post, or script must leave a coach thinking: **"I need to talk to Ziv Raviv."**
-
-Not "interesting news." Not "good point." Not "I should look into that."
-
-The viewer is an independent coach earning $2K-$8K/month. They either have VAs they're frustrated with, clients they're losing, prices they can't raise, or delivery they can't scale. They are NOT interested in AI company valuations, supply chain disruption, or general tech news. They are interested in their own business surviving and growing.
-
-### The Emotional Trigger Test
-
-Before picking any topic, ask: does this make a coach feel one of these three things?
-
-1. **"I'm losing ground and I didn't know it"** - a threat they haven't yet named
-2. **"There's something working right now that I'm not doing"** - a specific opportunity with a window
-3. **"Someone just solved the problem I've been stuck on"** - a direct answer to a real blocker
-
-If the answer is none of the three, the topic fails. Drop it regardless of how newsworthy it is.
-
-### Topic Filter: Pass/Fail
-
-**A topic PASSES if:**
-- A coach earning $3K/month could watch 90 seconds and see a direct threat or opportunity in their own business
-- The insight is only possible from Ziv's position: 6 years + 300+ clients + AI agent infrastructure
-- It naturally ends with a question only a strategy session can answer
-
-**A topic FAILS if:**
-- It references AI company funding rounds, valuations, or press releases coaches don't care about
-- It could be written by any "AI for business" creator with zero coaching experience
-- It's interesting but creates no urgency to act or talk to anyone
-
----
-
-### The 5 Content Pillars
-
-#### Pillar 1: The VA Team Is Dying
-
-The coaches who hired human teams to scale are watching clients leave. AI agent teams are faster, more consistent, and cheaper. This is already happening - not a prediction.
-
-**Emotional trigger:** "I'm losing ground and I didn't know it."
-
-**Audience belief going in:** "I need a good team to scale."
-**Belief shift:** "The team model is being disrupted from underneath me."
-
-**Example topics (use as pattern, not scripts):**
-- A client cut her operations team from 5 to 1 and doubled her output in 60 days - here is what changed
-- Your VA is making you look unprofessional to your clients and you probably don't know it
-- The hidden cost of a human operations team that nobody in the coaching industry is talking about
-- Why 6 of my long-term clients didn't renew last year - the real reason was not price
-- What coaching clients are actually comparing when they decide whether to stay with you
-
-#### Pillar 2: The Economics of High-Ticket AI Delivery
-
-What separates a $2K/month coach from a $5K/month coach is not credentials or methodology. It is the cost and quality of delivery. AI agents enable done-for-you delivery at near-zero cost of goods. This changes the entire pricing model.
-
-**Emotional trigger:** "There's something working right now that I'm not doing."
-
-**Audience belief going in:** "I can't charge more without working more."
-**Belief shift:** "The price ceiling is a delivery problem, not a value problem."
-
-**Example topics:**
-- Why the $2K coach and the $5K coach do almost identical work - and what actually creates the gap
-- The coaching offer with near-zero cost of delivery (clients bring their own API keys)
-- How to raise your coaching prices without changing your methodology or working more hours
-- The done-for-you coaching model that runs while you sleep - what it actually looks like
-- I coach coaches for $4,500 a month and my delivery cost is under $50 - here is how
-
-#### Pillar 3: The Coaching Industry Is Being Restructured Right Now
-
-Coaches who don't adapt to AI agent delivery will lose clients to coaches who do. This is not a future warning - the restructuring is happening in 2026. Clients are already benchmarking their coach's team output against AI tools they use themselves.
-
-**Emotional trigger:** "I'm losing ground and I didn't know it."
-
-**Audience belief going in:** "My clients trust me and my team."
-**Belief shift:** "My clients are already using AI tools that outperform my team - they just haven't said it yet."
-
-**Example topics:**
-- What happens when your clients discover that ChatGPT can do what your team does in 10 minutes
-- The coaching business model that will look outdated in 18 months - and the one replacing it
-- Why AI did not kill coaching - it raised the bar for what good coaching delivery looks like
-- The signal I watch in my client roster that tells me a client is about to leave (it has nothing to do with results)
-- Three types of coaches who will thrive in 2026 - and two types who will not
-
-#### Pillar 4: AI Agent Teams - What They Actually Look Like in Practice
-
-Most coaches have heard "use AI agents" and have no idea what that means in their business. Not theory. Not tools lists. Real implementations from real coaching businesses Ziv has built these in.
-
-**Emotional trigger:** "Someone just solved the problem I've been stuck on."
-
-**Audience belief going in:** "AI agents are too technical for me."
-**Belief shift:** "This is concrete and achievable - and someone has already done it for businesses like mine."
-
-**Example topics:**
-- What my client's coaching business looks like with an AI agent team - a real walkthrough
-- The seven jobs I replaced with AI agents in my own business (in order of easiest to hardest)
-- Why "just use ChatGPT" is the wrong advice for coaches - and what actually works
-- The first AI agent I set up for every new coaching client - and why this one first
-- My client's agent generated her first piece of client content while she was on vacation - here is how that works
-
-#### Pillar 5: The Super Coaching Proof
-
-Six years. Three hundred clients. A published book. A named methodology. This pillar is authority - earned, specific, verifiable. Not thought leadership. Evidence.
-
-**Emotional trigger:** "This person has done this at scale. I should talk to them."
-
-**Audience belief going in:** "Everyone says they know how to scale coaching."
-**Belief shift:** "This person has actually done it with hundreds of coaches and has data."
-
-**Example topics:**
-- After 300 coaching clients, one pattern separates the ones who hit $10K months from the ones who don't
-- What I would write differently in The Fully Booked Coach if I wrote it today
-- The one question I ask every new coaching client before we build anything
-- The mistake I made with my first 50 clients that I corrected in the next 250
-- Six years of coaching coaches: the three things that actually move the needle (none of them are what you think)
-
----
-
-### Day-of-Week Angle Calibration
-
-Apply these angles to whichever pillar fits the day's strongest available story:
-
-- **Monday:** Big shift - something in the coaching industry just changed or is changing
-- **Tuesday:** Tactical - here is exactly how to do a specific thing
-- **Wednesday:** Contrarian - everyone believes X, here is why X is wrong
-- **Thursday:** Case study - a real client, a real result, a real sequence of events
-- **Friday:** Second-order - the downstream consequence of something coaches haven't noticed yet
-
----
-
-### What the Topic Selection Agent Must Never Do
-
-- Pick AI news stories (funding rounds, product launches, valuations) and try to make them relevant to coaches - this always produces generic content
-- Use Ziv's name or "I" in topic titles - hooks are about the viewer, not the creator
-- Pick topics that require the viewer to care about tech trends - they care about their business, not the industry
-- Produce five variations of the same angle in one week - each day must hit a different pillar or a different emotional trigger
-- Choose a topic where the insight is equally available from any other creator - if TJ Robertson, Justin Welsh, or any generic "AI for business" account could have said it, it is not specific enough
-
----
-
-### The Competitive Position
-
-Ziv is not an AI influencer. He is not an SEO expert. He is not a productivity guru.
-
-He is the person with the deepest track record of making coaches' businesses actually work - 300+ clients, published book, proven methodology - who also happens to have built the AI agent infrastructure that makes high-ticket done-for-you coaching economically viable at near-zero cost.
-
-The content should constantly reflect that specific combination. Neither half alone is interesting. Together, they are a category of one.
-
----
-
-## THE UNCOMFORTABLE TRUTH
-
-The bottleneck isn't the offer, tech skills, niche knowledge, or content. It's that 20 hours/week go to building tools and 0 hours go to selling. This plan works ONLY if 10 of those R&D hours shift to outreach, strategy sessions, and webinar building. The first email goes out today.
-
----
-
-## FINANCIAL MODEL
-
-### Current State
-- 17 event industry clients: ~$30K/month
-- Team cost: ~$8K/month
-- Net before Ziv's compensation: ~$22K/month
-
-### Target State (Week 12)
-- 17 event industry clients: ~$30K/month
-- 5 coaching clients at $4,500: ~$22.5K/month
-- Total revenue: ~$52.5K/month
-- Team cost: ~$8K/month (coaching clients don't need VA team)
-- Ad spend: ~$1,500-2,000/month
-- Net before Ziv's compensation: ~$42.5K/month
-
-### Key Insight
-New coaching clients at $4-5K with AI agent delivery have near-zero COGS (clients bring own API keys, no VA team needed). Every new coaching client is almost pure margin.
-
----
-
-## TARGET ARCHETYPE (April 2026 Precision Update)
-
-The person who watches a walking video and thinks "this person gets it":
-
-- Coach or consultant with a real content library they built themselves - not occasional posting, actual depth
-- Earning $10K-30K/mo — business works, marketing is underperforming relative to what they know they're capable of
-- **Burned by an agency that used a questionnaire instead of actually reading their content.** Voice precision is non-negotiable for them — they've been traumatized by semantic drift (generic output from a team that consumed nothing).
-- NOT: a solo coach drowning in admin. NOT: a beginner. NOT: a tech-curious generalist.
-- Archetype A: Analytical consultant with multiple credentials and a strong personal POV. Thinks carefully. Doesn't want to sound like everyone else. MBA-level. Has a philosophy, not just a method.
-- Archetype B: 7-figure person who built their business on content quality and reputation alone — not marketing volume. Not repurposing their content. Skeptical of agencies because they failed before.
-
-What they FEEL when they see Ziv's content: "This person actually consumed material like mine and understands what's at stake."
-
-What they FEEL when they see generic AI content: "Another agency that used a questionnaire."
-
----
-
-## FB POST IMAGERY STRATEGY
-
-Every story_brief's `visual_job` field must describe a scene or emotion — not just "show the product."
-
-**What works:**
-- Authentic over stock — never laptops on desks, never people pointing at whiteboards
-- Screenshots of tools producing real output: dashboards, before/after counts ("240 videos → 44 scripts"), actual results in a real UI
-- Behind the scenes: Ziv's actual workspace, tools in use, real numbers on screen
-- Emotional contrast: overwhelmed manual state vs calm automated state — show the gap
-- Mood: understated confidence, not hustle culture. Dark tones + clean UI > bright colors + stock smiles
-
-**What never works:**
-- Generic "AI robot" or "brain with circuit board" imagery
-- Stock photos of team meetings, handshakes, or people pointing at whiteboards
-- Animated explainer graphics that look like agency decks
-
-**How to write `visual_job`:** Describe the emotional scene. "A quiet screenshot of a tool that just did what a team of 5 used to do" beats "show the AI product." The image should answer "how does it feel to have this working?" not "what does this thing look like?"
-
----
-
-## WALKING VIDEO TOPIC CRITERIA
-
-Walking video topics are different from text post topics. Additional rules beyond the standard topic filter:
-
-**A topic PASSES for walking video if:**
-- It is confessional and first-person: "I did X and here's what happened" — personal stake visible in the first 5 words
-- It's something Ziv is thinking about because he lived it, not because it's timely
-- The hook starts with personal experience: "I built 44 scripts from a client's 240 videos for $7 last week" — not "AI is changing content creation"
-- A coach watching it would feel "he's telling me something from inside the room, not from a stage"
-
-**A topic FAILS for walking video if:**
-- It's news-driven: "OpenAI just announced..." — no personal stake
-- It could have been written by any "AI for business" creator
-- The hook is a data point without a human being living the experience
-- It requires visual aids or slides to make sense (walking video = one person, one camera, one idea)
-
-**Good examples:**
-- "I fired my marketing agency last year — here is what I actually learned"
-- "I built 44 scripts for a client's 240 videos for $7 last week — here is the process"
-- "A client of mine just let go of her last VA — here is what changed first"
-- "My worst client result in 6 years — and what it taught me about AI delivery"
-
----
-
-## WHAT ACTUALLY CONVERTS (Working Examples, April 2026)
-
-These are observed from real outreach and demos that moved prospects:
-
-**Email hook that worked:** "Her marketing company made a mess" — conflict + peer-register + specificity. Triggers the burned-by-agency archetype directly. Opens because the reader suspects their own agency made a mess too.
-
-**Demo that landed:** InstaIQ - "240 Reels → 44 voice-matched scripts overnight, for $7." The specificity (not "low cost" but "$7"), the evidence of volume (240 Reels = they consumed her material), and the overnight turnaround together = credibility. Vague demos don't land. This one lands.
-
-**Format that worked:** Dimitri proposal — 4-page PDF in Cambria, typographically clean, peer-to-peer memo tone, zero agency language. The FORMAT itself communicated "I'm not an agency, I'm a peer who builds things." Agencies send decks. Peers send memos.
-
-**Pattern:** Specificity + evidence you consumed their content = trust. Generic + impressive numbers = skepticism.
-
----
-
-## ZIV'S VOICE AND WRITING STYLE (36 observed patterns, apply to all content)
-
-These patterns are derived from side-by-side comparisons of Ziv's rewrites of Claude's drafts, April 2026 (Chris Gamble, Brant Matthews, David Monro-Jones, podcast-guest bulk emails). They apply to every piece of content the pipeline produces - emails, posts, captions, scripts.
+Derived from comparisons of Ziv's rewrites of AI drafts. Pattern IDs are stable so critics
+can cite them (for example "B6").
 
 ### A. Tone & framing
 
-1. **Paraphrase memory > verbatim transcript quote.** Reference what someone said the way human memory works, not like you recorded them. "You said you've got Copilot to write you a couple of posts" beats `"I've got Copilot to write me a couple of posts."` The latter feels like surveillance.
-2. **Peer language, never funnel language.** "Another great coach I worked with" / "someone I was talking to" - never "another prospect" or "another lead." Reframes the relationship as community, not pipeline.
-3. **Reframe late-ness as added value.** "A more up to date answer" beats "two days later than I'd have liked." Never apologize for timing - reframe the delay as richer intel. Higher-status posture.
-4. **Callback > deflection on humor.** When the audience makes a joke, play INTO it and amplify, don't neutralize.
-5. **Name the topic in the transition.** "As for the decision - no rush. Quick thing -" beats "Settle in, no rush. But while you're doing that, quick thing -." Tell them what's coming; don't dance.
+1. **Paraphrase memory over verbatim quotes.** Reference what someone said the way memory
+   works, not like a recording. Verbatim quoting feels like surveillance.
+2. **Peer language, never funnel language.** "Someone I was talking to", never "a prospect"
+   or "a lead".
+3. **Reframe lateness as added value.** Never apologize for timing; offer the more current
+   answer.
+4. **Callback over deflection on humor.** Play into the audience's joke instead of
+   neutralizing it.
+5. **Name the topic in the transition.** Tell the reader what is coming; do not dance.
 
 ### B. Claims & credibility
 
-6. **Underclaim for credibility.** "Very minimal tweaking required" beats "no tweaking required." Underclaiming is more believable and avoids implicitly shaming the reader for work they're already doing.
-7. **Social proof via counter-example beats testimonial.** "An agency with a famous-author CEO couldn't capture her voice" is stronger than "our clients won X." Universalizes the problem; disarms reputation-based skepticism.
-8. **Drop cost-arbitrage numbers** ($7 API vs $500 human) unless the reader's stated objection is per-unit cost. Usually the objection is THEIR cashflow, not comparative economics - mentioning API costs is a distraction.
-9. **Audience-fit vocabulary.** "Online courses" for coaches; "YouTube" for creators. Always ask: which word lives in this specific person's world?
+6. **Underclaim for credibility.** "Very little tweaking" beats "no tweaking".
+7. **A counter-example beats a testimonial.** Show why the common approach fails instead of
+   quoting praise.
+8. **Drop cost-comparison numbers** unless the reader's stated objection is unit cost.
+9. **Audience-fit vocabulary.** Use the words that live in this reader's world.
 
 ### C. Structure & restraint
 
-10. **One idea per piece.** Resist stacking pricing tiers, offers, or secondary pitches inside a story-driven post/email. If the piece is about voice precision, don't bolt on Fire and Forget. Second offers go in separate pieces.
-11. **When the recipient committed a timeline, drop ALL CTAs.** If they said "I'll let you know by end of month" and you accepted, the email should have NO ask. Not even a soft demo call. The quiet close IS the close. The piece is the gift.
-12. **Observation + insight bullets, not observation-only bullets.** Every bullet needs a second sentence of meaning. Weak: "You travel constantly, Fire Guy + Dispatch keep you moving." Strong: "You travel constantly, Fire Guy + Dispatch keep you moving. You commit for 6 months but actually use it throughout 2026." The insight is the payload.
-13. **Metaphor is earned when the audience is creative.** Performers, writers, coaches can hold metaphor ("3 months doesn't hold enough gravitational pull"). Engineers/operators usually can't. Match the register.
+10. **One idea per piece.** No stacked offers or secondary pitches.
+11. **No ask when the reader already committed a timeline.** The quiet close is the close.
+12. **Observation plus insight.** Every bullet carries a second sentence of meaning.
+13. **Earn metaphor.** Creative audiences hold metaphor; operators usually want the plain version.
 
 ### D. Objections & closes
 
-14. **Bake objection-handling INTO the offer description.** For a reader who's "not on TikTok", don't handle it later - put "Even if you never go into the platform, there is something to learn from people who are already doing well there" INSIDE the TikTokIQ description. Pre-empt the dismissal at the moment it would form.
-15. **Mirror their phrases back ONCE, never sprinkled.** If they said "brutally honest," you can say "brutally honest back to you" once. Multiple mirrors feel mimicking; one feels intentional.
-16. **Conditional CTA, not direct ask.** "If it's a hell yeah, I'll send you the link" beats "send me the signed agreement." Permission to enthusiastically say yes OR opt out without embarrassment. Derek Sivers filter.
-17. **When you've sent a counter-offer, leave the door open on the original, don't replace it.** "The original plan still stands" preserves optionality.
-18. **Final-line restraint.** Single clean line closes: "Take your time." / "One answer, not three." / "No rush." Avoid stacking multiple closing thoughts.
+14. **Handle the objection inside the description**, at the moment it would form.
+15. **Mirror the reader's phrase once**, never sprinkled.
+16. **Conditional invitation over a direct ask.** Make it easy to say yes or to opt out.
+17. **When offering an alternative, leave the original on the table.**
+18. **Final-line restraint.** One clean closing line.
 
-### E. Sequencing across a campaign (multi-touch discipline)
+### E. Sequencing
 
-19. **Pace across the sequence, not just within a single piece.** When drafting follow-up N, ask: "what am I holding back for N+1 and N+2?" Stacking offers in a single touch signals desperation; rationing them signals confidence that more rounds will happen.
+19. **Pace across a series.** Hold something back for the next piece.
 
 ### F. Storytelling & emotional structure
 
-20. **Subject lines / hooks with conflict language > neutral curiosity.** "Her marketing company made a mess" beats "A story from last week." Provocative framing with emotional words ("mess", "horror", "wrong", "fired") opens more inboxes and stops more scrolls than curiosity-gap neutrality.
-21. **Anonymize heroes, specify villains (fairly).** Calling the hero "a brilliant coach" makes the story universal - reader identifies. Being specific about the villain ("a marketing company with a famous-author CEO") + fair to their strengths makes the critique credible.
-22. **Fair to villain = credible to reader.** Acknowledge the villain's legit strengths BEFORE the critique. "His books are genuinely good - his team created a shit show." The concession is load-bearing: it says "I'm a realist, not a hater."
-23. **Bulleted pain points with emotional words.** Don't narrate pain as a paragraph. List each as a distinct beat. Use weighted words: "super annoying", "ignored", "felt dismissed". AI sands off emotion; humans don't.
-24. **Show the hero being patient before they snap.** "She trusted the process. She gave it a few months but eventually she had to let them go" beats "eventually she fired them." Patience beat makes the decision feel measured, not impulsive.
-25. **Three-beat emotional cadence for the turn.** Feeling → interpretation → wish. Short punchy lines with blank space between.
-26. **Standalone aphorism lines.** "Some call it authenticity." alone on its own line = poetic pause. Use once per piece, not multiple.
-27. **Profanity signals peer-register when used sparingly.** One "shit show" per piece drops formality. Zero = safe but cold. Two+ = vulgar. One = intimate.
-28. **Diagnosis > observation.** "They templatized him without studying her voice" beats "They used a questionnaire." Name the mental model that caused the failure, not the symptom.
-29. **Specificity swap: name the CURRENT objection, not a generic one.** "Most people hear 'AI content' and think prompts or templates" beats "they think cheaper or faster." 2026 objections are not 2023 objections.
-30. **Process language > result language.** "A process that creates voice precision" beats "voice precision." Operators trust systems. "Precision" sounds magical; "process that creates precision" sounds repeatable. Operators hire the repeatable.
-31. **Consistent theme vocabulary.** If voice is the through-line, say "voice DNA" not "teaching DNA" in the same piece.
-32. **Seller's subjective + client's confirmation > numbers alone.** "Ran 268 Reels through it, got 44 scripts, I actually liked them and so did he" beats "got 44 scripts, minimal tweaking." Double-validation: yours alone could be biased; theirs alone could be polite; together they're credible.
-33. **Capitalize NEW / ORIGINAL to pre-empt "AI just recycles."** "44 NEW scripts" signals freshness at a glance. Small typographic move, meaningful defense.
+20. **Hooks with real tension beat neutral curiosity**, without fear or crisis framing.
+21. **Anonymize the hero.** The reader should see themselves in the story.
+22. **Be fair to the other side.** Concede real strengths before the critique.
+23. **List pain points as distinct beats** in plain, felt words.
+24. **Show patience before the decision** so it reads as measured.
+25. **Three-beat turn:** feeling, interpretation, wish. Short lines with space between.
+26. **One standalone line per piece** for a pause.
+27. **Casual register, used sparingly.** Warm, never vulgar.
+28. **Diagnosis over observation.** Name the thinking that caused the failure.
+29. **Name the current objection**, not a generic old one.
+30. **Process language over result language.** Owners trust repeatable systems.
+31. **Consistent theme vocabulary** within a piece.
+32. **Your view plus the other person's confirmation** beats a bare claim.
+33. **Signal freshness** when readers expect recycled material.
 
 ### G. CTA rules
 
-34. **Pattern 11 (drop CTAs) applies ONLY when recipient has committed a timeline.** Cold reconnects, warm follow-ups without a promised timeline, and initiation pieces should include a soft conditional CTA.
-35. **Dual-benefit CTAs cover multiple why-hire-me vectors.** "For your lead gen, or how your clients could benefit from it" simultaneously positions the recipient as (a) a buyer for themselves, (b) a reseller/ambassador. One CTA, two reasons to click. Strong for coach audiences.
-36. **"Meet again" / "talk again" reframes as reconnect, not new sale.** For podcast guests or past clients, naming the prior relationship makes the invitation feel relational rather than transactional.
+34. **Pattern 11 applies only after a committed timeline.** Otherwise include a soft,
+    conditional invitation. For public content the invitation is a strategy session.
+35. **One invitation can carry two reasons** (for the owner's business and for their clients).
+36. **Reconnect framing** for people Ziv already knows.
 
 ### Banned vocabulary (zero tolerance)
 
-Any of the following is an automatic voice failure - the piece must be rewritten if any appears:
-
-- "smart money", "smart coaches who", "smart founders/operators who"
-- "competitive landscape", "structural advantage", "human resource complexity"
+- "smart money", "smart coaches who", "smart founders who"
+- "competitive landscape", "structural advantage"
 - "the math is compelling", "the math just works", "the ROI is clear"
-- "window is closing", "window for this advantage is closing", "before everyone else figures it out"
-- "maximize ROI", "AI-powered solutions", "leverage synergies", "seamlessly integrates", "scalable solutions", "best-in-class"
+- "window is closing", "before everyone else figures it out"
+- "maximize ROI", "AI-powered solutions", "leverage synergies", "seamlessly integrates",
+  "scalable solutions", "best-in-class"
 - "In today's fast-paced world", "Now more than ever", "In an era where", "Gone are the days"
-- "game-changer", "game-changing", "paradigm shift" (overused; use a specific verb)
-- "Translation:" as a connective phrase before restating a feature
-- Em-dashes (—) and double dashes (--). Use a single dash with spaces: " - "
+- "game-changer", "game-changing", "paradigm shift"
+- "Translation:" as a connective before restating a feature
+- Long dashes and double dashes. Use a single dash with spaces: " - "
 
 ### Meta-rule
 
-Ziv's pieces are LOWER-PRESSURE than the AI default draft. AI writes like it wants to close. Ziv writes like he's sharing an insight. Warmth comes from restraint. Removing CTAs, cost justifications, and urgency framing makes the piece feel MORE valuable because it reads like a peer thinking out loud, not a pitch.
+Ziv's pieces are lower pressure than the AI default. He writes like a peer sharing an
+insight, not like someone trying to close. Warmth comes from restraint.
 
-**Self-check after every draft:** "Could this have been written by a peer with no stake in the outcome?" If no, cut until it could.
+**Self-check after every draft:** "Could this have been written by a peer with no stake in
+the outcome?" If not, cut until it could.

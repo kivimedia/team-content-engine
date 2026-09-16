@@ -18,11 +18,19 @@ Two layers:
 
 This keeps existing single-tenant behavior identical while letting
 multi-tenant runs override per workspace.
+
+3. **Effective strategy with provenance**: `load_effective_strategy(db, workspace_id)`
+   returns the text agents should apply plus where each part came from. The public
+   default file carries the settled positioning; a workspace DB override extends it
+   with (private) business context. An override whose markdown starts with
+   `<!-- tce-strategy: replace -->` replaces the default instead. Editorial agents
+   (selector, packets, weekly planner) use this path.
 """
 from __future__ import annotations
 
 import os
 import uuid
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
@@ -38,6 +46,8 @@ _PORTFOLIO_PATH = os.path.join(_DOCS_DIR, "repo-portfolio.md")
 
 _MAX_CHARS = 12000
 _PORTFOLIO_MAX_CHARS = 8000
+_VOICE_MARKER = "## ZIV'S VOICE AND WRITING STYLE"
+REPLACE_MARKER = "<!-- tce-strategy: replace -->"
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +82,7 @@ def load_voice_patterns() -> str:
             text = f.read()
     except FileNotFoundError:
         return ""
-    marker = "## ZIV'S VOICE AND WRITING STYLE"
+    marker = _VOICE_MARKER
     start = text.find(marker)
     if start == -1:
         return ""
@@ -114,7 +124,10 @@ async def load_strategy_for_workspace(
     if text is not None:
         # Truncate workspace overrides too so prompts stay manageable
         if len(text) > _MAX_CHARS:
-            text = text[:_MAX_CHARS] + "\n\n[... strategy doc continues - workspace override truncated]"
+            text = (
+                text[:_MAX_CHARS]
+                + "\n\n[... strategy doc continues - workspace override truncated]"
+            )
         return text
     return load_strategy()
 
@@ -161,6 +174,117 @@ async def load_trend_focus_for_workspace(
         # DB unavailable / table missing - silently fall back
         return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Effective strategy with provenance (editorial path)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EffectiveStrategy:
+    """Strategy text an agent should apply, and where every part of it came from."""
+
+    text: str
+    sources: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"text": self.text, "sources": list(self.sources)}
+
+
+def _read_default_file() -> str:
+    try:
+        with open(_STRATEGY_PATH, encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+
+
+def _positioning_only(text: str) -> str:
+    """The default doc without the voice section (writers load that separately)."""
+    idx = text.find(_VOICE_MARKER)
+    if idx == -1:
+        return text.strip()
+    return text[:idx].rstrip().rstrip("-").rstrip()
+
+
+async def load_effective_strategy(
+    db: AsyncSession | None,
+    workspace_id: uuid.UUID | str | None,
+    *,
+    include_voice: bool = False,
+) -> EffectiveStrategy:
+    """Default public strategy, extended (or replaced) by the workspace DB override.
+
+    Provenance entries: {"kind": "file"|"db_override", "ref", "mode", "chars", ...}.
+    A DB error is recorded in provenance as {"kind": "db_override", "status": "error"}
+    rather than silently looking like "no override".
+    """
+    sources: list[dict[str, Any]] = []
+    default_raw = _read_default_file()
+    default_text = default_raw.strip() if include_voice else _positioning_only(default_raw)
+
+    override_row = None
+    ws_uuid = _coerce_uuid(workspace_id) if workspace_id else None
+    if db is not None and ws_uuid is not None:
+        from tce.models.workspace_context import WorkspaceStrategy
+
+        try:
+            result = await db.execute(
+                select(WorkspaceStrategy).where(WorkspaceStrategy.workspace_id == ws_uuid)
+            )
+            override_row = result.scalar_one_or_none()
+        except Exception as exc:  # table missing / DB down: say so in provenance
+            sources.append(
+                {
+                    "kind": "db_override",
+                    "ref": "workspace_strategies",
+                    "status": "error",
+                    "detail": type(exc).__name__,
+                }
+            )
+
+    override_text = (override_row.markdown or "").strip() if override_row else ""
+    replace = override_text.startswith(REPLACE_MARKER)
+
+    parts: list[str] = []
+    if default_text and not replace:
+        parts.append(default_text)
+        sources.append(
+            {
+                "kind": "file",
+                "ref": "docs/super-coaching-strategy.md",
+                "mode": "default",
+                "chars": len(default_text),
+                "includes_voice": include_voice,
+            }
+        )
+    if override_text:
+        body = override_text[len(REPLACE_MARKER):].strip() if replace else override_text
+        if len(body) > _MAX_CHARS:
+            body = body[:_MAX_CHARS] + "\n\n[... workspace strategy override truncated]"
+        if replace:
+            parts.append(body)
+        else:
+            parts.append(
+                "WORKSPACE CONTEXT (adds business context for this workspace; the settled "
+                "positioning above - audience, offer, strategy-session CTA, no prices - "
+                "stays binding where they conflict):\n\n" + body
+            )
+        sources.append(
+            {
+                "kind": "db_override",
+                "ref": "workspace_strategies",
+                "mode": "replace" if replace else "extend",
+                "label": override_row.label,
+                "row_id": str(override_row.id),
+                "updated_at": override_row.updated_at.isoformat()
+                if getattr(override_row, "updated_at", None)
+                else None,
+                "chars": len(body),
+            }
+        )
+    return EffectiveStrategy(text="\n\n".join(parts), sources=sources)
 
 
 # ---------------------------------------------------------------------------

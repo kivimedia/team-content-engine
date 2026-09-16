@@ -1,4 +1,12 @@
-﻿"""Story Strategist â€” chooses the daily angle and best-fit template (PRD Section 9.5)."""
+"""Story Strategist - frames one piece from an evidence-backed idea (PRD Section 9.5).
+
+Evidence-backed TopicCandidates (from Ziv's calls and his team's work) are the primary
+source. An operator-assigned topic still wins. Trends are optional context and only a
+verification constraint when the piece makes a news claim. No weekday angle and no
+giveaway/guide CTA is forced; the call to action is a strategy session.
+
+Output shape is unchanged: {"story_brief": {...}}.
+"""
 
 from __future__ import annotations
 
@@ -8,41 +16,164 @@ from typing import Any
 from tce.agents.base import AgentBase
 from tce.agents.registry import register_agent
 
-# Default 5-day cadence (PRD Section 9.5)
+# Legacy angle vocabulary, offered as optional suggestions only.
 DEFAULT_CADENCE = {
-    0: {"angle": "big_shift_explainer", "label": "Monday: big AI shift explained"},
-    1: {"angle": "tactical_workflow_guide", "label": "Tuesday: practical workflow/tool post"},
-    2: {"angle": "contrarian_diagnosis", "label": "Wednesday: contrarian belief-shift post"},
-    3: {"angle": "case_study_build_story", "label": "Thursday: case study/build-with-AI post"},
-    4: {
-        "angle": "second_order_implication",
-        "label": "Friday: strategic implication/future-of-work",
-    },
+    0: {"angle": "big_shift_explainer", "label": "Monday"},
+    1: {"angle": "tactical_workflow_guide", "label": "Tuesday"},
+    2: {"angle": "contrarian_diagnosis", "label": "Wednesday"},
+    3: {"angle": "case_study_build_story", "label": "Thursday"},
+    4: {"angle": "second_order_implication", "label": "Friday"},
 }
 
 SYSTEM_PROMPT = """\
-You are the Story Strategist for Team Content Engine. Your job is the most \
-consequential decision each day: choosing what to write about and how to frame it.
+You are the Story Strategist for Ziv Raviv's coaching content. You decide how to frame \
+one piece: the single lesson, who it is for, and the angle.
 
 You must output a StoryBrief as JSON with these fields:
 - brief_id: a descriptive identifier
-- topic: one sentence describing the story
-- audience: who this post targets and what they currently believe
-- angle_type: from the cadence
+- topic: one sentence describing the piece
+- audience: who this targets (coaches first, event-industry small business owners second) \
+and what they currently believe
+- angle_type: a short free label for the angle you chose
 - desired_belief_shift: FROM -> TO format
-- template_id: which template to use (name, not UUID)
+- template_id: which template to use (name, not UUID), or "" when none fits
 - house_voice_weights: adjusted weights for this specific post
-- thesis: the single core argument (1-2 sentences)
-- evidence_requirements: what the Research Agent must verify (array of strings)
-- cta_goal: "weekly_guide_keyword" (default) or secondary CTA type
+- thesis: the single core lesson (1-2 sentences)
+- evidence_requirements: claims that still need verification (array of strings; empty \
+when the cited evidence already supports every claim)
+- cta_goal: "strategy_session"
 - visual_job: cinematic_symbolic / proof_diagram / emotional_alternate
 - platform_notes: any platform-specific adjustments
+- candidate_id: the evidence-backed idea this brief is built on, or null
+- public_safety_notes: redaction and uncertainty notes carried from the idea, or ""
 
 RULES:
-- The thesis must be specific enough that a writer can build an argument from it
-- Never pick a topic that was covered in the last 10 posts
-- The belief shift must be something the reader can verify after reading
+- Evidence-backed ideas come first; keep their lesson and public angle.
+- One lesson per piece. Keep coaching lessons that do not mention AI.
+- The call to action is booking a strategy session. No giveaway, guide or comment keyword.
+- Never prices or revenue figures; no client or customer names or words.
+- Claims discipline: built, tested, deployed, used and measured are different; never state \
+an outcome the evidence does not measure. No invented statistics.
+- Trends are optional context. A news claim goes into evidence_requirements for verification.
+- The thesis must be specific enough that a writer can build from it.
+- Never repeat a topic covered in the last 10 posts.
 """
+
+
+def build_story_prompt_parts(
+    context: dict[str, Any],
+    *,
+    strategy_text: str = "",
+    evidence_candidates: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """Pure prompt builder (unit-tested): no DB, no LLM."""
+    trend_brief = context.get("trend_brief") or {}
+    day_of_week = context.get("day_of_week", 0)
+    templates = context.get("templates", [])
+    recent_posts = context.get("recent_posts", [])
+    weekly_theme = context.get("weekly_theme", "")
+    operator_overrides = context.get("operator_overrides", {})
+    user_topic = context.get("topic", "")
+    template_hint = context.get("template_hint", "")
+    suggested = DEFAULT_CADENCE.get(day_of_week, DEFAULT_CADENCE[0])
+
+    parts: list[str] = []
+    assigned = context.get("topic_candidate")
+    if user_topic:
+        parts.append(
+            "OPERATOR-ASSIGNED TOPIC (NON-NEGOTIABLE):\n"
+            "Build the StoryBrief around this topic. Do not pick a different one.\n\n"
+            f"TOPIC:\n{user_topic}"
+        )
+        if template_hint:
+            parts.append(
+                f"TEMPLATE HINT: The operator suggests the '{template_hint}' template pattern."
+            )
+    if assigned:
+        parts.append(
+            "ASSIGNED EVIDENCE-BACKED IDEA (build the brief on this):\n"
+            + json.dumps(assigned, indent=2)
+        )
+    if evidence_candidates and not assigned:
+        parts.append(
+            "EVIDENCE-BACKED IDEAS (primary pool unless an operator topic is set):\n"
+            + json.dumps(evidence_candidates, indent=2)
+        )
+
+    parts.append(
+        f"Optional angle suggestion: {suggested['angle']} (use only if it fits the lesson)."
+    )
+    if weekly_theme:
+        parts.append(f"Weekly theme: {weekly_theme}")
+
+    if trend_brief.get("trends"):
+        parts.append(
+            "OPTIONAL TREND CONTEXT (framing only; any news claim must be listed in "
+            "evidence_requirements for verification):\n"
+            f"{json.dumps(trend_brief['trends'][:5], indent=2)}"
+        )
+
+    if templates:
+        template_names = [
+            t.get("template_name", t.get("template_family", "unknown")) for t in templates[:10]
+        ]
+        parts.append(f"Available templates: {', '.join(template_names)}")
+
+    if recent_posts:
+        parts.append(f"Recent posts (avoid repetition): {json.dumps(recent_posts[-10:], indent=2)}")
+
+    if operator_overrides:
+        parts.append(f"Operator overrides: {json.dumps(operator_overrides)}")
+
+    creator_profile = context.get("creator_profile") or {}
+    if creator_profile:
+        creator_name = creator_profile.get("creator_name", "the reference creator")
+        disallowed = creator_profile.get("disallowed_clone_markers") or []
+        top_patterns = creator_profile.get("top_patterns") or []
+        hook_prefs = [
+            p.split(":", 1)[1].replace("_", " ") for p in top_patterns if p.startswith("hook:")
+        ]
+        creator_parts = [
+            f"\nCREATOR DELIVERY REFERENCE ({creator_name}) - delivery only (hooks, pacing); "
+            "it never decides identity, positioning or topic:"
+        ]
+        if disallowed:
+            creator_parts.append(
+                "Delivery patterns to avoid:\n"
+                + "\n".join(f"- {d.replace('_', ' ')}" for d in disallowed)
+            )
+        if hook_prefs:
+            creator_parts.append(
+                "Opening patterns that work for this reference:\n"
+                + "\n".join(f"- {h}" for h in hook_prefs)
+            )
+        parts.append("\n".join(creator_parts))
+
+    if strategy_text:
+        parts.append(
+            "BUSINESS STRATEGY (effective for this workspace; read before framing):\n\n"
+            + strategy_text
+        )
+    else:
+        parts.append(
+            "STRATEGY: coaches first, event-industry small business owners second. Offer: "
+            "Super Coaching (Ziv's human team and AI team become the client's). Call to "
+            "action: book a strategy session. No prices."
+        )
+
+    creator_insp = context.get("creator_inspiration")
+    if creator_insp:
+        parts.append(
+            "DELIVERY INSPIRATION: structure may borrow from "
+            f"{creator_insp.get('creator_name', 'a creator')} "
+            f"(hook_type={creator_insp.get('hook_type', '?')}, "
+            f"body_structure={creator_insp.get('body_structure', '?')}, "
+            f"story_arc={creator_insp.get('story_arc', '?')}). The topic and lesson still "
+            "come from the evidence and strategy."
+        )
+
+    parts.append("Frame the best piece and produce a StoryBrief as JSON.")
+    return parts
 
 
 @register_agent
@@ -51,150 +182,32 @@ class StoryStrategist(AgentBase):
     default_model = "claude-opus-4-8"  # Most consequential decision - worth premium
 
     async def _execute(self, context: dict[str, Any]) -> dict[str, Any]:
-        """Select today's angle and produce a StoryBrief."""
-        trend_brief = context.get("trend_brief", {})
-        day_of_week = context.get("day_of_week", 0)  # 0=Monday
-        templates = context.get("templates", [])
-        recent_posts = context.get("recent_posts", [])
-        weekly_theme = context.get("weekly_theme", "")
-        operator_overrides = context.get("operator_overrides", {})
-        user_topic = context.get("topic", "")
-        template_hint = context.get("template_hint", "")
+        """Frame one piece and produce a StoryBrief."""
+        trend_brief = context.get("trend_brief") or {}
+        day_of_week = context.get("day_of_week", 0)
+        suggested = DEFAULT_CADENCE.get(day_of_week, DEFAULT_CADENCE[0])
+        ws_id = context.get("workspace_id")
 
-        cadence = DEFAULT_CADENCE.get(day_of_week, DEFAULT_CADENCE[0])
+        evidence_candidates: list[dict[str, Any]] = []
+        if not context.get("topic") and not context.get("topic_candidate"):
+            from tce.editorial.planning import load_week_candidates
 
-        prompt_parts = []
-
-        # When user provided a specific topic, override cadence framing
-        if user_topic:
-            prompt_parts.append(
-                "OPERATOR-ASSIGNED TOPIC (NON-NEGOTIABLE):\n"
-                f"The operator has assigned a specific topic for this post. "
-                f"You MUST build your StoryBrief around this topic. "
-                f"Do NOT pick a different topic from the trend brief.\n\n"
-                f"TOPIC:\n{user_topic}"
+            evidence_candidates = await load_week_candidates(
+                self.db, ws_id, context.get("week_start")
             )
-            if template_hint:
-                prompt_parts.append(
-                    f"TEMPLATE HINT: The operator suggests using the '{template_hint}' template pattern."
-                )
-            prompt_parts.append(
-                f"Cadence reference (adapt if needed): {cadence['angle']}"
-            )
+
+        from tce.services.strategy_loader import load_effective_strategy, load_strategy
+
+        if self.db is not None and ws_id:
+            strategy_text = (await load_effective_strategy(self.db, ws_id)).text
         else:
-            prompt_parts.append(f"Today is {cadence['label']}.")
-            prompt_parts.append(f"Today's cadence slot: {cadence['angle']}")
+            strategy_text = load_strategy()
+        if strategy_text:
+            self._report("Loaded strategy for framing")
 
-        if weekly_theme:
-            prompt_parts.append(f"Weekly theme: {weekly_theme}")
-
-        if trend_brief.get("trends"):
-            if user_topic:
-                # When user topic is set, trends are supporting context only
-                prompt_parts.append(
-                    "SUPPORTING TREND CONTEXT (for evidence/framing only - "
-                    "do NOT change the topic):\n"
-                    f"{json.dumps(trend_brief['trends'][:5], indent=2)}"
-                )
-            else:
-                prompt_parts.append(
-                    "TREND BRIEF (ranked candidates):\n"
-                    f"{json.dumps(trend_brief['trends'][:10], indent=2)}"
-                )
-
-        if templates:
-            template_names = [
-                t.get("template_name", t.get("template_family", "unknown")) for t in templates[:10]
-            ]
-            prompt_parts.append(f"Available templates: {', '.join(template_names)}")
-
-        if recent_posts:
-            prompt_parts.append(
-                f"Recent posts (avoid repetition): {json.dumps(recent_posts[-10:], indent=2)}"
-            )
-
-        if operator_overrides:
-            prompt_parts.append(f"Operator overrides: {json.dumps(operator_overrides)}")
-
-        # Layer 3 of TJ grounding: when a creator_profile is in context, bake
-        # in their failure patterns + angle preferences so the StoryBrief this
-        # agent produces respects what works for that creator's audience.
-        creator_profile = context.get("creator_profile") or {}
-        if creator_profile:
-            creator_name = creator_profile.get("creator_name", "the reference creator")
-            disallowed = creator_profile.get("disallowed_clone_markers") or []
-            angle_weights = creator_profile.get("angle_weights") or {}
-            top_patterns = creator_profile.get("top_patterns") or []
-            hook_prefs = [p.split(":", 1)[1].replace("_", " ")
-                          for p in top_patterns if p.startswith("hook:")]
-            creator_parts = [f"\nCREATOR STYLE ANCHOR ({creator_name}):"]
-            if disallowed:
-                creator_parts.append(
-                    "HARD AVOID (these failure patterns scored 0 views in their bottom 10 posts):\n"
-                    + "\n".join(f"- {d.replace('_', ' ')}" for d in disallowed)
-                )
-            if hook_prefs:
-                creator_parts.append(
-                    "PREFERRED HOOK FORMULAS (their top-performing opening patterns):\n"
-                    + "\n".join(f"- {h}" for h in hook_prefs)
-                )
-            if angle_weights:
-                weighted = sorted(angle_weights.items(), key=lambda kv: -kv[1])
-                creator_parts.append(
-                    "ANGLE FIT WEIGHTS for this creator (pick higher-weighted angles when the topic fits):\n"
-                    + "\n".join(f"- {a}: {w:.1f}" for a, w in weighted)
-                )
-            creator_parts.append(
-                "Use these as calibration, not a checklist. The goal is a brief that "
-                "a writer can execute in this creator's voice without parroting them."
-            )
-            prompt_parts.append("\n".join(creator_parts))
-
-        # Business strategy context â€” always loaded, not gated on niche flag
-        from tce.services.strategy_loader import load_strategy
-        strategy_context = load_strategy()
-        if strategy_context:
-            self._report("Loaded Super Coaching strategy doc for topic selection")
-            prompt_parts.append(
-                "BUSINESS STRATEGY â€” READ BEFORE CHOOSING ANY TOPIC:\n"
-                "The following defines who this content is for, what makes a topic pass or fail, "
-                "and what the content must make the viewer feel. Apply the topic filter, "
-                "the 5 pillars, and the emotional trigger test to every topic you pick.\n\n"
-                f"{strategy_context}\n\n"
-                "CONTENT GOAL: Build authority as THE person who helps coaches add AI agent "
-                "teams. Every piece should leave the viewer thinking 'I need to talk to this guy.'"
-            )
-        else:
-            self._report("Strategy doc not found â€” using inline fallback context")
-            prompt_parts.append(
-                "NICHE CONTEXT - SUPER COACHING:\n"
-                "This content is for coaches who want to add AI agent teams to their coaching business. "
-                "Creator: Ziv Raviv (Kivi Media, 300+ clients, 'Super Coaching' trademarked).\n"
-                "TARGET: Independent coaches earning $10K-30K/mo, burned by generic agency content.\n"
-                "GOAL: Every piece makes a coach think 'I need to talk to Ziv Raviv.'"
-            )
-
-        # Creator inspiration context
-        creator_insp = context.get("creator_inspiration")
-        if creator_insp:
-            cname = creator_insp.get("creator_name", "a creator")
-            hook = creator_insp.get("hook_type", "?")
-            body = creator_insp.get("body_structure", "?")
-            arc = creator_insp.get("story_arc", "?")
-            prompt_parts.append(
-                f"CREATOR INSPIRATION: The operator wants this"
-                f" post INSPIRED by {cname}'s style. "
-                f"Pick a topic that would work well with their"
-                f" style patterns: "
-                f"hook_type={hook}, "
-                f"body_structure={body}, "
-                f"story_arc={arc}. "
-                f"The post topic should be fresh but the"
-                f" structural approach should align with"
-                f" the creator's strengths."
-            )
-
-        prompt_parts.append("Select the best story and produce a StoryBrief as JSON.")
+        prompt_parts = build_story_prompt_parts(
+            context, strategy_text=strategy_text, evidence_candidates=evidence_candidates
+        )
 
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
@@ -231,35 +244,46 @@ class StoryStrategist(AgentBase):
                 story_brief = self._parse_json_response(self._extract_text(repair))
                 self._report("Repair succeeded")
             except (json.JSONDecodeError, Exception):
-                # Use top trend as fallback instead of generic text
-                top_trend = {}
-                if trend_brief.get("trends"):
-                    top_trend = trend_brief["trends"][0]
-                story_brief = {
-                    "topic": top_trend.get("headline", "AI industry update"),
-                    "angle_type": cadence["angle"],
-                    "thesis": top_trend.get("angles", [""])[0]
-                    if top_trend.get("angles")
-                    else "Analyze the latest shift in AI and what it means for business",
-                    "audience": "Business leaders and AI-curious professionals",
-                    "evidence_requirements": [top_trend.get("headline", "")] if top_trend else [],
-                    "_parsing_failed": True,
-                }
-                self._report("Using top trend as fallback")
+                base = context.get("topic_candidate") or (
+                    evidence_candidates[0] if evidence_candidates else None
+                )
+                if base:
+                    story_brief = {
+                        "topic": base.get("title", ""),
+                        "thesis": base.get("lesson", ""),
+                        "audience": base.get("audience", "coaches"),
+                        "angle_type": suggested["angle"],
+                        "evidence_requirements": [],
+                        "candidate_id": base.get("candidate_id"),
+                        "public_safety_notes": base.get("public_safety_notes") or "",
+                    }
+                else:
+                    top_trend = (trend_brief.get("trends") or [{}])[0]
+                    story_brief = {
+                        "topic": context.get("topic") or top_trend.get("headline", ""),
+                        "angle_type": suggested["angle"],
+                        "thesis": "",
+                        "audience": "coaches",
+                        "evidence_requirements": [top_trend["headline"]]
+                        if top_trend.get("headline")
+                        else [],
+                    }
+                story_brief["cta_goal"] = "strategy_session"
+                story_brief["_parsing_failed"] = True
+                self._report("Using evidence-based fallback brief")
+
+        story_brief.setdefault("cta_goal", "strategy_session")
 
         self._report("Selected story:")
         self._report(f"  Topic: {story_brief.get('topic', 'N/A')}")
         self._report(f"  Angle: {story_brief.get('angle_type', 'N/A')}")
         self._report(f"  Thesis: {story_brief.get('thesis', 'N/A')}")
         self._report(f"  Audience: {story_brief.get('audience', 'N/A')}")
-        belief_shift = story_brief.get("desired_belief_shift", "")
-        if belief_shift:
-            self._report(f"  Belief shift: {belief_shift}")
-        template = story_brief.get("template_id", "")
-        if template:
-            self._report(f"  Template: {template}")
-        visual = story_brief.get("visual_job", "")
-        if visual:
-            self._report(f"  Visual direction: {visual}")
+        if story_brief.get("desired_belief_shift"):
+            self._report(f"  Belief shift: {story_brief['desired_belief_shift']}")
+        if story_brief.get("template_id"):
+            self._report(f"  Template: {story_brief['template_id']}")
+        if story_brief.get("visual_job"):
+            self._report(f"  Visual direction: {story_brief['visual_job']}")
 
         return {"story_brief": story_brief}
