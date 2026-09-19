@@ -73,6 +73,32 @@ def stable_hash(payload: Any) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
+def replace_nul(value: Any) -> tuple[Any, int]:
+    """Return `value` with U+0000 replaced by U+FFFD in every string and key.
+
+    PostgreSQL text and JSONB reject U+0000 outright, which fails the whole
+    insert. Collectors exclude binary content themselves; this is the storage
+    backstop, and the count it returns must be recorded, never dropped.
+    """
+    if isinstance(value, str):
+        n = value.count("\x00")
+        return (value.replace("\x00", "�"), n) if n else (value, 0)
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        total = 0
+        for k, v in value.items():
+            k2, nk = replace_nul(k) if isinstance(k, str) else (k, 0)
+            v2, nv = replace_nul(v)
+            out[k2] = v2
+            total += nk + nv
+        return (out, total) if total else (value, 0)
+    if isinstance(value, list):
+        items = [replace_nul(v) for v in value]
+        total = sum(n for _, n in items)
+        return ([v for v, _ in items], total) if total else (value, 0)
+    return value, 0
+
+
 def retry_after_seconds(resp: httpx.Response, now: datetime | None = None) -> float | None:
     raw = resp.headers.get("Retry-After")
     if not raw:

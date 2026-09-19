@@ -258,19 +258,42 @@ def blob_url_at_sha(full_name: str, sha: str, path: str) -> str:
     return f"https://github.com/{full_name}/blob/{sha}/{path}"
 
 
+NUL = "\x00"
+NUL_PATCH_EXCLUDED = "nul_bytes_binary_content"
+
+
 def build_commit_record(full_name: str, detail: dict[str, Any]) -> dict[str, Any]:
+    """One commit, exact at its SHA.
+
+    PostgreSQL text and JSONB cannot hold U+0000. A diff containing NUL bytes is
+    binary content, so its patch is excluded by name (`patch_excluded`) while the
+    file keeps its exact path, counts and blob URL. A stray NUL in a message or
+    path is replaced with U+FFFD and the commit is flagged `nul_replaced`.
+    """
     sha = detail["sha"]
-    message = (detail.get("commit") or {}).get("message") or ""
+    replaced = False
+
+    def clean(text: str) -> str:
+        nonlocal replaced
+        if NUL in text:
+            replaced = True
+            return text.replace(NUL, "�")
+        return text
+
+    message = clean((detail.get("commit") or {}).get("message") or "")
     files = []
     for idx, f in enumerate(detail.get("files") or []):
-        path = f.get("filename") or ""
+        path = clean(f.get("filename") or "")
         patch = f.get("patch")
+        excluded = None
+        if patch is not None and NUL in patch:
+            patch, excluded = None, NUL_PATCH_EXCLUDED
         excerpt = None
         truncated = False
         if patch is not None and idx < MAX_FILES_WITH_PATCH:
             excerpt = patch[:PATCH_EXCERPT_CHARS]
             truncated = len(patch) > PATCH_EXCERPT_CHARS
-        files.append({
+        entry = {
             "path": path,
             "status": f.get("status"),
             "additions": f.get("additions", 0),
@@ -279,9 +302,12 @@ def build_commit_record(full_name: str, detail: dict[str, Any]) -> dict[str, Any
             "patch_truncated": truncated,
             "patch_signature": _patch_signature(patch) if patch is not None else None,
             "blob_url_at_sha": blob_url_at_sha(full_name, sha, path),
-        })
+        }
+        if excluded:
+            entry["patch_excluded"] = excluded
+        files.append(entry)
     date = commit_date(detail)
-    return {
+    record = {
         "sha": sha,
         "repo": full_name,
         "message": message,
@@ -291,6 +317,9 @@ def build_commit_record(full_name: str, detail: dict[str, Any]) -> dict[str, Any
         "reverts": [],
         "reverted_by": [],
     }
+    if replaced:
+        record["nul_replaced"] = True
+    return record
 
 
 def _patch_signature(patch: str) -> dict[str, list[str]]:

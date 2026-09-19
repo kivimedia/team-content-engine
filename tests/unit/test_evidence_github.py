@@ -284,3 +284,106 @@ def test_model_bump_is_low_signal():
         [("src/settings.py", "@@ -1 +1 @@\n+model = 'b'\n-model = 'a'")],
     ))
     assert low_signal_reason([rec]) == "model id bump"
+
+
+# --- NUL bytes: PostgreSQL text/JSONB cannot store U+0000 --------------------
+# A live run lost a whole repository to "unsupported Unicode escape sequence,
+# U+0000 cannot be converted to text" because one committed file carried NUL
+# bytes in its diff. The file must stay in the record (exact path, counts, blob
+# URL at the SHA) with its patch explicitly excluded, never silently dropped.
+
+NUL = chr(0)
+
+
+def _has_nul(value) -> bool:
+    import json
+
+    return "\\u0000" in json.dumps(value)
+
+
+def test_nul_patch_is_excluded_with_exact_provenance():
+    binary_like = f"@@ -0,0 +1,2 @@\n+PK{NUL}{NUL}\n+{NUL}{NUL}data"
+    rec = build_commit_record(
+        "o/r",
+        detail("o/r", 77, when(1), "feat: add fixture", [
+            ("fixtures/sample.bin", binary_like),
+            ("src/app.py", "@@ -1 +1 @@\n+ok = True\n-ok = False"),
+        ]),
+    )
+    assert not _has_nul(rec)
+    binf, textf = rec["files"]
+    assert binf["path"] == "fixtures/sample.bin"
+    assert binf["blob_url_at_sha"] == f"https://github.com/o/r/blob/{sha(77)}/fixtures/sample.bin"
+    assert binf["additions"] == 2
+    assert binf["patch_excerpt"] is None
+    assert binf["patch_signature"] is None
+    assert binf["patch_excluded"] == "nul_bytes_binary_content"
+    # the ordinary file in the same commit is untouched
+    assert textf["patch_excerpt"].endswith("-ok = False")
+    assert "patch_excluded" not in textf
+
+
+def test_nul_in_message_or_path_is_replaced_and_flagged():
+    rec = build_commit_record(
+        "o/r", detail("o/r", 78, when(1), f"fix:{NUL} odd message", [(f"a{NUL}b.txt", "@@ +x")])
+    )
+    assert not _has_nul(rec)
+    assert rec["message"] == "fix:� odd message"
+    assert rec["files"][0]["path"] == "a�b.txt"
+    assert rec["nul_replaced"] is True
+
+
+async def test_repo_with_nul_patch_is_collected_not_failed(editorial_sessionmaker):
+    class NulGitHub(FakeGitHub):
+        def handler(self, request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path == "/user/repos":
+                return self.page(request, [{"full_name": "o/nul"}], None)
+            if path == "/user/orgs":
+                return self.page(request, [], None)
+            if path == "/repos/o/nul/commits":
+                return self.page(request, [listing_item(500, when(2))], None)
+            if path == f"/repos/o/nul/commits/{sha(500)}":
+                return httpx.Response(200, json=detail(
+                    "o/nul", 500, when(2), "feat(export): add sample archive",
+                    [("export/sample.zip", f"@@ -0,0 +1 @@\n+{NUL}PK{NUL}"),
+                     ("export/writer.py", "@@ -1 +1 @@\n+write = True\n-write = False")],
+                ))
+            return httpx.Response(500)
+
+    fake = NulGitHub()
+    client = make_client(fake, [])
+    run_id = await collect_github(editorial_sessionmaker, WS, START, END, client=client)
+    await client.aclose()
+    async with editorial_sessionmaker() as s:
+        run = await s.get(EvidenceCollectionRun, run_id)
+        rows = (await s.execute(
+            select(EvidenceSource).where(EvidenceSource.external_id.like("o/nul@%"))
+        )).scalars().all()
+    assert (run.counts or {}).get("failed", 0) == 0, run.errors
+    assert len(rows) == 1
+    payload = rows[0].payload_private
+    assert not _has_nul(payload) and not _has_nul(rows[0].meta)
+    files = {f["path"]: f for c in payload["commits"] for f in c["files"]}
+    assert files["export/sample.zip"]["patch_excluded"] == "nul_bytes_binary_content"
+    assert files["export/writer.py"]["patch_excerpt"]
+
+
+async def test_storage_backstop_replaces_and_counts_nul(editorial_sessionmaker):
+    from tce.evidence.collect import upsert_source
+
+    data = {
+        "external_id": "mtg-1",
+        "title": f"Weekly{NUL} sync",
+        "occurred_at": START,
+        "version_hash": "h1",
+        "payload": {"turns": [{"text": f"a{NUL}b", f"k{NUL}": [f"{NUL}{NUL}"]}]},
+        "meta": {"note": "x"},
+    }
+    async with editorial_sessionmaker() as s:
+        state, row = await upsert_source(s, WS, "fathom_meeting", data, uuid.uuid4())
+        await s.commit()
+    assert state == "processed"
+    assert not _has_nul(row.payload_private) and NUL not in row.title
+    assert row.meta == {"note": "x", "nul_chars_replaced": 5}
+    assert row.version_hash == "h1"  # identity with earlier runs is unchanged

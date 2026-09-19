@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tce.evidence import fathom as fathom_mod
 from tce.evidence import github as github_mod
-from tce.evidence.common import EvidenceHTTPError, as_utc, stable_hash, to_db
+from tce.evidence.common import EvidenceHTTPError, as_utc, replace_nul, stable_hash, to_db
 from tce.models.editorial import EvidenceCollectionRun, EvidenceMoment, EvidenceSource
 from tce.settings import settings
 
@@ -129,7 +129,14 @@ async def upsert_source(
 
     Concurrent runs may insert the same source between our lookup and insert; the
     unique identity then rejects ours and we reconcile against the winner's row.
+
+    Any U+0000 left in the data is replaced before storage (PostgreSQL rejects it)
+    and counted in meta["nul_chars_replaced"]. `version_hash` is untouched, so
+    the source stays identical to earlier runs.
     """
+    data, nul_count = replace_nul(data)
+    if nul_count:
+        data = {**data, "meta": {**(data.get("meta") or {}), "nul_chars_replaced": nul_count}}
 
     async def _lookup() -> EvidenceSource | None:
         return (
