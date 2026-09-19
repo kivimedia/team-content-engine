@@ -87,22 +87,42 @@ class RepoStoryteller(AgentBase):
             return {"error": "repo_storyteller needs repo_brief in context"}
 
         angle = repo_brief.get("angle") or context.get("angle") or "generic"
-        weekly_keyword = context.get("weekly_keyword") or ""
         notes = (context.get("operator_overrides") or {}).get("notes") or ""
 
-        from tce.services.strategy_loader import load_strategy
-        _strategy = load_strategy()
+        from tce.services.cta_policy import STRATEGY_SESSION, resolve_cta_policy
+        from tce.services.strategy_loader import load_effective_strategy, load_strategy
+
+        policy = await resolve_cta_policy(self.db, context)
+        weekly_keyword = policy.keyword or ""
+        ws_id = context.get("workspace_id")
+        if self.db is not None and ws_id:
+            _strategy = (await load_effective_strategy(self.db, ws_id)).text
+        else:
+            _strategy = load_strategy()
+        private_repo = not policy.allow_public_repo_link
         strategy_block = (
-            "\nBUSINESS STRATEGY CONTEXT (audience, framing, and visual_job must reflect this):\n"
-            "The repo story will become a post targeting coaches/consultants burned by generic agency content.\n"
-            "The audience field must name coaches or agency owners, not generic 'builders'.\n"
-            "AUTHORSHIP: This repo belongs to the operator running this pipeline. The thesis, "
-            "headline_options, and platform_notes must be phrased from the builder's first-person "
-            "POV ('I shipped...', 'I built...'), never as a third-party report on someone else's work.\n"
-            f"{_strategy[:3500]}"
+            "\nBUSINESS STRATEGY (audience, framing, CTA and visual_job must follow this "
+            "workspace strategy):\n"
+            "AUTHORSHIP: this work belongs to the operator running this pipeline. Phrase the "
+            "thesis and platform_notes in the operator's first person ('I decided...', "
+            "'I built...'), never as a third-party report.\n"
+            + (
+                "The code is EVIDENCE for a lesson, not the idea: the story is the owner-level "
+                "decision or problem behind it and what a small service business can use. No "
+                "software pitch.\n"
+                if policy.mode == STRATEGY_SESSION
+                else ""
+            )
+            + (
+                "The repository is private: do not put its name, URL or commit ids in "
+                "story_brief fields.\n"
+                if private_repo
+                else ""
+            )
+            + f"{_strategy[:3500]}"
         ) if _strategy else ""
         if _strategy:
-            self._report("Loaded strategy context for repo storytelling")
+            self._report("Loaded workspace strategy for repo storytelling")
 
         self._report(
             f"Story brief for {repo_brief.get('slug', '?')} (angle={angle})"
@@ -133,8 +153,8 @@ class RepoStoryteller(AgentBase):
 
         # Compact the repo brief so the prompt stays cheap
         compact = {
-            "slug": repo_brief.get("slug"),
-            "repo_url": repo_brief.get("repo_url"),
+            "slug": None if private_repo else repo_brief.get("slug"),
+            "repo_url": None if private_repo else repo_brief.get("repo_url"),
             "angle": angle,
             "commit_sha": repo_brief.get("commit_sha"),
             "summary": repo_brief.get("summary"),
@@ -151,7 +171,12 @@ class RepoStoryteller(AgentBase):
             repo_brief_json=json.dumps(compact, indent=2),
             angle=angle,
             templates_json=json.dumps(templates, indent=2) if templates else "[]",
-            weekly_keyword=weekly_keyword or "(none)",
+            weekly_keyword=weekly_keyword
+            or (
+                "(none - the call to action is booking a strategy session)"
+                if policy.mode == STRATEGY_SESSION
+                else "(none - use the workspace strategy's call to action)"
+            ),
             notes=notes or "(none)",
             strategy_block=strategy_block,
         )

@@ -13,6 +13,7 @@ from typing import Any
 
 from tce.agents.base import AgentBase
 from tce.agents.registry import register_agent
+from tce.services.cta_policy import CtaPolicy, resolve_cta_policy, writer_cta_block
 from tce.services.strategy_loader import load_voice_patterns
 
 
@@ -331,10 +332,23 @@ _ANGLE_GUIDANCE = {
 }
 
 
-def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
+def _evidence_line(label: str, sha: str, detail: str) -> str:
+    """One evidence bullet; the commit id appears only when the repo may be public."""
+    head = f"  - {label} [{sha}]" if sha else f"  - {label}"
+    return f"{head} - {detail}".rstrip(" -")
+
+
+def _build_repo_block(
+    context: dict, platform: str, policy: CtaPolicy | None = None
+) -> tuple[str, str | None]:
     """Build a REPO CONTEXT block for repo-sourced runs.
 
-    Returns (block_text, repo_url). Empty string + None if not a repo run.
+    Returns (block_text, repo_url_used_as_cta). Empty string + None if not a repo run.
+
+    Unless the workspace policy allows a public repo link (a replace-mode tenant strategy
+    AND a repo explicitly marked public), the repository is private evidence: its URL,
+    name and commit ids are withheld from the writer and the post teaches the owner-level
+    decision behind the code, not the software.
     The block forces the writer to ground the post in concrete repo specifics
     (slug, summary, top features w/ commit shas, top snippets) and to close
     with the repo URL. The user-selected angle (new_features / whole_repo /
@@ -348,6 +362,7 @@ def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
     if not repo_url:
         return "", None
 
+    public_link = bool(policy and policy.allow_public_repo_link)
     slug = repo_brief.get("slug") or ""
     summary = (repo_brief.get("summary") or "").strip()
     arch = (repo_brief.get("architecture_notes") or "").strip()
@@ -359,13 +374,21 @@ def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
     snippets = repo_brief.get("code_snippets") or []
     citations = context.get("repo_citations") or []
 
-    lines = [
-        "REPO CONTEXT (this post is about a real GitHub repo - ground every claim here):",
-        f"Repo: {slug or repo_url}",
-        f"URL: {repo_url}",
-        f"Angle: {angle_cfg['label']}",
-        f"Angle instruction: {angle_cfg['instruction']}",
-    ]
+    if public_link:
+        lines = [
+            "REPO CONTEXT (this post is about a real GitHub repo - ground every claim here):",
+            f"Repo: {slug or repo_url}",
+            f"URL: {repo_url}",
+            f"Angle: {angle_cfg['label']}",
+            f"Angle instruction: {angle_cfg['instruction']}",
+        ]
+    else:
+        lines = [
+            "SOURCE EVIDENCE (private work by the operator's team - ground every claim here, "
+            "but it is evidence for a business lesson, not the subject of a software post):",
+            f"Angle: {angle_cfg['label']}",
+            f"Angle instruction: {angle_cfg['instruction']}",
+        ]
     if summary:
         lines.append(f"Summary: {summary}")
     if arch:
@@ -374,23 +397,29 @@ def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
     def _features_section() -> list[str]:
         if not features:
             return []
-        out = ["\nTop feature highlights (cite at least one with its commit sha):"]
+        out = [
+            "\nTop feature highlights"
+            + (" (cite at least one with its commit sha):" if public_link else ":")
+        ]
         for f in features[:4]:
-            sha = f.get("commit_sha") or ""
+            sha = (f.get("commit_sha") or "") if public_link else ""
             title = f.get("title") or ""
             why = f.get("why_interesting") or ""
-            out.append(f"  - {title} [{sha}] - {why}".rstrip(" -"))
+            out.append(_evidence_line(title, sha, why))
         return out
 
     def _fixes_section() -> list[str]:
         if not fixes:
             return []
-        out = ["\nRecent bug fixes (cite at least one with its commit sha):"]
+        out = [
+            "\nRecent bug fixes"
+            + (" (cite at least one with its commit sha):" if public_link else ":")
+        ]
         for f in fixes[:4]:
-            sha = f.get("commit_sha") or ""
+            sha = (f.get("commit_sha") or "") if public_link else ""
             title = f.get("title") or ""
             what = f.get("what_broke") or ""
-            out.append(f"  - {title} [{sha}] - {what}".rstrip(" -"))
+            out.append(_evidence_line(title, sha, what))
         return out
 
     # Reorder evidence sections so the angle's primary material reads first.
@@ -407,7 +436,7 @@ def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
         lines.extend(_features_section())
         lines.extend(_fixes_section())
 
-    if snippets:
+    if snippets and public_link:
         lines.append("\nReal code snippets (reference at least one if relevant):")
         for s in snippets[:2]:
             path = s.get("path") or s.get("file") or ""
@@ -420,36 +449,65 @@ def _build_repo_block(context: dict, platform: str) -> tuple[str, str | None]:
         lines.append("\nStoryteller-chosen citations:")
         for c in citations[:3]:
             label = c.get("label") or ""
-            sha = c.get("commit_sha") or ""
+            sha = (c.get("commit_sha") or "") if public_link else ""
             why = c.get("why_cite") or ""
-            lines.append(f"  - {label} [{sha}] - {why}".rstrip(" -"))
+            lines.append(_evidence_line(label, sha, why))
 
     lines.append("")
     lines.append("HARD RULES FOR THIS POST:")
     lines.append(
-        "- This is the OPERATOR'S OWN repo. Write in FIRST PERSON as the builder "
-        "('I built X', 'I shipped Y', 'I ran into Z'). NEVER refer to the author "
-        "in third person ('a Windows developer', 'this developer', 'the builder', "
-        "'they shipped'). The post is from the person who wrote the code, not a "
-        "reporter covering it."
+        "- This is the OPERATOR'S OWN work. Write in FIRST PERSON ('I built X', 'I decided Y', "
+        "'I ran into Z'). NEVER refer to the author in third person ('a Windows developer', "
+        "'this developer', 'the builder', 'they shipped')."
     )
-    lines.append("- The post must be recognizably about THIS repo - mention the slug or a specific feature/fix in the first 3 lines.")
     if angle == "new_features":
-        lines.append("- The hook MUST name a specific feature from the 'feature highlights' list. Do not lead with a bug fix or an architectural overview.")
+        lines.append(
+            "- The hook MUST come from a specific feature in the highlights list. Do not lead "
+            "with a bug fix or an architectural overview."
+        )
     elif angle == "recent_fixes":
-        lines.append("- The hook MUST name a specific bug or symptom from the 'bug fixes' list. Do not lead with a feature announcement.")
+        lines.append(
+            "- The hook MUST come from a specific bug or symptom in the fixes list. Do not lead "
+            "with a feature announcement."
+        )
     elif angle == "whole_repo":
         lines.append("- The hook MUST frame what the project IS and who it's for. Do not lead with a single feature or fix - that's a different angle.")
-    lines.append("- Reference at least one concrete commit sha by [shortsha] inline, not in a separate footer.")
     lines.append("- Generic AI/coaching commentary is NOT acceptable.")
-    if platform == "facebook":
-        lines.append(f"- The CTA at the very end MUST be the repo URL on its own line: {repo_url}")
-        lines.append("- Do NOT use the 'comment KEYWORD' pattern for this post - the CTA is the repo link.")
-    else:
-        lines.append(f"- Close the post with the repo URL on its own line: {repo_url}")
-        lines.append("- Soft CTA only: invite readers to check out the code, star the repo, or read the README.")
+    if public_link:
+        lines.append(
+            "- The post must be recognizably about THIS repo - mention the slug or a specific "
+            "feature/fix in the first 3 lines."
+        )
+        lines.append(
+            "- Reference at least one concrete commit sha by [shortsha] inline, not in a "
+            "separate footer."
+        )
+        if platform == "facebook":
+            lines.append(
+                f"- The CTA at the very end MUST be the repo URL on its own line: {repo_url}"
+            )
+            lines.append(
+                "- Do NOT use the 'comment KEYWORD' pattern for this post - the CTA is the "
+                "repo link."
+            )
+        else:
+            lines.append(f"- Close the post with the repo URL on its own line: {repo_url}")
+            lines.append(
+                "- Soft CTA only: invite readers to check out the code, star the repo, or read "
+                "the README."
+            )
+        return "\n".join(lines), repo_url
 
-    return "\n".join(lines), repo_url
+    lines.append(
+        "- The idea is the owner-level decision or lesson behind this work (what problem it "
+        "solves for a small service business, what a reader can do this week), described in "
+        "plain language. The software is evidence, not the product being sold."
+    )
+    lines.append(
+        "- Do NOT include any repository name, URL, commit id, file path or code. Do NOT say "
+        "the code is open, invite anyone to star, clone or read a repo, or pitch the software."
+    )
+    return "\n".join(lines), None
 
 
 def _clean_writer_output(result: dict) -> dict:
@@ -482,7 +540,7 @@ ZIV'S CONTENT VOICE RULES (apply to every post):
 
 FB_SYSTEM_PROMPT = """\
 You are the Facebook Writer for Team Content Engine. Your job is to write a \
-scroll-stopping, comment-triggering post that makes people engage.
+scroll-stopping post that makes people stop, think and respond.
 """ + _VOICE_RULES + """
 FACEBOOK-SPECIFIC RULES:
 - The first 2 lines must survive the "See more" cut - they ARE the hook
@@ -490,7 +548,7 @@ FACEBOOK-SPECIFIC RULES:
 - Use whitespace aggressively - a blank line between every block
 - Tone: emotional, conversational, punchy. Permission to be provocative
 - NEVER use emdashes or en dashes. Use a single hyphen (-) instead. No exceptions
-- Build toward the CTA
+- Build toward the call to action given in the prompt (and only that one)
 - No hashtags. No emoji unless the voice naturally uses them
 - No AI-slop preamble ("In today's fast-paced world...")
 - Length: 600-1200 words. LONGER IS ALWAYS BETTER. Develop every idea fully with examples, \
@@ -514,7 +572,7 @@ LINKEDIN-SPECIFIC RULES:
 - Stronger evidence packaging - more data, more "here's what most people miss"
 - NEVER use emdashes or en dashes. Use a single hyphen (-) instead. No exceptions
 - Professional close with a takeaway, not a hard CTA
-- May include a soft CTA (follow for more, share if useful)
+- Use only the call to action given in the prompt, as a soft close
 - NEVER a "say XXX" comment-trigger
 - Length: 800-2000 words. Go DEEP. Develop complete frameworks with full explanations, \
 give numbered insights with examples for each, tell full stories with specific details. \
@@ -619,24 +677,23 @@ class FacebookWriter(AgentBase):
         story_brief = context.get("story_brief", {})
         research_brief = context.get("research_brief", {})
         founder_voice = context.get("founder_voice", {})
-        weekly_keyword = context.get("weekly_keyword", "guide")
         thesis = story_brief.get("thesis", "N/A")[:60]
         self._report(f"Writing FB post - thesis: {thesis}")
 
-        repo_block, repo_url = _build_repo_block(context, platform="facebook")
+        policy = await resolve_cta_policy(self.db, context)
+        for note in policy.notes:
+            self._report(f"CTA policy: {note}")
+        repo_block, repo_url = _build_repo_block(context, platform="facebook", policy=policy)
 
         prompt_parts = [
             f"STORY BRIEF:\n{json.dumps(story_brief, indent=2)}",
             f"RESEARCH BRIEF:\n{json.dumps(research_brief, indent=2)}",
         ]
         if repo_block:
-            # Repo runs replace the comment-keyword CTA with a direct link.
             prompt_parts.append(repo_block)
-        else:
-            prompt_parts.append(f'Weekly CTA keyword: "{weekly_keyword}"')
-            prompt_parts.append(
-                f'CTA line must end with: Comment "{weekly_keyword}" and I\'ll send it to you.'
-            )
+        if not repo_url:
+            # a public repo link, when allowed, IS the CTA; otherwise the strategy decides
+            prompt_parts.append(writer_cta_block(policy, "facebook"))
 
         template_block = _build_template_block(context)
         if template_block:
@@ -651,6 +708,8 @@ class FacebookWriter(AgentBase):
 
         if repo_url:
             self._report(f"Repo-sourced post - grounding in {repo_url}")
+        elif repo_block:
+            self._report("Repo-sourced post - repository kept private, lesson-first")
 
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],
@@ -707,7 +766,8 @@ class LinkedInWriter(AgentBase):
         thesis = story_brief.get("thesis", "N/A")[:60]
         self._report(f"Writing LI post - thesis: {thesis}")
 
-        repo_block, repo_url = _build_repo_block(context, platform="linkedin")
+        policy = await resolve_cta_policy(self.db, context)
+        repo_block, repo_url = _build_repo_block(context, platform="linkedin", policy=policy)
 
         prompt_parts = [
             f"STORY BRIEF:\n{json.dumps(story_brief, indent=2)}",
@@ -715,6 +775,8 @@ class LinkedInWriter(AgentBase):
         ]
         if repo_block:
             prompt_parts.append(repo_block)
+        if not repo_url:
+            prompt_parts.append(writer_cta_block(policy, "linkedin"))
 
         template_block = _build_template_block(context)
         if template_block:
@@ -729,6 +791,8 @@ class LinkedInWriter(AgentBase):
 
         if repo_url:
             self._report(f"Repo-sourced post - grounding in {repo_url}")
+        elif repo_block:
+            self._report("Repo-sourced post - repository kept private, lesson-first")
 
         response = await self._call_llm(
             messages=[{"role": "user", "content": "\n\n".join(prompt_parts)}],

@@ -1,4 +1,10 @@
-"""CTA / Funnel Agent — handles "say XXX" tactic and DM flows (PRD Section 9.7)."""
+"""CTA / Funnel Agent.
+
+The workspace's effective strategy decides the call to action (tce.services.cta_policy).
+For the default coaching strategy that is a strategy-session invitation with no keyword,
+DM flow or giveaway. The "say XXX" keyword model below (PRD Section 9.7) only runs for a
+workspace whose own strategy calls for it, or an explicit operator keyword with a real guide.
+"""
 
 from __future__ import annotations
 
@@ -66,29 +72,63 @@ class CTAAgent(AgentBase):
         weekly_keyword = context.get("weekly_keyword")  # May be pre-set
         guide_title = str(context.get("guide_title", "") or "")
 
-        # Repo-sourced runs: skip the comment-keyword pattern entirely. The
-        # CTA IS the link to the repo. No DM flow, no fulfillment checklist.
+        # The workspace's effective strategy decides the CTA. Ziv's default strategy (and
+        # overrides that extend it) has one CTA: a strategy session. The keyword/DM flow
+        # below only runs when that strategy allows it; nothing is invented.
+        from tce.services.cta_policy import (
+            FB_STRATEGY_SESSION_LINE,
+            LI_STRATEGY_SESSION_LINE,
+            STRATEGY_SESSION,
+            resolve_cta_policy,
+        )
+
+        policy = await resolve_cta_policy(self.db, context)
+        for note in policy.notes:
+            self._report(f"CTA policy: {note}")
+
         repo_brief = context.get("repo_brief") or {}
         repo_url = repo_brief.get("repo_url") or context.get("repo_url")
-        if context.get("_source") == "repo" and repo_url:
-            slug = repo_brief.get("slug") or ""
-            display = slug or repo_url
-            cta_package = {
+        is_repo_run = context.get("_source") == "repo"
+
+        if not policy.allow_comment_keyword:
+            base = {
                 "weekly_keyword": None,
                 "secondary_keyword": None,
-                "fb_cta_line": f"Code's open: {repo_url}",
-                "li_cta_line": f"Repo (open source): {repo_url}",
                 "dm_flow": None,
                 "whatsapp_group_link": None,
                 "fulfillment_checklist": [],
-                "cta_type": "repo_link",
-                "repo_url": repo_url,
+                "policy": policy.to_dict(),
             }
-            self._report("Repo-sourced run - emitting repo-link CTA (no keyword/DM flow):")
-            self._report(f"  Repo: {display}")
-            self._report(f"  FB CTA: {cta_package['fb_cta_line']}")
-            self._report(f"  LI CTA: {cta_package['li_cta_line']}")
+            if policy.mode == STRATEGY_SESSION:
+                # Repo runs too: the repository is evidence for the lesson, never the CTA,
+                # and its (possibly private) link is not published.
+                cta_package = base | {
+                    "fb_cta_line": FB_STRATEGY_SESSION_LINE,
+                    "li_cta_line": LI_STRATEGY_SESSION_LINE,
+                    "cta_type": "strategy_session",
+                }
+            elif is_repo_run and repo_url and policy.allow_public_repo_link:
+                cta_package = base | {
+                    "fb_cta_line": f"Code's open: {repo_url}",
+                    "li_cta_line": f"Repo (open source): {repo_url}",
+                    "cta_type": "repo_link",
+                    "repo_url": repo_url,
+                }
+            else:
+                cta_package = base | {
+                    "fb_cta_line": "",
+                    "li_cta_line": "",
+                    "cta_type": "workspace_defined",
+                    "cta_instruction": "use the call to action in this workspace's strategy",
+                }
+            self._report(f"CTA package ready: {cta_package['cta_type']} (no keyword/DM flow)")
+            if cta_package["fb_cta_line"]:
+                self._report(f"  FB CTA: {cta_package['fb_cta_line'][:120]}")
+            if cta_package["li_cta_line"]:
+                self._report(f"  LI CTA: {cta_package['li_cta_line'][:120]}")
             return {"cta_package": cta_package}
+
+        weekly_keyword = policy.keyword or weekly_keyword
 
         prompt_parts = []
 
@@ -98,6 +138,11 @@ class CTAAgent(AgentBase):
             prompt_parts.append(
                 "IMPORTANT: The weekly guide is NOT ready yet. "
                 "Use the NO-ASSET PLAYBOOK - pick one of the 5 fallback CTA types."
+            )
+
+        if policy.strategy_excerpt:
+            prompt_parts.append(
+                "WORKSPACE STRATEGY (follow its CTA rules):\n" + policy.strategy_excerpt
             )
 
         if weekly_keyword:
@@ -132,6 +177,8 @@ class CTAAgent(AgentBase):
                 "weekly_keyword": weekly_keyword or "guide",
                 "dm_flow": {"trigger": weekly_keyword or "guide"},
             }
+        if isinstance(cta_package, dict):
+            cta_package["policy"] = policy.to_dict()
 
         self._report("CTA package ready:")
         self._report(f'  Weekly keyword: "{cta_package.get("weekly_keyword", "N/A")}"')

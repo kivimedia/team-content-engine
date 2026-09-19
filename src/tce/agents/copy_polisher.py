@@ -107,8 +107,6 @@ class CopyPolisher(AgentBase):
         story_brief = context.get("story_brief", {})
         copy_analysis = context.get("copy_analysis", {})
         matched_template = context.get("matched_template", {})
-        weekly_keyword = context.get("weekly_keyword", "")
-        cta_keyword = context.get("cta_keyword", "")
         platform = context.get("platform", "both")
 
         if not raw_copy:
@@ -117,8 +115,16 @@ class CopyPolisher(AgentBase):
 
         self._report(f"Polishing copy ({len(raw_copy.split())} words) using template: {matched_template.get('template_name', 'none')}...")
 
-        keyword = cta_keyword or weekly_keyword
-        keyword_section = f"CTA keyword to weave in: {keyword}" if keyword else "No specific CTA keyword provided."
+        from tce.services.cta_policy import resolve_cta_policy, writer_cta_block
+
+        policy = await resolve_cta_policy(self.db, context)
+        for note in policy.notes:
+            self._report(f"CTA policy: {note}")
+        if policy.allow_comment_keyword and policy.keyword:
+            keyword_section = f"CTA keyword to weave in: {policy.keyword}"
+        else:
+            cta_platform = platform if platform != "both" else "facebook"
+            keyword_section = writer_cta_block(policy, cta_platform)
         platform_section = f"Primary platform: {platform}" if platform != "both" else "Produce equal-quality drafts for both platforms."
 
         raw_word_count = len(raw_copy.split())
