@@ -134,6 +134,21 @@ def test_resume_labels_name_what_the_server_will_do():
     )
     assert unsaved["label"] == "Resume: save the finished selection"
     assert "without new model calls" in unsaved["note"]
+    # shards done, global ranking never ran: resuming DOES make one more model call
+    unranked = run_js(
+        "edSelectAction({source:'durable', state:'interrupted', resumable:true,"
+        " job_counts:{succeeded:2}, max_candidates:6, shards:[{shard:1},{shard:2}],"
+        " rank:null}, 6)"
+    )
+    assert unranked["label"] == "Resume: rank the finalists and save"
+    assert "without new model calls" not in unranked["note"]
+    assert "global ranking job" in unranked["note"]
+    ranked = run_js(
+        "edSelectAction({source:'durable', state:'interrupted', resumable:true,"
+        " job_counts:{succeeded:3}, max_candidates:6, shards:[{shard:1},{shard:2}],"
+        " rank:{stage:'rank', status:'succeeded'}}, 6)"
+    )
+    assert ranked["label"] == "Resume: save the finished selection"
     failed = run_js(
         "edSelectAction({source:'durable', state:'failed', resumable:true,"
         " job_counts:{succeeded:1, failed:1}, max_candidates:6}, 6)"

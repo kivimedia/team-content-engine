@@ -10549,6 +10549,9 @@ function edSelectAction(job, maxCandidates) {
     const waiting = edCount(counts, ['waiting_capacity']);
     return { label: 'Resume selection (' + flying + ' job' + (flying === 1 ? '' : 's') + ' still ' + (waiting ? 'waiting for capacity' : 'queued or running') + ')', disabled: false, resume: true, note: 'Re-attaches to the same jobs and saves the result when they finish. No new jobs are created.' };
   }
+  if (Array.isArray(job.shards) && job.shards.length > 1 && !job.rank) {
+    return { label: 'Resume: rank the finalists and save', disabled: false, resume: true, note: 'Every shard job finished. Resuming reuses them; if 2 or more finalists pass the checks, one global ranking job runs before the result is saved.' };
+  }
   return { label: 'Resume: save the finished selection', disabled: false, resume: true, note: 'Every job already finished; this saves the result without new model calls.' };
 }
 function edPacketAction(job, hasPacket) {

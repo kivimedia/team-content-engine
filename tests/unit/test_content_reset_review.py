@@ -235,9 +235,107 @@ async def test_enqueue_recovers_when_another_request_wins_the_insert_race(
         assert reused.id == winner_id
 
 
+async def test_source_collection_recovers_when_another_run_inserts_the_same_source(
+    editorial_sessionmaker, monkeypatch
+):
+    from tce.evidence.collect import upsert_source
+
+    workspace = uuid.uuid4()
+    data = {
+        "external_id": "synthetic/repo@one-business-change",
+        "version_hash": "a" * 64,
+        "payload": {"summary": "Synthetic source"},
+    }
+    async with editorial_sessionmaker() as winner_session:
+        _, winner = await upsert_source(
+            winner_session, workspace, "github_commit_group", data, uuid.uuid4()
+        )
+        await winner_session.commit()
+        winner_id = winner.id
+
+    async with editorial_sessionmaker() as retry_session:
+        execute = retry_session.execute
+        first_read = True
+
+        class MissingBeforeConcurrentCommit:
+            def scalar_one_or_none(self):
+                return None
+
+        async def initially_missing(statement, *args, **kwargs):
+            nonlocal first_read
+            if first_read:
+                first_read = False
+                return MissingBeforeConcurrentCommit()
+            return await execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(retry_session, "execute", initially_missing)
+        state, reused = await upsert_source(
+            retry_session, workspace, "github_commit_group", data, uuid.uuid4()
+        )
+        await retry_session.commit()
+        assert reused.id == winner_id
+        assert state == "unchanged"
+
+
 @pytest.mark.parametrize("model", [EvidenceSource, EvidenceMoment, TopicCandidate, RecordingPacket])
 def test_private_evidence_workspace_is_required_in_database(model):
     assert model.__table__.c.workspace_id.nullable is False
+
+
+@pytest.mark.parametrize("team_permission", [None, "reader"])
+def test_doc_export_requires_intended_team_editor_access(team_permission):
+    from tce.production.export import verify_restricted
+
+    permissions = [{"type": "user", "role": "owner", "emailAddress": "owner@example.invalid"}]
+    if team_permission:
+        permissions.append(
+            {"type": "user", "role": team_permission, "emailAddress": "editor@example.invalid"}
+        )
+    verified, _ = verify_restricted(permissions, ["editor@example.invalid"])
+    assert verified is False, "Intended team editor access was not established"
+
+
+@pytest.mark.parametrize("other_workspace", [False, True])
+async def test_publication_receipt_cannot_attach_another_candidates_packet(
+    editorial_session, other_workspace
+):
+    from fastapi import HTTPException
+    from tce.api.routers.production import PublicationCreate, create_publication
+
+    own = uuid.uuid4()
+    other = uuid.uuid4() if other_workspace else own
+    fields = dict(
+        moment_ids=[],
+        lesson="Synthetic lesson",
+        audience="coaches",
+        public_angle="Synthetic angle",
+        gates={},
+    )
+    candidate = TopicCandidate(
+        workspace_id=own, week_start=datetime(2000, 1, 3), title="Synthetic own topic", **fields
+    )
+    foreign_candidate = TopicCandidate(
+        workspace_id=other, week_start=datetime(2000, 1, 3), title="Synthetic other topic", **fields
+    )
+    editorial_session.add_all([candidate, foreign_candidate])
+    await editorial_session.flush()
+    foreign_packet = RecordingPacket(
+        workspace_id=other,
+        candidate_id=foreign_candidate.id,
+        bullets=["Synthetic bullet"] * 5,
+        script_phrases=["Synthetic script"],
+    )
+    editorial_session.add(foreign_packet)
+    await editorial_session.commit()
+    body = PublicationCreate(
+        platform="linkedin", external_post_id="synthetic-unit-receipt", packet_id=foreign_packet.id
+    )
+    try:
+        await create_publication(candidate.id, body, own, editorial_session)
+    except HTTPException as exc:
+        assert exc.status_code in {403, 404, 422}
+        return
+    pytest.fail("Receipt accepted a packet belonging to another candidate or workspace")
 
 
 @pytest.mark.parametrize("missing", ["auth_method", "api_provider"])
