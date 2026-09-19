@@ -642,6 +642,414 @@ def enforce_candidates(
 
 
 # ---------------------------------------------------------------------------
+# Global ranking across shard finalists
+# ---------------------------------------------------------------------------
+# Shards are judged separately, so two shards can each propose the same lesson from
+# different sources (a meeting and a repo). One more subscription job sees every
+# validated finalist of the run at once and picks the week's set: best first, no
+# redundant lessons, at most max_candidates, fewer when fewer are strong. It chooses
+# among existing finalist keys only; wording and citations stay exactly as validated.
+
+RANK_AGENT_NAME = "editorial_ranker"
+RANK_PROMPT_VERSION = "editorial_rank.v1"
+_FINALISTS_MARKER = "FINALISTS (JSON):\n"
+
+RANK_SYSTEM_PROMPT = """\
+You are the final editor for Ziv Raviv's coaching content. Several editors each read part \
+of this week's evidence and proposed finalists; every finalist below already passed all \
+four gates and has checked citations. You see all of them together and choose the week's \
+set.
+
+Choose like an editor who wants the strongest, most useful week for coaches first and \
+event-industry small business owners second:
+- Pick the finalists most worth Ziv saying on camera, best first.
+- Never pick two finalists that teach the same lesson, even when they come from different \
+sources (a meeting and a code change can show the same decision). Keep the better-supported \
+or more useful one and list the other as a duplicate of it.
+- A coaching lesson that does not mention AI is as valuable as an AI one. Do not prefer an \
+idea because it is recent; freshness is only a tie-breaker.
+- Return at most the number asked for, and fewer when fewer are strong. Do not fill a quota.
+- Use only the finalist keys given. Do not rewrite titles or lessons.
+- Account for every key exactly once: selected, duplicates or not_selected, each with a \
+one-sentence reason.
+
+Return only JSON matching the schema."""
+
+RANK_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "selected": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"key": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["key", "reason"],
+            },
+        },
+        "duplicates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                    "duplicate_of": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["key", "duplicate_of", "reason"],
+            },
+        },
+        "not_selected": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"key": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["key", "reason"],
+            },
+        },
+    },
+    "required": ["selected", "duplicates", "not_selected"],
+}
+
+
+def _finalist_item(key: str, cand: dict[str, Any]) -> dict[str, Any]:
+    evidence = [
+        {
+            "source_kind": c.get("source_kind"),
+            "occurred_at": c.get("occurred_at"),
+            "claim_type": c.get("claim_type"),
+            "speaker_confidence": c.get("speaker_confidence"),
+            "excerpt_private": str(c.get("excerpt_private") or "")[:300],
+        }
+        for c in cand.get("citations_private") or []
+    ]
+    return {
+        "key": key,
+        "shard": cand.get("shard"),
+        "cites": list(cand["moment_ids"]),
+        "title": cand["title"],
+        "lesson": cand["lesson"],
+        "audience": cand["audience"],
+        "reasons_to_care": cand.get("reasons_to_care") or [],
+        "public_angle": cand["public_angle"],
+        "freshness_role": cand["freshness_role"],
+        "support_score": cand["rank_score"],
+        "evidence": evidence,
+    }
+
+
+def build_rank_prompt(
+    strategy_text: str,
+    finalists: list[tuple[str, dict[str, Any]]],
+    max_candidates: int,
+    week_start: datetime,
+    shards: int,
+) -> str:
+    # The first lines are durable headers parsed by tce.editorial.common; the finalists
+    # block must stay last (a resumed run reads it back to map keys to evidence).
+    return "\n\n".join(
+        [
+            f"WEEK STARTING: {week_start.date().isoformat()}\n"
+            "SELECTION STAGE: rank\n"
+            f"SELECTION SHARDS: {shards}\n"
+            f"RETURN AT MOST {max_candidates} candidates for the whole week. Fewer or zero "
+            "is correct when fewer are strong.",
+            "STRATEGY (effective for this workspace):\n" + (strategy_text or "(none)"),
+            f"{len(finalists)} validated finalists from {shards} separately judged shards "
+            "of this week's evidence. support_score is the code's evidence-support score "
+            "(0-1), a signal, not the answer.",
+            _FINALISTS_MARKER + json.dumps([_finalist_item(k, c) for k, c in finalists], indent=1),
+        ]
+    )
+
+
+def parse_rank_finalists(prompt: str) -> dict[str, frozenset[str]]:
+    """key -> cited moment ids, read back from a stored rank prompt."""
+    if _FINALISTS_MARKER not in prompt:
+        return {}
+    try:
+        items = json.loads(prompt.split(_FINALISTS_MARKER, 1)[1])
+    except ValueError:
+        return {}
+    return {
+        str(i["key"]): frozenset(str(m) for m in i.get("cites") or [])
+        for i in items
+        if isinstance(i, dict) and i.get("key")
+    }
+
+
+def cap_per_shard(
+    finalists: list[dict[str, Any]], max_candidates: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Explicit finalist-pool guardrail: each shard was asked for at most max_candidates,
+    so a shard that returned more keeps its best max_candidates by support score and the
+    rest are recorded as rejections (code shard_cap). Nothing is dropped silently and
+    nothing is cut by recency."""
+    by_shard: dict[Any, list[dict[str, Any]]] = {}
+    for cand in finalists:
+        by_shard.setdefault(cand.get("shard"), []).append(cand)
+    keep_ids = set()
+    capped: list[dict[str, Any]] = []
+    for cands in by_shard.values():
+        ordered = sorted(cands, key=lambda c: c["rank_score"], reverse=True)
+        keep_ids.update(id(c) for c in ordered[:max_candidates])
+        for extra in ordered[max_candidates:]:
+            cut = _reject(
+                extra,
+                extra["moment_ids"],
+                "unspecified",
+                "shard_cap",
+                f"its shard returned more than the {max_candidates} finalists it was asked "
+                "for; kept that shard's best by evidence support",
+            )
+            cut["job_id"] = extra.get("job_id")
+            capped.append(cut)
+    return [c for c in finalists if id(c) in keep_ids], capped
+
+
+def apply_rank_output(
+    data: dict[str, Any],
+    finalists: list[tuple[str, dict[str, Any]]],
+    max_candidates: int,
+    rank_job_id: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Map the ranker's keys back to validated finalists. Returns (final, rejected, report).
+
+    Only known keys count; order is the ranker's; anything beyond max_candidates is cut
+    and recorded; a finalist the ranker neither selected nor explained is recorded with
+    exactly that fact, never with an invented reason."""
+    by_key = dict(finalists)
+    report: dict[str, Any] = {
+        "unknown_keys": [],
+        "cut_over_max": [],
+        "unaccounted_keys": [],
+        "duplicates": 0,
+        "not_selected": 0,
+    }
+    final: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    decided: set[str] = set()
+
+    def rej(key: str, code: str, reason: str) -> None:
+        cand = by_key[key]
+        row = _reject(cand, cand["moment_ids"], "unspecified", code, reason)
+        row["job_id"] = rank_job_id
+        rejected.append(row)
+        decided.add(key)
+
+    for item in data.get("selected") or []:
+        key = str((item or {}).get("key") or "") if isinstance(item, dict) else ""
+        if key not in by_key:
+            report["unknown_keys"].append(key)
+            continue
+        if key in decided:
+            continue
+        if len(final) >= max_candidates:
+            report["cut_over_max"].append(key)
+            rej(key, "rank_cap", f"the global ranking listed more than {max_candidates}")
+            continue
+        cand = dict(by_key[key])
+        cand["job_id"] = cand.get("job_id")
+        cand["rank_reason"] = str(item.get("reason") or "")
+        final.append(cand)
+        decided.add(key)
+    for item in data.get("duplicates") or []:
+        if not isinstance(item, dict):
+            continue
+        key, other = str(item.get("key") or ""), str(item.get("duplicate_of") or "")
+        if key not in by_key:
+            report["unknown_keys"].append(key)
+            continue
+        if key in decided:
+            continue
+        of = f" Duplicate of: {by_key[other]['title']}." if other in by_key else ""
+        rej(key, "duplicate_lesson", (str(item.get("reason") or "") + of).strip())
+        report["duplicates"] += 1
+    for item in data.get("not_selected") or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "")
+        if key not in by_key:
+            report["unknown_keys"].append(key)
+            continue
+        if key in decided:
+            continue
+        rej(key, "not_selected_globally", str(item.get("reason") or ""))
+        report["not_selected"] += 1
+    for key, _cand in finalists:
+        if key not in decided:
+            report["unaccounted_keys"].append(key)
+            rej(
+                key,
+                "rank_unaccounted",
+                "the global ranking neither selected nor explained this finalist",
+            )
+    return final, rejected, report
+
+
+def _valid_rank_output(data: Any) -> bool:
+    return (
+        isinstance(data, dict)
+        and all(
+            isinstance(data.get(k, []), list) for k in ("selected", "duplicates", "not_selected")
+        )
+        and any(k in data for k in ("selected", "duplicates", "not_selected"))
+    )
+
+
+async def _global_rank(
+    session: AsyncSession,
+    ws: uuid.UUID,
+    run_id: uuid.UUID,
+    start: datetime,
+    max_candidates: int,
+    shards_n: int,
+    finalists_pool: list[dict[str, Any]],
+    stored_rank_job: Any,
+    result: SelectionResult,
+    coverage: dict[str, Any],
+    activity: Any,
+) -> tuple[bool, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Run (or resume) the run's one ranking job. Returns (ok, final, rejected).
+
+    Not ok means the result/coverage already say why and nothing may be saved."""
+    key_text = selection_key_text(ws, run_id, stage="rank")
+    row: dict[str, Any] = {
+        "stage": "rank",
+        "status": None,
+        "job_id": None,
+        "shards": shards_n,
+        "finalists": len(finalists_pool),
+        "detail": None,
+        "retry_at": None,
+    }
+    coverage["rank"] = row
+    late: list[dict[str, Any]] = []
+    requeue = False
+    if stored_rank_job is not None:
+        req = replay_request(stored_rank_job, key_text)
+        stored = parse_rank_finalists(job_prompt_text(stored_rank_job.request_json))
+        if req is None or not stored:
+            row.update(status="failed", job_id=str(stored_rank_job.id))
+            result.status = "failed"
+            result.detail = (
+                f"the ranking job {stored_rank_job.id} of this run could not be rebuilt "
+                "exactly; nothing was saved. Start a new selection."
+            )
+            return False, [], []
+        by_ids = {frozenset(c["moment_ids"]): c for c in finalists_pool}
+        finalists: list[tuple[str, dict[str, Any]]] = []
+        gone: list[str] = []
+        for key, ids in stored.items():
+            cand = by_ids.pop(ids, None)
+            if cand is None:
+                gone.append(key)
+            else:
+                finalists.append((key, cand))
+        late = list(by_ids.values())
+        row.update(finalists=len(finalists), no_longer_finalists=gone)
+        requeue = job_can_requeue(stored_rank_job)
+    else:
+        finalists = [(f"F{i}", c) for i, c in enumerate(finalists_pool, start=1)]
+        strategy = await load_effective_strategy(session, ws)
+        req = LLMRequest(
+            job_type=JOB_TYPE,
+            agent_name=RANK_AGENT_NAME,
+            messages=[
+                {
+                    "role": "user",
+                    "content": build_rank_prompt(
+                        strategy.text, finalists, max_candidates, start, shards_n
+                    ),
+                }
+            ],
+            system=RANK_SYSTEM_PROMPT,
+            output_schema=RANK_OUTPUT_SCHEMA,
+            # up to MAX_SHARDS * MAX_CANDIDATES_CAP finalists, each needing a one-line reason
+            max_tokens=16384,
+            prompt_version=RANK_PROMPT_VERSION,
+            workspace_id=ws,
+            run_id=run_id,
+            idempotency_key=key_text,
+        )
+
+    activity(
+        f"Global ranking: {len(finalists)} validated finalists from {shards_n} shards "
+        f"(choosing at most {max_candidates})"
+    )
+    try:
+        if requeue:
+            llm = await _llm.complete(req, requeue_failed=True)
+        else:
+            llm = await _llm.complete(req)
+    except LLMUnavailable as exc:
+        if exc.job_id:
+            result.job_ids.append(exc.job_id)
+        row.update(
+            job_id=str(exc.job_id) if exc.job_id else None,
+            status=exc.status,
+            detail=exc.detail,
+            retry_at=exc.retry_at.isoformat() if exc.retry_at else None,
+        )
+        result.retry_at = exc.retry_at or result.retry_at
+        result.status = exc.status
+        result.detail = (
+            f"global ranking {exc.status}: {exc.detail}. All {shards_n} shard jobs finished "
+            "and are kept; nothing was saved and earlier candidates are untouched. Retrying "
+            "resumes the same ranking job."
+        )
+        return False, [], []
+
+    result.job_ids.append(llm.job_id)
+    row["job_id"] = str(llm.job_id)
+    activity("Global ranking returned; applying it", job_id=llm.job_id)
+    data = llm.structured if isinstance(llm.structured, dict) else None
+    if data is None:
+        try:
+            data = json.loads(llm.text)
+        except (TypeError, ValueError):
+            data = None
+    if not _valid_rank_output(data):
+        row.update(status="invalid_output", detail="ranking job returned no usable JSON")
+        result.status = "failed"
+        result.detail = (
+            "the global ranking job returned no usable answer; nothing was saved and earlier "
+            "candidates are untouched. Start a new selection to rank again."
+        )
+        return False, [], []
+
+    final, rejected, report = apply_rank_output(data, finalists, max_candidates, llm.job_id)
+    for cand in late:
+        cut = _reject(
+            cand,
+            cand["moment_ids"],
+            "unspecified",
+            "not_ranked",
+            "became a finalist after this run's ranking job was built (the evidence changed); "
+            "run a new selection to rank it",
+        )
+        cut["job_id"] = cand.get("job_id")
+        rejected.append(cut)
+    row.update(
+        status="succeeded",
+        selected=len(final),
+        rank_reasons=[
+            {"moment_ids": c["moment_ids"], "title": c["title"], "reason": c.get("rank_reason")}
+            for c in final
+        ],
+        not_ranked=len(late),
+        **report,
+    )
+    if report["unaccounted_keys"] or report["unknown_keys"] or late:
+        extra = (
+            f"Global ranking: {len(report['unaccounted_keys'])} finalist(s) neither selected "
+            f"nor explained, {len(report['unknown_keys'])} unknown key(s) ignored, "
+            f"{len(late)} finalist(s) not ranked (see coverage.rank)."
+        )
+        result.detail = f"{result.detail} {extra}" if result.detail else extra
+    return True, final, rejected
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -687,8 +1095,10 @@ class ShardSpec:
 
 async def _stored_shard_specs(
     session: AsyncSession, ws: uuid.UUID, run_id: uuid.UUID
-) -> tuple[list[ShardSpec], str | None]:
-    """Rebuild the exact requests of a run that already has jobs. Returns (specs, problem)."""
+) -> tuple[list[ShardSpec], Any, str | None]:
+    """Rebuild the exact requests of a run that already has jobs.
+
+    Returns (shard specs, stored ranking job or None, problem)."""
     jobs = (
         (
             await session.execute(
@@ -703,17 +1113,21 @@ async def _stored_shard_specs(
         .all()
     )
     if not jobs:
-        return [], None
+        return [], None, None
     specs: list[ShardSpec] = []
+    rank_job = None
     expected = None
     for job in jobs:
         meta = parse_selection_header(job_prompt_text(job.request_json))
         if meta is None:
-            return [], f"job {job.id} has no selection header; start a new selection"
+            return [], None, f"job {job.id} has no selection header; start a new selection"
+        if meta["stage"] == "rank":
+            rank_job = job
+            continue
         key = selection_key_text(ws, run_id, meta["shard"], meta["shards"])
         req = replay_request(job, key)
         if req is None:
-            return [], f"job {job.id} could not be rebuilt exactly; start a new selection"
+            return [], None, f"job {job.id} could not be rebuilt exactly; start a new selection"
         expected = meta["shards"]
         specs.append(
             ShardSpec(
@@ -727,11 +1141,15 @@ async def _stored_shard_specs(
         )
     specs.sort(key=lambda s: s.shard)
     if expected is None or len(specs) != expected or len({s.shard for s in specs}) != expected:
-        return specs, (
-            f"run has {len(specs)} of {expected} shard jobs (interrupted while enqueueing); "
-            "start a new selection"
+        return (
+            specs,
+            rank_job,
+            (
+                f"run has {len(specs)} of {expected} shard jobs (interrupted while enqueueing); "
+                "start a new selection"
+            ),
         )
-    return specs, None
+    return specs, rank_job, None
 
 
 _FAILURE_ORDER = ("failed", "invalid_output", "cancelled", "waiting_capacity", "timeout")
@@ -795,7 +1213,7 @@ async def select_candidates(
         }
         result.coverage = coverage
 
-        specs, problem = await _stored_shard_specs(session, ws, run_id)
+        specs, stored_rank_job, problem = await _stored_shard_specs(session, ws, run_id)
         if problem:
             result.status = "failed"
             result.detail = problem
@@ -1001,6 +1419,8 @@ async def select_candidates(
                     )
                 for item in acc + rej:
                     item["job_id"] = job_id
+                for item in acc:
+                    item["shard"] = spec.shard
                 accepted.extend(acc)
                 rejected.extend(rej)
                 missing = [i for i in spec.moment_ids if i not in accounted]
@@ -1064,8 +1484,8 @@ async def select_candidates(
             result.detail = "this selection run was already saved; returning the saved rows"
             return result
 
-        # Existing week rows: supersede proposed + prior selector rejections; never touch
-        # selected/recorded/published/editor-rejected/calibration rows.
+        # Existing week rows are only READ here; nothing is superseded until the ranking
+        # has succeeded, so a failed or waiting ranking leaves the week untouched.
         existing = (
             (
                 await session.execute(
@@ -1077,18 +1497,11 @@ async def select_candidates(
             .scalars()
             .all()
         )
-        kept_sets = set()
-        for row in existing:
-            if row.status == "proposed" or (
-                row.origin == ORIGIN_SELECTOR_REJECTED and row.status == "rejected"
-            ):
-                row.status = "withdrawn"
-                row.editor_notes = (
-                    (row.editor_notes + "\n") if row.editor_notes else ""
-                ) + f"superseded by selection run {run_id}"
-                result.superseded += 1
-            elif row.status in USED_STATUSES and row.moment_ids:
-                kept_sets.add(frozenset(str(i) for i in row.moment_ids))
+        kept_sets = {
+            frozenset(str(i) for i in row.moment_ids)
+            for row in existing
+            if row.status in USED_STATUSES and row.moment_ids
+        }
 
         deduped = []
         for cand in accepted:
@@ -1104,18 +1517,58 @@ async def select_candidates(
                 rejected.append(dup)
             else:
                 deduped.append(cand)
-        deduped.sort(key=lambda c: c["rank_score"], reverse=True)
-        for extra in deduped[max_candidates:]:
-            cut = _reject(
-                extra,
-                extra["moment_ids"],
-                "unspecified",
-                "below_cut",
-                f"ranked below the top {max_candidates}",
+
+        if len(specs) > 1 and len(deduped) > 1:
+            finalists_pool, capped = cap_per_shard(deduped, max_candidates)
+            rejected.extend(capped)
+            rank_ok, final, rank_rejected = await _global_rank(
+                session,
+                ws,
+                run_id,
+                start,
+                max_candidates,
+                len(specs),
+                finalists_pool,
+                stored_rank_job,
+                result,
+                coverage,
+                activity,
             )
-            cut["job_id"] = extra.get("job_id")
-            rejected.append(cut)
-        final = deduped[:max_candidates]
+            if not rank_ok:
+                return result
+            rejected.extend(rank_rejected)
+        else:
+            coverage["rank"] = {
+                "stage": "rank",
+                "status": "skipped",
+                "detail": "one shard judged the whole pool"
+                if len(specs) <= 1
+                else f"{len(deduped)} finalist(s): nothing to rank across shards",
+            }
+            deduped.sort(key=lambda c: c["rank_score"], reverse=True)
+            for extra in deduped[max_candidates:]:
+                cut = _reject(
+                    extra,
+                    extra["moment_ids"],
+                    "unspecified",
+                    "below_cut",
+                    f"ranked below the top {max_candidates}",
+                )
+                cut["job_id"] = extra.get("job_id")
+                rejected.append(cut)
+            final = deduped[:max_candidates]
+
+        # supersede proposed + prior selector rejections; never touch
+        # selected/recorded/published/editor-rejected/calibration rows.
+        for row in existing:
+            if row.status == "proposed" or (
+                row.origin == ORIGIN_SELECTOR_REJECTED and row.status == "rejected"
+            ):
+                row.status = "withdrawn"
+                row.editor_notes = (
+                    (row.editor_notes + "\n") if row.editor_notes else ""
+                ) + f"superseded by selection run {run_id}"
+                result.superseded += 1
 
         now = _now()
         rows: list[TopicCandidate] = []

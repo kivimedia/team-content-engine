@@ -160,14 +160,27 @@ async def latest_selection_run(
             continue
         run = runs.setdefault(
             job.run_id,
-            {"jobs": [], "shards": meta["shards"], "max_candidates": meta["max_candidates"]},
+            {"jobs": [], "rank": None, "shards": None, "max_candidates": None},
         )
-        run["jobs"].append((meta, job))
+        run["shards"] = run["shards"] or meta["shards"]
+        if run["max_candidates"] is None:
+            run["max_candidates"] = meta["max_candidates"]
+        if meta["stage"] == "rank":
+            # the run's one global ranking job, after all shards finished
+            run["rank"] = job
+        else:
+            run["jobs"].append((meta, job))
     if not runs:
         return None
-    run_id, run = max(
-        runs.items(), key=lambda kv: max(j.created_at or datetime.min for _m, j in kv[1]["jobs"])
-    )
+
+    def newest(run: dict[str, Any]) -> datetime:
+        stamps = [j.created_at or datetime.min for _m, j in run["jobs"]]
+        if run["rank"] is not None:
+            stamps.append(run["rank"].created_at or datetime.min)
+        return max(stamps)
+
+    run_id, run = max(runs.items(), key=lambda kv: newest(kv[1]))
+    rank_job = run["rank"]
     saved = (
         await session.execute(
             select(TopicCandidate.id)
@@ -179,6 +192,7 @@ async def latest_selection_run(
     shard_rows = []
     counts: dict[str, int] = {}
     has_output = False
+    finalists = 0  # candidates proposed by finished shards (before code checks)
     unreadable = 0
     requeueable = True
     for meta, job in sorted(run["jobs"], key=lambda mj: mj[0]["shard"] or 1):
@@ -197,15 +211,38 @@ async def latest_selection_run(
                 unreadable += 1
             elif data.get("candidates") or data.get("rejections"):
                 has_output = True
+                finalists += len(data.get("candidates") or [])
         if job.status in ("failed", "cancelled") and not job_can_requeue(job):
             requeueable = False
 
-    total = run["shards"]
+    total = run["shards"] or len(run["jobs"])
     missing = total - len(run["jobs"])
     finished = counts.get("succeeded", 0)
+    shards_done = finished == total and missing == 0
+    # the selector ranks globally only with 2+ shards and 2+ validated finalists; this
+    # count is the shards' raw proposals, so it is an upper bound
+    rank_pending = shards_done and total > 1 and finalists > 1 and rank_job is None
+    rank_row = None
+    if rank_job is not None:
+        counts[rank_job.status] = counts.get(rank_job.status, 0) + 1
+        rank_row = _job_brief(rank_job, stage="rank", shards=total)
+        if rank_job.status == "succeeded":
+            data = rank_job.result_json
+            if not isinstance(data, dict):
+                unreadable += 1
+            elif data.get("selected") or data.get("duplicates") or data.get("not_selected"):
+                has_output = True
+        if rank_job.status in ("failed", "cancelled") and not job_can_requeue(rank_job):
+            requeueable = False
     waiting = [j for _m, j in run["jobs"] if j.status == "waiting_capacity"]
+    if rank_job is not None and rank_job.status == "waiting_capacity":
+        waiting.append(rank_job)
     retry_at = max((j.retry_at for j in waiting if j.retry_at), default=None)
-    summary = f"{finished} of {total} selection job(s) finished"
+    summary = f"{finished} of {total} shard job(s) finished"
+    if rank_job is not None:
+        summary += f"; global ranking job {rank_job.status}"
+    elif rank_pending:
+        summary += "; global ranking not started"
     in_flight = sum(counts.get(s, 0) for s in IN_FLIGHT)
 
     if saved:
@@ -220,7 +257,8 @@ async def latest_selection_run(
     elif counts.get("failed") or counts.get("cancelled") or unreadable:
         state, resumable = "failed", bool(requeueable and not unreadable)
         bad = counts.get("failed", 0) + counts.get("cancelled", 0) + unreadable
-        activity = f"Selection not saved: {bad} of {total} job(s) failed. " + (
+        jobs_total = total + (1 if rank_job is not None else 0)
+        activity = f"Selection not saved ({summary}): {bad} of {jobs_total} job(s) failed. " + (
             "Retry re-queues the failed job(s) once and reuses the finished ones."
             if resumable
             else "Start a new selection."
@@ -233,6 +271,13 @@ async def latest_selection_run(
             + (f" until {_iso_naive(retry_at)}" if retry_at else "")
             + ". No request is waiting to save the result in this process: retry resumes "
             "the same jobs."
+        )
+    elif has_output and rank_pending:
+        state, resumable = "interrupted", True
+        activity = (
+            f"{summary}: the request ended before the global ranking ran. Retry reuses the "
+            "finished shard jobs, runs the one global ranking job (when 2 or more finalists "
+            "pass the checks) and saves the result."
         )
     elif has_output:
         state, resumable = "interrupted", True
@@ -252,9 +297,12 @@ async def latest_selection_run(
         "resumable": resumable,
         "saved": saved,
         "current_activity": activity,
-        "job_ids": [s["job_id"] for s in shard_rows],
+        "job_ids": [s["job_id"] for s in shard_rows] + ([rank_row["job_id"]] if rank_row else []),
         "job_counts": counts,
         "shards": shard_rows,
+        # the run's global ranking job across shard finalists (None until it exists; runs
+        # with one shard never need one)
+        "rank": rank_row,
         "shards_expected": total,
         "max_candidates": run["max_candidates"],
         "retry_at": _iso_naive(retry_at),
@@ -382,6 +430,9 @@ async def unattended_jobs(session: Any, workspace_id: uuid.UUID | str) -> list[d
                 "shard": meta.get("shard") or 1,
                 "shards": meta.get("shards"),
             }
+            if meta.get("stage") == "rank":
+                key["stage"] = "rank"
+                key["shard"] = None
         else:
             key = {"kind": "packet", "key": str(job.run_id) if job.run_id else None}
         out.append(_job_brief(job, **key))

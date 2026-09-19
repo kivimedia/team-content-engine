@@ -81,6 +81,18 @@ status, accounted, unaccounted}], considered, unaccounted_moment_ids, complete}`
 shard does not finish, nothing is saved or superseded. Moments the model skipped are listed,
 never turned into rejections.
 
+Global ranking: when a run has 2+ shards and 2+ validated finalists, one more subscription
+job (`agent editorial_ranker`, `editorial_rank.v1`, key `...:rank`) sees every finalist
+together and returns finalist keys only: `selected` (best first, at most max_candidates,
+fewer when fewer are strong), `duplicates` (same lesson as a selected one) and
+`not_selected`. Titles, lessons and citations are the shards' validated text, unchanged.
+Explicit finalist guardrail: a shard that returns more than max_candidates keeps its best
+by evidence support; the rest are saved as `shard_cap` rejections. Keys the ranker skips
+are saved as `rank_unaccounted` with exactly that fact. A ranking that fails, waits or
+returns no usable JSON saves and supersedes nothing (`coverage.rank` says why) and a retry
+resumes the same job. Durable status carries it as `durable.rank` and `in_flight` rows with
+`stage: "rank"`.
+
 Durable status: `GET /select-status` and `GET /candidates/{id}/packet-status` return `job`
 (the live in-process entry while running, otherwise the durable view rebuilt from llm_jobs
 and saved rows) and `durable{state: done|waiting|failed|interrupted, resumable,

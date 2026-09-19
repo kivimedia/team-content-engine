@@ -92,6 +92,8 @@ def current_week_start(today: date | None = None) -> date:
 
 _WEEK_HEADER = re.compile(r"^WEEK STARTING: (\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 _SHARD_HEADER = re.compile(r"^SELECTION SHARD: (\d+)/(\d+)\s*$", re.MULTILINE)
+_STAGE_HEADER = re.compile(r"^SELECTION STAGE: (\w+)\s*$", re.MULTILINE)
+_SHARDS_HEADER = re.compile(r"^SELECTION SHARDS: (\d+)\s*$", re.MULTILINE)
 _MAX_HEADER = re.compile(r"^RETURN AT MOST (\d+) ", re.MULTILINE)
 _PACKET_HEADER = re.compile(r"^PACKET REQUEST: ([0-9a-fA-F-]{36})\s*$", re.MULTILINE)
 _MOMENT_ID = re.compile(r'"moment_id": "([0-9a-fA-F-]{36})"')
@@ -112,9 +114,14 @@ def selection_key_text(
     run_id: uuid.UUID | str,
     shard: int | None = None,
     shards: int | None = None,
+    *,
+    stage: str | None = None,
 ) -> str:
-    """Idempotency key text for one selection job. `shard=None` is the v1 single job."""
+    """Idempotency key text for one selection job. `shard=None` is the v1 single job;
+    `stage="rank"` is the run's one global ranking job."""
     base = f"editorial_selection:{workspace_id}:{run_id}"
+    if stage == "rank":
+        return f"{base}:rank"
     return base if shard is None else f"{base}:shard:{shard}/{shards}"
 
 
@@ -128,8 +135,20 @@ def parse_selection_header(prompt: str) -> dict[str, Any] | None:
         return None
     shard = _SHARD_HEADER.search(prompt)
     most = _MAX_HEADER.search(prompt)
+    stage = _STAGE_HEADER.search(prompt)
+    if stage and stage.group(1) == "rank":
+        total = _SHARDS_HEADER.search(prompt)
+        return {
+            "week_start": week.group(1),
+            "stage": "rank",
+            "shard": None,
+            "shards": int(total.group(1)) if total else None,
+            "max_candidates": int(most.group(1)) if most else None,
+            "moment_ids": [],
+        }
     return {
         "week_start": week.group(1),
+        "stage": "shard",
         # v1 jobs had no shard line: one job covered the whole pool
         "shard": int(shard.group(1)) if shard else None,
         "shards": int(shard.group(2)) if shard else 1,
