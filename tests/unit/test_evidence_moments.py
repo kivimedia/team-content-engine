@@ -185,6 +185,79 @@ async def test_llm_unavailable_is_surfaced(editorial_sessionmaker, monkeypatch):
     assert len(pending) >= 2  # nothing marked as extracted; rerun will retry
 
 
+async def _seed_meetings(sessionmaker, n: int) -> None:
+    async with sessionmaker() as s:
+        s.add_all([
+            EvidenceSource(
+                workspace_id=WS, source_kind="fathom_meeting", external_id=f"mc{i}",
+                occurred_at=datetime(2026, 9, 8, i), version_hash=f"{i:064x}",
+                payload_private={"turns": turns(), "language": "en"}, meta={},
+            )
+            for i in range(n)
+        ])
+        await s.commit()
+
+
+async def test_extraction_waits_on_several_sources_at_once(editorial_sessionmaker, monkeypatch):
+    import asyncio
+
+    await _seed_meetings(editorial_sessionmaker, 6)
+    live = {"now": 0, "peak": 0}
+
+    async def complete(req, *, wait_timeout_s=None):
+        live["now"] += 1
+        live["peak"] = max(live["peak"], live["now"])
+        await asyncio.sleep(0.05)  # a worker elsewhere is running the job
+        live["now"] -= 1
+        return llm.LLMResult(job_id=uuid.uuid4(), text="", structured={"moments": []}, model="m")
+
+    monkeypatch.setattr(llm, "complete", complete)
+    run_id = await extract_moments(editorial_sessionmaker, WS, START, END, concurrency=3)
+    async with editorial_sessionmaker() as s:
+        run = await s.get(EvidenceCollectionRun, run_id)
+    assert live["peak"] == 3  # bounded, and actually parallel
+    assert run.counts["processed"] == 6 and run.status == "complete"
+    assert run.counts.get("not_started", 0) == 0
+
+
+async def test_parallel_stop_counts_every_unstarted_source(editorial_sessionmaker, monkeypatch):
+    await _seed_meetings(editorial_sessionmaker, 7)
+    calls = []
+
+    async def complete(req, *, wait_timeout_s=None):
+        calls.append(req)
+        raise llm.LLMUnavailable("waiting_capacity", "subscription limit", job_id=uuid.uuid4())
+
+    monkeypatch.setattr(llm, "complete", complete)
+    run_id = await extract_moments(editorial_sessionmaker, WS, START, END, concurrency=2)
+    async with editorial_sessionmaker() as s:
+        run = await s.get(EvidenceCollectionRun, run_id)
+    # the two in flight stop; nothing new starts after the first stop
+    assert len(calls) == 2
+    assert run.counts["unavailable"] == 2
+    assert run.counts["not_started"] == 5
+    assert run.status == "partial" and run.complete is False
+    assert "waiting_capacity" in run.current_activity
+
+
+async def test_one_source_crash_is_recorded_not_fatal(editorial_sessionmaker, monkeypatch):
+    await _seed_meetings(editorial_sessionmaker, 3)
+    n = {"i": 0}
+
+    async def complete(req, *, wait_timeout_s=None):
+        n["i"] += 1
+        if n["i"] == 2:
+            raise RuntimeError("worker returned garbage")
+        return llm.LLMResult(job_id=uuid.uuid4(), text="", structured={"moments": []}, model="m")
+
+    monkeypatch.setattr(llm, "complete", complete)
+    run_id = await extract_moments(editorial_sessionmaker, WS, START, END, concurrency=1)
+    async with editorial_sessionmaker() as s:
+        run = await s.get(EvidenceCollectionRun, run_id)
+    assert run.counts["processed"] == 2 and run.counts["failed"] == 1
+    assert run.status == "partial" and run.complete is False  # never a false success
+
+
 def test_chunking_overlaps_and_covers_all_turns():
     many = [
         {"index": i, "speaker": "Host", "start_s": float(i * 10), "end_s": float(i * 10 + 10),

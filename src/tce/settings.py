@@ -135,6 +135,9 @@ class Settings(BaseSettings):
     fathom_api_base: str = "https://api.fathom.ai/external/v1"
     evidence_repo_cache_dir: str = str(_TMPDIR / "tce-evidence-repos")
     evidence_upload_dir: str = str(_TMPDIR / "tce-recordings")
+    # Sources extracted at once. Each waits on one queued subscription job, so this
+    # only helps when that many workers are leasing; extra jobs simply stay queued.
+    evidence_extract_concurrency: int = 3
 
     # Recording and production (package 4). Every step here is local or free.
     production_max_upload_bytes: int = 4_000_000_000

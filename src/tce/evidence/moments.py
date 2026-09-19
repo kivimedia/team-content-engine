@@ -9,6 +9,7 @@ swallowed and never replaced by a fabricated result.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -23,6 +24,7 @@ import tce.llm as llm
 from tce.evidence.collect import FATHOM_KIND, GITHUB_KIND, RunLedger
 from tce.evidence.common import stable_hash, to_db
 from tce.models.editorial import CLAIM_TYPES, EvidenceMoment, EvidenceSource
+from tce.settings import settings
 
 logger = structlog.get_logger()
 
@@ -177,7 +179,9 @@ def render_commit_group(payload: dict[str, Any]) -> str:
         for f in c.get("files", []):
             lines.append(f"- {f['path']} (+{f.get('additions', 0)} -{f.get('deletions', 0)})")
         for f in c.get("files", []):
-            if f.get("patch_excerpt"):
+            if f.get("patch_excluded"):
+                lines.append(f"\n### Patch {f['path']} not shown: {f['patch_excluded']}")
+            elif f.get("patch_excerpt"):
                 trunc = " (excerpt, truncated)" if f.get("patch_truncated") else ""
                 lines.append(f"\n### Patch {f['path']}{trunc}\n{f['patch_excerpt']}")
     return "\n".join(lines)
@@ -441,10 +445,14 @@ async def extract_moments(
     run_id: uuid.UUID | None = None,
     wait_timeout_s: float | None = None,
     source_kinds: list[str] | None = None,
+    concurrency: int | None = None,
 ) -> uuid.UUID:
     """Extract moments for every source lacking active moments for its current hash.
 
     `source_kinds` limits the run (e.g. meetings first); the rest stay pending.
+    Up to `concurrency` sources wait on their subscription jobs at once (default
+    settings.evidence_extract_concurrency). After the first LLM stop no new
+    source starts; those are counted as not_started and a rerun picks them up.
     """
     if run_id is None:
         run_id = await RunLedger.create_run(
@@ -453,6 +461,7 @@ async def extract_moments(
         )
     ledger = RunLedger(sessionmaker, run_id)
     job_ids: list[str] = []
+    width = max(1, concurrency or settings.evidence_extract_concurrency)
     try:
         async with sessionmaker() as session:
             sources = await sources_needing_extraction(
@@ -461,19 +470,46 @@ async def extract_moments(
         ledger.counts["sources"] = len(sources)
         await ledger.set_activity(f"Moment extraction: {len(sources)} sources need extraction")
         stopped: str | None = None
-        for s_idx, source in enumerate(sources, start=1):
+        started = 0
+        finished = 0
+        in_flight = 0
+        gate = asyncio.Semaphore(width)
+
+        async def extract_one(s_idx: int, source: EvidenceSource) -> None:
+            nonlocal stopped, started, finished, in_flight
             skip = skip_reason(source)
             if skip:
+                started += 1
                 ledger.add_item(source.external_id, "excluded", skip, source_id=str(source.id))
-                continue
+                return
+            async with gate:
+                if stopped is not None:
+                    return  # never started; counted as not_started below
+                started += 1
+                in_flight += 1
+                try:
+                    await _extract_source(s_idx, source)
+                except Exception as exc:  # one source's failure is recorded, not fatal
+                    reason = f"{type(exc).__name__}: {exc}"[:300]
+                    ledger.add_item(
+                        source.external_id, "failed", reason, source_id=str(source.id)
+                    )
+                    ledger.add_error(f"source:{source.id}", reason)
+                finally:
+                    in_flight -= 1
+                    finished += 1
+
+        async def _extract_source(s_idx: int, source: EvidenceSource) -> None:
+            nonlocal stopped
             jobs = _jobs_for_source(source)
             raw_moments: list[dict[str, Any]] = []
             source_job_ids: list[str] = []
             unavailable: Exception | None = None
             for j_idx, (message, schema) in enumerate(jobs, start=1):
                 await ledger.set_activity(
-                    f"Moment extraction source {s_idx} of {len(sources)} "
-                    f"({source.source_kind}): waiting for LLM job {j_idx} of {len(jobs)}"
+                    f"Moment extraction: {finished} of {len(sources)} sources done, "
+                    f"{in_flight} in flight. Source {s_idx} ({source.source_kind}): "
+                    f"waiting for LLM job {j_idx} of {len(jobs)}"
                 )
                 req = llm.LLMRequest(
                     job_type=JOB_TYPE,
@@ -508,13 +544,13 @@ async def extract_moments(
                     retry_at=retry_at.isoformat() if retry_at else None,
                 )
                 ledger.add_error(f"source:{source.id}", reason)
-                stopped = (
-                    f"LLM {exc.status}"
-                    + (f" (job {exc.job_id})" if exc.job_id else "")
-                    + (f", retry at {retry_at.isoformat()}" if retry_at else "")
-                )
-                ledger.counts["not_started"] = len(sources) - s_idx
-                break
+                if stopped is None:  # the first stop reason wins; no new sources start
+                    stopped = (
+                        f"LLM {exc.status}"
+                        + (f" (job {exc.job_id})" if exc.job_id else "")
+                        + (f", retry at {retry_at.isoformat()}" if retry_at else "")
+                    )
+                return
 
             stored, dropped = await _store_moments(
                 sessionmaker, workspace_id, source, raw_moments, source_job_ids
@@ -527,6 +563,12 @@ async def extract_moments(
                 source_id=str(source.id), job_ids=source_job_ids,
                 dropped=[d["reason"] for d in dropped],
             )
+
+        await asyncio.gather(
+            *(extract_one(i, s) for i, s in enumerate(sources, start=1))
+        )
+        if len(sources) - started:
+            ledger.counts["not_started"] = len(sources) - started
         ledger.counts["llm_jobs"] = len(job_ids)
         await ledger.finish(pagination_finished=stopped is None, fatal=stopped)
     except Exception as exc:
