@@ -66,16 +66,17 @@ async def _mark_stale_weekly_plans_interrupted() -> None:
     """
     try:
         from sqlalchemy import text
+
         async with async_session() as db:
             result = await db.execute(
                 text(
                     "UPDATE weekly_plans "
                     "SET status = 'interrupted', "
                     "    plan_data = COALESCE(plan_data, '{}'::jsonb) || "
-                    "                '{\"status\":\"interrupted\",\"phase\":\"interrupted\","
-                    "                  \"phase_detail\":\"Server restarted during run. "
-                    "Click Generate from Plan again to retry.\","
-                    "                  \"error\":\"interrupted by server restart\"}'::jsonb "
+                    '                \'{"status":"interrupted","phase":"interrupted",'
+                    '                  "phase_detail":"Server restarted during run. '
+                    'Click Generate from Plan again to retry.",'
+                    '                  "error":"interrupted by server restart"}\'::jsonb '
                     "WHERE status = 'running' "
                     "RETURNING id"
                 )
@@ -84,12 +85,14 @@ async def _mark_stale_weekly_plans_interrupted() -> None:
             await db.commit()
             if ids:
                 import structlog
+
                 structlog.get_logger().info(
                     "marked_stale_weekly_plans", count=len(ids), ids=[str(i) for i in ids]
                 )
     except Exception:
         # Never block startup on cleanup. Worst case the stale row remains.
         import structlog
+
         structlog.get_logger().warning("mark_stale_weekly_plans.failed", exc_info=True)
 
 
@@ -146,7 +149,8 @@ async def lifespan(app: FastAPI):
     # start spending on its own. TCE_DISABLE_SCHEDULER=1 still forces off.
     import os
 
-    if os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
+    # Occurrence creation is owned by the VPS cron tick (see settings.content_run_poller).
+    if settings.content_run_poller and os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
         schedule_poller = asyncio.create_task(content_runs.poll_weekly_schedules(async_session))
 
     if settings.scheduler_enabled and os.environ.get("TCE_DISABLE_SCHEDULER") != "1":

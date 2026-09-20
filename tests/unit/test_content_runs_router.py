@@ -127,6 +127,8 @@ async def test_schedule_tick_is_durable_and_duplicate_safe(editorial_sessionmake
     assert first[0]["status"] == "queued"
     assert second[0] == {
         "status": "already_created",
+        "schedule": "weekly-content",
+        "occurrence_key": "2026-09-21T07:00+0300",
         "workspace_id": str(workspace_id),
         "run_id": first[0]["run_id"],
     }

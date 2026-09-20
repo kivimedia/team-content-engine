@@ -18,6 +18,9 @@ from tce.models.content_run import ContentRun, ContentRunStage
 STAGES = ("collecting", "extracting", "selecting", "ranking", "drafting", "exporting")
 ACTIVE_STATES = frozenset((*STAGES, "queued", "waiting_capacity", "waiting_worker"))
 TERMINAL_STATES = frozenset({"ready", "failed", "cancelled"})
+# Waits a scheduler tick may re-drive on its own. "failed" and
+# "needs_source_choice" need a person and stay parked until /resume.
+REDRIVABLE_STATES = frozenset({"queued", "waiting_capacity", "waiting_worker", *STAGES})
 DEFAULT_LEASE = timedelta(minutes=5)
 
 
@@ -59,6 +62,14 @@ class ContentRunRequest:
     actor: str | None = None
     late: bool = False
     week_label: str | None = None
+    # Last stage to execute. A daily evidence refresh stops after "extracting".
+    final_stage: str = STAGES[-1]
+
+
+def stages_through(final_stage: str) -> tuple[str, ...]:
+    if final_stage not in STAGES:
+        raise ValueError(f"final_stage must be one of {', '.join(STAGES)}")
+    return STAGES[: STAGES.index(final_stage) + 1]
 
 
 def normalized_scope(req: ContentRunRequest) -> tuple[dict[str, Any], str]:
@@ -70,6 +81,7 @@ def normalized_scope(req: ContentRunRequest) -> tuple[dict[str, Any], str]:
         "window_end": _db_time(req.window_end).isoformat() if req.window_end else None,
         "maximum_candidate_count": max(1, min(req.maximum_candidate_count, 6)),
         "target_packet_count": max(1, min(req.target_packet_count, 10)),
+        "final_stage": req.final_stage,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return payload, hashlib.sha256(raw.encode()).hexdigest()
@@ -82,6 +94,7 @@ async def create_or_get_run(
         raise ValueError("scope_kind must be week or sources")
     if req.scope_kind == "sources" and not req.source_ids:
         raise ValueError("source scope needs at least one source id")
+    stages = stages_through(req.final_stage)
     if (
         req.window_start
         and req.window_end
@@ -131,13 +144,14 @@ async def create_or_get_run(
         state="queued",
         current_stage=STAGES[0],
         late=req.late,
+        final_stage=req.final_stage,
     )
     try:
         async with session.begin_nested():
             session.add(run)
             await session.flush()
             run.focused_path = f"/dashboard?content_run={run.id}"
-            for position, stage in enumerate(STAGES):
+            for position, stage in enumerate(stages):
                 session.add(
                     ContentRunStage(
                         workspace_id=workspace_id,
@@ -310,11 +324,53 @@ async def make_run_resumable(session: AsyncSession, run: ContentRun) -> None:
     await session.flush()
 
 
+async def list_redrivable_runs(
+    session: AsyncSession,
+    workspace_id: uuid.UUID | None,
+    *,
+    now: datetime | None = None,
+    limit: int = 20,
+) -> list[ContentRun]:
+    """Active runs nobody is driving right now, oldest first.
+
+    A run is re-drivable when it is not terminal, not parked on a person, and
+    its first unfinished stage holds no live lease and is past `next_eligible_at`.
+    Leasing re-checks all of that under a row lock, so a race here is harmless.
+    """
+    now = now or utcnow()
+    stmt = (
+        select(ContentRun)
+        .where(ContentRun.state.in_(REDRIVABLE_STATES))
+        .order_by(ContentRun.priority.desc(), ContentRun.created_at.asc())
+        .limit(limit * 4)
+    )
+    if workspace_id is not None:
+        stmt = stmt.where(ContentRun.workspace_id == workspace_id)
+    picked: list[ContentRun] = []
+    for run in (await session.execute(stmt)).scalars():
+        current = next(
+            (s for s in await list_stages(session, run.id) if s.status != "succeeded"), None
+        )
+        if current is None:
+            continue
+        if current.status == "running" and current.leased_until and current.leased_until >= now:
+            continue
+        if current.next_eligible_at and current.next_eligible_at > now:
+            continue
+        if current.status in {"failed", "needs_source_choice"}:
+            continue
+        picked.append(run)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
 def run_json(run: ContentRun, stages: list[ContentRunStage]) -> dict[str, Any]:
     return {
         "id": str(run.id),
         "request_key": run.request_key,
         "scope_kind": run.scope_kind,
+        "final_stage": run.final_stage,
         "window_start": run.window_start.isoformat() + "Z" if run.window_start else None,
         "window_end": run.window_end.isoformat() + "Z" if run.window_end else None,
         "week_label": run.week_label,

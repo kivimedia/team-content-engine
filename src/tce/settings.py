@@ -42,7 +42,9 @@ class Settings(BaseSettings):
     # database stays clean and the dashboard doesn't ship megabytes of
     # base64 inline.
     image_storage_dir: str = str(_TMPDIR / "tce-images")
-    image_public_base: str = ""  # If set (e.g. "https://tce.example.com"), prefixed; otherwise relative URL.
+    image_public_base: str = (
+        ""  # If set (e.g. "https://tce.example.com"), prefixed; otherwise relative URL.
+    )
 
     # Logging
     log_level: str = "INFO"
@@ -116,6 +118,12 @@ class Settings(BaseSettings):
 
     # Recurring generation schedules. Off by default so a restart can never spend.
     scheduler_enabled: bool = False
+
+    # Content-run schedule ownership. The VPS cron calls
+    # POST /api/v1/content-runs/schedule/tick (scripts/tce-schedule-tick.sh) and
+    # is the only owner of occurrence creation. The in-process poller exists for
+    # a box with no cron and is OFF by default: two owners are one too many.
+    content_run_poller: bool = False  # TCE_CONTENT_RUN_POLLER=1 to enable
 
     # Read by start.sh (uvicorn --host). Declared so .env validation accepts it.
     bind_host: str = "127.0.0.1"

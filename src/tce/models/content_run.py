@@ -41,13 +41,17 @@ class ContentRun(Base):
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     ready_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # The last stage this run executes. "exporting" is a full run; the daily
+    # evidence refresh stops after "extracting" and leaves generation to the
+    # weekly run, which reuses every finished job.
+    final_stage: Mapped[str] = mapped_column(
+        String(30), default="exporting", server_default="exporting"
+    )
 
 
 class ContentRunStage(Base):
     __tablename__ = "content_run_stages"
-    __table_args__ = (
-        UniqueConstraint("run_id", "stage", name="uq_content_run_stage"),
-    )
+    __table_args__ = (UniqueConstraint("run_id", "stage", name="uq_content_run_stage"),)
 
     workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     run_id: Mapped[uuid.UUID] = mapped_column(
@@ -71,9 +75,7 @@ class ContentRunStage(Base):
 
 class StageResultCache(Base):
     __tablename__ = "stage_result_cache"
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "cache_key", name="uq_stage_result_cache"),
-    )
+    __table_args__ = (UniqueConstraint("workspace_id", "cache_key", name="uq_stage_result_cache"),)
 
     workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     cache_key: Mapped[str] = mapped_column(String(128))
@@ -87,9 +89,7 @@ class StageResultCache(Base):
 
 class EditorialSchedule(Base):
     __tablename__ = "editorial_schedules"
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "name", name="uq_editorial_schedule_name"),
-    )
+    __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_editorial_schedule_name"),)
 
     workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(100))
@@ -99,6 +99,17 @@ class EditorialSchedule(Base):
     local_time: Mapped[str] = mapped_column(String(5), default="07:00")
     catchup_days: Mapped[int] = mapped_column(Integer, default=7)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # "weekly" fires on `weekday` at `local_time`; "daily" fires every day at
+    # `local_time`. Both are evaluated in `timezone`, so Israel DST needs no
+    # special casing here or in cron (the launcher ticks often, this decides).
+    cadence: Mapped[str] = mapped_column(String(20), default="weekly", server_default="weekly")
+    # Stage the created run stops after. The daily evidence refresh stops at
+    # "extracting"; the weekly content run goes through "exporting".
+    final_stage: Mapped[str] = mapped_column(
+        String(30), default="exporting", server_default="exporting"
+    )
+    # Days of evidence each occurrence covers, ending at the occurrence.
+    window_days: Mapped[int] = mapped_column(Integer, default=7, server_default="7")
 
 
 class EditorialScheduleOccurrence(Base):
