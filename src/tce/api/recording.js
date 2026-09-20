@@ -389,6 +389,18 @@ function runWords(run) {
     return row;
   }
 
+  // The engine's own words for what a job is doing, in his.
+  function humanActivity(text) {
+    const raw = String(text || "");
+    if (/queued/i.test(raw)) return "Queued for your PC worker";
+    if (/waiting for subscription/i.test(raw)) return "Your PC worker is picking it up";
+    if (/waiting for capacity|capacity/i.test(raw)) return "Waiting for subscription capacity";
+    if (/validating/i.test(raw)) return "Checking it against the evidence";
+    if (/resuming/i.test(raw)) return "Carrying on where it stopped";
+    if (/packet ready|done/i.test(raw)) return "Ready";
+    return raw || "Writing the script";
+  }
+
   // Where it came from, in the words he would use: a call, or the code.
   function ideaSource(candidate) {
     const citations = candidate.citations_private || [];
@@ -441,11 +453,7 @@ function runWords(run) {
         return;
       }
       const waited = attempt * 5;
-      setIdeaPhase(
-        candidate.id,
-        "writing",
-        (job.current_activity || "Writing the script") + (waited > 20 ? ` (${waited}s so far)` : ""),
-      );
+      setIdeaPhase(candidate.id, "writing", humanActivity(job.current_activity) + (waited > 20 ? ` (${waited}s so far)` : ""));
       if (attempt > 144) {
         setIdeaPhase(candidate.id, "writing", "Still queued after twelve minutes. It will finish on its own; check the queue later.");
         return;
