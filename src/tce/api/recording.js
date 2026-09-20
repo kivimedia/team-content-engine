@@ -2,6 +2,8 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+  const pathPrefix = window.location.pathname.startsWith("/tce/") ? "/tce" : "";
+  const apiV1 = `${pathPrefix}/api/v1`;
   const state = {
     ideas: [], idea: null, session: null, stream: null, recorder: null, clip: null,
     mode: "points", sequence: 0, startedAt: 0, activeStartedAt: 0, activeMs: 0,
@@ -22,7 +24,7 @@
   }
 
   async function api(path, options = {}) {
-    const response = await fetch(`/api/v1/production${path}`, {
+    const response = await fetch(`${apiV1}/production${path}`, {
       credentials: "same-origin",
       ...options,
       headers: { ...(options.body instanceof Blob ? {} : { "Content-Type": "application/json" }), ...(options.headers || {}) },
@@ -163,12 +165,12 @@
     const end = new Date();
     const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
     try {
-      const response = await fetch("/api/v1/content-runs/produce-now", {
+      const response = await fetch(`${apiV1}/content-runs/produce-now`, {
         method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           idempotency_key: `recording-studio:${end.toISOString().slice(0, 13)}`,
           scope_kind: "week", window_start: start.toISOString(), window_end: end.toISOString(),
-          maximum_candidate_count: 12, target_packet_count: 3,
+          maximum_candidate_count: 6, target_packet_count: 3,
         }),
       });
       const data = await response.json().catch(() => ({}));
