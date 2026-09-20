@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from tce.api.private_access import require_private_workspace
@@ -181,6 +181,34 @@ async def _require_worker(sm: Any) -> None:
         )
 
 
+async def _moments_for_run(db: Any, run: ContentRun) -> int:
+    """Active evidence moments this run can actually select from.
+
+    The question that matters after extraction is not "did this pass do work"
+    but "is there evidence"; a re-drive legitimately processes nothing.
+    """
+    from tce.models.editorial import EvidenceMoment
+
+    stmt = (
+        select(func.count())
+        .select_from(EvidenceMoment)
+        .join(EvidenceSource, EvidenceSource.id == EvidenceMoment.source_id)
+        .where(
+            EvidenceMoment.workspace_id == run.workspace_id,
+            EvidenceMoment.status == "active",
+        )
+    )
+    source_ids = [uuid.UUID(value) for value in (run.source_ids_private or [])]
+    if source_ids:
+        stmt = stmt.where(EvidenceMoment.source_id.in_(source_ids))
+    elif run.window_start and run.window_end:
+        stmt = stmt.where(
+            EvidenceSource.occurred_at >= run.window_start,
+            EvidenceSource.occurred_at < run.window_end,
+        )
+    return int((await db.execute(stmt)).scalar_one() or 0)
+
+
 async def _execute_stage(sm: Any, run: ContentRun, stage: str) -> dict[str, Any]:
     from tce.editorial.packets import build_packet
     from tce.editorial.selector import select_candidates
@@ -226,13 +254,27 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str) -> dict[str, Any]
                 # workers were idle. Only work still in flight waits.
                 if ledger.finished_at is None:
                     raise runs.StageWaitingError("waiting_capacity", detail)
-                if unavailable and not processed:
+                # `processed` counts what THIS pass extracted. A re-drive skips
+                # every source already extracted at its current version, so
+                # processed=0 usually means the work is done, not that there is
+                # nothing: asking the ledger instead of the evidence failed two
+                # runs on 20-Sep that had thousands of moments already stored.
+                stored = await _moments_for_run(db, run)
+                if stored:
+                    return {
+                        "extraction_run_id": str(extraction_id),
+                        "processed": processed,
+                        "failed": failed,
+                        "unavailable": unavailable,
+                        "moments_available": stored,
+                        "partial": True,
+                        "detail": detail,
+                    }
+                if unavailable or not processed:
                     raise runs.StageWaitingError(
                         "waiting_capacity",
-                        f"No source could be extracted yet: {detail}",
+                        f"No evidence has been extracted for this run yet: {detail}",
                     )
-                if not processed:
-                    raise ValueError(f"extraction produced nothing: {detail}")
                 # Some sources failed, most did not: the run continues on the
                 # evidence it has and says what it left behind.
                 return {

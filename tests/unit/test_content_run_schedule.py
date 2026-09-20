@@ -1178,6 +1178,63 @@ async def test_extraction_still_in_flight_waits(editorial_sessionmaker, monkeypa
     assert "3 in flight" in exc.value.detail
 
 
+async def _store_moment(sm, workspace_id: uuid.UUID, when: datetime):
+    """One active moment inside the run's window, as an earlier pass would leave."""
+    from tce.models.editorial import EvidenceMoment, EvidenceSource
+
+    async with sm() as db:
+        source = EvidenceSource(
+            workspace_id=workspace_id,
+            source_kind="fathom_meeting",
+            external_id=f"src-{uuid.uuid4()}",
+            title="already extracted",
+            occurred_at=when.replace(tzinfo=None),
+            version_hash=uuid.uuid4().hex,
+            revision=1,
+            fetch_status="ok",
+            payload_private={"turns": []},
+        )
+        db.add(source)
+        await db.flush()
+        db.add(
+            EvidenceMoment(
+                workspace_id=workspace_id,
+                source_id=source.id,
+                source_version_hash=source.version_hash,
+                extraction_job_id=uuid.uuid4(),
+                status="active",
+                excerpt_private="x",
+                lesson_summary="y",
+                claim_type="quoted",
+            )
+        )
+        await db.commit()
+
+
+async def test_a_redrive_that_processes_nothing_new_continues_on_stored_evidence(
+    editorial_sessionmaker, monkeypatch
+):
+    """20-Sep: two runs FAILED with "extraction produced nothing" although
+    thousands of moments were stored - a re-drive skips sources already
+    extracted, so processed=0 is normal."""
+    set_worker(monkeypatch, online=True)
+    workspace_id = uuid.uuid4()
+    await _store_moment(editorial_sessionmaker, workspace_id, datetime(2026, 9, 16, tzinfo=UTC))
+    _ledger(
+        monkeypatch,
+        editorial_sessionmaker,
+        complete=False,
+        finished=True,
+        counts={"processed": 0, "failed": 1, "excluded": 3},
+        activity="Finished (partial): 0 processed, 3 excluded, 1 failed",
+    )
+    run = await _extracting_run(editorial_sessionmaker, workspace_id)
+    output = await api._execute_stage(editorial_sessionmaker, run, "extracting")
+    assert output["partial"] is True
+    assert output["moments_available"] == 1
+    assert output["processed"] == 0 and output["failed"] == 1
+
+
 async def test_extraction_that_produced_nothing_fails_loudly(editorial_sessionmaker, monkeypatch):
     set_worker(monkeypatch, online=True)
     workspace_id = uuid.uuid4()
@@ -1190,8 +1247,10 @@ async def test_extraction_that_produced_nothing_fails_loudly(editorial_sessionma
         activity="Finished (partial): 0 processed, 9 failed",
     )
     run = await _extracting_run(editorial_sessionmaker, workspace_id)
-    with pytest.raises(ValueError, match="extraction produced nothing"):
+    with pytest.raises(runs.StageWaitingError) as exc:
         await api._execute_stage(editorial_sessionmaker, run, "extracting")
+    assert exc.value.state == "waiting_capacity"
+    assert "No evidence has been extracted for this run yet" in exc.value.detail
 
 
 async def test_unavailable_sources_with_nothing_processed_still_wait(
@@ -1211,4 +1270,4 @@ async def test_unavailable_sources_with_nothing_processed_still_wait(
     with pytest.raises(runs.StageWaitingError) as exc:
         await api._execute_stage(editorial_sessionmaker, run, "extracting")
     assert exc.value.state == "waiting_capacity"
-    assert "No source could be extracted yet" in exc.value.detail
+    assert "No evidence has been extracted for this run yet" in exc.value.detail
