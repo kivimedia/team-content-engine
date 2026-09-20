@@ -12,6 +12,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 router = APIRouter(tags=["dashboard"])
 
 _HTML_PATH = Path(__file__).parent / "dashboard.html"
+_RECORDING_HTML_PATH = Path(__file__).parent / "recording.html"
+_RECORDING_CSS_PATH = Path(__file__).parent / "recording.css"
+_RECORDING_JS_PATH = Path(__file__).parent / "recording.js"
 _CACHE: str | None = None
 
 
@@ -33,3 +36,25 @@ async def root_redirect(request: Request):
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     return _load_html()
+
+
+@router.get("/record", response_class=HTMLResponse)
+async def recording_studio():
+    return _RECORDING_HTML_PATH.read_text(encoding="utf-8")
+
+
+@router.get("/recording.css", include_in_schema=False)
+async def recording_css():
+    from fastapi.responses import Response
+
+    return Response(_RECORDING_CSS_PATH.read_text(encoding="utf-8"), media_type="text/css")
+
+
+@router.get("/recording.js", include_in_schema=False)
+async def recording_js():
+    from fastapi.responses import Response
+
+    return Response(
+        _RECORDING_JS_PATH.read_text(encoding="utf-8"),
+        media_type="application/javascript",
+    )

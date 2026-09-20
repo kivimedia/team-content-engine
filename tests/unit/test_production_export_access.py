@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
-from tce.production.export import export_packet, verify_restricted
+from tce.models.editorial import ExportIntent, RecordingPacket, TopicCandidate
+from tce.production.export import export_packet, export_packet_durable, verify_restricted
 
 OWNER = {"type": "user", "role": "owner", "emailAddress": "owner@example.invalid"}
 TEAM = ["editor@example.invalid", "second@example.invalid"]
@@ -103,3 +106,89 @@ async def test_failed_access_does_not_mark_packet_exported(tmp_path):
     assert packet.google_doc_access["verified"] is False
     assert "not editor" in packet.google_doc_access["detail"]
     assert "1 team editor(s)" in packet.google_doc_access["intended"]
+
+
+class CrashOnceDrive:
+    def __init__(self):
+        self.created = 0
+        self.fail_write = True
+
+    async def available(self):
+        return True, "fake"
+
+    async def create_document(self, title):
+        self.created += 1
+        return {"id": "durable-doc-1", "url": "https://docs.example.invalid/durable-doc-1"}
+
+    async def write_blocks(self, document_id, blocks):
+        if self.fail_write:
+            self.fail_write = False
+            raise RuntimeError("synthetic crash after document creation")
+
+    async def share_with_user(self, document_id, email, role):
+        return None
+
+    async def list_permissions(self, document_id):
+        return [OWNER]
+
+
+async def test_durable_export_reuses_document_after_restart(editorial_sessionmaker, tmp_path):
+    ws = uuid.uuid4()
+    candidate = TopicCandidate(
+        workspace_id=ws,
+        week_start=date(2026, 9, 7),
+        moment_ids=[],
+        title="Synthetic candidate",
+        lesson="Synthetic lesson",
+        audience="coaches",
+        public_angle="Synthetic angle",
+        gates={},
+        status="selected",
+        citations_private=[],
+    )
+    async with editorial_sessionmaker() as session:
+        session.add(candidate)
+        await session.flush()
+        packet = RecordingPacket(
+            workspace_id=ws,
+            candidate_id=candidate.id,
+            version=1,
+            bullets=["One useful point"],
+            script_phrases=["Opening", "Book a strategy session."],
+            hook_options=[],
+            beats=[],
+            citations_private=[],
+            public_safety={"status": "clean"},
+            status="ready",
+        )
+        session.add(packet)
+        await session.commit()
+        drive = CrashOnceDrive()
+
+        with pytest.raises(RuntimeError, match="synthetic crash"):
+            await export_packet_durable(
+                session,
+                packet,
+                candidate,
+                client=drive,
+                docx_dir=tmp_path,
+                docx_url="/private.docx",
+            )
+
+        first = (
+            await session.execute(select(ExportIntent).where(ExportIntent.packet_id == packet.id))
+        ).scalar_one()
+        assert first.document_id == "durable-doc-1" and first.status == "failed"
+
+        result = await export_packet_durable(
+            session,
+            packet,
+            candidate,
+            client=drive,
+            docx_dir=tmp_path,
+            docx_url="/private.docx",
+        )
+
+    assert result["status"] == "exported"
+    assert result["google_doc_id"] == "durable-doc-1"
+    assert drive.created == 1

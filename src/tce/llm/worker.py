@@ -20,7 +20,6 @@ import json
 import os
 import platform
 import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -32,6 +31,7 @@ import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from tce.llm.provider import POLICY_MODEL, is_policy_model
@@ -95,10 +95,16 @@ def allowed_auth_methods(env: dict[str, str]) -> frozenset[str]:
 
 
 def resolve_claude_bin(env: dict[str, str]) -> str | None:
+    """Return only the executable explicitly pinned by the supervisor.
+
+    PATH lookup is deliberately forbidden. A desktop can carry several Claude
+    installations, and a scheduled task must never drift to a different CLI
+    after an update or PATH change.
+    """
     explicit = env.get("TCE_CLAUDE_BIN")
     if explicit:
         return explicit
-    return shutil.which("claude")
+    return None
 
 
 # --- subprocess plumbing -----------------------------------------------------
@@ -390,6 +396,51 @@ def parse_retry_at(message: str, now: datetime | None = None) -> datetime | None
         n = int(rel.group(1))
         delta = timedelta(hours=n) if rel.group(2).lower().startswith("h") else timedelta(minutes=n)
         return (now + delta).astimezone(UTC).replace(tzinfo=None)
+    dated = re.search(
+        r"resets?\s+(?:on\s+)?([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*"
+        r"(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*"
+        r"(?:\(([A-Za-z_/+-]+)\))?",
+        message,
+        re.IGNORECASE,
+    )
+    if dated:
+        from calendar import month_abbr, month_name
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        lookup = {
+            label.lower(): index
+            for index in range(1, 13)
+            for label in (month_abbr[index], month_name[index])
+        }
+        month = lookup.get(dated.group(1).lower())
+        if month is None:
+            return None
+        day = int(dated.group(2))
+        hour = int(dated.group(3))
+        minute = int(dated.group(4) or 0)
+        ampm = (dated.group(5) or "").lower()
+        if ampm == "pm" and hour < 12:
+            hour += 12
+        if ampm == "am" and hour == 12:
+            hour = 0
+        if hour > 23 or minute > 59:
+            return None
+        try:
+            tz = ZoneInfo(dated.group(6)) if dated.group(6) else UTC
+        except (ZoneInfoNotFoundError, ValueError):
+            return None
+        local_now = now.astimezone(tz)
+        year = local_now.year
+        try:
+            candidate = datetime(year, month, day, hour, minute, tzinfo=tz)
+        except ValueError:
+            return None
+        if candidate <= local_now:
+            try:
+                candidate = candidate.replace(year=year + 1)
+            except ValueError:
+                return None
+        return candidate.astimezone(UTC).replace(tzinfo=None)
     clock = re.search(
         r"resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([A-Za-z_/+-]+)\))?",
         message,
@@ -412,7 +463,7 @@ def parse_retry_at(message: str, now: datetime | None = None) -> datetime | None
 
                 tz = ZoneInfo(clock.group(4))
             except Exception:
-                tz = UTC
+                return None
         local_now = now.astimezone(tz)
         candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if candidate <= local_now:
@@ -500,6 +551,10 @@ class Worker:
         self.log = log or (lambda msg: print(msg, file=sys.stderr, flush=True))
         self.bin_path = resolve_claude_bin(self.env)
         self.preflight: Preflight | None = None
+        configured_outbox = self.env.get("TCE_WORKER_OUTBOX_DIR", "").strip()
+        self.outbox_dir = Path(configured_outbox) if configured_outbox else None
+        if self.outbox_dir is not None:
+            self.outbox_dir.mkdir(parents=True, exist_ok=True)
 
     def report_status(
         self, state: str, preflight: Preflight | None, job_id: str | None = None
@@ -692,6 +747,45 @@ class Worker:
             self.log(f"submit {outcome.kind} failed (transport); retrying")
         return 0, None
 
+    def persist_outcome(self, job_id: str, outcome: JobOutcome) -> Path | None:
+        """Save model output before delivery so a transport loss cannot discard it."""
+        if self.outbox_dir is None:
+            return None
+        attempt = str(outcome.body.get("attempt_id") or "unknown")
+        path = self.outbox_dir / f"{job_id}-{attempt}-{outcome.kind}.json"
+        tmp = path.with_suffix(".json.tmp")
+        payload = {"job_id": job_id, "kind": outcome.kind, "body": outcome.body}
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+        return path
+
+    def finish_outbox_delivery(self, path: Path | None, code: int) -> None:
+        if path is None:
+            return
+        if 200 <= code < 300:
+            path.unlink(missing_ok=True)
+        elif code == 409:
+            rejected = path.parent / "rejected"
+            rejected.mkdir(parents=True, exist_ok=True)
+            path.replace(rejected / path.name)
+
+    def reconcile_outbox(self) -> bool:
+        """Deliver older outputs first. False means transport is still unavailable."""
+        if self.outbox_dir is None:
+            return True
+        for path in sorted(self.outbox_dir.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                outcome = JobOutcome(str(payload["kind"]), dict(payload["body"]))
+                code, _ = self.submit(str(payload["job_id"]), outcome)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self.log(f"outbox {path.name} unreadable: {type(exc).__name__}")
+                return False
+            self.finish_outbox_delivery(path, code)
+            if code == 0 or code >= 500:
+                return False
+        return True
+
     def run(
         self, *, once: bool = False, max_jobs: int | None = None, poll_seconds: float = 10.0
     ) -> int:
@@ -714,6 +808,12 @@ class Worker:
                 self.log(f"preflight failed: {pf.reason}")
                 self.report_status("preflight_failed", pf)
                 return EXIT_PREFLIGHT_FAILED
+            if not self.reconcile_outbox():
+                self.report_status("waiting_delivery", pf)
+                if once:
+                    return EXIT_OK
+                time.sleep(poll_seconds)
+                continue
             self.report_status("idle", pf)
             leased_any = False
             capacity_hit = False
@@ -733,7 +833,9 @@ class Worker:
                 )
                 self.report_status("running", pf, job_id=job["id"])
                 outcome = self.execute(job, pf)
+                outbox_path = self.persist_outcome(job["id"], outcome)
                 code, _ = self.submit(job["id"], outcome)
+                self.finish_outbox_delivery(outbox_path, code)
                 done += 1
                 self.log(
                     f"job {job['id']} -> {outcome.kind} "

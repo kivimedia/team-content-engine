@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
@@ -273,6 +274,54 @@ def test_plan_shards_keeps_sources_together_and_loses_nothing():
     }
     for sid in split:  # a source that fits in one shard is never split
         assert sum(any(str(pm.source.id) == sid for pm in sh) for sh in shards) == 1
+
+
+async def test_more_than_thirty_shards_are_all_dispatched(
+    editorial_sessionmaker, judge, monkeypatch
+):
+    """The old 30-shard ceiling must never leave repository groups unanalysed."""
+    ws = uuid.uuid4()
+    src = SimpleNamespace(
+        id=uuid.uuid4(),
+        occurred_at=datetime(2026, 9, 8, 9),
+        source_kind="github_commit_group",
+        version_hash="a" * 64,
+        title="Synthetic repository group",
+        url_private=None,
+    )
+    pool = []
+    for i in range(1240):
+        moment = SimpleNamespace(
+            id=uuid.uuid4(),
+            created_at=None,
+            lesson_summary=f"synthetic repository lesson {i}",
+            claim_type="paraphrased",
+            speaker_confidence="high",
+            translation_label=None,
+            language_uncertain=False,
+            sensitivity_flags=[],
+            excerpt_private=f"synthetic excerpt {i}",
+        )
+        pool.append(selector.PoolMoment(moment, src, True))
+    plan = selector.PoolPlan(
+        moments=pool,
+        week_total=len(pool),
+        reserve_eligible=0,
+        reserve_included=0,
+        window_start=datetime(2026, 9, 6, 21),
+        window_end=datetime(2026, 9, 13, 21),
+    )
+
+    async def fake_pool(session, workspace_id, week_start, source_ids=None):
+        return plan
+
+    monkeypatch.setattr(selector, "collect_pool", fake_pool)
+    judge["skip"] = {pm.id for pm in pool}
+    result = await selector.select_candidates(editorial_sessionmaker, ws, WEEK)
+
+    assert len(judge["calls"]) == 31
+    assert sum(len(ids_in(req)) for req in judge["calls"]) == 1240
+    assert len(result.coverage["shards"]) == 31
 
 
 # ---------------------------------------------------------------------------

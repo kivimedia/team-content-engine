@@ -10,7 +10,7 @@ import json
 import tempfile
 import threading
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,7 @@ router = APIRouter(
 
 MIN_LEASE_SECONDS = 30
 MAX_LEASE_SECONDS = 3600
+WORKER_STALE_SECONDS = 180
 
 
 class LeaseBody(BaseModel):
@@ -133,7 +134,19 @@ async def get_worker_status() -> dict[str, Any]:
     with _status_lock:
         if not _worker_status:
             _worker_status.update(_load_status_file())
-        workers = list(_worker_status.values())
+        workers = [dict(worker) for worker in _worker_status.values()]
+    now = queue.utcnow().replace(tzinfo=UTC)
+    for worker in workers:
+        raw = str(worker.get("received_at") or "")
+        try:
+            received = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            age_s = max(0, int((now - received.astimezone(UTC)).total_seconds()))
+        except ValueError:
+            age_s = WORKER_STALE_SECONDS + 1
+        stale = age_s > WORKER_STALE_SECONDS
+        worker["age_seconds"] = age_s
+        worker["stale"] = stale
+        worker["current_state"] = "offline" if stale else str(worker.get("state") or "unknown")
     workers.sort(key=lambda w: str(w.get("received_at") or ""), reverse=True)
     return {"workers": workers, "latest": workers[0] if workers else None}
 

@@ -32,9 +32,11 @@ scheduler may relaunch it every few minutes to recover from a crash.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -69,7 +71,7 @@ def _now() -> str:
 def _no_window() -> dict[str, Any]:
     if os.name == "nt":
         return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
-    return {}
+    return {"start_new_session": True}
 
 
 def _worker_python() -> str:
@@ -80,6 +82,98 @@ def _worker_python() -> str:
         if candidate.exists():
             return str(candidate)
     return str(exe)
+
+
+def terminate_owned_tree(proc: subprocess.Popen, log: Any) -> None:
+    """Terminate only the descendants rooted at the process we started."""
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        result = subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            **_no_window(),
+        )
+        if result.returncode not in (0, 128):
+            log(f"owned tree {proc.pid} taskkill returned {result.returncode}")
+            proc.terminate()
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        proc.terminate()
+
+
+class ProcessOwner:
+    """Windows Job Object that kills assigned workers and descendants on owner exit."""
+
+    def __init__(self) -> None:
+        self.handle: Any = None
+        if os.name != "nt":
+            return
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", ctypes.c_uint32),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32),
+            ]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                (name, ctypes.c_ulonglong)
+                for name in (
+                    "ReadOperationCount",
+                    "WriteOperationCount",
+                    "OtherOperationCount",
+                    "ReadTransferCount",
+                    "WriteTransferCount",
+                    "OtherTransferCount",
+                )
+            ]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BasicLimits),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel.CreateJobObjectW(None, None)
+        if not handle:
+            raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+        limits = ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000
+        if not kernel.SetInformationJobObject(
+            handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+        ):
+            kernel.CloseHandle(handle)
+            raise OSError(ctypes.get_last_error(), "SetInformationJobObject failed")
+        self.handle = handle
+        self._kernel = kernel
+
+    def assign(self, proc: subprocess.Popen) -> None:
+        if self.handle is None:
+            return
+        if not self._kernel.AssignProcessToJobObject(self.handle, int(proc._handle)):
+            raise OSError(ctypes.get_last_error(), "AssignProcessToJobObject failed")
+
+    def close(self) -> None:
+        if self.handle is not None:
+            self._kernel.CloseHandle(self.handle)
+            self.handle = None
 
 
 class Log:
@@ -151,9 +245,8 @@ class Supervisor:
         self.api_ok = False
         self.api_checked_at: str | None = None
         self.api_error: str | None = None
-        self.slots = [
-            Slot(worker_id=f"{args.worker_prefix}-{i + 1}") for i in range(args.workers)
-        ]
+        self.process_owner = ProcessOwner()
+        self.slots = [Slot(worker_id=f"{args.worker_prefix}-{i + 1}") for i in range(args.workers)]
         self.started_at = _now()
 
     # --- configuration -------------------------------------------------------
@@ -174,6 +267,8 @@ class Supervisor:
         env["TCE_PRIVATE_ACCESS_KEY"] = key
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        env["TCE_CLAUDE_BIN"] = self.args.claude_bin
+        env["TCE_WORKER_OUTBOX_DIR"] = str(self.state_dir / "outbox")
         return env
 
     # --- tunnel --------------------------------------------------------------
@@ -195,12 +290,18 @@ class Supervisor:
         cmd = [
             ssh,
             "-N",
-            "-o", "BatchMode=yes",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
-            "-o", "ConnectTimeout=15",
-            "-L", f"127.0.0.1:{self.args.local_port}:127.0.0.1:{self.args.remote_port}",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-o",
+            "ConnectTimeout=15",
+            "-L",
+            f"127.0.0.1:{self.args.local_port}:127.0.0.1:{self.args.remote_port}",
             self.args.ssh_target,
         ]
         err = (self.state_dir / "tunnel.log").open("a", encoding="utf-8")
@@ -208,8 +309,16 @@ class Supervisor:
             self.tunnel = subprocess.Popen(
                 cmd, stdin=subprocess.DEVNULL, stdout=err, stderr=err, **_no_window()
             )
+            self.process_owner.assign(self.tunnel)
             self.log(f"tunnel started pid={self.tunnel.pid} local={self.args.local_port}")
         except OSError as exc:
+            if self.tunnel is not None:
+                terminate_owned_tree(self.tunnel, self.log)
+                try:
+                    self.tunnel.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    self.tunnel.kill()
+                self.tunnel = None
             self.log(f"tunnel could not start: {type(exc).__name__}")
             self.tunnel_next = time.monotonic() + self.tunnel_backoff
         finally:
@@ -235,9 +344,12 @@ class Supervisor:
         cmd = [
             _worker_python(),
             str(WORKER_SCRIPT),
-            "--api-base", self.api_base,
-            "--worker-id", slot.worker_id,
-            "--poll-seconds", str(self.args.poll_seconds),
+            "--api-base",
+            self.api_base,
+            "--worker-id",
+            slot.worker_id,
+            "--poll-seconds",
+            str(self.args.poll_seconds),
         ]
         try:
             slot.proc = subprocess.Popen(
@@ -249,7 +361,15 @@ class Supervisor:
                 stderr=subprocess.STDOUT,
                 **_no_window(),
             )
+            self.process_owner.assign(slot.proc)
         except OSError as exc:
+            if slot.proc is not None:
+                terminate_owned_tree(slot.proc, self.log)
+                try:
+                    slot.proc.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    slot.proc.kill()
+                slot.proc = None
             slot.log_fh.close()
             slot.log_fh = None
             slot.state = "start_failed"
@@ -343,7 +463,7 @@ class Supervisor:
     def stop_all(self) -> None:
         for slot in self.slots:
             if slot.proc and slot.proc.poll() is None:
-                slot.proc.terminate()
+                terminate_owned_tree(slot.proc, self.log)
         deadline = time.monotonic() + 20
         for slot in self.slots:
             if slot.proc:
@@ -354,7 +474,8 @@ class Supervisor:
                 slot.state = "stopped"
                 slot.proc = None
         if self.tunnel and self.tunnel.poll() is None:
-            self.tunnel.terminate()
+            terminate_owned_tree(self.tunnel, self.log)
+        self.process_owner.close()
 
     def run(self) -> int:
         stop_file = self.state_dir / "STOP"
@@ -391,9 +512,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--poll-seconds", type=float, default=10.0)
     parser.add_argument("--check-seconds", type=float, default=15.0)
     parser.add_argument("--preflight-retry-seconds", type=float, default=600.0)
+    parser.add_argument("--claude-bin", default=os.environ.get("TCE_CLAUDE_BIN", ""))
     args = parser.parse_args(argv)
     if args.workers < 1:
         parser.error("--workers must be at least 1")
+    if not args.claude_bin:
+        parser.error("--claude-bin is required; pin the verified VS Code Claude executable")
 
     state_dir = Path(args.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)

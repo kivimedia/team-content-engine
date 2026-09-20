@@ -1,11 +1,9 @@
 """Tests for publishing adapter export format."""
 
-import asyncio
-
 from tce.services.publishing import ManualExportAdapter
 
 
-def test_manual_export_format():
+async def test_manual_export_format():
     """Export should include all platform-specific content."""
     adapter = ManualExportAdapter()
     package = {
@@ -15,7 +13,7 @@ def test_manual_export_format():
         "cta_keyword": "agents",
         "dm_flow": {"trigger": "agents", "ack": "Thanks!"},
     }
-    result = asyncio.get_event_loop().run_until_complete(adapter.publish(package))
+    result = await adapter.publish(package)
     assert result["adapter"] == "manual_export"
     assert result["status"] == "exported"
     assert "facebook" in result
@@ -25,9 +23,9 @@ def test_manual_export_format():
     assert "instructions" in result
 
 
-def test_manual_export_empty_package():
+async def test_manual_export_empty_package():
     """Should handle empty package gracefully."""
     adapter = ManualExportAdapter()
-    result = asyncio.get_event_loop().run_until_complete(adapter.publish({}))
+    result = await adapter.publish({})
     assert result["adapter"] == "manual_export"
     assert result["facebook"]["post"] == ""

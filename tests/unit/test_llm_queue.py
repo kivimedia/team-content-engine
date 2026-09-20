@@ -10,6 +10,7 @@ from sqlalchemy import func, select, update
 
 from tce.llm import queue
 from tce.llm.provider import POLICY_MODEL, LLMRequest
+from tce.models.content_run import WorkerGroupState
 from tce.models.llm_job import LLMJob
 
 SCHEMA = {
@@ -230,6 +231,27 @@ async def test_capacity_without_retry_at_defaults_to_30_minutes(editorial_sessio
     assert failed.retry_at >= before + timedelta(minutes=29)
 
 
+async def test_capacity_pauses_the_shared_subscription_group(editorial_session):
+    await enqueue(editorial_session, 1)
+    await enqueue(editorial_session, 2)
+    first = await queue.lease_job(editorial_session, "slot-1", 600)
+    retry_at = queue.utcnow() + timedelta(hours=2)
+    await queue.fail_job(
+        editorial_session,
+        first.id,
+        first.attempt_id,
+        error_code="capacity",
+        error_detail="weekly subscription limit",
+        retry_at=retry_at,
+    )
+    await editorial_session.commit()
+    assert await queue.lease_job(editorial_session, "slot-2", 600) is None
+    resumed = await queue.lease_job(
+        editorial_session, "slot-2", 600, now=retry_at + timedelta(seconds=1)
+    )
+    assert resumed is not None
+
+
 async def test_invalid_json_requeues_then_fails_at_max_attempts(editorial_session):
     await enqueue(editorial_session, schema=SCHEMA)
     for attempt in range(1, 4):
@@ -310,6 +332,10 @@ async def test_policy_fail_codes_are_final_and_other_codes_retry(editorial_sessi
     ja = await queue.lease_job(editorial_session, "w", 600)
     fa = await queue.fail_job(editorial_session, ja.id, ja.attempt_id, error_code="auth")
     assert fa.status == "failed"
+    assert await queue.lease_job(editorial_session, "w", 600) is None
+    group = (await editorial_session.execute(select(WorkerGroupState))).scalar_one()
+    group.state = "available"  # explicit operator recovery after auth is fixed
+    await editorial_session.flush()
     jb = await queue.lease_job(editorial_session, "w", 600)
     fb = await queue.fail_job(editorial_session, jb.id, jb.attempt_id, error_code="timeout")
     assert fb.status == "queued"

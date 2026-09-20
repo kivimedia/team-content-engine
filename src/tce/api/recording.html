@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#10213b">
+  <title>TCE Recording Studio</title>
+  <link rel="stylesheet" href="/recording.css">
+</head>
+<body>
+  <header class="topbar">
+    <button id="homeButton" class="icon-button" type="button" aria-label="Open script queue">⌂</button>
+    <div class="identity">
+      <strong>Walking studio</strong>
+      <span id="syncState">Loading your scripts</span>
+    </div>
+    <button id="textSizeButton" class="icon-button text-size" type="button" aria-label="Change text size">Aa</button>
+  </header>
+
+  <main>
+    <section id="queueView" class="queue-view" aria-labelledby="queueTitle">
+      <div class="queue-intro">
+        <p class="kicker">This recording sitting</p>
+        <h1 id="queueTitle">Choose the next idea</h1>
+        <p>Each idea keeps its own clips. You can move between scripts without losing a take.</p>
+        <div class="produce-panel">
+          <button id="produceNowButton" type="button">Produce now</button>
+          <span id="produceNowState">Collect the last seven days and prepare recording scripts.</span>
+        </div>
+      </div>
+      <div id="queue" class="queue" aria-live="polite"></div>
+      <div id="emptyQueue" class="empty" hidden>
+        <strong>No ready scripts yet</strong>
+        <span>Return after a packet reaches Ready.</span>
+      </div>
+    </section>
+
+    <section id="studioView" class="studio-view" hidden>
+      <div class="camera-stage">
+        <video id="camera" playsinline muted></video>
+        <div id="cameraEmpty" class="camera-empty">
+          <span class="lens"></span>
+          <strong>Front camera</strong>
+          <span>Camera and microphone start only when you press Record.</span>
+        </div>
+        <div id="recordingFlag" class="recording-flag" hidden><span></span> Recording</div>
+        <div id="interruptionFlag" class="interruption-flag" hidden>Recording interrupted. Check the camera before continuing.</div>
+      </div>
+
+      <div class="script-heading">
+        <h1 id="scriptTitle"></h1>
+        <p id="bigIdea"></p>
+        <div id="hookPanel" class="hook-panel"></div>
+      </div>
+
+      <div class="reader-shell">
+        <nav id="beatRail" class="beat-rail" aria-label="Jump to a point"></nav>
+        <div class="reader-main">
+          <div class="tabs" role="tablist" aria-label="Reader mode">
+            <button id="pointsTab" class="tab is-active" type="button" role="tab" aria-selected="true">Points</button>
+            <button id="scriptTab" class="tab" type="button" role="tab" aria-selected="false">Full script</button>
+          </div>
+          <div id="reader" class="reader" tabindex="0"></div>
+        </div>
+        <nav class="scroll-rail" aria-label="Scroll reader">
+          <button id="scrollUp" type="button" aria-label="Scroll up">⌃</button>
+          <input id="scrollPosition" type="range" min="0" max="100" value="0" aria-label="Reader position">
+          <button id="scrollDown" type="button" aria-label="Scroll down">⌄</button>
+        </nav>
+      </div>
+
+      <div class="session-strip">
+        <span id="timer">00:00</span>
+        <span id="clipCount">No clips yet</span>
+        <span id="uploadState">Saved locally: 0</span>
+      </div>
+
+      <div class="controls" aria-label="Recording controls">
+        <button id="recordButton" class="control record" type="button">Record</button>
+        <button id="pauseButton" class="control" type="button" disabled>Pause</button>
+        <button id="markerButton" class="control" type="button" disabled>Mark take</button>
+        <button id="finishClipButton" class="control" type="button" disabled>Finish clip</button>
+        <button id="finishSessionButton" class="control finish" type="button" disabled>Finish session</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+  <dialog id="switchDialog">
+    <form method="dialog">
+      <h2>Save this clip before switching?</h2>
+      <p>The clip will stay with this script. The next script opens as soon as the bytes are safe on this phone.</p>
+      <div class="dialog-actions">
+        <button value="cancel">Stay here</button>
+        <button id="switchConfirm" value="confirm" class="primary">Save clip and switch</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="/recording.js" defer></script>
+</body>
+</html>

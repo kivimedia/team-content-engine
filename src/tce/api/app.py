@@ -7,8 +7,6 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from tce.settings import settings
-
 from tce.api import dashboard
 from tce.api.routers import (
     admin,
@@ -16,6 +14,7 @@ from tce.api.routers import (
     calendar,
     chat,
     content,
+    content_runs,
     costs,
     dm_fulfillment,
     documents,
@@ -50,6 +49,7 @@ from tce.api.routers import (
 )
 from tce.db.session import async_session
 from tce.services.seed import seed_database
+from tce.settings import settings
 from tce.utils.logging import setup_logging
 
 
@@ -137,6 +137,7 @@ async def lifespan(app: FastAPI):
     import asyncio
 
     media_recovery = asyncio.create_task(production.recover_media_on_startup())
+    schedule_poller = None
 
     # Auto-start the scheduler so recurring workflows (daily_content,
     # weekly_planning, daily_backup, etc.) fire without manual intervention.
@@ -144,6 +145,9 @@ async def lifespan(app: FastAPI):
     # Schedules are OFF unless TCE_SCHEDULER_ENABLED=true: a restart must never
     # start spending on its own. TCE_DISABLE_SCHEDULER=1 still forces off.
     import os
+
+    if os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
+        schedule_poller = asyncio.create_task(content_runs.poll_weekly_schedules(async_session))
 
     if settings.scheduler_enabled and os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
         try:
@@ -157,6 +161,8 @@ async def lifespan(app: FastAPI):
     yield
 
     media_recovery.cancel()
+    if schedule_poller:
+        schedule_poller.cancel()
 
     # Stop the scheduler on shutdown so tests/restarts don't leave
     # orphaned background tasks.
@@ -234,6 +240,7 @@ def create_app() -> FastAPI:
     app.include_router(patterns.router, prefix=prefix)
     app.include_router(briefs.router, prefix=prefix)
     app.include_router(content.router, prefix=prefix)
+    app.include_router(content_runs.router, prefix=prefix)
     app.include_router(qa.router, prefix=prefix)
     app.include_router(pipeline.router, prefix=prefix)
     app.include_router(costs.router, prefix=prefix)

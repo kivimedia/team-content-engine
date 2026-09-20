@@ -34,9 +34,19 @@ rendering do not need the desktop.
 - **SSH tunnel drop**: the supervisor restarts it with backoff.
 - **Supervisor crash or desktop logon**: the scheduled task relaunches it (at logon
   and every 5 minutes; a lock file makes a relaunch a no-op while it runs).
-- **Interrupted runs**: on API start, runs and media tasks that were running are
-  marked interrupted/partial with a message. Re-POST `/evidence/extract` or
-  `/editorial/select`: finished jobs are reused by idempotency key, never re-run.
+- **Interrupted content runs**: `content_runs` and `content_run_stages` keep the
+  exact completed stages and output references. POST
+  `/api/v1/content-runs/<run-id>/resume` leases the first unfinished stage. The
+  stored selection run id and subscription job idempotency keys reuse completed
+  jobs instead of creating duplicates.
+- **Interrupted Google Docs exports**: `export_intents` commits the document id
+  before content, sharing or permission readback. A retry finds that id and
+  continues. It also rechecks access on an already verified export so permission
+  drift cannot remain labelled safe.
+- **Interrupted phone uploads**: recording chunks are checksum-addressed and
+  idempotent by clip and sequence. The browser keeps unsent chunks in IndexedDB;
+  the API assembles only a complete sequence and keeps every source clip after it
+  creates the canonical upload.
 
 The watchdog exits non-zero whenever it had to repair something, so the fleet's
 `run-watched.sh` wrapper records a heartbeat and raises its usual deduplicated alert.
@@ -48,7 +58,12 @@ The watchdog exits non-zero whenever it had to repair something, so the fleet's
 - A worker that cannot verify a `claude.ai` subscription login (exit 3) waits 10
   minutes and verifies again. No job is leased until verification passes.
 - TCE never logs in, switches or rotates Claude accounts.
-- Schedules stay off (`TCE_SCHEDULER_ENABLED=false`); the scheduler routes answer 409.
+- The older publishing scheduler stays off (`TCE_SCHEDULER_ENABLED=false`). The
+  content-run poller only sees durable `editorial_schedules` rows, and every new
+  weekly schedule starts disabled. Enabling one is an explicit private API action.
+- Google Docs export fails closed as `not_connected`, `waiting_worker` or
+  `access_problem`. A private DOCX may exist, but the content run is not `ready`
+  until the restricted Google Doc passes permission readback.
 
 ## Stopping things safely
 
@@ -68,8 +83,66 @@ The watchdog exits non-zero whenever it had to repair something, so the fleet's
 2. Put the TCE private access key in `%USERPROFILE%\.tce-worker\private_access_key`
    and restrict the file to your user (`icacls <file> /inheritance:r /grant:r "%USERNAME%:F"`).
 3. `powershell -NoProfile -File scripts\install_tce_worker_task.ps1 -SshTarget <user@server> -Workers 3`
-4. Check `status.json`: `api_ok: true`, each worker `running`.
+4. The installer finds the newest VS Code Claude bundle, resolves its exact
+   executable path, checks `auth status --json` for a first-party `claude.ai`
+   subscription session, records the CLI version, and passes the pinned path to
+   the supervisor. PATH discovery is intentionally rejected at worker runtime.
+5. Check `status.json`: `api_ok: true`, `auth_ok: true`, the expected Opus policy,
+   and each worker `running`. The API treats a worker receipt older than 180 seconds
+   as offline.
 
 Moment extraction runs up to `TCE_EVIDENCE_EXTRACT_CONCURRENCY` (default 3) sources
 at once, which matches three workers. More workers than that only helps selection,
 which enqueues all shards together.
+
+## Content request surfaces
+
+All three surfaces create the same durable `content_runs` record and share the
+same stage contract: collecting, extracting, selecting, ranking, drafting and
+exporting.
+
+- `POST /api/v1/content-runs/produce-now`: run an explicit week or source scope.
+- `POST /api/v1/content-runs/from-claude/request`: resolve a request such as
+  "Yesterday's Fathom with Dovid is sick. Make a script for me in TCE." Ambiguous
+  matches return choices and create no run.
+- `PUT /api/v1/content-runs/schedule/weekly`: configure the disabled-by-default
+  weekly schedule. Occurrence keys make catch-up and repeated ticks idempotent.
+- `GET /api/v1/content-runs/<run-id>`: inspect current stage, attempts, job ids,
+  outputs and the exact failure or wait reason.
+
+Every route requires the existing private workspace access header. Produce now
+does not bypass subscription capacity, create a metered call, or publish content.
+
+## Recording and post-production
+
+`GET /record` serves the mobile recording studio. It provides the selected hook,
+Points and Full script tabs, beat and scroll controls, text sizing, Record,
+Pause/Resume, Mark take, Finish clip and Finish session. Camera and microphone
+checks run before recording. A session can contain several clips and switch to
+another script without losing the current take.
+
+Finalization verifies audio and video with ffprobe, joins selected clips with
+ffmpeg, saves a timeline map with clip offsets and take markers, and creates one
+canonical `recording_uploads` row. Source clips remain available for a later edit.
+
+The configured transcription WebSocket remains a required local dependency. If
+it is unavailable, TCE says so and does not buy a transcription fallback. Precise
+word timings are labelled `word`; a legacy transcript without word timing is
+labelled `coarse` and cannot support timing-sensitive auto-edit claims.
+
+## Deployment and migration checks
+
+Before `alembic upgrade head`:
+
+1. Verify no duplicate `(workspace_id, candidate_id, version)` rows exist in
+   `recording_packets`.
+2. Take and size-check a PostgreSQL custom-format backup.
+3. Restore that backup into a temporary database and run migrations 038, 039 and
+   040 there.
+4. Keep the desktop `STOP` file in place throughout the deployment.
+
+After restart, verify `/api/v1/health`, Alembic head `040`, anonymous denial on
+the live private routes, authenticated `/record`, and a worker status that is
+honestly stopped or offline while `STOP` exists. Rollback uses the recorded prior
+commit plus the pre-migration backup; never downgrade tables while new code is
+still accepting writes.

@@ -34,6 +34,7 @@ from tce.llm.provider import (
     sha256_hex,
     validate_output,
 )
+from tce.models.content_run import WorkerGroupState
 from tce.models.llm_job import LLMJob
 
 logger = structlog.get_logger()
@@ -45,6 +46,7 @@ SUBSCRIPTION_AUTH_METHODS = frozenset({"claude.ai", "oauth_token"})
 CAPACITY_ERROR = "capacity"
 DEFAULT_CAPACITY_BACKOFF = timedelta(minutes=30)
 MAX_REQUEUES_OF_FAILED = 1
+WORKER_GROUP_KEY = "claude-subscription-opus-5"
 
 # Receipt keys a worker may store. Anything else (emails, org ids, tokens) is dropped.
 RECEIPT_ALLOWED_KEYS = frozenset(
@@ -241,6 +243,21 @@ async def lease_job(
     compare-and-swap UPDATE guarded by the status/attempt the candidate was read with.
     """
     now = now or utcnow()
+    group = (
+        await session.execute(
+            select(WorkerGroupState).where(WorkerGroupState.group_key == WORKER_GROUP_KEY)
+        )
+    ).scalar_one_or_none()
+    if group is not None:
+        if group.state == "refused_policy":
+            return None
+        if group.state == "waiting_capacity" and group.retry_at and group.retry_at > now:
+            return None
+        if group.state == "waiting_capacity":
+            group.state = "available"
+            group.retry_at = None
+            group.reason = "capacity retry time reached; next lease must verify subscription"
+            await session.flush()
     dialect = session.bind.dialect.name if session.bind is not None else ""
     for _ in range(25):
         stmt = select(LLMJob).where(_leasable_clause(now)).order_by(LLMJob.created_at, LLMJob.id)
@@ -500,12 +517,36 @@ async def fail_job(
         job.leased_until = None
         # Capacity is not the job's fault: do not spend one of its attempts.
         job.attempt_count = max(0, (job.attempt_count or 0) - 1)
+        group = (
+            await session.execute(
+                select(WorkerGroupState).where(WorkerGroupState.group_key == WORKER_GROUP_KEY)
+            )
+        ).scalar_one_or_none()
+        if group is None:
+            group = WorkerGroupState(group_key=WORKER_GROUP_KEY)
+            session.add(group)
+        group.state = "waiting_capacity"
+        group.retry_at = job.retry_at
+        group.reason = detail
+        group.receipt = sanitize_receipt(receipt)
     elif error_code in NON_RETRYABLE_ERRORS:
         job.status = "failed"
         job.error_code = error_code
         job.error_detail = detail
         job.leased_until = None
         job.completed_at = now
+        group = (
+            await session.execute(
+                select(WorkerGroupState).where(WorkerGroupState.group_key == WORKER_GROUP_KEY)
+            )
+        ).scalar_one_or_none()
+        if group is None:
+            group = WorkerGroupState(group_key=WORKER_GROUP_KEY)
+            session.add(group)
+        group.state = "refused_policy"
+        group.retry_at = None
+        group.reason = f"{error_code}: {detail}"
+        group.receipt = sanitize_receipt(receipt)
     else:
         _retryable_failure(job, error_code, detail, now)
     await session.flush()

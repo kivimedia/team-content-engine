@@ -67,8 +67,8 @@ AGENT_NAME = "editorial_selector"
 MAX_CANDIDATES_CAP = 6
 # Week moments are never capped; they are split into jobs of at most SHARD_SIZE moments.
 SHARD_SIZE = 40
-# Above this many jobs a run is refused with an explanation instead of silently trimmed.
-MAX_SHARDS = 30
+# Keep provider pressure bounded while still processing every shard.
+MAX_IN_FLIGHT_SHARDS = 3
 RESERVE_POOL_LIMIT = 30
 EXCERPT_CHARS = 600
 
@@ -291,7 +291,10 @@ def _pick_reserve(reserve: list[PoolMoment], limit: int) -> list[PoolMoment]:
 
 
 async def collect_pool(
-    session: AsyncSession, workspace_id: uuid.UUID, week_start: date | datetime | str
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    week_start: date | datetime | str,
+    source_ids: list[uuid.UUID] | None = None,
 ) -> PoolPlan:
     """Every eligible moment of the week, plus a bounded evergreen reserve.
 
@@ -300,18 +303,19 @@ async def collect_pool(
     """
     label_start, _ = week_bounds(week_start)
     start, end = week_source_window(week_start)
-    rows = (
-        await session.execute(
-            select(EvidenceMoment, EvidenceSource)
-            .join(EvidenceSource, EvidenceSource.id == EvidenceMoment.source_id)
-            .where(
-                EvidenceMoment.workspace_id == workspace_id,
-                EvidenceSource.workspace_id == workspace_id,
-                EvidenceMoment.status == "active",
-                or_(EvidenceSource.occurred_at.is_(None), EvidenceSource.occurred_at < end),
-            )
+    stmt = (
+        select(EvidenceMoment, EvidenceSource)
+        .join(EvidenceSource, EvidenceSource.id == EvidenceMoment.source_id)
+        .where(
+            EvidenceMoment.workspace_id == workspace_id,
+            EvidenceSource.workspace_id == workspace_id,
+            EvidenceMoment.status == "active",
+            or_(EvidenceSource.occurred_at.is_(None), EvidenceSource.occurred_at < end),
         )
-    ).all()
+    )
+    if source_ids:
+        stmt = stmt.where(EvidenceSource.id.in_(source_ids))
+    rows = (await session.execute(stmt)).all()
 
     used: set[str] = set()
     used_rows = (
@@ -335,13 +339,15 @@ async def collect_pool(
         if moment.source_version_hash and moment.source_version_hash != source.version_hash:
             continue
         when = _moment_time(source, moment)
-        if when is not None and start <= when < end:
+        if source_ids:
+            week.append(PoolMoment(moment, source, True))
+        elif when is not None and start <= when < end:
             week.append(PoolMoment(moment, source, True))
         elif when is not None and when < start and str(moment.id) not in used:
             reserve.append(PoolMoment(moment, source, False))
 
     week.sort(key=_pm_sort_key)
-    picked = _pick_reserve(reserve, RESERVE_POOL_LIMIT)
+    picked = [] if source_ids else _pick_reserve(reserve, RESERVE_POOL_LIMIT)
     return PoolPlan(
         moments=week + picked,
         week_total=len(week),
@@ -353,9 +359,12 @@ async def collect_pool(
 
 
 async def build_pool(
-    session: AsyncSession, workspace_id: uuid.UUID, week_start: date | datetime | str
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    week_start: date | datetime | str,
+    source_ids: list[uuid.UUID] | None = None,
 ) -> list[PoolMoment]:
-    return (await collect_pool(session, workspace_id, week_start)).moments
+    return (await collect_pool(session, workspace_id, week_start, source_ids)).moments
 
 
 def plan_shards(pool: list[PoolMoment], shard_size: int | None = None) -> list[list[PoolMoment]]:
@@ -390,6 +399,7 @@ def _pool_prompt_item(pm: PoolMoment) -> dict[str, Any]:
         "moment_id": pm.id,
         "pool": "this_week" if pm.in_week else "evergreen_reserve",
         "source_kind": s.source_kind,
+        "source_version_hash": s.version_hash,
         "occurred_at": s.occurred_at.isoformat() if s.occurred_at else None,
         "lesson_summary": m.lesson_summary,
         "claim_type": m.claim_type,
@@ -964,7 +974,8 @@ async def _global_rank(
             ],
             system=RANK_SYSTEM_PROMPT,
             output_schema=RANK_OUTPUT_SCHEMA,
-            # up to MAX_SHARDS * MAX_CANDIDATES_CAP finalists, each needing a one-line reason
+            # Every finalist remains explicit; reduction rounds can be added if measured
+            # prompt size approaches the provider context window.
             max_tokens=16384,
             prompt_version=RANK_PROMPT_VERSION,
             workspace_id=ws,
@@ -1163,6 +1174,7 @@ async def select_candidates(
     max_candidates: int = 6,
     selection_run_id: uuid.UUID | None = None,
     on_activity: Any = None,
+    source_ids: list[uuid.UUID] | None = None,
 ) -> SelectionResult:
     """Run (or resume) one selection for a week.
 
@@ -1181,7 +1193,7 @@ async def select_candidates(
 
     async with open_session(sessionmaker_or_session) as session:
         activity("Building evidence pool")
-        plan = await collect_pool(session, ws, start)
+        plan = await collect_pool(session, ws, start, source_ids)
         result = SelectionResult(
             selection_run_id=run_id,
             status="complete",
@@ -1233,14 +1245,6 @@ async def select_candidates(
             )
         elif plan.moments and max_candidates > 0:
             shards = plan_shards(plan.moments)
-            if len(shards) > MAX_SHARDS:
-                result.status = "failed"
-                result.detail = (
-                    f"{len(plan.moments)} moments need {len(shards)} selection jobs, above the "
-                    f"limit of {MAX_SHARDS}; nothing was sent or saved. Narrow the evidence "
-                    "(exclude low-signal sources) and retry."
-                )
-                return result
             activity(f"Loading strategy and feedback ({len(plan.moments)} moments in pool)")
             strategy = await load_effective_strategy(session, ws)
             feedback = await summarize_feedback(session, ws)
@@ -1295,15 +1299,18 @@ async def select_candidates(
                 f"{n_moments} moments" + (" (resumed)" if result.resumed else "")
             )
 
+            in_flight = asyncio.Semaphore(MAX_IN_FLIGHT_SHARDS)
+
             async def run_shard(spec: ShardSpec) -> tuple[ShardSpec, Any, Any]:
-                try:
-                    if spec.requeue_failed:
-                        llm = await _llm.complete(spec.request, requeue_failed=True)
-                    else:
-                        llm = await _llm.complete(spec.request)
-                    outcome: tuple[ShardSpec, Any, Any] = (spec, llm, None)
-                except LLMUnavailable as exc:
-                    outcome = (spec, None, exc)
+                async with in_flight:
+                    try:
+                        if spec.requeue_failed:
+                            llm = await _llm.complete(spec.request, requeue_failed=True)
+                        else:
+                            llm = await _llm.complete(spec.request)
+                        outcome: tuple[ShardSpec, Any, Any] = (spec, llm, None)
+                    except LLMUnavailable as exc:
+                        outcome = (spec, None, exc)
                 done["n"] += 1
                 activity(
                     f"Selection shard {spec.shard}/{spec.shards} "

@@ -378,6 +378,30 @@ def test_parse_retry_at_formats():
     assert w.parse_retry_at("no time here", now) is None
 
 
+def test_parse_retry_at_dated_israel_reset_and_year_rollover():
+    now = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
+    assert w.parse_retry_at("limit resets Sep 24, 1am (Asia/Jerusalem)", now) == datetime(
+        2026, 9, 23, 22, 0
+    )
+    december = datetime(2026, 12, 30, 10, 0, tzinfo=UTC)
+    assert w.parse_retry_at("resets Jan 2, 3pm (Asia/Jerusalem)", december) == datetime(
+        2027, 1, 2, 13, 0
+    )
+
+
+def test_parse_retry_at_rejects_invalid_date_or_timezone():
+    now = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
+    assert w.parse_retry_at("resets Feb 31, 1am (Asia/Jerusalem)", now) is None
+    assert w.parse_retry_at("resets Sep 24, 1am (Mars/Olympus)", now) is None
+
+
+def test_worker_requires_explicit_pinned_claude_binary():
+    assert w.resolve_claude_bin({"PATH": "/path"}) is None
+    assert w.resolve_claude_bin({"TCE_CLAUDE_BIN": "/verified/vscode/claude"}) == (
+        "/verified/vscode/claude"
+    )
+
+
 def test_execute_policy_violation_when_cli_used_api_key():
     out = stream(key_source="ANTHROPIC_API_KEY")
     worker = w.Worker(
@@ -444,6 +468,47 @@ def test_run_once_leases_executes_and_completes():
     assert complete[0]["attempt_id"] == job()["attempt_id"]
     assert complete[0]["receipt"]["models"][POLICY_MODEL]["output_tokens"] == 9
     assert "someone@example.com" not in json.dumps(api.posts)
+
+
+def test_completion_outbox_retries_before_any_new_lease(tmp_path, monkeypatch):
+    monkeypatch.setattr(w.time, "sleep", lambda _seconds: None)
+    class FirstApi(FakeApi):
+        def post(self, path, body):
+            self.posts.append((path, body))
+            if path == "/lease":
+                return 200, {"job": self.jobs.pop(0) if self.jobs else None}
+            if path.endswith("/complete"):
+                return 0, {"detail": "synthetic transport loss"}
+            return 200, {"status": "ok"}
+
+    env = {**BASE_ENV, "TCE_WORKER_OUTBOX_DIR": str(tmp_path / "outbox")}
+    first_api = FirstApi([job()])
+    first = w.Worker(
+        first_api,
+        "w1",
+        env=env,
+        popen=FakePopen(FakeProc(stream())),
+        runner=runner_for(AUTH_OK),
+        log=lambda _: None,
+        heartbeat_s=3600,
+    )
+    assert first.run(once=True) == w.EXIT_OK
+    pending = list((tmp_path / "outbox").glob("*.json"))
+    assert len(pending) == 1
+
+    second_api = FakeApi()
+    second = w.Worker(
+        second_api,
+        "w1",
+        env=env,
+        popen=FakePopen(FakeProc(stream())),
+        runner=runner_for(AUTH_OK),
+        log=lambda _: None,
+    )
+    assert second.run(once=True) == w.EXIT_OK
+    paths = [path for path, _ in second_api.posts]
+    assert paths.index(f"/{job()['id']}/complete") < paths.index("/lease")
+    assert list((tmp_path / "outbox").glob("*.json")) == []
 
 
 def test_transport_reset_is_status_zero_not_a_crash(monkeypatch):

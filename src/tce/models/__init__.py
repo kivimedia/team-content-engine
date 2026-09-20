@@ -4,6 +4,14 @@ from tce.models.audit_log import AuditLog
 from tce.models.brand_profile import BrandProfile
 from tce.models.competitor_post_snapshot import CompetitorPostSnapshot
 from tce.models.content_calendar import ContentCalendarEntry
+from tce.models.content_run import (
+    ContentRun,
+    ContentRunStage,
+    EditorialSchedule,
+    EditorialScheduleOccurrence,
+    StageResultCache,
+    WorkerGroupState,
+)
 from tce.models.cost_event import CostEvent
 from tce.models.creator_profile import CreatorProfile
 from tce.models.dm_fulfillment import DMFulfillmentLog
@@ -12,6 +20,7 @@ from tce.models.editorial import (
     EvidenceCollectionRun,
     EvidenceMoment,
     EvidenceSource,
+    ExportIntent,
     PublicationReceipt,
     RecordingPacket,
     RecordingUpload,
@@ -29,6 +38,7 @@ from tce.models.post_example import PostExample
 from tce.models.post_package import PostPackage
 from tce.models.prompt_version import PromptVersion
 from tce.models.qa_scorecard import QAScorecard
+from tce.models.recording_session import RecordingChunk, RecordingClip, RecordingSession
 from tce.models.render_queue import RenderQueueJob
 from tce.models.repo_brief import RepoBrief
 from tce.models.research_brief import ResearchBrief
@@ -51,11 +61,16 @@ __all__ = [
     "AuditLog",
     "BrandProfile",
     "CompetitorPostSnapshot",
+    "ContentRun",
+    "ContentRunStage",
     "ContentCalendarEntry",
     "CostEvent",
     "CreatorProfile",
     "DMFulfillmentLog",
     "EditorialFeedback",
+    "ExportIntent",
+    "EditorialSchedule",
+    "EditorialScheduleOccurrence",
     "EvidenceCollectionRun",
     "EvidenceMoment",
     "EvidenceSource",
@@ -72,6 +87,9 @@ __all__ = [
     "PublicationReceipt",
     "QAScorecard",
     "RecordingPacket",
+    "RecordingChunk",
+    "RecordingClip",
+    "RecordingSession",
     "RecordingUpload",
     "NarrationScript",
     "RenderQueueJob",
@@ -79,6 +97,7 @@ __all__ = [
     "ResearchBrief",
     "SourceDocument",
     "StoryBrief",
+    "StageResultCache",
     "SystemVersion",
     "TopicCandidate",
     "TrackedRepo",
@@ -87,6 +106,7 @@ __all__ = [
     "VideoLeadScript",
     "WalkingVideoScript",
     "WeeklyGuide",
+    "WorkerGroupState",
     "WorkspacePortfolio",
     "WorkspaceStrategy",
     "WorkspaceTrendFocus",

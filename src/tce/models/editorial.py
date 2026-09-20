@@ -193,6 +193,9 @@ class EditorialFeedback(_PrivateWorkspaceMixin, Base):
 
 class RecordingPacket(_PrivateWorkspaceMixin, Base):
     __tablename__ = "recording_packets"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "candidate_id", "version", name="uq_packet_version"),
+    )
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("topic_candidates.id", ondelete="CASCADE"), index=True
@@ -203,6 +206,10 @@ class RecordingPacket(_PrivateWorkspaceMixin, Base):
     facebook_post: Mapped[str | None] = mapped_column(Text, nullable=True)
     linkedin_post: Mapped[str | None] = mapped_column(Text, nullable=True)
     interviewer_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Packet v2. Legacy rows keep these nullable and remain readable.
+    hook_options: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONType, nullable=True)
+    selected_hook_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    beats: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONType, nullable=True)
     citations_private: Mapped[list[dict[str, Any]]] = mapped_column(JSONType, default=list)
     # {"checked": bool, "issues": [...], "status": "clean"|"issues"|"unevaluated"}
     public_safety: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
@@ -214,6 +221,29 @@ class RecordingPacket(_PrivateWorkspaceMixin, Base):
     status: Mapped[str] = mapped_column(String(20), default="draft")
     prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
     job_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+
+
+class ExportIntent(_PrivateWorkspaceMixin, Base):
+    """Restart-safe identity for one packet-version Google Docs export."""
+
+    __tablename__ = "export_intents"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "packet_id", "packet_version", name="uq_export_intent"),
+        UniqueConstraint("marker", name="uq_export_marker"),
+    )
+
+    packet_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("recording_packets.id", ondelete="CASCADE"), index=True
+    )
+    packet_version: Mapped[int] = mapped_column(Integer)
+    marker: Mapped[str] = mapped_column(String(120))
+    provider: Mapped[str] = mapped_column(String(30), default="google_docs")
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    document_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    document_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    access_readback: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class RecordingUpload(_PrivateWorkspaceMixin, Base):
@@ -229,6 +259,9 @@ class RecordingUpload(_PrivateWorkspaceMixin, Base):
     )
     packet_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("recording_packets.id", ondelete="SET NULL"), nullable=True
+    )
+    recording_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("recording_sessions.id", ondelete="SET NULL"), nullable=True, index=True
     )
     original_filename: Mapped[str] = mapped_column(String(300))
     storage_path: Mapped[str] = mapped_column(String(1000))

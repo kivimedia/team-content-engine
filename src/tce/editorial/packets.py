@@ -36,7 +36,7 @@ from tce.models.editorial import EvidenceSource, RecordingPacket, TopicCandidate
 from tce.models.llm_job import LLMJob
 from tce.services.strategy_loader import load_effective_strategy
 
-PROMPT_VERSION = "recording_packet.v1"
+PROMPT_VERSION = "recording_packet.v2"
 JOB_TYPE = "recording_packet"
 AGENT_NAME = "recording_packet_writer"
 MIN_BULLETS = 5
@@ -75,6 +75,12 @@ outcome that the cited evidence does not measure.
 - facebook_post and linkedin_post adapt the same lesson for text, ending with the same \
 strategy-session invitation. No long dashes.
 - interviewer_prompt: one question an interviewer could ask so Ziv answers in his own words.
+- hook_options: exactly three honest openings, ranked best first. Each names the unresolved
+  viewer question, the phrase ID that pays it off, the evidence moment IDs that support it,
+  and a private ranking rationale. The first option is selected by default and its text must
+  be the first spoken script phrase. Curiosity cannot hide or distort the central lesson.
+- beats: one beat for each walking bullet. Use stable phrase IDs p001, p002 and so on and map
+  every beat to an ordered inclusive phrase range.
 - self_check: report honestly whether each rule holds.
 
 Return only JSON matching the schema."""
@@ -87,6 +93,45 @@ OUTPUT_SCHEMA: dict[str, Any] = {
         "facebook_post": {"type": "string"},
         "linkedin_post": {"type": "string"},
         "interviewer_prompt": {"type": "string"},
+        "hook_options": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "text",
+                    "question",
+                    "payoff_phrase_id",
+                    "moment_ids",
+                    "rationale",
+                ],
+                "properties": {
+                    "id": {"type": "string"},
+                    "text": {"type": "string"},
+                    "question": {"type": "string"},
+                    "payoff_phrase_id": {"type": "string"},
+                    "moment_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "rationale": {"type": "string"},
+                },
+            },
+        },
+        "selected_hook_id": {"type": "string"},
+        "beats": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id", "label", "bullet_index", "start_phrase_id", "end_phrase_id"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "label": {"type": "string"},
+                    "bullet_index": {"type": "integer"},
+                    "start_phrase_id": {"type": "string"},
+                    "end_phrase_id": {"type": "string"},
+                },
+            },
+        },
         "self_check": {
             "type": "object",
             "properties": {
@@ -105,6 +150,9 @@ OUTPUT_SCHEMA: dict[str, Any] = {
         "facebook_post",
         "linkedin_post",
         "interviewer_prompt",
+        "hook_options",
+        "selected_hook_id",
+        "beats",
         "self_check",
     ],
 }
@@ -160,6 +208,71 @@ def validate_packet_output(data: Any) -> dict[str, Any]:
         if not isinstance(data.get(key), str) or not data[key].strip():
             errors.append(f"{key} is required")
 
+    phrase_ids = [f"p{i:03d}" for i in range(1, len(phrases) + 1)]
+    phrase_positions = {pid: index for index, pid in enumerate(phrase_ids)}
+    options = data.get("hook_options")
+    if not isinstance(options, list) or len(options) != 3:
+        errors.append("hook_options must contain exactly three openings")
+        options = []
+    clean_options: list[dict[str, Any]] = []
+    option_ids: set[str] = set()
+    for option in options:
+        if not isinstance(option, dict):
+            errors.append("each hook option must be an object")
+            continue
+        clean = {
+            key: str(option.get(key) or "").strip()
+            for key in ("id", "text", "question", "payoff_phrase_id", "rationale")
+        }
+        moment_ids = [str(value) for value in (option.get("moment_ids") or []) if str(value)]
+        if not all(clean.values()) or not moment_ids:
+            errors.append("each hook needs text, question, payoff, evidence and rationale")
+            continue
+        if clean["id"] in option_ids:
+            errors.append("hook option ids must be unique")
+        option_ids.add(clean["id"])
+        if clean["payoff_phrase_id"] not in phrase_positions:
+            errors.append(f"hook {clean['id']} has an unknown payoff phrase")
+        clean["moment_ids"] = moment_ids
+        clean_options.append(clean)
+    selected_hook_id = str(data.get("selected_hook_id") or "").strip()
+    selected = next((item for item in clean_options if item["id"] == selected_hook_id), None)
+    if selected is None:
+        errors.append("selected_hook_id must identify one hook option")
+    elif phrases and selected["text"] != phrases[0].strip():
+        errors.append("the selected hook text must be the first spoken script phrase")
+
+    beats = data.get("beats")
+    if not isinstance(beats, list) or len(beats) != len(bullets):
+        errors.append("beats must contain one ordered range for every bullet")
+        beats = []
+    clean_beats: list[dict[str, Any]] = []
+    for expected_index, beat in enumerate(beats):
+        if not isinstance(beat, dict):
+            errors.append("each beat must be an object")
+            continue
+        start_id = str(beat.get("start_phrase_id") or "")
+        end_id = str(beat.get("end_phrase_id") or "")
+        try:
+            bullet_index = int(beat.get("bullet_index"))
+        except (TypeError, ValueError):
+            bullet_index = -1
+        if bullet_index != expected_index:
+            errors.append("beat bullet indexes must be sequential")
+        if start_id not in phrase_positions or end_id not in phrase_positions:
+            errors.append("beat range references an unknown phrase")
+        elif phrase_positions[start_id] > phrase_positions[end_id]:
+            errors.append("beat range ends before it starts")
+        clean_beats.append(
+            {
+                "id": str(beat.get("id") or f"b{expected_index + 1:02d}"),
+                "label": str(beat.get("label") or bullets[expected_index]).strip(),
+                "bullet_index": bullet_index,
+                "start_phrase_id": start_id,
+                "end_phrase_id": end_id,
+            }
+        )
+
     public = [
         *(bullets or []),
         *(phrases or []),
@@ -180,6 +293,9 @@ def validate_packet_output(data: Any) -> dict[str, Any]:
         "facebook_post": data["facebook_post"].strip(),
         "linkedin_post": data["linkedin_post"].strip(),
         "interviewer_prompt": data["interviewer_prompt"].strip(),
+        "hook_options": clean_options,
+        "selected_hook_id": selected_hook_id,
+        "beats": clean_beats,
         "self_check": data.get("self_check") if isinstance(data.get("self_check"), dict) else {},
     }
 
@@ -361,6 +477,16 @@ async def build_packet(
                 detail="packet failed validation",
                 errors=str(exc).split("; "),
             )
+        cited_moments = {
+            moment_id for option in clean["hook_options"] for moment_id in option["moment_ids"]
+        }
+        if not cited_moments.issubset({str(value) for value in (cand.moment_ids or [])}):
+            return PacketOutcome(
+                status="failed",
+                job_id=llm.job_id,
+                detail="packet hook cited evidence outside the selected idea",
+                errors=["hook moment IDs must belong to the candidate"],
+            )
 
         try:
             safety = scan_public_text(
@@ -427,6 +553,9 @@ async def build_packet(
             facebook_post=clean["facebook_post"],
             linkedin_post=clean["linkedin_post"],
             interviewer_prompt=clean["interviewer_prompt"],
+            hook_options=clean["hook_options"],
+            selected_hook_id=clean["selected_hook_id"],
+            beats=clean["beats"],
             citations_private=list(cand.citations_private or []),
             public_safety=safety,
             status="ready" if safety["status"] == "clean" else "draft",
@@ -462,3 +591,78 @@ async def list_packets(
         .scalars()
         .all()
     )
+
+
+async def choose_hook(
+    session: AsyncSession,
+    workspace_id: uuid.UUID | str,
+    packet_id: uuid.UUID | str,
+    hook_id: str,
+) -> RecordingPacket:
+    """Create a validated packet version with a different compatible opening.
+
+    Existing packets are immutable because recordings bind to their exact version.
+    """
+    ws = coerce_uuid(workspace_id)
+    original = (
+        await session.execute(
+            select(RecordingPacket).where(
+                RecordingPacket.workspace_id == ws,
+                RecordingPacket.id == coerce_uuid(packet_id),
+            )
+        )
+    ).scalar_one_or_none()
+    if original is None:
+        raise PacketValidationError("packet not found")
+    options = list(original.hook_options or [])
+    selected = next((item for item in options if item.get("id") == hook_id), None)
+    if selected is None:
+        raise PacketValidationError("hook option not found")
+    phrases = list(original.script_phrases or [])
+    if not phrases:
+        raise PacketValidationError("packet has no script")
+    phrases[0] = str(selected.get("text") or "").strip()
+    clean = validate_packet_output(
+        {
+            "bullets": list(original.bullets or []),
+            "script_phrases": phrases,
+            "facebook_post": original.facebook_post,
+            "linkedin_post": original.linkedin_post,
+            "interviewer_prompt": original.interviewer_prompt,
+            "hook_options": options,
+            "selected_hook_id": hook_id,
+            "beats": list(original.beats or []),
+        }
+    )
+    maximum = (
+        await session.execute(
+            select(func.max(RecordingPacket.version)).where(
+                RecordingPacket.workspace_id == ws,
+                RecordingPacket.candidate_id == original.candidate_id,
+            )
+        )
+    ).scalar_one() or 0
+    now = datetime.now(UTC).replace(tzinfo=None)
+    clone = RecordingPacket(
+        workspace_id=ws,
+        candidate_id=original.candidate_id,
+        version=int(maximum) + 1,
+        bullets=clean["bullets"],
+        script_phrases=clean["script_phrases"],
+        facebook_post=clean["facebook_post"],
+        linkedin_post=clean["linkedin_post"],
+        interviewer_prompt=clean["interviewer_prompt"],
+        hook_options=clean["hook_options"],
+        selected_hook_id=clean["selected_hook_id"],
+        beats=clean["beats"],
+        citations_private=list(original.citations_private or []),
+        public_safety=dict(original.public_safety or {}),
+        status="ready" if (original.public_safety or {}).get("status") == "clean" else "draft",
+        prompt_version=original.prompt_version,
+        job_id=original.job_id,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(clone)
+    await session.flush()
+    return clone

@@ -38,9 +38,98 @@ def good_output(**over) -> dict:
         "facebook_post": "A question before you plan a course. Book a strategy session.",
         "linkedin_post": "Plan the course from the problems. Book a strategy session.",
         "interviewer_prompt": "What do you ask before discussing lessons?",
+        "hook_options": [
+            {
+                "id": "hook-1",
+                "text": "When a coach asks me what lessons to put in a course,",
+                "question": "Why start somewhere other than the lessons?",
+                "payoff_phrase_id": "p004",
+                "moment_ids": ["11111111-1111-1111-1111-111111111111"],
+                "rationale": "Opens on the familiar mistake and pays it off quickly.",
+            },
+            {
+                "id": "hook-2",
+                "text": "The best course outline does not begin with lessons.",
+                "question": "What should it begin with?",
+                "payoff_phrase_id": "p004",
+                "moment_ids": ["11111111-1111-1111-1111-111111111111"],
+                "rationale": "A direct tension statement.",
+            },
+            {
+                "id": "hook-3",
+                "text": "I used to start course planning one step too late.",
+                "question": "What was the missing first step?",
+                "payoff_phrase_id": "p003",
+                "moment_ids": ["11111111-1111-1111-1111-111111111111"],
+                "rationale": "Personal and honest.",
+            },
+        ],
+        "selected_hook_id": "hook-1",
+        "beats": [
+            {
+                "id": "b01",
+                "label": "Outcome",
+                "bullet_index": 0,
+                "start_phrase_id": "p001",
+                "end_phrase_id": "p002",
+            },
+            {
+                "id": "b02",
+                "label": "Question",
+                "bullet_index": 1,
+                "start_phrase_id": "p003",
+                "end_phrase_id": "p003",
+            },
+            {
+                "id": "b03",
+                "label": "Problems",
+                "bullet_index": 2,
+                "start_phrase_id": "p004",
+                "end_phrase_id": "p004",
+            },
+            {
+                "id": "b04",
+                "label": "Order",
+                "bullet_index": 3,
+                "start_phrase_id": "p005",
+                "end_phrase_id": "p005",
+            },
+            {
+                "id": "b05",
+                "label": "Lessons",
+                "bullet_index": 4,
+                "start_phrase_id": "p006",
+                "end_phrase_id": "p006",
+            },
+            {
+                "id": "b06",
+                "label": "Invitation",
+                "bullet_index": 5,
+                "start_phrase_id": "p007",
+                "end_phrase_id": "p008",
+            },
+        ],
         "self_check": {"one_lesson": True, "cta_is_strategy_session": True},
     }
     data.update(over)
+    if "script_phrases" in over and "hook_options" not in over:
+        data["hook_options"][0]["text"] = data["script_phrases"][0]
+    if ("bullets" in over or "script_phrases" in over) and "beats" not in over:
+        count = len(data["bullets"])
+        phrase_count = len(data["script_phrases"])
+        data["beats"] = []
+        for index, label in enumerate(data["bullets"]):
+            start = 1 + (index * phrase_count // count)
+            end = max(start, ((index + 1) * phrase_count // count))
+            data["beats"].append(
+                {
+                    "id": f"b{index + 1:02d}",
+                    "label": label,
+                    "bullet_index": index,
+                    "start_phrase_id": f"p{start:03d}",
+                    "end_phrase_id": f"p{end:03d}",
+                }
+            )
     return data
 
 
@@ -62,7 +151,7 @@ async def make_candidate(session, ws, status="selected"):
     c = TopicCandidate(
         workspace_id=ws,
         week_start=datetime(2026, 9, 7),
-        moment_ids=[],
+        moment_ids=["11111111-1111-1111-1111-111111111111"],
         title="Build the course around problems solved",
         lesson="Order problems first.",
         audience="coaches",
@@ -174,7 +263,18 @@ async def test_build_packet_persists_clean_packet_with_cta_and_no_price(
     assert "strategy session" in " ".join(p["script_phrases"][-2:]).lower()
     assert "$" not in " ".join(p["script_phrases"] + p["bullets"])
     req = fake_llm["calls"][0]
-    assert (req.job_type, req.prompt_version) == ("recording_packet", "recording_packet.v1")
+    assert (req.job_type, req.prompt_version) == ("recording_packet", "recording_packet.v2")
+
+
+def test_hook_and_beat_contract_rejects_unknown_payoff_and_wrong_opening():
+    bad = good_output()
+    bad["hook_options"][0]["payoff_phrase_id"] = "p999"
+    with pytest.raises(packets.PacketValidationError, match="payoff"):
+        packets.validate_packet_output(bad)
+    bad = good_output()
+    bad["hook_options"][0]["text"] = "Different from the spoken opening"
+    with pytest.raises(packets.PacketValidationError, match="first spoken"):
+        packets.validate_packet_output(bad)
 
 
 async def test_packet_with_participant_name_and_price_flags_issues(
@@ -208,6 +308,31 @@ async def test_versions_increment_and_older_superseded(editorial_sessionmaker, f
             .all()
         )
     assert [r.status for r in rows] == ["superseded", "ready"]
+
+
+async def test_choose_hook_creates_immutable_packet_version(editorial_sessionmaker, fake_llm):
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        candidate = await make_candidate(s, ws)
+    built = await packets.build_packet(editorial_sessionmaker, ws, candidate.id)
+    original_id = uuid.UUID(built.packet["id"])
+    original_opening = built.packet["script_phrases"][0]
+
+    async with editorial_sessionmaker() as s:
+        clone = await packets.choose_hook(s, ws, original_id, "hook-2")
+        await s.commit()
+        clone_id = clone.id
+
+    async with editorial_sessionmaker() as s:
+        rows = list(
+            (await s.execute(select(RecordingPacket).order_by(RecordingPacket.version)))
+            .scalars()
+            .all()
+        )
+    assert [row.version for row in rows] == [1, 2]
+    assert rows[0].id == original_id and rows[0].script_phrases[0] == original_opening
+    assert rows[1].id == clone_id and rows[1].selected_hook_id == "hook-2"
+    assert rows[1].script_phrases[0] == "The best course outline does not begin with lessons."
 
 
 async def test_invalid_output_and_unavailable_persist_nothing(editorial_sessionmaker, fake_llm):

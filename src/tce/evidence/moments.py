@@ -395,6 +395,7 @@ async def sources_needing_extraction(
     window_start: datetime | None,
     window_end: datetime | None,
     source_kinds: list[str] | None = None,
+    source_ids: list[uuid.UUID] | None = None,
 ) -> list[EvidenceSource]:
     stmt = select(EvidenceSource).where(
         EvidenceSource.workspace_id == workspace_id,
@@ -402,6 +403,8 @@ async def sources_needing_extraction(
     )
     if source_kinds:
         stmt = stmt.where(EvidenceSource.source_kind.in_(source_kinds))
+    if source_ids:
+        stmt = stmt.where(EvidenceSource.id.in_(source_ids))
     if window_start is not None:
         stmt = stmt.where(EvidenceSource.occurred_at >= to_db(window_start))
     if window_end is not None:
@@ -445,6 +448,7 @@ async def extract_moments(
     run_id: uuid.UUID | None = None,
     wait_timeout_s: float | None = None,
     source_kinds: list[str] | None = None,
+    source_ids: list[uuid.UUID] | None = None,
     concurrency: int | None = None,
 ) -> uuid.UUID:
     """Extract moments for every source lacking active moments for its current hash.
@@ -465,7 +469,7 @@ async def extract_moments(
     try:
         async with sessionmaker() as session:
             sources = await sources_needing_extraction(
-                session, workspace_id, window_start, window_end, source_kinds
+                session, workspace_id, window_start, window_end, source_kinds, source_ids
             )
         ledger.counts["sources"] = len(sources)
         await ledger.set_activity(f"Moment extraction: {len(sources)} sources need extraction")

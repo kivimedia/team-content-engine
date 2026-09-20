@@ -1,9 +1,8 @@
 """Local, free media steps: probe, transcribe, cut. No metered API is reachable from here.
 
-- Transcription: a self-hosted faster-whisper worker over WebSocket (the protocol of
-  the VPS `courseiq-whisperx` worker: send JSON meta, then the audio bytes; it answers
-  status messages and finally `transcript_md` with `[HH:MM:SS] text` lines). When no
-  URL is configured the step is `unavailable` with the reason.
+- Transcription: a configured self-hosted faster-whisper worker over WebSocket. Send
+  JSON meta, then media bytes. A worker may return precise `words` or the legacy
+  `transcript_md` whole-second format. Precision is stored on every timing row.
 - Render: ffmpeg trim + concat of the kept ranges into an H.264 MP4 with the captions
   burned in (readable anywhere) and also carried as a soft mov_text track. The caller
   keeps SRT/VTT sidecars. An audio-only upload gets a plain dark background.
@@ -69,6 +68,42 @@ async def probe_duration(path: str | Path) -> float | None:
         return None
 
 
+async def probe_media(path: str | Path) -> dict[str, Any]:
+    """Return container, duration and audible/video stream proof from ffprobe."""
+    exe = ffprobe_path()
+    if not exe:
+        raise StepUnavailableError("ffprobe is not installed")
+    proc = await asyncio.create_subprocess_exec(
+        exe,
+        "-v", "error",
+        "-show_streams",
+        "-show_format",
+        "-of", "json",
+        str(path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, _err = await proc.communicate()
+    if proc.returncode != 0:
+        raise ValueError("ffprobe could not read the assembled recording")
+    data = json.loads(out.decode("utf-8", "replace") or "{}")
+    streams = data.get("streams") or []
+    duration = (data.get("format") or {}).get("duration")
+    return {
+        "duration_s": float(duration) if duration not in (None, "N/A") else None,
+        "has_audio": any(item.get("codec_type") == "audio" for item in streams),
+        "has_video": any(item.get("codec_type") == "video" for item in streams),
+        "format_name": (data.get("format") or {}).get("format_name"),
+        "streams": [
+            {
+                "type": item.get("codec_type"),
+                "codec": item.get("codec_name"),
+                "width": item.get("width"),
+                "height": item.get("height"),
+            }
+            for item in streams
+        ],
+    }
 _LINE_RE = re.compile(r"^\[(\d{2}):(\d{2}):(\d{2})\]\s*(.+)$")
 
 
@@ -99,6 +134,25 @@ def parse_transcript_md(md: str, duration_s: float | None = None) -> list[dict[s
                 "precision": "whole_second_start_inferred_end",
             }
         )
+    return out
+
+
+def parse_precise_words(words: Any) -> list[dict[str, Any]]:
+    if not isinstance(words, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in words:
+        if not isinstance(item, dict):
+            return []
+        try:
+            start = float(item["start"])
+            end = float(item["end"])
+        except (KeyError, TypeError, ValueError):
+            return []
+        text = str(item.get("word") or item.get("text") or "").strip()
+        if not text or start < 0 or end <= start:
+            return []
+        out.append({"start_s": start, "end_s": end, "text": text, "precision": "word"})
     return out
 
 
@@ -151,6 +205,9 @@ async def transcribe_local(
                             "with local faster-whisper"
                         )
                     elif state == "complete":
+                        precise = parse_precise_words(data.get("words"))
+                        if precise:
+                            return precise
                         return parse_transcript_md(data.get("transcript_md", ""), duration_s)
                     elif state == "error":
                         raise RuntimeError(f"Local transcription failed: {data.get('message')}")

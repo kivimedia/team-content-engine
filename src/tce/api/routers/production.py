@@ -46,8 +46,10 @@ from tce.models.editorial import (
     TopicCandidate,
 )
 from tce.models.llm_job import LLMJob
+from tce.models.recording_session import RecordingClip, RecordingSession
 from tce.production import media
-from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet
+from tce.production import sessions as recording_sessions
+from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
 from tce.production.retakes import (
     build_cues,
     fmt_ts,
@@ -75,6 +77,80 @@ _STEP_LABEL = {
     "transcribing": ("transcription", "Transcribe"),
     "rendering": ("the render", "Render edit"),
 }
+
+
+class RecordingSessionCreate(BaseModel):
+    candidate_id: uuid.UUID
+    packet_id: uuid.UUID
+    device_meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class RecordingClipCreate(BaseModel):
+    local_clip_id: str = Field(min_length=1, max_length=120)
+    mime_type: str = Field(min_length=1, max_length=120)
+    extension: str = Field(min_length=1, max_length=12)
+
+
+class RecordingClipFinish(BaseModel):
+    active_duration_s: float = Field(ge=0)
+    take_markers: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RecordingSessionFinish(BaseModel):
+    selected_clip_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+def _recording_root() -> Path:
+    return Path(settings.evidence_upload_dir) / "sessions"
+
+
+def _clip_json(row: RecordingClip) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "session_id": str(row.session_id),
+        "local_clip_id": row.local_clip_id,
+        "position": row.position,
+        "status": row.status,
+        "mime_type": row.mime_type,
+        "duration_s": row.duration_s,
+        "active_duration_s": row.active_duration_s,
+        "chunk_count": row.chunk_count,
+        "take_markers": row.take_markers or [],
+        "timing_meta": row.timing_meta or {},
+        "error_detail": row.error_detail,
+    }
+
+
+async def _recording_session_json(db: AsyncSession, row: RecordingSession) -> dict[str, Any]:
+    clips = list(
+        (
+            await db.execute(
+                select(RecordingClip)
+                .where(
+                    RecordingClip.workspace_id == row.workspace_id,
+                    RecordingClip.session_id == row.id,
+                )
+                .order_by(RecordingClip.position)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        "id": str(row.id),
+        "candidate_id": str(row.candidate_id),
+        "packet_id": str(row.packet_id),
+        "packet_version": row.packet_version,
+        "retake_index": row.retake_index,
+        "status": row.status,
+        "active_duration_s": row.active_duration_s,
+        "selected_clip_ids": row.selected_clip_ids or [],
+        "timeline_map": row.timeline_map or [],
+        "canonical_upload_id": str(row.canonical_upload_id) if row.canonical_upload_id else None,
+        "device_meta": row.device_meta or {},
+        "error_detail": row.error_detail,
+        "clips": [_clip_json(clip) for clip in clips],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +381,8 @@ async def export_packet_route(
         )
     ).scalar_one_or_none()
     try:
-        result = await export_packet(
+        result = await export_packet_durable(
+            db,
             packet,
             candidate,
             client=google_client(),
@@ -620,10 +697,15 @@ async def _run_transcription(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str) 
                 return  # superseded by a retry; its result is the one that counts
             row.transcript = timings
             row.status = "transcribed"
+            precise = bool(timings) and all(item.get("precision") == "word" for item in timings)
             row.status_detail = (
-                f"Transcribed {len(timings)} segments locally. Timing is whole-second "
-                "segment starts, so any cut will be approximate. "
-                "Click Plan edit to find retakes."
+                f"Transcribed {len(timings)} {'words' if precise else 'segments'} locally. "
+                + (
+                    "Word timestamps are available. "
+                    if precise
+                    else "Timing uses whole-second segment starts, so cuts are approximate. "
+                )
+                + "Click Plan edit to find retakes."
             )
             row.job_ids = _with_lease(row.job_ids, None)
             await s.commit()
@@ -1025,6 +1107,181 @@ async def patch_publication(
     await db.commit()
     await db.refresh(row)
     return publication_json(row)
+
+
+# ---------------------------------------------------------------------------
+# Mobile recording sessions. Source chunks are append-only and never published.
+
+
+@router.get("/recording-queue")
+async def recording_queue(
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    rows = (
+        await db.execute(
+            select(TopicCandidate, RecordingPacket)
+            .join(RecordingPacket, RecordingPacket.candidate_id == TopicCandidate.id)
+            .where(
+                TopicCandidate.workspace_id == ws,
+                RecordingPacket.workspace_id == ws,
+                TopicCandidate.status.in_(("selected", "recorded")),
+                RecordingPacket.status.in_(("ready", "exported")),
+            )
+            .order_by(TopicCandidate.rank.asc().nullslast(), RecordingPacket.created_at.desc())
+        )
+    ).all()
+    seen: set[uuid.UUID] = set()
+    ideas: list[dict[str, Any]] = []
+    for candidate, packet in rows:
+        if candidate.id in seen:
+            continue
+        seen.add(candidate.id)
+        active = (
+            await db.execute(
+                select(RecordingSession)
+                .where(
+                    RecordingSession.workspace_id == ws,
+                    RecordingSession.candidate_id == candidate.id,
+                    RecordingSession.packet_id == packet.id,
+                    RecordingSession.status.notin_(("uploaded", "failed")),
+                )
+                .order_by(RecordingSession.retake_index.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        ideas.append(
+            {
+                "candidate_id": str(candidate.id),
+                "packet_id": str(packet.id),
+                "packet_version": packet.version,
+                "title": candidate.title,
+                "big_idea": candidate.lesson,
+                "bullets": packet.bullets or [],
+                "script_phrases": packet.script_phrases or [],
+                "hook_options": packet.hook_options or [],
+                "selected_hook_id": packet.selected_hook_id,
+                "beats": packet.beats or [],
+                "interviewer_prompt": packet.interviewer_prompt,
+                "packet_format": "v2" if packet.hook_options and packet.beats else "legacy",
+                "active_session_id": str(active.id) if active else None,
+                "active_session_status": active.status if active else None,
+            }
+        )
+    return {"ideas": ideas, "count": len(ideas)}
+
+
+@router.post("/recording-sessions", status_code=201)
+async def create_recording_session_route(
+    body: RecordingSessionCreate,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        row = await recording_sessions.create_session(
+            db, ws, body.candidate_id, body.packet_id, device_meta=body.device_meta
+        )
+    except recording_sessions.RecordingSessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"session": await _recording_session_json(db, row)}
+
+
+@router.get("/recording-sessions/{session_id}")
+async def get_recording_session_route(
+    session_id: uuid.UUID,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    row = (
+        await db.execute(
+            select(RecordingSession).where(
+                RecordingSession.id == session_id, RecordingSession.workspace_id == ws
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Recording session not found")
+    return {"session": await _recording_session_json(db, row)}
+
+
+@router.post("/recording-sessions/{session_id}/clips", status_code=201)
+async def create_recording_clip_route(
+    session_id: uuid.UUID,
+    body: RecordingClipCreate,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        row = await recording_sessions.create_clip(
+            db, ws, session_id, body.local_clip_id, body.mime_type, body.extension
+        )
+    except recording_sessions.RecordingSessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"clip": _clip_json(row)}
+
+
+@router.put("/recording-clips/{clip_id}/chunks/{sequence}", status_code=201)
+async def upload_recording_chunk_route(
+    clip_id: uuid.UUID,
+    sequence: int,
+    request: Request,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    digest = request.headers.get("x-chunk-sha256", "")
+    data = await request.body()
+    try:
+        row = await recording_sessions.store_chunk(
+            db, ws, clip_id, sequence, data, digest, _recording_root()
+        )
+    except recording_sessions.RecordingSessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "chunk": {
+            "id": str(row.id),
+            "clip_id": str(row.clip_id),
+            "sequence": row.sequence,
+            "sha256": row.sha256,
+            "size_bytes": row.size_bytes,
+        }
+    }
+
+
+@router.post("/recording-clips/{clip_id}/finish")
+async def finish_recording_clip_route(
+    clip_id: uuid.UUID,
+    body: RecordingClipFinish,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        row = await recording_sessions.finalize_clip(
+            db,
+            ws,
+            clip_id,
+            _recording_root(),
+            active_duration_s=body.active_duration_s,
+            take_markers=body.take_markers,
+        )
+    except recording_sessions.RecordingSessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"clip": _clip_json(row)}
+
+
+@router.post("/recording-sessions/{session_id}/finish")
+async def finish_recording_session_route(
+    session_id: uuid.UUID,
+    body: RecordingSessionFinish,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        row, upload = await recording_sessions.finalize_session(
+            db, ws, session_id, body.selected_clip_ids, _recording_root()
+        )
+    except recording_sessions.RecordingSessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"session": await _recording_session_json(db, row), "upload": upload_json(upload)}
 
 
 # ---------------------------------------------------------------------------

@@ -170,3 +170,23 @@ async def test_worker_status_drops_unknown_fields(client):
     latest = got["latest"]
     assert latest["worker_id"] == "w1" and latest["auth_method"] == "claude.ai"
     assert "email" not in latest and "orgId" not in latest and "token" not in latest
+
+
+async def test_worker_status_marks_old_receipt_offline(client, monkeypatch):
+    old = (queue.utcnow() - timedelta(minutes=4)).isoformat() + "Z"
+    payload = {
+        "worker_id": "w-old",
+        "ok": True,
+        "checked_at": old,
+        "state": "idle",
+        "auth_method": "claude.ai",
+        "api_provider": "firstParty",
+        "policy_model": "claude-opus-5",
+    }
+    response = await client.post("/api/v1/llm-jobs/worker-status", json=payload, headers=AUTH)
+    assert response.status_code == 200
+    persisted = llm_jobs._worker_status["w-old"]
+    persisted["received_at"] = old
+    got = (await client.get("/api/v1/llm-jobs/worker-status", headers=AUTH)).json()
+    assert got["latest"]["current_state"] == "offline"
+    assert got["latest"]["stale"] is True

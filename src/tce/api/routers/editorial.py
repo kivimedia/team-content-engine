@@ -35,7 +35,7 @@ from tce.editorial.feedback import (
     record_feedback,
     summarize_feedback,
 )
-from tce.editorial.packets import build_packet, list_packets
+from tce.editorial.packets import PacketValidationError, build_packet, choose_hook, list_packets
 from tce.editorial.selector import MAX_CANDIDATES_CAP, select_candidates
 from tce.models.editorial import EditorialFeedback, RecordingPacket, TopicCandidate
 from tce.services.strategy_loader import load_effective_strategy
@@ -73,6 +73,10 @@ class FeedbackRequest(BaseModel):
     gate: str | None = None
     note: str | None = None
     created_by: str | None = None
+
+
+class HookChoiceRequest(BaseModel):
+    hook_id: str = Field(min_length=1, max_length=80)
 
 
 def _parse_uuid(value: str, what: str = "id") -> uuid.UUID:
@@ -514,6 +518,23 @@ async def get_packet(
     if row is None:
         raise HTTPException(status_code=404, detail="packet not found")
     return packet_to_json(row)
+
+
+@router.post("/packets/{packet_id}/choose-hook")
+async def choose_packet_hook(
+    packet_id: str,
+    body: HookChoiceRequest,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    async with open_session(sm) as db:
+        try:
+            packet = await choose_hook(db, ws, packet_id, body.hook_id)
+        except PacketValidationError as exc:
+            code = 404 if str(exc) in {"packet not found", "hook option not found"} else 409
+            raise HTTPException(status_code=code, detail=str(exc)) from exc
+        await db.commit()
+    return packet_to_json(packet)
 
 
 # ---------------------------------------------------------------------------

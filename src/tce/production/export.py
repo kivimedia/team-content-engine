@@ -19,6 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from tce.models.editorial import ExportIntent
+
 
 @dataclass
 class DocBlock:
@@ -69,6 +74,7 @@ class GoogleDocsClient(Protocol):
     async def write_blocks(self, document_id: str, blocks: list[DocBlock]) -> None: ...
     async def list_permissions(self, document_id: str) -> list[dict[str, Any]]: ...
     async def share_with_user(self, document_id: str, email: str, role: str) -> None: ...
+    async def find_document_by_marker(self, marker: str) -> dict[str, str] | None: ...
 
 
 def _doc_requests(blocks: list[DocBlock]) -> list[dict[str, Any]]:
@@ -146,6 +152,32 @@ class GwsDocsClient:
         return {
             "id": doc_id,
             "url": data.get("webViewLink") or f"https://docs.google.com/document/d/{doc_id}/edit",
+        }
+
+    async def find_document_by_marker(self, marker: str) -> dict[str, str] | None:
+        data = await self._run(
+            "drive",
+            "files",
+            "list",
+            "--params",
+            json.dumps(
+                {
+                    "q": f"name contains '{marker}' and trashed = false",
+                    "fields": "files(id,name,webViewLink)",
+                    "pageSize": 10,
+                }
+            ),
+        )
+        matches = [item for item in (data.get("files") or []) if marker in item.get("name", "")]
+        if len(matches) > 1:
+            raise RuntimeError(f"multiple Google Docs match export marker {marker}")
+        if not matches:
+            return None
+        item = matches[0]
+        return {
+            "id": item["id"],
+            "url": item.get("webViewLink")
+            or f"https://docs.google.com/document/d/{item['id']}/edit",
         }
 
     async def write_blocks(self, document_id: str, blocks: list[DocBlock]) -> None:
@@ -299,3 +331,157 @@ async def export_packet(
         "docx_url": docx_url,
         "access": packet.google_doc_access,
     }
+
+
+async def export_packet_durable(
+    session: AsyncSession,
+    packet: Any,
+    candidate: Any | None,
+    *,
+    client: GoogleDocsClient | None,
+    docx_dir: Path,
+    docx_url: str,
+    team_emails: list[str] | None = None,
+) -> dict[str, Any]:
+    """Export with a durable identity written before external side effects.
+
+    The document id is committed immediately after discovery or creation. A restart
+    therefore resumes sharing and access readback instead of creating another Doc.
+    """
+    marker = f"TCE-{packet.id}-v{packet.version}"
+    intent = (
+        await session.execute(
+            select(ExportIntent).where(
+                ExportIntent.workspace_id == packet.workspace_id,
+                ExportIntent.packet_id == packet.id,
+                ExportIntent.packet_version == packet.version,
+            )
+        )
+    ).scalar_one_or_none()
+    if intent is None:
+        intent = ExportIntent(
+            workspace_id=packet.workspace_id,
+            packet_id=packet.id,
+            packet_version=packet.version,
+            marker=marker,
+            status="pending",
+        )
+        session.add(intent)
+        await session.commit()
+    if intent.status == "verified" and intent.document_id:
+        packet.google_doc_id = intent.document_id
+        packet.google_doc_url = intent.document_url
+        access = intent.access_readback
+        if client is not None:
+            ok, _ = await client.available()
+            if ok:
+                emails = [e.strip() for e in (team_emails or []) if e.strip()]
+                permissions = await client.list_permissions(intent.document_id)
+                verified, detail = verify_restricted(permissions, emails)
+                access = {
+                    "intended": (
+                        f"restricted: owner and {len(emails)} team editor(s)"
+                        if emails
+                        else "restricted: owner only (no team editors configured)"
+                    )
+                    + ", no link sharing",
+                    "verified": verified,
+                    "detail": detail,
+                    "status": "exported" if verified else "access_problem",
+                }
+                intent.access_readback = access
+                intent.status = "verified" if verified else "access_problem"
+                await session.commit()
+        packet.google_doc_access = access
+        if (access or {}).get("verified"):
+            packet.status = "exported"
+        return {
+            "status": "exported" if (access or {}).get("verified") else "access_problem",
+            "google_doc_id": intent.document_id,
+            "google_doc_url": intent.document_url,
+            "access": access,
+            "resumed": True,
+        }
+    intent.attempt_count = int(intent.attempt_count or 0) + 1
+    intent.status = "running"
+    await session.commit()
+
+    if client is None:
+        result = await export_packet(
+            packet,
+            candidate,
+            client=None,
+            docx_dir=docx_dir,
+            docx_url=docx_url,
+            team_emails=team_emails,
+        )
+        intent.status = "not_connected"
+        intent.access_readback = result.get("access")
+        await session.commit()
+        return result
+
+    ok, detail = await client.available()
+    if not ok:
+        return await export_packet_durable(
+            session,
+            packet,
+            candidate,
+            client=None,
+            docx_dir=docx_dir,
+            docx_url=docx_url,
+            team_emails=team_emails,
+        )
+
+    try:
+        doc = None
+        if intent.document_id:
+            doc = {"id": intent.document_id, "url": intent.document_url}
+        else:
+            finder = getattr(client, "find_document_by_marker", None)
+            if finder is not None:
+                doc = await finder(marker)
+            if doc is None:
+                title = packet_blocks(packet, candidate)[0].text
+                doc = await client.create_document(f"{title} [{marker}]")
+            intent.document_id = doc["id"]
+            intent.document_url = doc["url"]
+            intent.status = "created"
+            await session.commit()
+
+        blocks = packet_blocks(packet, candidate)
+        await client.write_blocks(doc["id"], blocks)
+        emails = [e.strip() for e in (team_emails or []) if e.strip()]
+        for email in emails:
+            await client.share_with_user(doc["id"], email, "writer")
+        permissions = await client.list_permissions(doc["id"])
+        verified, readback = verify_restricted(permissions, emails)
+        access = {
+            "intended": (
+                f"restricted: owner and {len(emails)} team editor(s)"
+                if emails
+                else "restricted: owner only (no team editors configured)"
+            )
+            + ", no link sharing",
+            "verified": verified,
+            "detail": readback,
+            "status": "exported" if verified else "access_problem",
+        }
+        intent.access_readback = access
+        intent.status = "verified" if verified else "access_problem"
+        packet.google_doc_id = doc["id"]
+        packet.google_doc_url = doc["url"]
+        packet.google_doc_access = access
+        if verified:
+            packet.status = "exported"
+        await session.commit()
+        return {
+            "status": "exported" if verified else "access_problem",
+            "google_doc_id": doc["id"],
+            "google_doc_url": doc["url"],
+            "access": access,
+        }
+    except Exception as exc:
+        intent.status = "failed"
+        intent.error_detail = f"{type(exc).__name__}: {exc}"[:1000]
+        await session.commit()
+        raise

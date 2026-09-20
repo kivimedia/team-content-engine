@@ -23,6 +23,7 @@ logger = structlog.get_logger()
 # settings.default_image_model.
 DEFAULT_FAL_MODEL = "fal-ai/flux-pro/v1.1"
 DEFAULT_IMAGE_SIZE = "landscape_16_9"
+DEFAULT_RESOLUTION = "1024x1024"
 
 # Map common aspect ratios to fal.ai image_size values
 ASPECT_RATIO_MAP = {
@@ -38,12 +39,12 @@ ASPECT_RATIO_MAP = {
 
 # PRD Section 41.5: Platform crop guidance
 PLATFORM_CROPS = {
-    "facebook_link": "landscape_16_9",
-    "facebook_square": "square_hd",
-    "facebook_portrait": "portrait_4_3",
-    "linkedin_link": "landscape_16_9",
-    "linkedin_square": "square_hd",
-    "linkedin_article": "landscape_16_9",
+    "facebook_link": "1200x630",
+    "facebook_square": "1080x1080",
+    "facebook_portrait": "1080x1350",
+    "linkedin_link": "1200x627",
+    "linkedin_square": "1080x1080",
+    "linkedin_article": "1200x627",
 }
 
 

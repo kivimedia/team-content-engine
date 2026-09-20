@@ -25,6 +25,7 @@ param(
     [Parameter(Mandatory = $true)][string]$SshTarget,
     [int]$Workers = 1,
     [string]$SshBin = "",
+    [string]$ClaudeBin = "",
     [string]$TaskName = "TCE Subscription Worker"
 )
 $ErrorActionPreference = "Stop"
@@ -35,10 +36,38 @@ $script = Join-Path $repo "scripts\tce_worker_supervisor.py"
 if (-not (Test-Path $pythonw)) { throw "pythonw not found at $pythonw (create the .venv first)" }
 if (-not $SshBin) { $SshBin = (Get-Command ssh -ErrorAction Stop).Source }
 
+if (-not $ClaudeBin) {
+    $extensionRoot = Join-Path $env:USERPROFILE ".vscode\extensions"
+    $ClaudeBin = Get-ChildItem -Path $extensionRoot -Directory -Filter "anthropic.claude-code-*-win32-x64" |
+        Sort-Object { [version](($_.Name -replace '^anthropic\.claude-code-', '') -replace '-win32-x64$', '') } -Descending |
+        ForEach-Object { Join-Path $_.FullName "resources\native-binary\claude.exe" } |
+        Where-Object { Test-Path $_ } |
+        Select-Object -First 1
+}
+if (-not $ClaudeBin -or -not (Test-Path -LiteralPath $ClaudeBin)) {
+    throw "VS Code Claude executable not found. Pass -ClaudeBin with the verified bundle path."
+}
+
+$forbidden = Get-ChildItem Env: | Where-Object {
+    $_.Value -and ($_.Name -match 'ANTHROPIC' -or $_.Name -match '^CLAUDE_CODE_USE_' -or $_.Name -match '^CLAUDE_CODE_SKIP_')
+}
+if ($forbidden) {
+    $names = ($forbidden | Select-Object -ExpandProperty Name | Sort-Object) -join ', '
+    throw "Metered or alternate-provider environment variables are set: $names"
+}
+$authRaw = & $ClaudeBin auth status --json 2>$null
+if ($LASTEXITCODE -ne 0 -or -not $authRaw) { throw "Claude subscription auth check failed" }
+try { $auth = $authRaw | ConvertFrom-Json } catch { throw "Claude auth status was not valid JSON" }
+if ($auth.loggedIn -ne $true -or $auth.apiProvider -ne "firstParty" -or $auth.authMethod -ne "claude.ai") {
+    throw "Claude must be logged in with first-party claude.ai subscription auth"
+}
+$claudeVersion = (& $ClaudeBin --version 2>$null | Select-Object -First 1)
+if (-not $claudeVersion) { throw "Claude version check failed for $ClaudeBin" }
+
 $keyFile = Join-Path $env:USERPROFILE ".tce-worker\private_access_key"
 if (-not (Test-Path $keyFile)) { throw "missing $keyFile - the workers cannot lease without it" }
 
-$taskArgs = "`"$script`" --ssh-target $SshTarget --ssh-bin `"$SshBin`" --workers $Workers"
+$taskArgs = "`"$script`" --ssh-target $SshTarget --ssh-bin `"$SshBin`" --claude-bin `"$ClaudeBin`" --workers $Workers"
 $action = New-ScheduledTaskAction -Execute $pythonw -Argument $taskArgs -WorkingDirectory $repo
 
 $user = "$env:USERDOMAIN\$env:USERNAME"
@@ -61,4 +90,4 @@ Register-ScheduledTask -TaskName $TaskName -Action $action `
     -Force | Out-Null
 
 Start-ScheduledTask -TaskName $TaskName
-Write-Output "registered and started: $TaskName (workers=$Workers)"
+Write-Output "registered and started: $TaskName (workers=$Workers, claude=$ClaudeBin, version=$claudeVersion)"
