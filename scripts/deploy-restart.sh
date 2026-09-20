@@ -34,7 +34,16 @@ if sudo ss -lntp 2>/dev/null | grep -q ':8200 '; then
 fi
 
 echo "[deploy-restart] Starting tce..."
-pm2 start tce 2>&1 | grep -E 'online|status' | head -3
+start_log=$(mktemp)
+if ! pm2 start tce >"$start_log" 2>&1; then
+  cat "$start_log"
+  rm -f "$start_log"
+  exit 1
+fi
+rm -f "$start_log"
 sleep 3
 echo "[deploy-restart] Final status:"
-pm2 show tce 2>&1 | grep -E 'status|uptime|restarts' | head -3
+pm2 show tce 2>&1 | grep -E 'status|uptime|restarts' || {
+  echo "[deploy-restart] tce status was not available"
+  exit 1
+}
