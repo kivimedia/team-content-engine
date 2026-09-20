@@ -10444,7 +10444,12 @@ const ED_RUN_WORDS = {
 async function edLoadRun(id) {
   try {
     const r = await fetch(API + `/content-runs/${id}`, { credentials: 'same-origin' });
-    if (!r.ok) { ED.runError = r.status === 404 ? 'That run does not exist in this workspace.' : `Could not load the run (${r.status}).`; ED.run = null; return; }
+    if (!r.ok) {
+      ED.runError = r.status === 404 ? 'That run does not exist in this workspace.' : `Could not load the run (${r.status}).`;
+      ED.run = null;
+      edRenderRunBanner();
+      return;  // a wrong id is not retried: nothing will change by asking again
+    }
     ED.run = await r.json();
     ED.runError = null;
   } catch (e) { ED.runError = 'Could not reach the server for that run.'; ED.run = null; }
