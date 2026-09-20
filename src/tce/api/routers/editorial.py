@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from tce.api.private_access import require_private_workspace
+from tce.editorial import more_ideas as more_ideas_service
 from tce.editorial import status as job_status
 from tce.editorial.common import (
     CANDIDATE_STATUSES,
@@ -658,6 +659,33 @@ async def archive_candidate(
         await db.commit()
         fb = await list_feedback(db, ws, cand.id)
     return candidate_to_json(cand, fb)
+
+
+@router.post("/more-ideas")
+async def more_ideas(
+    limit: int = Query(more_ideas_service.DEFAULT_LIMIT, ge=1, le=more_ideas_service.MAX_LIMIT),
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Offer ideas the selection validated and then set aside.
+
+    No model call and no worker: these already passed every gate in their own week
+    and carry their own citations. Answers 200 with added=0 and says why when the
+    reserve is empty, because "nothing left" is an answer, not an error.
+    """
+    async with open_session(sm) as db:
+        return await more_ideas_service.offer_more(db, ws, limit)
+
+
+@router.get("/more-ideas")
+async def more_ideas_available(
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """How many more ideas are waiting, so a button can say so before it is pressed."""
+    async with open_session(sm) as db:
+        ready = await more_ideas_service.available(db, ws)
+    return {"available": len(ready)}
 
 
 # ---------------------------------------------------------------------------

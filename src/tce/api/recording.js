@@ -78,6 +78,51 @@ function runWords(run) {
   return RUN_WORDS[run.state] || run.state;
 }
 
+// What a finished recording offers, and what it is still missing. Pure so the
+// links can be decided without a DOM: a link that 404s under his finger is worse
+// than no link at all.
+function recordedLinks(item, prefix = "") {
+  const targets = [
+    [item.edited_url, "Watch the edited cut"],
+    [item.edited_url ? null : item.video_url, "Watch it"],
+    [item.captions_srt_url, "Captions"],
+    [item.google_doc_url, "Open the script"],
+  ];
+  return targets
+    .filter(([href]) => Boolean(href))
+    .map(([href, label]) => ({
+      href: href.startsWith("http") ? href : `${prefix}${href}`,
+      label,
+    }));
+}
+
+function recordedWhen(item) {
+  const parts = [];
+  if (item.recorded_at) {
+    const when = new Date(item.recorded_at);
+    if (!Number.isNaN(when.getTime())) {
+      parts.push(when.toLocaleDateString(undefined, { day: "numeric", month: "short" }));
+    }
+  }
+  // A talking-head take runs one to three minutes, and "134s" is not a length
+  // anyone reads as two and a bit minutes.
+  const seconds = Math.round(item.duration_s || 0);
+  if (seconds >= 60) {
+    parts.push(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
+  } else if (seconds > 0) {
+    parts.push(`${seconds}s`);
+  }
+  return parts.join(" \u00b7 ");
+}
+
+function recordedPending(item) {
+  if (item.status === "superseded") return "An older take. You recorded this one again.";
+  if (!item.captions_srt_url && !item.has_transcript) {
+    return "Captions are not made yet. Ask for them from the dashboard when you want them.";
+  }
+  return "";
+}
+
 (() => {
   "use strict";
 
@@ -89,7 +134,8 @@ function runWords(run) {
     mode: "points", sequence: 0, startedAt: 0, activeStartedAt: 0, activeMs: 0,
     timerId: null, pendingWrites: [], pendingSync: new Map(), takeMarkers: [],
     wakeLock: null, pendingIdea: null, textSize: 1, runTimer: null, waiting: [], ideasShown: 5,
-    phases: new Map(), rows: new Map(), away: [],
+    phases: new Map(), rows: new Map(), away: [], recorded: [], ideasLoaded: false,
+    sessionPending: null, sessionPendingFor: null,
   };
   const supportedMime = [
     "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
@@ -257,6 +303,7 @@ function runWords(run) {
       // An idea being written, or just put away, stays on screen with its own
       // state until it genuinely moves on.
       state.waiting = fresh;
+      state.ideasLoaded = true;
       renderIdeas();
       renderAway();
     } catch (_) {
@@ -281,7 +328,10 @@ function runWords(run) {
     const list = $("ideasList");
     const section = $("ideasSection");
     const waiting = state.waiting || [];
-    section.hidden = waiting.length === 0;
+    // The section stays once ideas have been loaded, even at zero: an empty list
+    // is exactly when he wants to ask for more, and hiding the whole section took
+    // that button away with it.
+    section.hidden = !state.ideasLoaded;
     const shown = waiting.slice(0, state.ideasShown || 5);
     if (!state.rows) state.rows = new Map();
 
@@ -302,12 +352,96 @@ function runWords(run) {
     });
 
     const being = waiting.filter((c) => ideaPhase(c.id).phase === "writing").length;
-    $("ideasCount").textContent = being
-      ? `${waiting.length} waiting \u00b7 ${being} being written`
-      : `${waiting.length} waiting`;
+    $("ideasCount").textContent = !waiting.length
+      ? "Nothing waiting. Everything here is decided."
+      : being
+        ? `${waiting.length} waiting \u00b7 ${being} being written`
+        : `${waiting.length} waiting`;
+    // One button, two jobs: reveal the rest of the list, and when there is no
+    // rest, go and get more. Hiding it was how "more ideas" became a dead end.
+    const hidden = waiting.length - shown.length;
     const more = $("moreIdeasButton");
-    more.hidden = waiting.length <= shown.length;
-    more.textContent = `Show more ideas (${waiting.length - shown.length} left)`;
+    more.hidden = false;
+    more.dataset.act = hidden > 0 ? "reveal" : "fetch";
+    more.textContent = hidden > 0 ? `Show more ideas (${hidden} left)` : "Find more ideas";
+  }
+
+  async function moreIdeas() {
+    const button = $("moreIdeasButton");
+    if (button.dataset.act === "reveal") {
+      state.ideasShown = (state.ideasShown || 5) + 5;
+      renderIdeas();
+      return;
+    }
+    const note = $("moreIdeasNote");
+    button.disabled = true;
+    note.hidden = false;
+    note.textContent = "Looking for ideas the engine set aside...";
+    try {
+      const response = await fetch(`${apiV1}/editorial/more-ideas`, {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
+      note.textContent = data.detail || "";
+      if (data.added) {
+        state.ideasShown = (state.ideasShown || 5) + data.added;
+        await loadIdeas();
+      }
+    } catch (error) {
+      note.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  // He records on a phone and the page used to say nothing back. The video, the
+  // captions and the Doc each lived behind their own route and none was on screen.
+  async function loadRecorded() {
+    try {
+      const data = await api("/recorded?limit=20");
+      state.recorded = data.recordings || [];
+    } catch (_) {
+      state.recorded = [];
+    }
+    renderRecorded();
+  }
+
+  function renderRecorded() {
+    const rows = state.recorded || [];
+    const section = $("recordedSection");
+    section.hidden = rows.length === 0;
+    $("recordedSummary").textContent = `Recorded (${rows.length})`;
+    const list = $("recordedList");
+    list.replaceChildren();
+    for (const item of rows) {
+      const row = document.createElement("article");
+      row.className = "recorded-row";
+      const title = document.createElement("strong");
+      title.textContent = item.title;
+      const when = document.createElement("span");
+      when.className = "recorded-when";
+      when.textContent = recordedWhen(item);
+      const links = document.createElement("div");
+      links.className = "recorded-links";
+      for (const target of recordedLinks(item, pathPrefix)) {
+        const link = document.createElement("a");
+        link.href = target.href;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = target.label;
+        links.appendChild(link);
+      }
+      row.append(title, when, links);
+      const pending = recordedPending(item);
+      if (pending) {
+        const line = document.createElement("p");
+        line.className = "recorded-pending";
+        line.textContent = pending;
+        row.appendChild(line);
+      }
+      list.appendChild(row);
+    }
   }
 
   // Withdrawn ideas are hidden from the default listing, so they are asked for
@@ -559,6 +693,7 @@ function runWords(run) {
       $("syncState").textContent = `${state.ideas.length} ready script${state.ideas.length === 1 ? "" : "s"}`;
       loadIdeas();
       loadEngineState();
+      loadRecorded();
     } catch (error) {
       $("syncState").textContent = "Could not load scripts";
       showNotice(error.message);
@@ -689,8 +824,21 @@ function runWords(run) {
     renderReader();
   }
 
-  async function ensureSession() {
-    if (state.session && state.session.packet_id === state.idea.packet_id) return state.session;
+  // Several things want the take set open at once (the hook step handing over, the
+  // reader, the record button). Without one shared promise they each POST and the
+  // second one collides on the take-set key.
+  function ensureSession() {
+    if (state.session && state.session.packet_id === state.idea.packet_id) {
+      return Promise.resolve(state.session);
+    }
+    if (!state.sessionPending || state.sessionPendingFor !== state.idea.packet_id) {
+      state.sessionPendingFor = state.idea.packet_id;
+      state.sessionPending = openSession().finally(() => { state.sessionPending = null; });
+    }
+    return state.sessionPending;
+  }
+
+  async function openSession() {
     if (state.idea.active_session_id) {
       const data = await api(`/recording-sessions/${state.idea.active_session_id}`);
       state.session = data.session;
@@ -1198,7 +1346,7 @@ function runWords(run) {
   $("homeButton").addEventListener("click", showQueue);
   $("produceNowButton").addEventListener("click", produceNow);
   $("moreHooksButton").addEventListener("click", askForMoreOpenings);
-  $("moreIdeasButton").addEventListener("click", () => { state.ideasShown += 5; renderIdeas(); });
+  $("moreIdeasButton").addEventListener("click", moreIdeas);
   $("textSizeButton").addEventListener("click", changeTextSize);
   $("pointsTab").addEventListener("click", () => setMode("points"));
   $("scriptTab").addEventListener("click", () => setMode("script"));

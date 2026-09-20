@@ -56,6 +56,27 @@ async def create_session(
     ).scalar_one_or_none()
     if packet is None or candidate is None:
         raise RecordingSessionError("packet and candidate must belong to this workspace")
+    # An empty draft for this exact packet IS this take set. Opening the studio
+    # twice (a second tap, a reload, the hook step handing over to the script) used
+    # to read the same max retake index twice and collide on the unique key, which
+    # reached him as a failure to start recording.
+    empty_draft = (
+        await db.execute(
+            select(RecordingSession)
+            .outerjoin(RecordingClip, RecordingClip.session_id == RecordingSession.id)
+            .where(
+                RecordingSession.workspace_id == workspace_id,
+                RecordingSession.candidate_id == candidate_id,
+                RecordingSession.packet_id == packet_id,
+                RecordingSession.status == "draft",
+                RecordingClip.id.is_(None),
+            )
+            .order_by(RecordingSession.retake_index.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if empty_draft is not None:
+        return empty_draft
     current = (
         await db.execute(
             select(func.max(RecordingSession.retake_index)).where(

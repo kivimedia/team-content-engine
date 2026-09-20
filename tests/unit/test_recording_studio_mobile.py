@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from tce.api import dashboard
+from tce.api.routers import content_runs as content_runs_router
 from tce.api.routers import editorial as editorial_router
 from tce.api.routers import production as prod
 from tce.db.session import get_db
@@ -114,6 +115,9 @@ def studio(monkeypatch, tmp_path):
     app.include_router(dashboard.router)
     app.include_router(prod.router, prefix="/api/v1")
     app.include_router(editorial_router.router, prefix="/api/v1")
+    # The page asks whether a worker is running before he presses anything, so the
+    # harness serves that route too rather than letting it 404 into the console.
+    app.include_router(content_runs_router.router, prefix="/api/v1")
     app.dependency_overrides[editorial_router.get_editorial_sessionmaker] = lambda: sessionmaker
 
     async def _db():
@@ -154,8 +158,8 @@ def studio(monkeypatch, tmp_path):
 LAYOUT_JS = """
 () => {
   const vw = window.innerWidth;
-  const cards = [...document.querySelectorAll('#hookChooser .hook-option')];
-  const buttons = [...document.querySelectorAll('#hookChooser .hook-use')];
+  const cards = [...document.querySelectorAll('#hookView .hook-option')];
+  const buttons = [...document.querySelectorAll('#hookView .hook-use')];
   const rect = (el) => el.getBoundingClientRect();
   return {
     overflowX: document.documentElement.scrollWidth > vw + 1,
@@ -199,7 +203,8 @@ def test_phone_hook_chooser_selects_a_new_version_and_locks_after_a_clip(studio,
         page.wait_for_selector(".idea-card")
         page.click(".idea-card")
 
-        chooser = page.locator("#hookChooser")
+        # Choosing the opening is its own step now, before the studio opens.
+        chooser = page.locator("#hookView")
         chooser.wait_for(state="visible")
         layout = page.evaluate(LAYOUT_JS)
         assert layout["overflowX"] is False, layout
@@ -211,21 +216,19 @@ def test_phone_hook_chooser_selects_a_new_version_and_locks_after_a_clip(studio,
             and "current opening" in layout["firstRank"]
         )
         assert all(r.startswith("Why (private):") for r in layout["rationales"]), layout
-        # The opening panel yields to the chooser until a choice is made, and
-        # no take set exists yet for this packet.
-        assert page.locator("#hookPanel").is_hidden()
-        assert page.locator("#clipCount").text_content() == "No clips yet"
+        # The studio is not reached until the opening is chosen.
+        assert page.locator("#studioView").is_hidden()
         page.screenshot(path=str(tmp_path / "hook-chooser-phone.png"))
 
         with page.expect_response(
             lambda r: "/choose-hook" in r.url and r.request.method == "POST"
         ) as chosen:
-            page.locator("#hookChooser .hook-option").nth(1).locator(".hook-use").click()
+            page.locator("#hookView .hook-option").nth(1).locator(".hook-use").click()
         assert chosen.value.status == 200
         chooser.wait_for(state="hidden")
         second_text = hooks[1]["text"]
-        assert page.locator("#hookPanel").is_visible()
-        assert second_text in page.locator("#hookPanel").text_content()
+        # ...and then the studio opens on the script, with that opening in it.
+        page.wait_for_selector("#studioView:not([hidden])")
         page.click("#scriptTab")
         first_line = page.locator("#reader .reader-line").first.text_content()
         assert first_line.endswith(second_text), first_line
@@ -253,7 +256,9 @@ def test_phone_hook_chooser_selects_a_new_version_and_locks_after_a_clip(studio,
         page.click("#homeButton")
         page.wait_for_selector(".idea-card")
         page.click(".idea-card")
+        # A bound take set skips the opening step entirely and says why in the studio.
         page.wait_for_selector("#hookPanel .hook-lock")
+        assert page.locator("#hookView").is_hidden()
         assert page.locator("#hookChooser").is_hidden()
         lock = page.locator("#hookPanel .hook-lock").text_content()
         assert "locked" in lock and "v2" in lock, lock

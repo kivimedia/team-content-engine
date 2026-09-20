@@ -259,9 +259,10 @@ def test_an_ideas_state_survives_its_neighbours_changing():
     script." Rows are reused by id and the phase lives outside the DOM."""
     js = JS.read_text(encoding="utf-8")
     assert "state.phases" in js and "state.rows" in js
-    # The list is no longer wiped and rebuilt on every change.
-    render = js.split("function renderIdeas")[1].split("function paintIdea")[0]
-    render = render.split("function renderAway")[0]  # the archive list holds no live state
+    # The list is no longer wiped and rebuilt on every change. Only renderIdeas is
+    # read: the archive and recorded lists hold no live state and may rebuild.
+    body = js.split("  function renderIdeas(")[1]
+    render = body[: body.index("\n  function ")]
     assert "list.replaceChildren()" not in render
     assert "row.remove(); state.rows.delete(id);" in js
     # A decided idea stops offering the same two choices.
@@ -293,7 +294,7 @@ def test_asking_for_a_script_puts_the_idea_in_the_queue():
     """The row said 'It is in the queue above' while the recording queue only
     shows approved ideas, so the script existed and the queue stayed empty."""
     js = JS.read_text(encoding="utf-8")
-    done = js.split('if (job.state === "done")')[1].split("if (job.state === \"failed\")")[0]
+    done = js.split('if (job.state === "done")')[1].split('if (job.state === "failed")')[0]
     assert "/feedback" in done
     assert '"kind": "approve"' in done or '"approve"' in done
     assert 'created_by: "ziv"' in done or '"created_by": "ziv"' in done

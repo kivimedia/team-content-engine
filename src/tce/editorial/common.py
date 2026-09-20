@@ -19,6 +19,9 @@ SessionSource = Any  # AsyncSession | async_sessionmaker[AsyncSession]
 CANDIDATE_STATUSES = ("proposed", "selected", "rejected", "recorded", "published", "withdrawn")
 ORIGIN_SELECTOR = "selector"
 ORIGIN_SELECTOR_REJECTED = "selector_rejected"
+# A finalist that passed every gate, lost its week, and was later offered when he
+# asked for more ideas. Its own origin so the list never pretends it was chosen.
+ORIGIN_SELECTOR_RESERVE = "selector_reserve"
 ORIGIN_CALIBRATION = "calibration"
 
 

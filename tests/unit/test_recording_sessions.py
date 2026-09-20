@@ -46,10 +46,26 @@ async def test_session_is_bound_to_workspace_candidate_and_immutable_packet(edit
     ws = uuid.uuid4()
     candidate, packet = await packet_fixture(editorial_session, ws)
     row = await sessions.create_session(editorial_session, ws, candidate.id, packet.id)
+    # Opening the same packet again with nothing recorded is the SAME take set, not
+    # a second empty one: two opens used to read the same retake index and collide.
     second = await sessions.create_session(editorial_session, ws, candidate.id, packet.id)
-    assert (row.packet_version, row.retake_index, second.retake_index) == (1, 1, 2)
+    assert (row.packet_version, row.retake_index) == (1, 1)
+    assert second.id == row.id
     with pytest.raises(sessions.RecordingSessionError):
         await sessions.create_session(editorial_session, uuid.uuid4(), candidate.id, packet.id)
+
+
+async def test_a_real_retake_still_gets_its_own_number(editorial_session):
+    # Once a take set has a clip it is spent, and the next open is take two.
+    ws = uuid.uuid4()
+    candidate, packet = await packet_fixture(editorial_session, ws)
+    first = await sessions.create_session(editorial_session, ws, candidate.id, packet.id)
+    await sessions.create_clip(editorial_session, ws, first.id, "local-1", "video/webm", "webm")
+
+    second = await sessions.create_session(editorial_session, ws, candidate.id, packet.id)
+
+    assert second.id != first.id
+    assert (first.retake_index, second.retake_index) == (1, 2)
 
 
 async def test_a_b_a_clips_append_and_local_id_is_idempotent(editorial_session):

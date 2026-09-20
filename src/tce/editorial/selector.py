@@ -49,6 +49,7 @@ from tce.editorial.common import (
     week_bounds,
     week_source_window,
 )
+from tce.editorial.dedupe import find_duplicate
 from tce.editorial.feedback import summarize_feedback
 from tce.llm import LLMRequest, LLMUnavailable
 from tce.models.editorial import (
@@ -74,6 +75,10 @@ EXCERPT_CHARS = 600
 
 EXCLUDED_FETCH_STATUSES = ("excluded", "failed", "unavailable")
 USED_STATUSES = ("selected", "recorded", "published")
+# On his list: waiting to be recorded, or already acted on. Withdrawn and rejected
+# rows are NOT on it, so a lesson he put away may be raised again by fresh evidence.
+LIVE_STATUSES = ("proposed", "selected", "recorded", "published")
+ON_THE_LIST_LIMIT = 120
 
 CLAIM_SUPPORT = {
     "measured": 1.0,
@@ -467,7 +472,24 @@ def _reject(
         if raw.get("audience") in ("coaches", "event_owners", "both")
         else "both",
         "gates": raw.get("gates") if isinstance(raw.get("gates"), dict) else {},
+        # Present only on candidates that already passed every gate. They are what
+        # lets a cut finalist be offered later as another idea instead of being
+        # thrown away with the ones that failed. A raw model proposal has neither.
+        "citations_private": raw.get("citations_private")
+        if isinstance(raw.get("citations_private"), list)
+        else [],
+        "rank_score": raw.get("rank_score")
+        if isinstance(raw.get("rank_score"), int | float)
+        else None,
+        "reasons_to_care": raw.get("reasons_to_care")
+        if isinstance(raw.get("reasons_to_care"), list)
+        else [],
     }
+
+
+# Codes that mean "good enough, just did not win this week". These rows keep their
+# citations so they can be offered later; everything else was cut for cause.
+RESERVE_CODES = frozenset({"rank_cap", "below_cut", "not_selected_globally", "shard_cap"})
 
 
 def _score(value: Any) -> float:
@@ -753,23 +775,38 @@ def build_rank_prompt(
     max_candidates: int,
     week_start: datetime,
     shards: int,
+    on_the_list: list[dict[str, str]] | None = None,
 ) -> str:
     # The first lines are durable headers parsed by tce.editorial.common; the finalists
     # block must stay last (a resumed run reads it back to map keys to evidence).
-    return "\n\n".join(
-        [
-            f"WEEK STARTING: {week_start.date().isoformat()}\n"
-            "SELECTION STAGE: rank\n"
-            f"SELECTION SHARDS: {shards}\n"
-            f"RETURN AT MOST {max_candidates} candidates for the whole week. Fewer or zero "
-            "is correct when fewer are strong.",
-            "STRATEGY (effective for this workspace):\n" + (strategy_text or "(none)"),
-            f"{len(finalists)} validated finalists from {shards} separately judged shards "
-            "of this week's evidence. support_score is the code's evidence-support score "
-            "(0-1), a signal, not the answer.",
-            _FINALISTS_MARKER + json.dumps([_finalist_item(k, c) for k, c in finalists], indent=1),
-        ]
+    parts = [
+        f"WEEK STARTING: {week_start.date().isoformat()}\n"
+        "SELECTION STAGE: rank\n"
+        f"SELECTION SHARDS: {shards}\n"
+        f"RETURN AT MOST {max_candidates} candidates for the whole week. Fewer or zero "
+        "is correct when fewer are strong.",
+        "STRATEGY (effective for this workspace):\n" + (strategy_text or "(none)"),
+    ]
+    if on_the_list:
+        # Earlier weeks each ranked their own finalists and could not see these. Two
+        # weeks of evidence can raise one lesson twice and both runs are right, which
+        # is how the same idea reached the list from two directions.
+        parts.append(
+            "ALREADY ON THE LIST - ideas from earlier weeks he has not recorded yet. "
+            "Never select a finalist that teaches one of these again; list it as a "
+            "duplicate with duplicate_of set to the finalist key it most resembles, or "
+            "in not_selected saying which of these it repeats.\n"
+            + "\n".join(f"- {i['title']}: {i['lesson']}" for i in on_the_list)
+        )
+    parts.append(
+        f"{len(finalists)} validated finalists from {shards} separately judged shards "
+        "of this week's evidence. support_score is the code's evidence-support score "
+        "(0-1), a signal, not the answer."
     )
+    parts.append(
+        _FINALISTS_MARKER + json.dumps([_finalist_item(k, c) for k, c in finalists], indent=1)
+    )
+    return "\n\n".join(parts)
 
 
 def parse_rank_finalists(prompt: str) -> dict[str, frozenset[str]]:
@@ -918,6 +955,7 @@ async def _global_rank(
     result: SelectionResult,
     coverage: dict[str, Any],
     activity: Any,
+    on_the_list: list[dict[str, str]] | None = None,
 ) -> tuple[bool, list[dict[str, Any]], list[dict[str, Any]]]:
     """Run (or resume) the run's one ranking job. Returns (ok, final, rejected).
 
@@ -968,7 +1006,7 @@ async def _global_rank(
                 {
                     "role": "user",
                     "content": build_rank_prompt(
-                        strategy.text, finalists, max_candidates, start, shards_n
+                        strategy.text, finalists, max_candidates, start, shards_n, on_the_list
                     ),
                 }
             ],
@@ -1510,6 +1548,27 @@ async def select_candidates(
             if row.status in USED_STATUSES and row.moment_ids
         }
 
+        # Ideas from OTHER weeks that are still on his list. Same-week repeats are
+        # already handled above (same evidence) and by the supersede pass below (the
+        # week is re-proposed whole); what nothing caught was a lesson raised again
+        # by a neighbouring week's evidence.
+        on_the_list = (
+            (
+                await session.execute(
+                    select(TopicCandidate)
+                    .where(
+                        TopicCandidate.workspace_id == ws,
+                        TopicCandidate.week_start != start,
+                        TopicCandidate.status.in_(LIVE_STATUSES),
+                    )
+                    .order_by(TopicCandidate.week_start.desc())
+                    .limit(ON_THE_LIST_LIMIT)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
         deduped = []
         for cand in accepted:
             if frozenset(cand["moment_ids"]) in kept_sets:
@@ -1540,6 +1599,7 @@ async def select_candidates(
                 result,
                 coverage,
                 activity,
+                [{"title": r.title, "lesson": r.lesson} for r in on_the_list],
             )
             if not rank_ok:
                 return result
@@ -1564,6 +1624,32 @@ async def select_candidates(
                 cut["job_id"] = extra.get("job_id")
                 rejected.append(cut)
             final = deduped[:max_candidates]
+
+        # The ranker is told what is already on the list, but it is a model and the
+        # list is what he reads. This is the net under that: a repeat is recorded
+        # with the idea it repeats, never dropped without a word.
+        kept: list[dict[str, Any]] = []
+        for cand in final:
+            hit = find_duplicate(cand, on_the_list)
+            if hit is None:
+                kept.append(cand)
+                continue
+            row, score = hit
+            dup = _reject(
+                cand,
+                cand["moment_ids"],
+                "unspecified",
+                "duplicate_existing",
+                score.reason(row.title),
+            )
+            dup["job_id"] = cand.get("job_id")
+            rejected.append(dup)
+        if len(kept) != len(final):
+            activity(
+                f"{len(final) - len(kept)} of {len(final)} ideas already on the list; "
+                f"proposing {len(kept)}"
+            )
+        final = kept
 
         # supersede proposed + prior selector rejections; never touch
         # selected/recorded/published/editor-rejected/calibration rows.
@@ -1613,6 +1699,8 @@ async def select_candidates(
                 "code": rej["code"],
                 "reason": rej["reason"],
             }
+            reserve = rej["code"] in RESERVE_CODES and bool(rej.get("citations_private"))
+            gates["_reserve"] = reserve
             session.add(
                 TopicCandidate(
                     workspace_id=ws,
@@ -1622,12 +1710,13 @@ async def select_candidates(
                     title=rej["title"] or f"Rejected: {rej['code']}",
                     lesson=rej["lesson"],
                     audience=rej["audience"],
-                    reasons_to_care=[],
+                    reasons_to_care=rej.get("reasons_to_care") or [],
                     public_angle=rej["public_angle"],
                     public_safety_notes=None,
                     gates=gates,
+                    rank_score=rej.get("rank_score") if reserve else None,
                     freshness_role="evergreen",
-                    citations_private=[],
+                    citations_private=rej.get("citations_private") or [] if reserve else [],
                     status="rejected",
                     editor_notes=rej["reason"],
                     prompt_version=PROMPT_VERSION,

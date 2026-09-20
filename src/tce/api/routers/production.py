@@ -340,6 +340,7 @@ def upload_json(u: RecordingUpload) -> dict[str, Any]:
         "captions_available": bool(plan and plan.get("keep")),
         "captions_srt_url": f"/api/v1/production/uploads/{u.id}/captions.srt" if plan else None,
         "captions_vtt_url": f"/api/v1/production/uploads/{u.id}/captions.vtt" if plan else None,
+        "video_url": f"/api/v1/production/uploads/{u.id}/video" if u.storage_path else None,
         "edited_url": f"/api/v1/production/uploads/{u.id}/edited" if u.edited_path else None,
         "created_at": _iso(u.created_at),
         "updated_at": _iso(u.updated_at),
@@ -962,6 +963,35 @@ async def render_upload(
     return upload_json(row)
 
 
+@router.get("/uploads/{upload_id}/video")
+async def recorded_file(
+    upload_id: uuid.UUID,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """The recording itself, as it came off the phone.
+
+    An edited cut only exists after a render, so without this there was no way to
+    watch back a video that had just been recorded.
+    """
+    row = await _upload(db, ws, upload_id)
+    path = Path(row.storage_path) if row.storage_path else None
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="The video file is not on this server")
+    return FileResponse(
+        path, media_type=_video_media_type(path), filename=row.original_filename or path.name
+    )
+
+
+def _video_media_type(path: Path) -> str:
+    return {
+        ".mp4": "video/mp4",
+        ".webm": "video/webm",
+        ".mov": "video/quicktime",
+        ".m4v": "video/mp4",
+    }.get(path.suffix.lower(), "application/octet-stream")
+
+
 @router.get("/uploads/{upload_id}/edited")
 async def edited_file(
     upload_id: uuid.UUID,
@@ -1169,6 +1199,56 @@ async def recording_queue(
             }
         )
     return {"ideas": ideas, "count": len(ideas)}
+
+
+@router.get("/recorded")
+async def recorded(
+    limit: int = 20,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """What he has already recorded, and what came of it.
+
+    The recorder could take a video and then showed nothing back: the file, the
+    captions and the Google Doc each lived behind a different route and none of
+    them was on screen. This is one call with all three.
+    """
+    limit = max(1, min(limit, 100))
+    await reconcile_interrupted_uploads(db, ws)
+    rows = (
+        await db.execute(
+            select(RecordingUpload, TopicCandidate, RecordingPacket)
+            .join(TopicCandidate, TopicCandidate.id == RecordingUpload.candidate_id)
+            .outerjoin(RecordingPacket, RecordingPacket.id == RecordingUpload.packet_id)
+            .where(RecordingUpload.workspace_id == ws)
+            # id breaks the tie so two takes in the same second do not swap
+            # places between one refresh and the next.
+            .order_by(RecordingUpload.created_at.desc(), RecordingUpload.id.desc())
+            .limit(limit)
+        )
+    ).all()
+    items = []
+    for upload, candidate, packet in rows:
+        data = upload_json(upload)
+        items.append(
+            {
+                "upload_id": data["id"],
+                "candidate_id": str(candidate.id),
+                "title": candidate.title,
+                "recorded_at": data["created_at"],
+                "duration_s": upload.duration_s,
+                "status": upload.status,
+                "status_detail": upload.status_detail,
+                "video_url": data["video_url"],
+                "edited_url": data["edited_url"],
+                "captions_srt_url": data["captions_srt_url"]
+                if data["captions_available"]
+                else None,
+                "has_transcript": data["has_transcript"],
+                "google_doc_url": packet.google_doc_url if packet else None,
+            }
+        )
+    return {"recordings": items, "count": len(items)}
 
 
 @router.post("/recording-sessions", status_code=201)

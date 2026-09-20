@@ -67,6 +67,21 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .ideas-count { margin: -8px 0 6px; color: #4a5a70; font-size: .9rem; font-weight: 700; }
 .engine-state { margin: 0 0 14px; padding: 8px 10px; border-left: 5px solid #b07d2a; background: #fff6e6; color: #5a4110; font-size: .88rem; line-height: 1.35; }
 .idea-source { display: block; margin-top: 8px; color: #55637a; font-size: .82rem; }
+.more-ideas-note { margin: 10px 0 0; color: #45536a; font-size: .88rem; line-height: 1.4; }
+.recorded-section { margin-top: 22px; }
+.recorded-section summary { cursor: pointer; font-weight: 800; color: #3d4b60; min-height: 44px;
+  display: flex; align-items: center; }
+.recorded-list { margin-top: 10px; display: grid; gap: 12px; }
+.recorded-row { padding: 12px 14px; border: 2px solid var(--line); border-radius: 12px;
+  background: var(--white); }
+.recorded-row strong { display: block; font-size: 1rem; line-height: 1.3; }
+.recorded-when { display: block; margin-top: 4px; color: #55637a; font-size: .82rem; }
+.recorded-links { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
+.recorded-links a { min-height: 44px; display: inline-flex; align-items: center; padding: 0 14px;
+  border: 2px solid var(--ink); border-radius: 10px; background: var(--white); color: var(--ink);
+  font-weight: 800; font-size: .9rem; text-decoration: none; }
+.recorded-links a:visited { color: var(--ink); }
+.recorded-pending { margin: 8px 0 0; color: #5a4110; font-size: .84rem; }
 .away-section { margin-top: 22px; }
 .away-section summary { cursor: pointer; font-weight: 800; color: #3d4b60; min-height: 44px; display: flex; align-items: center; }
 .away-section .ideas-list { margin-top: 10px; }
