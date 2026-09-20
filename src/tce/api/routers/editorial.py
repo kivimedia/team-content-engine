@@ -15,7 +15,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from tce.api.private_access import require_private_workspace
 from tce.editorial import status as job_status
@@ -304,11 +304,30 @@ async def list_candidates(
                 )
             ).scalars():
                 fb_by.setdefault(fb.candidate_id, []).append(fb)
+        # Whether a script has already been written for an idea is the
+        # difference between "ask for one" and "put the one you have in the
+        # queue", and the caller cannot see it from the candidate alone.
+        packets_by: dict[uuid.UUID, int] = {}
+        if ids:
+            rows = await db.execute(
+                select(RecordingPacket.candidate_id, func.count(RecordingPacket.id))
+                .where(
+                    RecordingPacket.workspace_id == ws,
+                    RecordingPacket.candidate_id.in_(ids),
+                )
+                .group_by(RecordingPacket.candidate_id)
+            )
+            packets_by = {cid: int(count) for cid, count in rows}
     cands = sorted(
         cands,
         key=lambda c: (c.week_start, c.rank if c.rank is not None else 10_000, str(c.created_at)),
     )
-    return {"candidates": [candidate_to_json(c, fb_by.get(c.id)) for c in cands]}
+    return {
+        "candidates": [
+            {**candidate_to_json(c, fb_by.get(c.id)), "packet_count": packets_by.get(c.id, 0)}
+            for c in cands
+        ]
+    }
 
 
 @router.get("/candidates/{candidate_id}")

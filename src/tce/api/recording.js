@@ -253,9 +253,7 @@ function runWords(run) {
       const fresh = all
         .filter((c) => (c.status === "proposed" && !written.has(c.id)) || busy.has(c.id))
         .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
-      state.away = all
-        .filter((c) => ["withdrawn", "rejected"].includes(c.status))
-        .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+      state.away = await loadAwayIdeas();
       // An idea being written, or just put away, stays on screen with its own
       // state until it genuinely moves on.
       state.waiting = fresh;
@@ -310,6 +308,21 @@ function runWords(run) {
     const more = $("moreIdeasButton");
     more.hidden = waiting.length <= shown.length;
     more.textContent = `Show more ideas (${waiting.length - shown.length} left)`;
+  }
+
+  // Withdrawn ideas are hidden from the default listing, so they are asked for
+  // by name; otherwise Put away looked like deletion after a refresh.
+  async function loadAwayIdeas() {
+    try {
+      const response = await fetch(`${apiV1}/editorial/candidates?status=withdrawn`, { credentials: "same-origin" });
+      if (!response.ok) return [];
+      const data = await response.json();
+      return (data.candidates || [])
+        .filter((c) => !/^SYNTHETIC/i.test(c.title || ""))
+        .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+    } catch (_) {
+      return [];
+    }
   }
 
   function renderAway() {
@@ -368,8 +381,11 @@ function runWords(run) {
     const write = document.createElement("button");
     write.type = "button";
     write.className = "primary";
-    write.textContent = "Write the script";
-    write.addEventListener("click", () => writeScript(candidate));
+    // A script may already exist (asked for earlier, or written and never put
+    // in the queue). Offering to write it again would pay for the same words.
+    const written = (candidate.packet_count || 0) > 0;
+    write.textContent = written ? "Put it in the queue" : "Write the script";
+    write.addEventListener("click", () => (written ? queueIdea(candidate) : writeScript(candidate)));
     const away = document.createElement("button");
     away.type = "button";
     away.textContent = "Put it away";
@@ -418,6 +434,22 @@ function runWords(run) {
     if (names.length) parts.push(`From ${names.slice(0, 2).join(" and ")}`);
     if (code) parts.push(`${code} piece${code === 1 ? "" : "s"} of your code`);
     return parts.join(" \u00b7 ");
+  }
+
+  async function queueIdea(candidate) {
+    setIdeaPhase(candidate.id, "writing", "Putting it in the queue...");
+    try {
+      const response = await fetch(`${apiV1}/editorial/candidates/${candidate.id}/feedback`, {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "approve", created_by: "ziv", note: "Queued from the studio." }),
+      });
+      if (!response.ok) throw new Error(`Request failed with ${response.status}`);
+      setIdeaPhase(candidate.id, "ready", "In the queue above, ready to record.");
+      state.waiting = (state.waiting || []).filter((item) => item.id !== candidate.id);
+      await loadQueue();
+    } catch (error) {
+      setIdeaPhase(candidate.id, "waiting", error.message);
+    }
   }
 
   async function writeScript(candidate) {

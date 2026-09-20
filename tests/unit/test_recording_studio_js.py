@@ -280,7 +280,10 @@ def test_an_idea_says_where_it_came_from_and_the_engine_says_if_it_can_act():
     assert "piece${code === 1" in js and "From ${names" in js
     # What he put away survives a reload, with a way back.
     assert "function renderAway" in js and "awaySummary" in js
-    assert '["withdrawn", "rejected"].includes(c.status)' in js
+    # Withdrawn ideas are hidden from the default listing, so they are fetched
+    # by name - otherwise Put away looked like deletion after a refresh.
+    assert "candidates?status=withdrawn" in js
+    assert "function loadAwayIdeas" in js
     # And whether pressing anything will actually start work.
     assert "loadEngineState" in js
     assert "will start when it checks in" in js
@@ -295,3 +298,12 @@ def test_asking_for_a_script_puts_the_idea_in_the_queue():
     assert '"kind": "approve"' in done or '"approve"' in done
     assert 'created_by: "ziv"' in done or '"created_by": "ziv"' in done
     assert "loadQueue()" in done
+
+
+def test_an_idea_whose_script_exists_offers_the_queue_not_another_write():
+    """Three packets were written and invisible because nothing approved them,
+    and offering Write the script again would pay for the same words twice."""
+    js = JS.read_text(encoding="utf-8")
+    assert "const written = (candidate.packet_count || 0) > 0;" in js
+    assert 'written ? "Put it in the queue" : "Write the script"' in js
+    assert "function queueIdea" in js
