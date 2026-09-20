@@ -1271,3 +1271,37 @@ async def test_unavailable_sources_with_nothing_processed_still_wait(
         await api._execute_stage(editorial_sessionmaker, run, "extracting")
     assert exc.value.state == "waiting_capacity"
     assert "No evidence has been extracted for this run yet" in exc.value.detail
+
+
+async def test_a_recovered_run_stops_showing_its_old_failure(editorial_sessionmaker):
+    """20-Sep: a run whose extraction later succeeded still carried
+    'Stopped: LLM failed ...' on the run row, so every surface that quotes
+    error_detail called a healthy run broken."""
+    workspace_id = uuid.uuid4()
+    async with editorial_sessionmaker() as db:
+        run = await runs.create_or_get_run(
+            db,
+            workspace_id,
+            runs.ContentRunRequest(
+                idempotency_key="recovered",
+                scope_kind="week",
+                window_start=datetime(2026, 9, 14, tzinfo=UTC),
+                window_end=datetime(2026, 9, 21, tzinfo=UTC),
+                final_stage="extracting",
+            ),
+        )
+        await db.flush()
+        stage = await runs.lease_next_stage(db, run.id, "owner-1")
+        await runs.wait_stage(
+            db, stage.id, "owner-1", "waiting_worker", "Stopped: LLM failed (job x)"
+        )
+        await db.commit()
+        assert run.error_detail == "Stopped: LLM failed (job x)"
+
+        await runs.make_run_resumable(db, run)
+        again = await runs.lease_next_stage(db, run.id, "owner-2")
+        await db.commit()
+        assert again is not None
+        row = await runs.get_run(db, workspace_id, run.id)
+        assert row.error_detail is None and row.error_code is None
+        assert row.state == "collecting"

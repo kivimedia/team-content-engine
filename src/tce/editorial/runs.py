@@ -240,6 +240,11 @@ async def lease_next_stage(
         stage.error_detail = None
         run.state = stage.stage
         run.current_stage = stage.stage
+        # The run is working again, so the last failure is history. Leaving it on
+        # the row made a recovered run read as broken everywhere it is shown:
+        # the briefing, the dashboard banner and the recorder all quote this.
+        run.error_code = None
+        run.error_detail = None
         await session.flush()
         return stage
     return None

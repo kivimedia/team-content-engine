@@ -1,0 +1,14 @@
+{
+  "name": "tce-mcp",
+  "version": "1.0.0",
+  "description": "Terminal Mode for the Team Content Engine: the week's evidence, ideas, scripts and machinery as MCP tools.",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "bin": { "tce-mcp": "./index.mjs" },
+  "scripts": { "smoke": "node smoke.mjs" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.24.1"
+  }
+}
