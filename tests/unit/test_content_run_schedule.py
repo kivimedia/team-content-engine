@@ -592,8 +592,10 @@ def test_final_stage_changes_the_scope_hash():
     pre_041 = {
         "scope_kind": "week",
         "source_ids": [],
-        "window_start": "2026-09-14T00:00:00",
-        "window_end": "2026-09-21T00:00:00",
+        # A week compares by the day: four Produce-now clicks on 20-Sep each
+        # carried their own instant and selected the same week four times.
+        "window_start": "2026-09-14",
+        "window_end": "2026-09-21",
         "maximum_candidate_count": 6,
         "target_packet_count": 3,
     }
@@ -1331,3 +1333,77 @@ async def test_an_interrupted_selection_starts_a_new_one_on_the_next_attempt(
     await api._execute_stage(editorial_sessionmaker, run, "selecting", 2)
     assert seen[0] == seen[1], "the same attempt must reuse its selection"
     assert seen[2] != seen[0], "a retry must start a new selection"
+
+
+def test_two_clicks_on_the_same_day_are_one_week_scope():
+    """20-Sep: clicks at 11:24, 12:41, 16:31 and 17:27 produced four runs that
+    all selected the last seven days in parallel on three workers."""
+    def scope(hour):
+        return runs.normalized_scope(
+            runs.ContentRunRequest(
+                idempotency_key=f"click-{hour}",
+                scope_kind="week",
+                window_start=datetime(2026, 9, 13, hour, 24, tzinfo=UTC),
+                window_end=datetime(2026, 9, 20, hour, 24, tzinfo=UTC),
+            )
+        )[1]
+
+    assert scope(11) == scope(17)
+    # A different day is still a different week's worth of evidence.
+    other = runs.normalized_scope(
+        runs.ContentRunRequest(
+            idempotency_key="tomorrow",
+            scope_kind="week",
+            window_start=datetime(2026, 9, 14, 9, 0, tzinfo=UTC),
+            window_end=datetime(2026, 9, 21, 9, 0, tzinfo=UTC),
+        )
+    )[1]
+    assert other != scope(11)
+
+
+def test_a_targeted_run_still_compares_by_the_exact_source():
+    base = dict(idempotency_key="k", scope_kind="sources")
+    one = runs.normalized_scope(
+        runs.ContentRunRequest(**base, source_ids=["11111111-1111-1111-1111-111111111111"])
+    )[1]
+    two = runs.normalized_scope(
+        runs.ContentRunRequest(**base, source_ids=["22222222-2222-2222-2222-222222222222"])
+    )[1]
+    assert one != two
+
+
+async def test_cancel_stops_a_run_and_keeps_what_it_finished(client, editorial_sessionmaker):
+    workspace_id = uuid.uuid4()
+    async with editorial_sessionmaker() as db:
+        run = await runs.create_or_get_run(
+            db,
+            workspace_id,
+            runs.ContentRunRequest(
+                idempotency_key="to-cancel",
+                scope_kind="week",
+                window_start=datetime(2026, 9, 14, tzinfo=UTC),
+                window_end=datetime(2026, 9, 21, tzinfo=UTC),
+                final_stage="extracting",
+            ),
+        )
+        await db.flush()
+        stages = await runs.list_stages(db, run.id)
+        stages[0].status = "succeeded"
+        stages[0].output_refs = {"collection": "kept"}
+        await db.commit()
+        run_id = run.id
+
+    response = await client.post(
+        f"/api/v1/content-runs/{run_id}/cancel", headers=auth(workspace_id)
+    )
+    assert response.status_code == 200
+    async with editorial_sessionmaker() as db:
+        row = await runs.get_run(db, workspace_id, run_id)
+        stages = {s.stage: s for s in await runs.list_stages(db, run_id)}
+    assert row.state == "cancelled"
+    assert stages["collecting"].status == "succeeded"
+    assert stages["collecting"].output_refs == {"collection": "kept"}
+    assert stages["extracting"].status == "cancelled"
+    # A cancelled run is terminal: the tick leaves it alone.
+    async with editorial_sessionmaker() as db:
+        assert await runs.list_redrivable_runs(db, workspace_id) == []

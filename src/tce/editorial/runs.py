@@ -76,13 +76,31 @@ def stages_through(final_stage: str) -> tuple[str, ...]:
     return STAGES[: STAGES.index(final_stage) + 1]
 
 
+def _scope_window(req: ContentRunRequest, value: datetime | None) -> str | None:
+    """The window as it counts for identity, not as it is stored.
+
+    A rolling "last seven days" is the same request whether it is clicked at
+    11:24 or at 17:27: on 20-Sep four runs selected the same week in parallel
+    because the hash carried the exact instant of each click. Week scopes
+    therefore compare by the day; a run whose window is already aligned to
+    midnight (the weekly schedule) is unaffected, and source-scoped runs have no
+    window at all.
+    """
+    stamp = _db_time(value)
+    if stamp is None:
+        return None
+    if req.scope_kind == "week":
+        return stamp.date().isoformat()
+    return stamp.isoformat()
+
+
 def normalized_scope(req: ContentRunRequest) -> tuple[dict[str, Any], str]:
     source_ids = sorted({str(uuid.UUID(value)) for value in req.source_ids})
     payload = {
         "scope_kind": req.scope_kind,
         "source_ids": source_ids,
-        "window_start": _db_time(req.window_start).isoformat() if req.window_start else None,
-        "window_end": _db_time(req.window_end).isoformat() if req.window_end else None,
+        "window_start": _scope_window(req, req.window_start),
+        "window_end": _scope_window(req, req.window_end),
         "maximum_candidate_count": max(1, min(req.maximum_candidate_count, 6)),
         "target_packet_count": max(1, min(req.target_packet_count, 10)),
     }

@@ -626,6 +626,37 @@ async def get_content_run(
         return runs.run_json(row, await runs.list_stages(db, row.id))
 
 
+@router.post("/{run_id}/cancel")
+async def cancel_content_run(
+    run_id: uuid.UUID,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_content_sessionmaker),
+) -> dict[str, Any]:
+    """Stop a run that is no longer wanted.
+
+    Finished evidence, jobs and packets are kept: cancelling says "do not spend
+    more on this", not "undo it". A run already ready cannot be cancelled.
+    """
+    async with open_session(sm) as db:
+        row = await runs.get_run(db, ws, run_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="content run not found")
+        if row.state == "ready":
+            raise HTTPException(status_code=409, detail="that run has already finished")
+        if row.state != "cancelled":
+            row.state = "cancelled"
+            row.current_stage = "cancelled"
+            row.error_code = None
+            row.error_detail = None
+            for stage in await runs.list_stages(db, row.id):
+                if stage.status not in {"succeeded", "failed"}:
+                    stage.status = "cancelled"
+                    stage.lease_owner = None
+                    stage.leased_until = None
+            await db.commit()
+    return {"id": str(run_id), "status": "cancelled"}
+
+
 @router.post("/{run_id}/resume")
 async def resume_content_run(
     run_id: uuid.UUID,
