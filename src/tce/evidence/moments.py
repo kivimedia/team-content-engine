@@ -318,7 +318,7 @@ def validate_meeting_moment(
     common.update({
         "span_start_s": start,
         "span_end_s": end,
-        "speaker": speaker,
+        "speaker": _fit(speaker, 200),
         "speaker_confidence": _worst_confidence(speaker_turns),
         "language_uncertain": bool(raw.get("language_uncertain"))
         or any(t.get("language_uncertain") for t in speaker_turns),
@@ -370,6 +370,20 @@ def validate_commit_moment(
     return common, None
 
 
+def _fit(value: Any, limit: int) -> str | None:
+    """Keep a model-written value inside its column, or drop it.
+
+    A value that does not fit is not worth losing the source over: the moment
+    carries the evidence, not the label.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text[:limit]
+
+
 def _common_fields(raw: dict[str, Any]) -> dict[str, Any] | str:
     claim = raw.get("claim_type")
     if claim not in CLAIM_TYPES:
@@ -386,9 +400,13 @@ def _common_fields(raw: dict[str, Any]) -> dict[str, Any] | str:
         "context_private": raw.get("context_private"),
         "lesson_summary": lesson,
         "claim_type": claim,
-        "language": raw.get("language"),
-        "translation_label": raw.get("translation_label"),
-        "sensitivity_flags": [str(f) for f in flags if isinstance(f, str | int)],
+        # Short columns, model-written values. An answer like "mixed English and
+        # Hebrew" (longer than language's 20 characters) used to reach the INSERT
+        # and lose the whole source with a raw asyncpg truncation error on the
+        # dashboard (20-Sep-2026, kivimedia/boards@839eae7).
+        "language": _fit(raw.get("language"), 20),
+        "translation_label": _fit(raw.get("translation_label"), 120),
+        "sensitivity_flags": [str(f)[:60] for f in flags if isinstance(f, str | int)],
     }
 
 

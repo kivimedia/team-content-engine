@@ -339,3 +339,31 @@ def test_commit_group_prompt_is_bounded_and_says_what_it_dropped():
     assert bounded.count("### Patch ") < unbounded.count("### Patch ")
     # The default budget keeps this pathological group under the ceiling too.
     assert len(moments_mod.render_commit_group(payload)) < moments_mod.GROUP_PROMPT_CHARS + 10_000
+
+
+def test_model_written_labels_cannot_break_the_insert():
+    """20-Sep-2026: a language label longer than its 20-character column threw a
+    raw asyncpg truncation error, lost the whole source and printed the SQL on
+    the dashboard."""
+    fields = moments_mod._common_fields(
+        {
+            "claim_type": "demonstrated",
+            "excerpt_private": "x",
+            "lesson_summary": "y",
+            "language": "mixed English and Hebrew with transliteration",
+            "translation_label": "T" * 400,
+            "sensitivity_flags": ["money", "x" * 200],
+        }
+    )
+    assert isinstance(fields, dict)
+    assert len(fields["language"]) <= 20
+    assert fields["language"].startswith("mixed English")
+    assert len(fields["translation_label"]) <= 120
+    assert all(len(flag) <= 60 for flag in fields["sensitivity_flags"])
+
+
+def test_an_empty_label_is_stored_as_nothing_not_as_blank():
+    fields = moments_mod._common_fields(
+        {"claim_type": "quoted", "excerpt_private": "x", "lesson_summary": "y", "language": "  "}
+    )
+    assert fields["language"] is None

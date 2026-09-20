@@ -377,6 +377,12 @@ img{background:var(--card);border-radius:4px}
 .ed-progress{height:8px;background:var(--border);border-radius:4px;overflow:hidden}
 .ed-progress>div{height:100%;background:var(--primary);width:0;transition:width .2s}
 .ed-issue{border:1px solid hsl(0 72% 55% / .5);background:var(--destructive-dim);border-radius:8px;padding:8px 10px;color:var(--text);font-size:13px;margin-top:6px}
+.ed-run{border:1px solid hsl(210 60% 55% / .45);background:hsl(210 60% 30% / .18);border-radius:8px;padding:10px 12px;font-size:13px;margin-top:8px}
+.ed-run.is-done{border-color:hsl(150 55% 45% / .5);background:hsl(150 55% 30% / .16)}
+.ed-run.is-bad{border-color:hsl(0 72% 55% / .55);background:var(--destructive-dim)}
+.ed-run-steps{margin-top:6px;color:var(--muted-foreground);font-size:12px}
+.ed-detail{margin-top:6px}.ed-detail summary{cursor:pointer;color:var(--muted-foreground);font-size:12px}
+.ed-detail pre{white-space:pre-wrap;word-break:break-word;font-size:11px;margin:6px 0 0;max-height:160px;overflow:auto}
 .ed-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
 .ed-table td,.ed-table th{border-top:1px solid var(--border);padding:6px 4px;text-align:left;vertical-align:top;color:var(--text);overflow-wrap:anywhere}
 .ed-table th{color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase}
@@ -10461,9 +10467,9 @@ async function edLoadRun(id) {
 function edRenderRunBanner() {
   const host = document.getElementById('ed-run-banner');
   if (!host) return;
-  if (ED.runError) { host.innerHTML = '<div class="ed-issue" role="status">' + edEsc(ED.runError) + '</div>'; return; }
+  if (ED.runError) { host.innerHTML = '<div class="ed-run is-bad" role="status">' + edEsc(ED.runError) + '</div>'; return; }
   const run = ED.run;
-  if (!run) { host.innerHTML = '<div class="ed-issue" role="status">Loading that run...</div>'; return; }
+  if (!run) { host.innerHTML = '<div class="ed-run" role="status">Reading that run...</div>'; return; }
   const stages = run.stages || [];
   const done = stages.filter((s) => s.status === 'succeeded').length;
   const current = stages.find((s) => s.status !== 'succeeded');
@@ -10473,9 +10479,11 @@ function edRenderRunBanner() {
     const mark = s.status === 'succeeded' ? '✓' : (s === current ? '→' : '·');
     return '<span style="margin-right:10px">' + mark + ' ' + edEsc(s.stage) + '</span>';
   }).join('');
-  host.innerHTML = `<div class="ed-issue" role="status" style="border-left:4px solid var(--blue)">
-    <strong>${edEsc(run.week_label || 'Content run')}</strong> — ${edEsc(words)}
-    <div class="ed-sub" style="margin-top:6px">${done} of ${stages.length} steps done. ${steps}</div>${detail}
+  // A run that is working is not a problem: only a stopped one is red.
+  const tone = run.state === 'failed' ? ' is-bad' : (run.state === 'ready' ? ' is-done' : '');
+  host.innerHTML = `<div class="ed-run${tone}" role="status">
+    <strong>${edEsc(run.week_label || 'Content run')}</strong> - ${edEsc(words)}
+    <div class="ed-run-steps">${done} of ${stages.length} steps done. ${steps}</div>${detail}
   </div>`;
 }
 function renderEditorial() {
@@ -10766,13 +10774,35 @@ async function edLoadCoverage() {
     const failed = (r.items || []).filter(i => ['failed', 'unavailable'].includes(i.state));
     if (failed.length) {
       h += '<div class="ed-issue"><strong>' + failed.length + ' item' + (failed.length === 1 ? '' : 's') + ' not covered</strong><ul style="padding-left:18px;margin-top:4px">';
-      for (const i of failed.slice(0, 20)) h += '<li>' + edEsc(i.external_id) + ': ' + edEsc(edHuman(i.state)) + (i.reason ? ' (' + edEsc(i.reason) + ')' : '') + '</li>';
-      h += '</ul></div>';
+      for (const i of failed.slice(0, 20)) h += '<li>' + edEsc(i.external_id) + ': ' + edEsc(edReason(i.reason) || edHuman(i.state)) + '</li>';
+      h += '</ul>' + edDetails(failed.map(i => i.external_id + ': ' + (i.reason || i.state)).join('\n\n')) + '</div>';
     }
-    for (const err of (r.errors || []).slice(0, 3)) h += '<div class="ed-err">' + edEsc(typeof err === 'string' ? err : (err.message || err.error || JSON.stringify(err))) + '</div>';
+    const errs = (r.errors || []).slice(0, 3).map(err => typeof err === 'string' ? err : (err.reason || err.message || err.error || JSON.stringify(err)));
+    if (errs.length) {
+      h += '<div class="ed-issue"><strong>' + errs.length + ' problem' + (errs.length === 1 ? '' : 's') + '</strong><div class="ed-sub">' + edEsc(errs.map(edReason).join('; ')) + '</div>' + edDetails(errs.join('\n\n')) + '</div>';
+    }
     h += '<div class="ed-sub">Last run ' + edEsc(edAgo(r.finished_at || r.started_at)) + '</div></div>';
   }
   el.innerHTML = h;
+}
+
+// Machine text a person cannot act on, turned into what actually happened.
+// The original is always one click away in edDetails, never the headline.
+function edReason(raw) {
+  const text = String(raw || '');
+  if (!text) return '';
+  if (/StringDataRightTruncation|value too long for type/i.test(text)) return 'one label the writer produced was too long to store (fixed on 20 September; re-extract to clear it)';
+  if (/Prompt is too long|request is ~\d+ tokens/i.test(text)) return 'the source was too large to read in one go';
+  if (/rate limit|secondary rate|403/i.test(text)) return 'GitHub asked us to slow down; it will be picked up on the next pass';
+  if (/usage limit|capacity/i.test(text)) return 'the subscription worker is out of capacity for now';
+  if (/max_attempts/i.test(text)) return 'tried three times and gave up';
+  if (/timeout|timed out/i.test(text)) return 'it took too long and was stopped';
+  if (/DBAPIError|asyncpg|sqlalchemy/i.test(text)) return 'the database refused the write';
+  return text.length > 160 ? text.slice(0, 160) + '...' : text;
+}
+function edDetails(text) {
+  if (!text) return '';
+  return '<details class="ed-detail"><summary>Exact message</summary><pre>' + edEsc(text) + '</pre></details>';
 }
 
 async function edRunAction(btnId, label, fn) {
