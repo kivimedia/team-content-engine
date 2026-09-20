@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.api.private_access import require_private_workspace
 from tce.db.session import get_db
+from tce.editorial.common import ORIGIN_TECHNICAL_VALIDATION
 from tce.models.editorial import (
     EvidenceCollectionRun,
     PublicationReceipt,
@@ -1220,7 +1221,12 @@ async def recorded(
             select(RecordingUpload, TopicCandidate, RecordingPacket)
             .join(TopicCandidate, TopicCandidate.id == RecordingUpload.candidate_id)
             .outerjoin(RecordingPacket, RecordingPacket.id == RecordingUpload.packet_id)
-            .where(RecordingUpload.workspace_id == ws)
+            .where(
+                RecordingUpload.workspace_id == ws,
+                # A synthetic take proving the pipeline works is not something he
+                # recorded, and it should not sit in his list looking like one.
+                TopicCandidate.origin != ORIGIN_TECHNICAL_VALIDATION,
+            )
             # id breaks the tie so two takes in the same second do not swap
             # places between one refresh and the next.
             .order_by(RecordingUpload.created_at.desc(), RecordingUpload.id.desc())

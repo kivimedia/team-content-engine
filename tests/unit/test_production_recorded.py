@@ -90,6 +90,26 @@ async def test_another_workspace_recordings_are_not_listed(client, editorial_ses
     assert body["count"] == 0
 
 
+async def test_a_synthetic_pipeline_test_is_not_something_he_recorded(
+    client, editorial_sessionmaker
+):
+    # A row created to prove the pipeline works had been sitting in his list
+    # looking like a video he made.
+    from sqlalchemy import select
+
+    from tce.models.editorial import TopicCandidate
+
+    cand, _p, _u = await record_one(client, editorial_sessionmaker, title="SYNTHETIC TEST")
+    async with editorial_sessionmaker() as s:
+        row = (
+            await s.execute(select(TopicCandidate).where(TopicCandidate.id == cand.id))
+        ).scalar_one()
+        row.origin = "technical_validation"
+        await s.commit()
+
+    assert (await client.get(RECORDED, headers=AUTH)).json()["count"] == 0
+
+
 async def test_nothing_recorded_yet_is_an_empty_list_not_an_error(client):
     r = await client.get(RECORDED, headers=AUTH)
 
