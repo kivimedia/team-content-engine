@@ -514,3 +514,61 @@ async def test_more_hooks_refuses_evidence_from_another_idea(editorial_sessionma
     outcome = await packets.more_hook_options(editorial_sessionmaker, ws, first.packet["id"])
     assert outcome.status == "failed"
     assert "outside this idea" in outcome.detail
+
+
+async def test_a_finished_job_is_applied_instead_of_paid_for_twice(
+    editorial_sessionmaker, fake_llm, monkeypatch
+):
+    """20-Sep: a deploy restarted the API while the worker was writing openings.
+    The answer arrived, was billed, and nobody applied it - twice."""
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as session:
+        cand = await make_candidate(session, ws)
+        fake_llm["output"] = good_output()
+        first = await packets.build_packet(editorial_sessionmaker, ws, cand.id)
+    assert first.packet is not None
+
+    # A hook job that already succeeded on the worker, its result unapplied.
+    from tce.models.llm_job import LLMJob
+
+    answer = {
+        "hook_options": [
+            {
+                "id": "from-the-worker",
+                "text": "If asking for money makes you flinch, stop charging.",
+                "question": "Why would a coach tell someone to work for free?",
+                "payoff_phrase_id": "p004",
+                "moment_ids": ["11111111-1111-1111-1111-111111111111"],
+                "rationale": "Opens on the prescription, not the discomfort.",
+            }
+        ]
+    }
+    job_id = uuid.uuid4()
+    async with editorial_sessionmaker() as session:
+        session.add(
+            LLMJob(
+                id=job_id,
+                workspace_id=ws,
+                job_type=packets.MORE_HOOKS_JOB_TYPE,
+                agent_name=packets.MORE_HOOKS_AGENT,
+                run_id=cand.id,
+                status="succeeded",
+                idempotency_key=f"more-hooks:{ws}:{uuid.uuid4()}",
+                input_hash="x" * 64,
+                prompt_version=packets.MORE_HOOKS_PROMPT_VERSION,
+                requested_model="claude-opus-5",
+                policy_model="claude-opus-5",
+                request_json={},
+                result_json=answer,
+                completed_at=datetime(2026, 9, 20, 17, 45),
+            )
+        )
+        await session.commit()
+
+    calls = len(fake_llm["calls"])
+    outcome = await packets.more_hook_options(editorial_sessionmaker, ws, first.packet["id"])
+    assert outcome.status == "ok", outcome.detail
+    assert len(fake_llm["calls"]) == calls, "the finished answer must not be paid for again"
+    assert outcome.packet["version"] == first.packet["version"] + 1
+    assert any(h["text"].startswith("If asking for money") for h in outcome.packet["hook_options"])
+    assert outcome.job_id == job_id

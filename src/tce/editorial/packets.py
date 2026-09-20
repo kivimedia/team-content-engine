@@ -796,6 +796,30 @@ async def more_hook_options(
         if cand is None:
             return PacketOutcome(status="invalid", detail="idea not found")
 
+        # A job that already finished for this packet is applied rather than
+        # paid for twice. The worker keeps running while the API restarts (a
+        # deploy, a crash), and the in-memory task that was waiting for it dies:
+        # twice on 20-Sep a good answer was written, billed and then dropped.
+        done = (
+            await session.execute(
+                select(LLMJob)
+                .where(
+                    LLMJob.workspace_id == ws,
+                    LLMJob.job_type == MORE_HOOKS_JOB_TYPE,
+                    LLMJob.run_id == packet.candidate_id,
+                    LLMJob.status == "succeeded",
+                )
+                .order_by(LLMJob.completed_at.desc().nullslast())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if done is not None and done.id != packet.job_id:
+            applied = await _apply_more_hooks(
+                session, ws, packet, cand, done.result_json, done.id
+            )
+            if applied.status == "ok":
+                return applied
+
         nonce = str(uuid.uuid4())
         request = LLMRequest(
             job_type=MORE_HOOKS_JOB_TYPE,
@@ -822,79 +846,93 @@ async def more_hook_options(
                 status=exc.status, job_id=exc.job_id, detail=exc.detail, retry_at=exc.retry_at
             )
 
-        data = llm.structured
-        if data is None:
-            try:
-                data = json.loads(llm.text)
-            except (TypeError, ValueError):
-                data = None
-        fresh = (data or {}).get("hook_options")
-        if not isinstance(fresh, list) or not fresh:
-            return PacketOutcome(
-                status="failed", job_id=llm.job_id, detail="no usable opening came back"
-            )
-        allowed = {str(value) for value in (cand.moment_ids or [])}
-        fresh = [
-            option
-            for option in fresh
-            if isinstance(option, dict)
-            and {str(m) for m in (option.get("moment_ids") or [])}.issubset(allowed)
-        ]
-        if not fresh:
-            return PacketOutcome(
-                status="failed",
-                job_id=llm.job_id,
-                detail="the new openings cited evidence outside this idea",
-            )
-        merged, dropped = merge_hook_options(
-            list(packet.hook_options or []), fresh, len(packet.script_phrases or [])
+        return await _apply_more_hooks(
+            session, ws, packet, cand, llm.structured or llm.text, llm.job_id
         )
-        added = len(merged) - len(packet.hook_options or [])
-        if not added:
-            return PacketOutcome(
-                status="failed",
-                job_id=llm.job_id,
-                detail="; ".join(dropped) or "nothing new came back",
-                errors=dropped,
-            )
-        maximum = (
-            await session.execute(
-                select(func.max(RecordingPacket.version)).where(
-                    RecordingPacket.workspace_id == ws,
-                    RecordingPacket.candidate_id == packet.candidate_id,
-                )
-            )
-        ).scalar_one() or 0
-        now = datetime.now(UTC).replace(tzinfo=None)
-        clone = RecordingPacket(
-            workspace_id=ws,
-            candidate_id=packet.candidate_id,
-            version=int(maximum) + 1,
-            bullets=list(packet.bullets or []),
-            script_phrases=list(packet.script_phrases or []),
-            facebook_post=packet.facebook_post,
-            linkedin_post=packet.linkedin_post,
-            interviewer_prompt=packet.interviewer_prompt,
-            hook_options=merged,
-            selected_hook_id=packet.selected_hook_id,
-            beats=list(packet.beats or []),
-            citations_private=list(packet.citations_private or []),
-            public_safety=dict(packet.public_safety or {}),
-            status=packet.status,
-            prompt_version=packet.prompt_version,
-            job_id=llm.job_id,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(clone)
-        await session.commit()
+
+
+async def _apply_more_hooks(
+    session: AsyncSession,
+    ws: uuid.UUID,
+    packet: RecordingPacket,
+    cand: TopicCandidate,
+    payload: Any,
+    job_id: uuid.UUID | None,
+) -> PacketOutcome:
+    """Turn one finished job's answer into the next packet version."""
+    data = payload if isinstance(payload, dict) else None
+    if data is None:
+        try:
+            data = json.loads(payload or "")
+        except (TypeError, ValueError):
+            data = None
+    fresh = (data or {}).get("hook_options")
+    if not isinstance(fresh, list) or not fresh:
         return PacketOutcome(
-            status="ok",
-            job_id=llm.job_id,
-            packet=packet_to_json(clone),
-            detail=f"{added} new opening(s) to choose from",
+            status="failed", job_id=job_id, detail="no usable opening came back"
+        )
+    allowed = {str(value) for value in (cand.moment_ids or [])}
+    fresh = [
+        option
+        for option in fresh
+        if isinstance(option, dict)
+        and {str(m) for m in (option.get("moment_ids") or [])}.issubset(allowed)
+    ]
+    if not fresh:
+        return PacketOutcome(
+            status="failed",
+            job_id=job_id,
+            detail="the new openings cited evidence outside this idea",
+        )
+    merged, dropped = merge_hook_options(
+        list(packet.hook_options or []), fresh, len(packet.script_phrases or [])
+    )
+    added = len(merged) - len(packet.hook_options or [])
+    if not added:
+        return PacketOutcome(
+            status="failed",
+            job_id=job_id,
+            detail="; ".join(dropped) or "nothing new came back",
             errors=dropped,
         )
+    maximum = (
+        await session.execute(
+            select(func.max(RecordingPacket.version)).where(
+                RecordingPacket.workspace_id == ws,
+                RecordingPacket.candidate_id == packet.candidate_id,
+            )
+        )
+    ).scalar_one() or 0
+    now = datetime.now(UTC).replace(tzinfo=None)
+    clone = RecordingPacket(
+        workspace_id=ws,
+        candidate_id=packet.candidate_id,
+        version=int(maximum) + 1,
+        bullets=list(packet.bullets or []),
+        script_phrases=list(packet.script_phrases or []),
+        facebook_post=packet.facebook_post,
+        linkedin_post=packet.linkedin_post,
+        interviewer_prompt=packet.interviewer_prompt,
+        hook_options=merged,
+        selected_hook_id=packet.selected_hook_id,
+        beats=list(packet.beats or []),
+        citations_private=list(packet.citations_private or []),
+        public_safety=dict(packet.public_safety or {}),
+        status=packet.status,
+        prompt_version=packet.prompt_version,
+        job_id=job_id,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(clone)
+    await session.commit()
+    return PacketOutcome(
+        status="ok",
+        job_id=job_id,
+        packet=packet_to_json(clone),
+        detail=f"{added} new opening(s) to choose from",
+        errors=dropped,
+    )
 
 
 async def choose_hook(
