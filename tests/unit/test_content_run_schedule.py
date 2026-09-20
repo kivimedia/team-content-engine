@@ -1089,3 +1089,126 @@ async def test_a_source_id_from_another_workspace_is_refused(client, editorial_s
 )
 def test_person_name_stops_at_the_first_non_name_word(text, expected):
     assert api.person_name(text) == expected
+
+
+# ---------------------------------------------------------------------------
+# extraction: a partial ledger is not a capacity problem
+# ---------------------------------------------------------------------------
+
+
+async def _extracting_run(sm, workspace_id: uuid.UUID):
+    async with sm() as db:
+        run = await runs.create_or_get_run(
+            db,
+            workspace_id,
+            runs.ContentRunRequest(
+                idempotency_key=f"extract-{uuid.uuid4()}",
+                scope_kind="week",
+                window_start=datetime(2026, 9, 14, tzinfo=UTC),
+                window_end=datetime(2026, 9, 21, tzinfo=UTC),
+                final_stage="extracting",
+            ),
+        )
+        await db.commit()
+        return run
+
+
+def _ledger(monkeypatch, sm, *, complete, finished, counts, activity):
+    """Stand in for extract_moments + its ledger row."""
+    from tce.models.editorial import EvidenceCollectionRun
+
+    ledger_id = uuid.uuid4()
+
+    async def fake_extract(_sm, ws, *a, **k):
+        async with sm() as db:
+            db.add(
+                EvidenceCollectionRun(
+                    id=ledger_id,
+                    workspace_id=ws,
+                    source_kind="moment_extraction",
+                    window_start=datetime(2026, 9, 14),
+                    window_end=datetime(2026, 9, 21),
+                    status="complete" if complete else "partial",
+                    complete=complete,
+                    finished_at=datetime(2026, 9, 20, 16) if finished else None,
+                    current_activity=activity,
+                    counts=counts,
+                )
+            )
+            await db.commit()
+        return ledger_id
+
+    monkeypatch.setattr("tce.evidence.moments.extract_moments", fake_extract)
+    return ledger_id
+
+
+async def test_partial_extraction_continues_on_what_it_has(editorial_sessionmaker, monkeypatch):
+    set_worker(monkeypatch, online=True)
+    workspace_id = uuid.uuid4()
+    _ledger(
+        monkeypatch,
+        editorial_sessionmaker,
+        complete=False,
+        finished=True,
+        counts={"processed": 27, "failed": 1, "excluded": 3},
+        activity="Finished (partial): 27 processed, 1 failed",
+    )
+    run = await _extracting_run(editorial_sessionmaker, workspace_id)
+    output = await api._execute_stage(editorial_sessionmaker, run, "extracting")
+    assert output["partial"] is True
+    assert output["processed"] == 27 and output["failed"] == 1
+    assert "27 processed" in output["detail"]
+
+
+async def test_extraction_still_in_flight_waits(editorial_sessionmaker, monkeypatch):
+    set_worker(monkeypatch, online=True)
+    workspace_id = uuid.uuid4()
+    _ledger(
+        monkeypatch,
+        editorial_sessionmaker,
+        complete=False,
+        finished=False,
+        counts={"processed": 4},
+        activity="Moment extraction: 4 of 200 sources done, 3 in flight",
+    )
+    run = await _extracting_run(editorial_sessionmaker, workspace_id)
+    with pytest.raises(runs.StageWaitingError) as exc:
+        await api._execute_stage(editorial_sessionmaker, run, "extracting")
+    assert exc.value.state == "waiting_capacity"
+    assert "3 in flight" in exc.value.detail
+
+
+async def test_extraction_that_produced_nothing_fails_loudly(editorial_sessionmaker, monkeypatch):
+    set_worker(monkeypatch, online=True)
+    workspace_id = uuid.uuid4()
+    _ledger(
+        monkeypatch,
+        editorial_sessionmaker,
+        complete=False,
+        finished=True,
+        counts={"processed": 0, "failed": 9},
+        activity="Finished (partial): 0 processed, 9 failed",
+    )
+    run = await _extracting_run(editorial_sessionmaker, workspace_id)
+    with pytest.raises(ValueError, match="extraction produced nothing"):
+        await api._execute_stage(editorial_sessionmaker, run, "extracting")
+
+
+async def test_unavailable_sources_with_nothing_processed_still_wait(
+    editorial_sessionmaker, monkeypatch
+):
+    set_worker(monkeypatch, online=True)
+    workspace_id = uuid.uuid4()
+    _ledger(
+        monkeypatch,
+        editorial_sessionmaker,
+        complete=False,
+        finished=True,
+        counts={"processed": 0, "unavailable": 5},
+        activity="Finished (partial): 0 processed, 5 unavailable",
+    )
+    run = await _extracting_run(editorial_sessionmaker, workspace_id)
+    with pytest.raises(runs.StageWaitingError) as exc:
+        await api._execute_stage(editorial_sessionmaker, run, "extracting")
+    assert exc.value.state == "waiting_capacity"
+    assert "No source could be extracted yet" in exc.value.detail

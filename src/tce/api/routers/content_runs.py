@@ -211,9 +211,38 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str) -> dict[str, Any]
         )
         async with open_session(sm) as db:
             ledger = await db.get(EvidenceCollectionRun, extraction_id)
-            if ledger is None or not ledger.complete:
-                detail = ledger.current_activity if ledger else "extraction ledger missing"
-                raise runs.StageWaitingError("waiting_capacity", detail or "extraction incomplete")
+            if ledger is None:
+                raise runs.StageWaitingError("waiting_capacity", "extraction ledger missing")
+            counts = ledger.counts or {}
+            processed = int(counts.get("processed") or 0)
+            failed = int(counts.get("failed") or 0)
+            unavailable = int(counts.get("unavailable") or 0)
+            detail = ledger.current_activity or "extraction incomplete"
+            if not ledger.complete:
+                # A ledger that STOPPED with failed or unavailable sources is not
+                # a capacity problem, and calling it one was a lie the run then
+                # showed to Ziv: a single failed source out of 31 parked a whole
+                # daily run as "waiting for subscription capacity" while the
+                # workers were idle. Only work still in flight waits.
+                if ledger.finished_at is None:
+                    raise runs.StageWaitingError("waiting_capacity", detail)
+                if unavailable and not processed:
+                    raise runs.StageWaitingError(
+                        "waiting_capacity",
+                        f"No source could be extracted yet: {detail}",
+                    )
+                if not processed:
+                    raise ValueError(f"extraction produced nothing: {detail}")
+                # Some sources failed, most did not: the run continues on the
+                # evidence it has and says what it left behind.
+                return {
+                    "extraction_run_id": str(extraction_id),
+                    "processed": processed,
+                    "failed": failed,
+                    "unavailable": unavailable,
+                    "partial": True,
+                    "detail": detail,
+                }
         return {"extraction_run_id": str(extraction_id)}
 
     week = (run.window_start or datetime.now(UTC)).date()
