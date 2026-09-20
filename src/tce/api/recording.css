@@ -51,7 +51,7 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .idea-meta { margin-top: 12px; color: var(--lake); font-weight: 800; font-size: .9rem; }
 .empty { margin-top: 32px; border: 2px dashed var(--line); padding: 28px; text-align: center; }
 .empty strong, .empty span { display: block; }
-.studio-view { height: 100%; display: grid; grid-template-rows: minmax(110px, 32%) auto minmax(0, 1fr) auto auto; overflow: hidden; }
+.studio-view { height: 100%; display: grid; grid-template-rows: minmax(150px, 44%) auto minmax(0, 1fr) auto; overflow: hidden; }
 .camera-stage { position: relative; background: #07111f; overflow: hidden; min-height: 0; }
 .camera-stage video { width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1); }
 .camera-empty { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px; text-align: center; padding: 30px; color: #fff; }
@@ -117,7 +117,20 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .scroll-rail { border-left: 1px solid #9baaba; padding: 8px 5px; gap: 8px; }
 .scroll-rail button { width: 44px; min-height: 44px; border: 0; background: var(--ink); color: #fff; border-radius: 8px; font-weight: 900; }
 .scroll-rail input { writing-mode: vertical-lr; direction: rtl; flex: 1; width: 28px; accent-color: var(--signal); }
-.session-strip { display: flex; justify-content: space-between; gap: 10px; padding: 10px 14px; background: var(--ink); color: #fff; font-size: .82rem; font-weight: 800; }
+.session-strip { display: flex; justify-content: space-between; gap: 10px; padding: 7px 14px; background: var(--ink); color: #fff; font-size: .78rem; font-weight: 800; }
+.session-strip[hidden] { display: none; }
+/* Seconds belong on the picture he is looking at. */
+.camera-timer { position: absolute; top: 12px; right: 12px; padding: 6px 12px; border-radius: 999px; background: rgba(7, 17, 31, .82); color: #fff; font: 900 1.05rem/1 'Trebuchet MS', sans-serif; letter-spacing: .04em; }
+/* The hook step: one decision, full screen, nothing else on it. */
+.hook-view { padding: 18px 16px 30px; max-width: 760px; margin: 0 auto; }
+.hook-view-head { margin-bottom: 16px; }
+.hook-view h1 { font-family: Georgia, serif; font-size: 1.7rem; line-height: 1.1; margin: 6px 0 10px; }
+.hook-view-idea { margin: 0 0 8px; color: #34435a; line-height: 1.35; }
+.hook-view-hint { margin: 0; color: #4a5a70; font-size: .92rem; }
+.hook-view-actions { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.secondary-button { min-height: 52px; padding: 0 18px; border: 2px solid var(--ink); border-radius: 12px; background: var(--white); font-weight: 900; }
+.secondary-button:disabled { opacity: .5; }
+.hook-view-state { color: #34435a; font-size: .9rem; line-height: 1.35; }
 .controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; padding: 9px 9px calc(9px + env(safe-area-inset-bottom)); background: #d7dfdf; border-top: 2px solid var(--ink); }
 .control { min-height: 56px; border: 2px solid var(--ink); border-radius: 12px; background: var(--white); font-size: .74rem; font-weight: 900; padding: 5px 3px; line-height: 1.1; }
 .control small { display: block; font-size: .62rem; font-weight: 700; opacity: .75; margin-top: 2px; }

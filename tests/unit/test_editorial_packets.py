@@ -397,3 +397,120 @@ def test_packet_prompt_falls_back_to_candidate_moment_ids():
         citations_private=[{"claim_type": "quoted", "excerpt_private": "older citation row"}],
     )
     assert "22222222-2222-2222-2222-222222222222" in packets.build_packet_prompt("s", cand)
+
+
+def _hook(n, text, payoff="p004", moment="11111111-1111-1111-1111-111111111111"):
+    return {
+        "id": f"h{n}",
+        "text": text,
+        "question": f"Q{n}",
+        "payoff_phrase_id": payoff,
+        "moment_ids": [moment],
+        "rationale": f"R{n}",
+    }
+
+
+def test_merge_keeps_what_is_usable_and_says_what_it_dropped():
+    existing = [_hook(1, "Opening one.")]
+    fresh = [
+        {**_hook(9, "A different angle."), "id": "model-made-up-id"},
+        _hook(9, "Opening one."),  # same text as the one already there
+        _hook(9, "Pays off nowhere.", payoff="p099"),
+        {**_hook(9, "No evidence."), "moment_ids": []},
+    ]
+    merged, dropped = packets.merge_hook_options(existing, fresh, phrase_count=8)
+    assert [h["text"] for h in merged] == ["Opening one.", "A different angle."]
+    # Ids are ours: a model id never overwrites an opening someone may be reading.
+    assert merged[1]["id"] == "h2"
+    assert len(dropped) == 3
+    assert any("same as an opening already there" in d for d in dropped)
+    assert any("payoff phrase is not in this script" in d for d in dropped)
+
+
+def test_merge_stops_at_the_maximum():
+    existing = [_hook(n, f"Opening {n}.") for n in range(1, packets.MAX_HOOK_OPTIONS + 1)]
+    merged, dropped = packets.merge_hook_options(existing, [_hook(99, "One more.")], 8)
+    assert len(merged) == packets.MAX_HOOK_OPTIONS
+    assert merged == existing
+
+
+def test_more_hooks_prompt_shows_the_existing_openings_and_the_ids_to_cite():
+    from types import SimpleNamespace
+
+    packet = SimpleNamespace(
+        hook_options=[_hook(1, "Opening one.")],
+        script_phrases=["Opening one.", "Second line.", "Third.", "Payoff line."],
+    )
+    cand = SimpleNamespace(
+        title="t",
+        lesson="l",
+        citations_private=[
+            {
+                "moment_id": "11111111-1111-1111-1111-111111111111",
+                "claim_type": "quoted",
+                "excerpt_private": "synthetic",
+            }
+        ],
+    )
+    prompt = packets.build_more_hooks_prompt(packet, cand, 3)
+    assert "WRITE 3 NEW OPENING(S)." in prompt
+    assert "do not repeat or reword these" in prompt
+    assert '"text": "Opening one."' in prompt
+    assert '"phrase_id": "p004"' in prompt
+    assert "11111111-1111-1111-1111-111111111111" in prompt
+
+
+async def test_more_hooks_adds_a_version_and_keeps_the_opening_in_use(
+    editorial_sessionmaker, fake_llm
+):
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as session:
+        cand = await make_candidate(session, ws)
+        fake_llm["output"] = good_output()
+        first = await packets.build_packet(editorial_sessionmaker, ws, cand.id)
+    assert first.packet is not None
+    fake_llm["output"] = {
+        "hook_options": [
+            {
+                "id": "whatever",
+                "text": "Nobody tells a coach the sale is the first lesson.",
+                "question": "Why would the sale teach anything?",
+                "payoff_phrase_id": "p004",
+                "moment_ids": ["11111111-1111-1111-1111-111111111111"],
+                "rationale": "Starts on the belief, not the tactic.",
+            }
+        ]
+    }
+    outcome = await packets.more_hook_options(editorial_sessionmaker, ws, first.packet["id"])
+    assert outcome.status == "ok", outcome.detail
+    assert outcome.detail.startswith("1 new opening")
+    packet = outcome.packet
+    assert packet["version"] == first.packet["version"] + 1
+    assert len(packet["hook_options"]) == 4
+    # The opening in use does not move under someone who is reading it.
+    assert packet["selected_hook_id"] == first.packet["selected_hook_id"]
+    assert packet["script_phrases"] == first.packet["script_phrases"]
+    assert packet["bullets"] == first.packet["bullets"]
+
+
+async def test_more_hooks_refuses_evidence_from_another_idea(editorial_sessionmaker, fake_llm):
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as session:
+        cand = await make_candidate(session, ws)
+        fake_llm["output"] = good_output()
+        first = await packets.build_packet(editorial_sessionmaker, ws, cand.id)
+    fake_llm["output"] = {
+        "hook_options": [
+            {
+                "id": "x",
+                "text": "Borrowed from somewhere else.",
+                "question": "?",
+                "payoff_phrase_id": "p004",
+                "moment_ids": ["99999999-9999-9999-9999-999999999999"],
+                "rationale": "r",
+            }
+        ]
+    }
+    outcome = await packets.more_hook_options(editorial_sessionmaker, ws, first.packet["id"])
+    assert outcome.status == "failed"
+    assert "outside this idea" in outcome.detail

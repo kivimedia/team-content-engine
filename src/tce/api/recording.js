@@ -174,8 +174,10 @@ function runWords(run) {
 
   function updateSyncLabel() {
     const pending = state.pendingSync.size;
-    $("uploadState").textContent = pending ? `Uploading: ${pending}` : "Phone copy is safe";
-    $("syncState").textContent = navigator.onLine ? (pending ? `Uploading ${pending} chunk${pending === 1 ? "" : "s"}` : "Ready") : "Offline: keeping chunks on this phone";
+    $("syncState").textContent = navigator.onLine
+      ? (pending ? `Saving ${pending}` : "Ready")
+      : "No signal: kept on this phone";
+    updateSessionLabels();
   }
 
   async function syncChunk(record) {
@@ -451,8 +453,7 @@ function runWords(run) {
     renderHookChooser(model);
   }
 
-  function renderHookChooser(model) {
-    const list = $("hookOptions");
+  function renderHookOptions(list, model, onChoose) {
     list.replaceChildren();
     model.options.forEach((option) => {
       const card = document.createElement("article");
@@ -474,17 +475,54 @@ function runWords(run) {
       use.type = "button";
       use.className = "hook-use";
       use.textContent = option.current ? "Keep this opening" : "Use this opening";
-      use.addEventListener("click", () => applyHookChoice(option.id));
+      use.addEventListener("click", () => onChoose(option.id));
       card.append(rank, text, question, why, use);
       list.appendChild(card);
     });
+  }
+
+  function renderHookChooser(model) {
+    renderHookOptions($("hookOptions"), model, (hookId) => applyHookChoice(hookId));
     $("hookChooserHint").textContent = "Pick the first spoken line. The rest of the script stays the same.";
     $("hookPanel").hidden = true;
     $("hookChooser").hidden = false;
   }
 
+  async function askForMoreOpenings() {
+    const idea = state.idea;
+    if (!idea) return;
+    const button = $("moreHooksButton");
+    const label = $("moreHooksState");
+    button.disabled = true;
+    label.textContent = "Writing more openings. This takes about a minute.";
+    try {
+      const response = await fetch(`${apiV1}/editorial/packets/${idea.packet_id}/more-hooks`, {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
+      const next = packetToIdea(idea, data.packet);
+      state.ideas = state.ideas.map((item) => (item.candidate_id === next.candidate_id ? next : item));
+      state.idea = next;
+      label.textContent = data.detail || "More openings are ready.";
+      const model = hookChooserModel(next, { clipCount: 0 });
+      renderHookOptions($("hookViewOptions"), model, (hookId) => {
+        markHookChosen(next);
+        applyHookChoice(hookId);
+      });
+    } catch (error) {
+      label.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   function closeHookChooser() {
     $("hookChooser").hidden = true;
+    if (!$("hookView").hidden && state.idea) {
+      enterStudio(state.idea);
+      return;
+    }
     if (state.idea) renderHookPanel(state.idea);
   }
 
@@ -527,32 +565,57 @@ function runWords(run) {
   async function openIdea(idea) {
     state.idea = idea;
     state.session = null;
+    try {
+      // An existing take set is already bound to this packet version; read it
+      // before deciding whether the opening may still change.
+      if (idea.active_session_id) await ensureSession();
+    } catch (error) {
+      showNotice(error.message);
+    }
+    const model = hookChooserModel(idea, {
+      sessionStatus: state.session?.status,
+      clipCount: (state.session?.clips || []).length,
+      recorderActive: Boolean(state.recorder && state.recorder.state !== "inactive"),
+    });
+    // One decision on its own screen, then the studio is only camera and words.
+    if (model.show && !hookAlreadyChosen(idea)) {
+      showHookStep(idea, model);
+      return;
+    }
+    enterStudio(idea, model.locked ? model.reason : "");
+  }
+
+  function showHookStep(idea, model) {
     $("queueView").hidden = true;
+    $("studioView").hidden = true;
+    $("hookView").hidden = false;
+    setStudioMode(false);
+    $("hookViewIdea").textContent = idea.title;
+    $("moreHooksState").textContent = "";
+    $("moreHooksButton").disabled = false;
+    renderHookOptions($("hookViewOptions"), model, (hookId) => {
+      markHookChosen(idea);
+      applyHookChoice(hookId);
+    });
+  }
+
+  async function enterStudio(idea, lockNote = "") {
+    $("queueView").hidden = true;
+    $("hookView").hidden = true;
     $("studioView").hidden = false;
     setStudioMode(true);
     $("scriptTitle").textContent = idea.title;
     $("bigIdea").textContent = idea.big_idea;
     $("hookChooser").hidden = true;
-    renderHookPanel(idea);
+    renderHookPanel(idea, lockNote);
     renderBeats();
     setMode("points");
     updateSessionLabels();
     try {
-      // An existing take set is already bound to this packet version; read it
-      // before deciding whether the opening may still change.
-      if (idea.active_session_id) await ensureSession();
-      const model = hookChooserModel(idea, {
-        sessionStatus: state.session?.status,
-        clipCount: (state.session?.clips || []).length,
-        recorderActive: Boolean(state.recorder && state.recorder.state !== "inactive"),
-      });
-      if (model.show && !hookAlreadyChosen(idea)) {
-        renderHookChooser(model);
-        return;
-      }
-      renderHookPanel(idea);
-      if (model.locked && model.options.length >= 2) renderHookPanel(idea, model.reason);
       await ensureSession();
+      // The top half is worth its space only if it shows him: the preview runs
+      // from the moment the studio opens, not from the first Record.
+      await ensureMedia();
     } catch (error) {
       showNotice(error.message);
     }
@@ -624,6 +687,7 @@ function runWords(run) {
       await requestWakeLock();
       state.timerId = setInterval(updateTimer, 250);
       $("recordingFlag").hidden = false;
+      $("timer").hidden = false;
       $("recordButton").disabled = true;
       $("pauseButton").disabled = false;
       $("finishClipButton").disabled = false;
@@ -739,10 +803,21 @@ function runWords(run) {
   }
 
   function updateSessionLabels() {
-    const clips = state.session?.clips || [];
-    $("clipCount").textContent = clips.length ? `${clips.length} clip${clips.length === 1 ? "" : "s"} in this take set` : "No clips yet";
-    // Finish is never disabled: it closes the open clip and then the session,
-    // which is what pressing it means when a clip is still recording.
+    // The strip only appears when something needs saying. The clip count was
+    // never his problem, and "Phone copy is safe" explained our storage to him
+    // rather than telling him anything he could act on.
+    const pending = state.pendingSync.size;
+    const offline = !navigator.onLine;
+    const strip = $("sessionStrip");
+    if (!pending && !offline) {
+      strip.hidden = true;
+      return;
+    }
+    strip.hidden = false;
+    $("clipCount").textContent = offline ? "No signal" : "";
+    $("uploadState").textContent = offline
+      ? "Keeping everything on this phone until you are back online"
+      : `Uploading ${pending} piece${pending === 1 ? "" : "s"}`;
   }
 
   function showQueue() {
@@ -771,6 +846,7 @@ function runWords(run) {
 
   $("homeButton").addEventListener("click", showQueue);
   $("produceNowButton").addEventListener("click", produceNow);
+  $("moreHooksButton").addEventListener("click", askForMoreOpenings);
   $("textSizeButton").addEventListener("click", changeTextSize);
   $("pointsTab").addEventListener("click", () => setMode("points"));
   $("scriptTab").addEventListener("click", () => setMode("script"));

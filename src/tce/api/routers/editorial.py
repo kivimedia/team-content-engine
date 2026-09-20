@@ -35,7 +35,13 @@ from tce.editorial.feedback import (
     record_feedback,
     summarize_feedback,
 )
-from tce.editorial.packets import PacketValidationError, build_packet, choose_hook, list_packets
+from tce.editorial.packets import (
+    PacketValidationError,
+    build_packet,
+    choose_hook,
+    list_packets,
+    more_hook_options,
+)
 from tce.editorial.selector import MAX_CANDIDATES_CAP, select_candidates
 from tce.models.editorial import EditorialFeedback, RecordingPacket, TopicCandidate
 from tce.services.strategy_loader import load_effective_strategy
@@ -535,6 +541,51 @@ async def choose_packet_hook(
             raise HTTPException(status_code=code, detail=str(exc)) from exc
         await db.commit()
     return packet_to_json(packet)
+
+
+@router.post("/packets/{packet_id}/more-hooks")
+async def more_packet_hooks(
+    packet_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """More openings for the same script, as a new immutable version.
+
+    One subscription job. The script, the bullets and the evidence do not change
+    and the opening in use stays in use, so this is safe to ask for while
+    deciding - but not while a take set is recording against the version.
+    """
+    outcome = await more_hook_options(sm, ws, packet_id)
+    if outcome.status == "invalid":
+        code = 404 if outcome.detail == "packet not found" else 409
+        raise HTTPException(status_code=code, detail=outcome.detail)
+    if outcome.status in {"waiting_capacity", "waiting_worker"}:
+        raise HTTPException(status_code=503, detail=outcome.detail)
+    if outcome.packet is None:
+        raise HTTPException(status_code=502, detail=outcome.detail or "no opening came back")
+    return {"packet": outcome.packet, "detail": outcome.detail, "dropped": outcome.errors}
+
+
+@router.post("/candidates/{candidate_id}/archive")
+async def archive_candidate(
+    candidate_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Put an idea away without judging it.
+
+    Rejecting teaches the engine what Ziv does not want; archiving says only
+    "not this one, not now". Both keep it out of the recording queue and out of
+    future selection, and an archived idea can be brought back by approving it.
+    """
+    async with open_session(sm) as db:
+        cand = await _get_candidate(db, ws, candidate_id)
+        if cand.status == "recorded":
+            raise HTTPException(status_code=409, detail="that idea has already been recorded")
+        cand.status = "withdrawn"
+        await db.commit()
+        fb = await list_feedback(db, ws, cand.id)
+    return candidate_to_json(cand, fb)
 
 
 # ---------------------------------------------------------------------------

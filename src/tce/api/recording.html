@@ -37,6 +37,20 @@
       </div>
     </section>
 
+    <section id="hookView" class="hook-view" hidden aria-labelledby="hookViewTitle">
+      <div class="hook-view-head">
+        <p class="kicker">Step 1 of 2</p>
+        <h1 id="hookViewTitle">Choose how it opens</h1>
+        <p id="hookViewIdea" class="hook-view-idea"></p>
+        <p class="hook-view-hint">The first spoken line. Everything after it stays the same.</p>
+      </div>
+      <div id="hookViewOptions" class="hook-options"></div>
+      <div class="hook-view-actions">
+        <button id="moreHooksButton" type="button" class="secondary-button">Ask for more openings</button>
+        <span id="moreHooksState" class="hook-view-state"></span>
+      </div>
+    </section>
+
     <section id="studioView" class="studio-view" hidden>
       <div class="camera-stage">
         <video id="camera" playsinline muted></video>
@@ -46,6 +60,7 @@
           <span>Camera and microphone start only when you press Record.</span>
         </div>
         <div id="recordingFlag" class="recording-flag" hidden><span></span> Recording</div>
+        <div id="timer" class="camera-timer" hidden>00:00</div>
         <div id="interruptionFlag" class="interruption-flag" hidden>Recording interrupted. Check the camera before continuing.</div>
       </div>
 
@@ -78,10 +93,9 @@
         </nav>
       </div>
 
-      <div class="session-strip">
-        <span id="timer">00:00</span>
-        <span id="clipCount">No clips yet</span>
-        <span id="uploadState">Saved locally: 0</span>
+      <div class="session-strip" id="sessionStrip" hidden>
+        <span id="clipCount"></span>
+        <span id="uploadState"></span>
       </div>
 
       <div class="controls" aria-label="Recording controls">

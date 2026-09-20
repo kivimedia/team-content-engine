@@ -110,8 +110,18 @@ def test_recording_js_and_html_parse():
         "hookChooserHint",
         "hookOptions",
         "hookPanel",
+        # The opening is its own step before the studio (Ziv, 20-Sep), with a
+        # way to ask for more, and the timer lives on the camera.
+        "hookView",
+        "hookViewOptions",
+        "moreHooksButton",
+        "moreHooksState",
+        "timer",
     ):
         assert f'id="{element_id}"' in html
+    assert 'class="camera-timer"' in html
+    # The strip that said "Phone copy is safe" and counted clips is gone.
+    assert "Phone copy is safe" not in html
 
 
 def test_model_ranks_recommended_first_and_marks_the_current_opening():

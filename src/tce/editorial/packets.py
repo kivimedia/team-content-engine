@@ -605,6 +605,298 @@ async def list_packets(
     )
 
 
+MORE_HOOKS_JOB_TYPE = "recording_packet_hooks"
+MORE_HOOKS_AGENT = "recording_hook_writer"
+MORE_HOOKS_PROMPT_VERSION = "recording_hooks.v1"
+# How many openings a packet may end up holding. Three arrive with the script;
+# a person who wants more usually wants a different angle, not a longer list.
+MAX_HOOK_OPTIONS = 9
+
+MORE_HOOKS_SYSTEM = """\
+You write alternative openings for a video Ziv is about to record.
+
+The script, the lesson and the evidence are fixed. Only the first spoken line
+changes, and the rest of the script must still follow from it.
+
+- Each opening names the unresolved question the viewer has at second zero, and
+  the phrase id later in the script that pays it off.
+- Cite only the evidence moment ids given to you, copied verbatim.
+- Be different from the openings that already exist: a new angle, a different
+  entry point, not a rewording. Say in the rationale what is different about it.
+- No hype, no promise the evidence does not support, no long dashes.
+
+Return only JSON matching the schema."""
+
+MORE_HOOKS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["hook_options"],
+    "properties": {
+        "hook_options": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "id",
+                    "text",
+                    "question",
+                    "payoff_phrase_id",
+                    "moment_ids",
+                    "rationale",
+                ],
+                "properties": {
+                    "id": {"type": "string"},
+                    "text": {"type": "string"},
+                    "question": {"type": "string"},
+                    "payoff_phrase_id": {"type": "string"},
+                    "moment_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "rationale": {"type": "string"},
+                },
+            },
+        }
+    },
+}
+
+
+def build_more_hooks_prompt(packet: RecordingPacket, cand: TopicCandidate, wanted: int) -> str:
+    existing = [
+        {"id": h.get("id"), "text": h.get("text"), "question": h.get("question")}
+        for h in (packet.hook_options or [])
+    ]
+    phrases = [
+        {"phrase_id": f"p{n + 1:03d}", "text": text}
+        for n, text in enumerate(packet.script_phrases or [])
+    ]
+    evidence = [
+        {
+            "moment_id": str(c.get("moment_id") or ""),
+            "claim_type": c.get("claim_type"),
+            "excerpt_private": (c.get("excerpt_private") or "")[:400],
+        }
+        for c in (cand.citations_private or [])
+    ]
+    return "\n\n".join(
+        [
+            f"WRITE {wanted} NEW OPENING(S).",
+            "THE IDEA:\n" + json.dumps({"title": cand.title, "lesson": cand.lesson}, indent=1),
+            "OPENINGS THAT ALREADY EXIST (do not repeat or reword these):\n"
+            + json.dumps(existing, indent=1),
+            "THE SCRIPT (payoff_phrase_id must be one of these phrase_ids):\n"
+            + json.dumps(phrases, indent=1),
+            "EVIDENCE (moment_ids must be copied verbatim from here):\n"
+            + json.dumps(evidence, indent=1),
+        ]
+    )
+
+
+def merge_hook_options(
+    existing: list[dict[str, Any]], fresh: list[dict[str, Any]], phrase_count: int
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Existing openings first, then the new ones that are usable and new.
+
+    Returns the merged list and the reasons anything was dropped, so the caller
+    can say "two of three were new" rather than silently returning fewer.
+    """
+    phrase_ids = {f"p{n + 1:03d}" for n in range(phrase_count)}
+    seen_ids = {str(h.get("id")) for h in existing}
+    seen_text = {str(h.get("text") or "").strip().casefold() for h in existing}
+    merged = list(existing)
+    dropped: list[str] = []
+    if len(merged) >= MAX_HOOK_OPTIONS:
+        return merged, [f"this script already has {MAX_HOOK_OPTIONS} openings"]
+    for option in fresh:
+        clean = {
+            key: str(option.get(key) or "").strip()
+            for key in ("id", "text", "question", "payoff_phrase_id", "rationale")
+        }
+        moment_ids = [str(value) for value in (option.get("moment_ids") or []) if str(value)]
+        if not all(clean.values()) or not moment_ids:
+            dropped.append("an opening was missing its question, payoff, evidence or reason")
+            continue
+        if clean["payoff_phrase_id"] not in phrase_ids:
+            dropped.append(f"{clean['text'][:40]}...: payoff phrase is not in this script")
+            continue
+        if clean["text"].casefold() in seen_text:
+            dropped.append(f"{clean['text'][:40]}...: same as an opening already there")
+            continue
+        # Ids are ours, not the model's: a collision would silently replace an
+        # opening the person may be reading right now.
+        index = len(merged) + 1
+        while f"h{index}" in seen_ids:
+            index += 1
+        clean["id"] = f"h{index}"
+        clean["moment_ids"] = moment_ids
+        seen_ids.add(clean["id"])
+        seen_text.add(clean["text"].casefold())
+        merged.append(clean)
+        if len(merged) >= MAX_HOOK_OPTIONS:
+            dropped.append("stopped at the maximum number of openings")
+            break
+    return merged, dropped
+
+
+async def more_hook_options(
+    sessionmaker_or_session: Any,
+    workspace_id: uuid.UUID | str,
+    packet_id: uuid.UUID | str,
+    *,
+    wanted: int = 3,
+) -> PacketOutcome:
+    """Ask for more openings for a packet, as a new immutable version.
+
+    The script, the bullets and the evidence do not change: only the list of
+    openings grows, and the one in use stays in use. A take set already holding
+    clips blocks this for the same reason it blocks choosing: the opening the
+    person is reading must not move under them.
+    """
+    ws = coerce_uuid(workspace_id)
+    async with open_session(sessionmaker_or_session) as session:
+        packet = (
+            await session.execute(
+                select(RecordingPacket).where(
+                    RecordingPacket.id == coerce_uuid(packet_id),
+                    RecordingPacket.workspace_id == ws,
+                )
+            )
+        ).scalar_one_or_none()
+        if packet is None:
+            return PacketOutcome(status="invalid", detail="packet not found")
+        in_progress = (
+            await session.execute(
+                select(RecordingSession.packet_version).where(
+                    RecordingSession.workspace_id == ws,
+                    RecordingSession.candidate_id == packet.candidate_id,
+                    RecordingSession.status.in_(RECORDING_IN_PROGRESS_STATUSES),
+                )
+            )
+        ).first()
+        if in_progress is not None:
+            return PacketOutcome(
+                status="invalid",
+                detail=(
+                    f"a take set is in progress on packet version {in_progress[0]}; "
+                    "finish that session before asking for more openings"
+                ),
+            )
+        if len(packet.hook_options or []) >= MAX_HOOK_OPTIONS:
+            return PacketOutcome(
+                status="invalid",
+                detail=f"this script already has {MAX_HOOK_OPTIONS} openings to choose from",
+            )
+        cand = (
+            await session.execute(
+                select(TopicCandidate).where(
+                    TopicCandidate.id == packet.candidate_id, TopicCandidate.workspace_id == ws
+                )
+            )
+        ).scalar_one_or_none()
+        if cand is None:
+            return PacketOutcome(status="invalid", detail="idea not found")
+
+        nonce = str(uuid.uuid4())
+        request = LLMRequest(
+            job_type=MORE_HOOKS_JOB_TYPE,
+            agent_name=MORE_HOOKS_AGENT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"MORE OPENINGS: {nonce}\n\n"
+                    + build_more_hooks_prompt(packet, cand, wanted),
+                }
+            ],
+            system=MORE_HOOKS_SYSTEM,
+            output_schema=MORE_HOOKS_SCHEMA,
+            max_tokens=2000,
+            prompt_version=MORE_HOOKS_PROMPT_VERSION,
+            workspace_id=ws,
+            run_id=cand.id,
+            idempotency_key=f"more-hooks:{ws}:{packet.id}:{nonce}",
+        )
+        try:
+            llm = await _llm.complete(request)
+        except LLMUnavailable as exc:
+            return PacketOutcome(
+                status=exc.status, job_id=exc.job_id, detail=exc.detail, retry_at=exc.retry_at
+            )
+
+        data = llm.structured
+        if data is None:
+            try:
+                data = json.loads(llm.text)
+            except (TypeError, ValueError):
+                data = None
+        fresh = (data or {}).get("hook_options")
+        if not isinstance(fresh, list) or not fresh:
+            return PacketOutcome(
+                status="failed", job_id=llm.job_id, detail="no usable opening came back"
+            )
+        allowed = {str(value) for value in (cand.moment_ids or [])}
+        fresh = [
+            option
+            for option in fresh
+            if isinstance(option, dict)
+            and {str(m) for m in (option.get("moment_ids") or [])}.issubset(allowed)
+        ]
+        if not fresh:
+            return PacketOutcome(
+                status="failed",
+                job_id=llm.job_id,
+                detail="the new openings cited evidence outside this idea",
+            )
+        merged, dropped = merge_hook_options(
+            list(packet.hook_options or []), fresh, len(packet.script_phrases or [])
+        )
+        added = len(merged) - len(packet.hook_options or [])
+        if not added:
+            return PacketOutcome(
+                status="failed",
+                job_id=llm.job_id,
+                detail="; ".join(dropped) or "nothing new came back",
+                errors=dropped,
+            )
+        maximum = (
+            await session.execute(
+                select(func.max(RecordingPacket.version)).where(
+                    RecordingPacket.workspace_id == ws,
+                    RecordingPacket.candidate_id == packet.candidate_id,
+                )
+            )
+        ).scalar_one() or 0
+        now = datetime.now(UTC).replace(tzinfo=None)
+        clone = RecordingPacket(
+            workspace_id=ws,
+            candidate_id=packet.candidate_id,
+            version=int(maximum) + 1,
+            bullets=list(packet.bullets or []),
+            script_phrases=list(packet.script_phrases or []),
+            facebook_post=packet.facebook_post,
+            linkedin_post=packet.linkedin_post,
+            interviewer_prompt=packet.interviewer_prompt,
+            hook_options=merged,
+            selected_hook_id=packet.selected_hook_id,
+            beats=list(packet.beats or []),
+            citations_private=list(packet.citations_private or []),
+            public_safety=dict(packet.public_safety or {}),
+            status=packet.status,
+            prompt_version=packet.prompt_version,
+            job_id=llm.job_id,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(clone)
+        await session.commit()
+        return PacketOutcome(
+            status="ok",
+            job_id=llm.job_id,
+            packet=packet_to_json(clone),
+            detail=f"{added} new opening(s) to choose from",
+            errors=dropped,
+        )
+
+
 async def choose_hook(
     session: AsyncSession,
     workspace_id: uuid.UUID | str,
