@@ -95,6 +95,10 @@ function runWords(run) {
     "video/mp4;codecs=h264,aac", "video/mp4",
   ].find((value) => window.MediaRecorder && MediaRecorder.isTypeSupported(value));
 
+  function setStudioMode(active) {
+    document.body.classList.toggle("in-studio", Boolean(active));
+  }
+
   function setRecordingChrome(active) {
     const view = document.getElementById("studioView");
     if (view) view.classList.toggle("is-recording", Boolean(active));
@@ -521,6 +525,7 @@ function runWords(run) {
     state.session = null;
     $("queueView").hidden = true;
     $("studioView").hidden = false;
+    setStudioMode(true);
     $("scriptTitle").textContent = idea.title;
     $("bigIdea").textContent = idea.big_idea;
     $("hookChooser").hidden = true;
@@ -740,6 +745,7 @@ function runWords(run) {
     if (state.recorder?.state === "recording") pauseResume();
     $("studioView").hidden = true;
     $("queueView").hidden = false;
+    setStudioMode(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
     // Take sets and packet versions change while the studio is open; the queue
     // must say what is bound now, not what it said when the page loaded.
