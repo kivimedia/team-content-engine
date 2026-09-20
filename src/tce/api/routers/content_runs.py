@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -30,6 +30,8 @@ from tce.models.editorial import (
     RecordingPacket,
     TopicCandidate,
 )
+
+JERUSALEM = ZoneInfo("Asia/Jerusalem")
 
 router = APIRouter(prefix="/content-runs", tags=["content-runs"])
 
@@ -57,6 +59,8 @@ class ContentRunBody(BaseModel):
 class ClaudeRequestBody(BaseModel):
     text: str = Field(min_length=3, max_length=1000)
     idempotency_key: str = Field(min_length=1, max_length=160)
+    # The answer to a previous needs_source_choice: the chosen meeting.
+    source_id: uuid.UUID | None = None
 
 
 class ScheduleBody(BaseModel):
@@ -564,47 +568,123 @@ async def resume_content_run(
     return {"id": str(run_id), "status": "resuming", "status_url": f"/api/v1/content-runs/{run_id}"}
 
 
-@router.post("/from-claude/request")
-async def request_from_claude(
+# Words that end a person's name in a sentence like "the Fathom with Dovid
+# yesterday is sick": without them the capture swallowed the rest of the line
+# and matched nobody (found 20-Sep-2026 by the "yesterday" test).
+_NAME_STOP_WORDS = frozenset(
+    {
+        "with",
+        "yesterday",
+        "today",
+        "tonight",
+        "this",
+        "last",
+        "the",
+        "is",
+        "was",
+        "were",
+        "about",
+        "on",
+        "at",
+        "and",
+        "call",
+        "calls",
+        "meeting",
+        "meetings",
+        "fathom",
+        "please",
+        "make",
+        "turn",
+        "script",
+    }
+)
+
+
+def person_name(text: str) -> str | None:
+    """The person named in a conversational request, or None.
+
+    "from the call with Dovid Katz yesterday" has to yield "Dovid Katz": skip
+    the filler after "with"/"from", then keep capitalised words until a stop
+    word or an ordinary lowercase word ends the name.
+    """
+    for match in re.finditer(r"(?:with|from)\s+([A-Za-z][A-Za-z' -]{1,60})", text, re.I):
+        words: list[str] = []
+        for raw in match.group(1).split():
+            word = raw.strip("'-")
+            if not word:
+                continue
+            if word.casefold() in _NAME_STOP_WORDS or (words and not word[0].isupper()):
+                if words:
+                    break
+                continue  # still in the filler before the name
+            words.append(word)
+        if words:
+            return " ".join(words)
+    return None
+
+
+def _participant_names(source: EvidenceSource) -> list[str]:
+    """Who was in the meeting. Fathom keeps them in the private payload; the
+    title often names only the host, so a search on title alone misses "the
+    Fathom with Dovid" whenever Dovid is a guest."""
+    payload = source.payload_private or {}
+    names: list[str] = []
+    for person in payload.get("participants") or []:
+        if isinstance(person, dict):
+            value = str(person.get("name") or person.get("display_name") or "").strip()
+        else:
+            value = str(person or "").strip()
+        if value and value not in names:
+            names.append(value)
+    return names
+
+
+def _local_date(value: datetime | None) -> date | None:
+    """`occurred_at` is naive UTC; a request that says "yesterday" means
+    yesterday in Jerusalem, so compare in Jerusalem, not in UTC."""
+    if value is None:
+        return None
+    aware = value if value.tzinfo else value.replace(tzinfo=UTC)
+    return aware.astimezone(JERUSALEM).date()
+
+
+async def _meetings_matching(
+    sm: Any, ws: uuid.UUID, name: str, target: date | None
+) -> list[EvidenceSource]:
+    needle = name.casefold()
+    async with open_session(sm) as db:
+        rows = list(
+            (
+                await db.execute(
+                    select(EvidenceSource)
+                    .where(
+                        EvidenceSource.workspace_id == ws,
+                        EvidenceSource.source_kind == "fathom_meeting",
+                    )
+                    .order_by(EvidenceSource.occurred_at.desc())
+                )
+            ).scalars()
+        )
+    matches = [
+        row
+        for row in rows
+        if needle in (row.title or "").casefold()
+        or any(needle in person.casefold() for person in _participant_names(row))
+    ]
+    if target is not None:
+        matches = [row for row in matches if _local_date(row.occurred_at) == target]
+    return matches
+
+
+async def _run_for_source(
+    source: EvidenceSource,
     body: ClaudeRequestBody,
     background: BackgroundTasks,
-    ws: uuid.UUID = Depends(require_private_workspace),
-    sm: Any = Depends(get_content_sessionmaker),
+    ws: uuid.UUID,
+    sm: Any,
+    *,
+    refreshed: bool = False,
 ) -> dict[str, Any]:
-    name_match = re.search(r"(?:with|from)\s+([A-Za-z][A-Za-z' -]{1,60})", body.text, re.I)
-    if not name_match:
-        raise HTTPException(
-            status_code=422, detail="Name the Fathom meeting person or choose a source"
-        )
-    name = name_match.group(1).strip().split(" is ")[0].strip()
-    now_local = datetime.now(ZoneInfo("Asia/Jerusalem"))
-    target = (now_local - timedelta(days=1)).date() if "yesterday" in body.text.lower() else None
-    async with open_session(sm) as db:
-        stmt = select(EvidenceSource).where(
-            EvidenceSource.workspace_id == ws,
-            EvidenceSource.source_kind == "fathom_meeting",
-            EvidenceSource.title.ilike(f"%{name}%"),
-        )
-        matches = list(
-            (await db.execute(stmt.order_by(EvidenceSource.occurred_at.desc()))).scalars()
-        )
-    if target:
-        matches = [row for row in matches if row.occurred_at and row.occurred_at.date() == target]
-    if not matches:
-        raise HTTPException(status_code=404, detail=f"No matching Fathom meeting found for {name}")
-    if len(matches) > 1:
-        return {
-            "status": "needs_source_choice",
-            "choices": [
-                {
-                    "source_id": str(row.id),
-                    "title": row.title,
-                    "occurred_at": row.occurred_at.isoformat(),
-                }
-                for row in matches[:10]
-            ],
-        }
-    source = matches[0]
     request = ContentRunBody(
         idempotency_key=body.idempotency_key,
         scope_kind="sources",
@@ -613,7 +693,85 @@ async def request_from_claude(
         actor="claude",
         week_label=f"Targeted: {source.title}",
     )
-    return await create_content_run(request, background, ws, sm)
+    result = await create_content_run(request, background, ws, sm)
+    result["source"] = {
+        "id": str(source.id),
+        "title": source.title,
+        "occurred_at": source.occurred_at.isoformat() if source.occurred_at else None,
+        "local_date": _local_date(source.occurred_at).isoformat() if source.occurred_at else None,
+        "participants": _participant_names(source),
+    }
+    result["refreshed_that_date"] = refreshed
+    return result
+
+
+@router.post("/from-claude/request")
+async def request_from_claude(
+    body: ClaudeRequestBody,
+    background: BackgroundTasks,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_content_sessionmaker),
+) -> dict[str, Any]:
+    # Answering an earlier needs_source_choice: the chosen meeting wins outright.
+    if body.source_id is not None:
+        async with open_session(sm) as db:
+            chosen = (
+                await db.execute(
+                    select(EvidenceSource).where(
+                        EvidenceSource.workspace_id == ws,
+                        EvidenceSource.id == body.source_id,
+                        EvidenceSource.source_kind == "fathom_meeting",
+                    )
+                )
+            ).scalar_one_or_none()
+        if chosen is None:
+            raise HTTPException(status_code=404, detail="that meeting is not in this workspace")
+        return await _run_for_source(chosen, body, background, ws, sm)
+
+    name = person_name(body.text)
+    if not name:
+        raise HTTPException(
+            status_code=422, detail="Name the Fathom meeting person or choose a source"
+        )
+    now_local = datetime.now(JERUSALEM)
+    target = (now_local - timedelta(days=1)).date() if "yesterday" in body.text.lower() else None
+
+    matches = await _meetings_matching(sm, ws, name, target)
+    refreshed = False
+    if not matches and target:
+        # "Refresh that date once if absent": collect the named day before saying no.
+        from tce.evidence.collect import collect_fathom
+
+        day_start = datetime.combine(target, time.min, JERUSALEM).astimezone(UTC)
+        await collect_fathom(sm, ws, day_start, day_start + timedelta(days=1))
+        refreshed = True
+        matches = await _meetings_matching(sm, ws, name, target)
+    if not matches:
+        when = f" on {target.isoformat()}" if target else ""
+        extra = " after refreshing that date once" if refreshed else ""
+        raise HTTPException(
+            status_code=404,
+            detail=f"No Fathom meeting with {name}{when} was found{extra}.",
+        )
+    if len(matches) > 1:
+        return {
+            "status": "needs_source_choice",
+            "refreshed": refreshed,
+            "choices": [
+                {
+                    "source_id": str(row.id),
+                    "title": row.title,
+                    "occurred_at": row.occurred_at.isoformat(),
+                    "participants": _participant_names(row),
+                }
+                for row in matches[:10]
+            ],
+            "how_to_choose": (
+                "POST this request again with the same idempotency_key and "
+                "source_id set to the meeting you mean."
+            ),
+        }
+    return await _run_for_source(matches[0], body, background, ws, sm, refreshed=refreshed)
 
 
 def due_occurrence(

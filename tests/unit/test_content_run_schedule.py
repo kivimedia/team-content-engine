@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -911,3 +911,181 @@ async def test_drafting_fails_only_when_no_finalist_produces_a_packet(
     run = await _drafting_run(editorial_sessionmaker, workspace_id, ranked)
     with pytest.raises(ValueError, match=r"no finalist produced a packet \(3 rejected\)"):
         await api._execute_stage(editorial_sessionmaker, run, "drafting")
+
+
+# ---------------------------------------------------------------------------
+# phase 6: the targeted Claude request
+# ---------------------------------------------------------------------------
+
+
+def _meeting(workspace_id: uuid.UUID, title: str, occurred_at: datetime, participants=()):
+    from tce.models.editorial import EvidenceSource
+
+    return EvidenceSource(
+        workspace_id=workspace_id,
+        source_kind="fathom_meeting",
+        external_id=f"m-{uuid.uuid4()}",
+        title=title,
+        occurred_at=occurred_at.replace(tzinfo=None),
+        version_hash=uuid.uuid4().hex,
+        revision=1,
+        fetch_status="ok",
+        payload_private={
+            "turns": [],
+            "participants": [{"name": n} for n in participants],
+        },
+    )
+
+
+async def test_yesterday_is_yesterday_in_jerusalem_not_utc(client, editorial_sessionmaker):
+    """A 21:30 Jerusalem meeting is stored as 18:30 UTC the same day; a meeting
+    at 00:30 Jerusalem is 21:30 UTC the day BEFORE. Comparing the UTC date
+    silently searched the wrong day."""
+    workspace_id = uuid.uuid4()
+    yesterday = (datetime.now(IL) - timedelta(days=1)).date()
+    late_last_night = datetime.combine(yesterday, time(0, 30), IL)  # 21:30 UTC, day before
+    async with editorial_sessionmaker() as db:
+        db.add(_meeting(workspace_id, "Dovid and Ziv", late_last_night.astimezone(UTC)))
+        await db.commit()
+    response = await client.post(
+        "/api/v1/content-runs/from-claude/request",
+        json={
+            "text": "The Fathom with Dovid yesterday is sick. Make a script",
+            "idempotency_key": "c-tz",
+        },
+        headers=auth(workspace_id),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source"]["local_date"] == yesterday.isoformat()
+    assert body["trigger_origin"] == "claude_request"
+
+
+async def test_participants_are_searched_not_only_the_title(client, editorial_sessionmaker):
+    workspace_id = uuid.uuid4()
+    when = datetime.now(UTC) - timedelta(days=2)
+    async with editorial_sessionmaker() as db:
+        db.add(_meeting(workspace_id, "Weekly sync", when, participants=["Ziv Raviv", "Dovid K"]))
+        await db.commit()
+    response = await client.post(
+        "/api/v1/content-runs/from-claude/request",
+        json={"text": "Make a script from the call with Dovid", "idempotency_key": "c-part"},
+        headers=auth(workspace_id),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["source"]["participants"] == ["Ziv Raviv", "Dovid K"]
+
+
+async def test_absent_date_is_refreshed_once_then_reported(
+    client, editorial_sessionmaker, monkeypatch
+):
+    workspace_id = uuid.uuid4()
+    calls: list[tuple] = []
+
+    async def fake_collect(_sm, ws, start, end):
+        calls.append((ws, start, end))
+        return uuid.uuid4()
+
+    monkeypatch.setattr("tce.evidence.collect.collect_fathom", fake_collect)
+    response = await client.post(
+        "/api/v1/content-runs/from-claude/request",
+        json={"text": "The Fathom with Dovid yesterday is sick", "idempotency_key": "c-miss"},
+        headers=auth(workspace_id),
+    )
+    assert response.status_code == 404
+    assert "after refreshing that date once" in response.json()["detail"]
+    assert len(calls) == 1, "the day must be collected exactly once before giving up"
+    ws_called, start, end = calls[0]
+    assert ws_called == workspace_id
+    assert (end - start) == timedelta(days=1)
+    assert start.astimezone(IL).date() == (datetime.now(IL) - timedelta(days=1)).date()
+    assert start.astimezone(IL).time() == time(0, 0)
+
+
+async def test_refresh_finds_the_meeting_and_starts_the_run(
+    client, editorial_sessionmaker, monkeypatch
+):
+    workspace_id = uuid.uuid4()
+    yesterday = (datetime.now(IL) - timedelta(days=1)).date()
+
+    async def fake_collect(_sm, ws, start, end):
+        async with editorial_sessionmaker() as db:
+            db.add(
+                _meeting(
+                    ws,
+                    "Call with Dovid",
+                    datetime.combine(yesterday, time(11, 0), IL).astimezone(UTC),
+                )
+            )
+            await db.commit()
+        return uuid.uuid4()
+
+    monkeypatch.setattr("tce.evidence.collect.collect_fathom", fake_collect)
+    response = await client.post(
+        "/api/v1/content-runs/from-claude/request",
+        json={"text": "The Fathom with Dovid yesterday is sick", "idempotency_key": "c-refresh"},
+        headers=auth(workspace_id),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["refreshed_that_date"] is True
+    assert body["source"]["title"] == "Call with Dovid"
+
+
+async def test_source_choice_is_answered_with_source_id(client, editorial_sessionmaker):
+    workspace_id = uuid.uuid4()
+    when = datetime.now(UTC) - timedelta(days=3)
+    async with editorial_sessionmaker() as db:
+        for suffix in ("morning", "afternoon"):
+            db.add(_meeting(workspace_id, f"Dovid {suffix}", when))
+        await db.commit()
+    ask = await client.post(
+        "/api/v1/content-runs/from-claude/request",
+        json={"text": "Make a script from the call with Dovid", "idempotency_key": "c-choice"},
+        headers=auth(workspace_id),
+    )
+    assert ask.json()["status"] == "needs_source_choice"
+    assert "source_id" in ask.json()["how_to_choose"]
+    chosen = ask.json()["choices"][1]
+    answer = await client.post(
+        "/api/v1/content-runs/from-claude/request",
+        json={
+            "text": "Make a script from the call with Dovid",
+            "idempotency_key": "c-choice",
+            "source_id": chosen["source_id"],
+        },
+        headers=auth(workspace_id),
+    )
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["source"]["id"] == chosen["source_id"]
+    assert answer.json()["source"]["title"] == chosen["title"]
+
+
+async def test_a_source_id_from_another_workspace_is_refused(client, editorial_sessionmaker):
+    mine, theirs = uuid.uuid4(), uuid.uuid4()
+    async with editorial_sessionmaker() as db:
+        other = _meeting(theirs, "Dovid elsewhere", datetime.now(UTC))
+        db.add(other)
+        await db.commit()
+        other_id = str(other.id)
+    response = await client.post(
+        "/api/v1/content-runs/from-claude/request",
+        json={"text": "call with Dovid", "idempotency_key": "c-x", "source_id": other_id},
+        headers=auth(mine),
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("The Fathom with Dovid is sick. Make a script", "Dovid"),
+        ("The Fathom with Dovid yesterday is sick", "Dovid"),
+        ("Make a script from the call with Dovid Katz yesterday", "Dovid Katz"),
+        ("turn the meeting with Mary-Anne O'Neill into a script", "Mary-Anne O'Neill"),
+        ("from Dovid about the pricing call", "Dovid"),
+        ("make me something good", None),
+    ],
+)
+def test_person_name_stops_at_the_first_non_name_word(text, expected):
+    assert api.person_name(text) == expected
