@@ -580,13 +580,57 @@ def test_final_stage_changes_the_scope_hash():
         window_start=datetime(2026, 9, 14, tzinfo=UTC),
         window_end=datetime(2026, 9, 21, tzinfo=UTC),
     )
-    full = runs.normalized_scope(runs.ContentRunRequest(**base))[1]
+    full_payload, full = runs.normalized_scope(runs.ContentRunRequest(**base))
     evidence_only = runs.normalized_scope(runs.ContentRunRequest(**base, final_stage="extracting"))[
         1
     ]
     assert full != evidence_only
+    # A full run hashes exactly as it did before final_stage existed, so the
+    # weekly occurrence attaches to an active pre-041 Produce-now run for the
+    # same window instead of creating a twin.
+    assert "final_stage" not in full_payload
+    pre_041 = {
+        "scope_kind": "week",
+        "source_ids": [],
+        "window_start": "2026-09-14T00:00:00",
+        "window_end": "2026-09-21T00:00:00",
+        "maximum_candidate_count": 6,
+        "target_packet_count": 3,
+    }
+    assert full_payload == pre_041
     with pytest.raises(ValueError):
         runs.stages_through("publishing")
+
+
+async def test_scheduled_full_week_attaches_to_the_active_produce_now_run(
+    editorial_sessionmaker,
+):
+    workspace_id = uuid.uuid4()
+    async with editorial_sessionmaker() as db:
+        produce_now = await runs.create_or_get_run(
+            db,
+            workspace_id,
+            runs.ContentRunRequest(
+                idempotency_key="produce-now:2026-09-14T11",
+                scope_kind="week",
+                window_start=datetime(2026, 9, 6, 21, tzinfo=UTC),
+                window_end=datetime(2026, 9, 13, 21, tzinfo=UTC),
+                trigger_origin="produce_now",
+            ),
+        )
+        db.add(_schedule(workspace_id))
+        await db.commit()
+        produce_now_id = produce_now.id
+    # Sunday 20-Sep 15:30 IL: the candidate is Monday 14-Sep 07:30, late.
+    results = await api.tick_due_schedules(
+        editorial_sessionmaker,
+        workspace_id=workspace_id,
+        now=datetime(2026, 9, 20, 12, 30, tzinfo=UTC),
+    )
+    assert results[0]["occurrence_key"] == "2026-09-14T07:30+0300"
+    assert results[0]["status"] == "queued"
+    assert results[0]["run_id"] == str(produce_now_id)
+    assert await _counts(editorial_sessionmaker, workspace_id) == (1, 1)
 
 
 # ---------------------------------------------------------------------------

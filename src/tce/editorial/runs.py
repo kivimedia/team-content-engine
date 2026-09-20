@@ -81,8 +81,12 @@ def normalized_scope(req: ContentRunRequest) -> tuple[dict[str, Any], str]:
         "window_end": _db_time(req.window_end).isoformat() if req.window_end else None,
         "maximum_candidate_count": max(1, min(req.maximum_candidate_count, 6)),
         "target_packet_count": max(1, min(req.target_packet_count, 10)),
-        "final_stage": req.final_stage,
     }
+    # Only a truncated run changes the hash: a full run keeps the hash it had
+    # before final_stage existed, so a scheduled week attaches to the active
+    # Produce-now run for the same window instead of starting a twin.
+    if req.final_stage != STAGES[-1]:
+        payload["final_stage"] = req.final_stage
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return payload, hashlib.sha256(raw.encode()).hexdigest()
 
