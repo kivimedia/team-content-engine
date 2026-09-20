@@ -34,6 +34,7 @@ from tce.editorial.safety import scan_public_text
 from tce.llm import LLMRequest, LLMUnavailable
 from tce.models.editorial import EvidenceSource, RecordingPacket, TopicCandidate
 from tce.models.llm_job import LLMJob
+from tce.models.recording_session import RecordingSession
 from tce.services.strategy_loader import load_effective_strategy
 
 PROMPT_VERSION = "recording_packet.v2"
@@ -41,6 +42,9 @@ JOB_TYPE = "recording_packet"
 AGENT_NAME = "recording_packet_writer"
 MIN_BULLETS = 5
 MAX_BULLETS = 7
+# A take set in one of these states has clips bound to its packet version; the
+# opening of that version cannot be switched underneath it (see choose_hook).
+RECORDING_IN_PROGRESS_STATUSES = ("recording", "finalizing")
 
 _CTA = re.compile(r"strategy[\s-]+session", re.IGNORECASE)
 _GIVEAWAY = re.compile(
@@ -602,6 +606,11 @@ async def choose_hook(
     """Create a validated packet version with a different compatible opening.
 
     Existing packets are immutable because recordings bind to their exact version.
+    While any take set of this candidate is in progress the opening is frozen for
+    the whole candidate: the recording queue shows one packet per candidate (the
+    newest), so a newer version created now would hide the take set that is
+    still being recorded. A draft session (opened, nothing recorded) does not
+    block; the new version simply gets its own session.
     """
     ws = coerce_uuid(workspace_id)
     original = (
@@ -614,6 +623,20 @@ async def choose_hook(
     ).scalar_one_or_none()
     if original is None:
         raise PacketValidationError("packet not found")
+    in_progress = (
+        await session.execute(
+            select(RecordingSession.packet_version).where(
+                RecordingSession.workspace_id == ws,
+                RecordingSession.candidate_id == original.candidate_id,
+                RecordingSession.status.in_(RECORDING_IN_PROGRESS_STATUSES),
+            )
+        )
+    ).first()
+    if in_progress is not None:
+        raise PacketValidationError(
+            f"a take set is in progress on packet version {in_progress[0]}; "
+            "finish that session before changing the opening"
+        )
     options = list(original.hook_options or [])
     selected = next((item for item in options if item.get("id") == hook_id), None)
     if selected is None:

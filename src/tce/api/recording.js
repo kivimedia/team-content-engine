@@ -1,3 +1,59 @@
+// Pure helpers for the hook chooser. They live outside the studio closure so the
+// unit tests can load them in Node without a DOM; nothing here touches the page.
+function payoffPhrase(phrases, phraseId) {
+  const list = Array.isArray(phrases) ? phrases : [];
+  const index = Number(String(phraseId || "").slice(1)) - 1;
+  return Number.isInteger(index) && index >= 0 && index < list.length ? list[index] : "";
+}
+
+function hookChooserModel(idea, context = {}) {
+  const options = Array.isArray(idea?.hook_options) ? idea.hook_options : [];
+  const phrases = Array.isArray(idea?.script_phrases) ? idea.script_phrases : [];
+  const currentId = idea?.selected_hook_id || options[0]?.id || null;
+  const sessionStatus = context.sessionStatus || idea?.active_session_status || null;
+  const clipCount = Number(context.clipCount || 0);
+  // A take set with clips is bound to this exact packet version: the opening is
+  // frozen for it. A draft session (opened, nothing recorded) does not lock.
+  const locked = Boolean(context.recorderActive) || clipCount > 0
+    || ["recording", "finalizing"].includes(sessionStatus);
+  const show = idea?.packet_format === "v2" && options.length >= 2 && !locked;
+  return {
+    show,
+    locked,
+    currentId,
+    reason: locked ? `Opening locked: this take set already has clips on packet v${idea?.packet_version ?? "?"}.` : "",
+    options: options.map((hook, index) => ({
+      id: hook.id,
+      text: hook.text,
+      question: hook.question,
+      rationale: hook.rationale,
+      payoff: payoffPhrase(phrases, hook.payoff_phrase_id),
+      rank: index + 1,
+      recommended: index === 0,
+      current: hook.id === currentId,
+    })),
+  };
+}
+
+function packetToIdea(idea, packet) {
+  // The choose-hook response is packet_to_json (id/version); the queue speaks
+  // packet_id/packet_version. The new version has no session of its own yet.
+  return {
+    ...idea,
+    packet_id: packet.id,
+    packet_version: packet.version,
+    bullets: packet.bullets || [],
+    script_phrases: packet.script_phrases || [],
+    hook_options: packet.hook_options || [],
+    selected_hook_id: packet.selected_hook_id,
+    beats: packet.beats || [],
+    interviewer_prompt: packet.interviewer_prompt ?? idea.interviewer_prompt ?? null,
+    packet_format: packet.packet_format || idea.packet_format,
+    active_session_id: null,
+    active_session_status: null,
+  };
+}
+
 (() => {
   "use strict";
 
@@ -265,27 +321,127 @@
     return state.session;
   }
 
-  function openIdea(idea) {
+  function renderHookPanel(idea, lockNote = "") {
+    const hook = selectedHook(idea);
+    const panel = $("hookPanel");
+    panel.replaceChildren();
+    panel.hidden = !hook;
+    if (!hook) return;
+    const strong = document.createElement("strong");
+    strong.textContent = `Opening: ${hook.text}`;
+    const span = document.createElement("span");
+    span.textContent = `Viewer question: ${hook.question}`;
+    panel.append(strong, span);
+    if (lockNote) {
+      const note = document.createElement("span");
+      note.className = "hook-lock";
+      note.textContent = lockNote;
+      panel.appendChild(note);
+    }
+  }
+
+  function renderHookChooser(model) {
+    const list = $("hookOptions");
+    list.replaceChildren();
+    model.options.forEach((option) => {
+      const card = document.createElement("article");
+      card.className = `hook-option${option.current ? " is-current" : ""}`;
+      card.dataset.hookId = option.id;
+      const rank = document.createElement("div");
+      rank.className = "hook-rank";
+      rank.textContent = (option.recommended ? "Recommended" : `Option ${option.rank}`) + (option.current ? " · current opening" : "");
+      const text = document.createElement("p");
+      text.className = "hook-text";
+      text.textContent = option.text;
+      const question = document.createElement("p");
+      question.className = "hook-detail";
+      question.textContent = `Viewer question: ${option.question}`;
+      const why = document.createElement("p");
+      why.className = "hook-detail hook-why";
+      why.textContent = `Why (private): ${option.rationale}`;
+      const use = document.createElement("button");
+      use.type = "button";
+      use.className = "hook-use";
+      use.textContent = option.current ? "Keep this opening" : "Use this opening";
+      use.addEventListener("click", () => applyHookChoice(option.id));
+      card.append(rank, text, question, why, use);
+      list.appendChild(card);
+    });
+    $("hookChooserHint").textContent = "Pick the first spoken line. The rest of the script stays the same.";
+    $("hookPanel").hidden = true;
+    $("hookChooser").hidden = false;
+  }
+
+  function closeHookChooser() {
+    $("hookChooser").hidden = true;
+    if (state.idea) renderHookPanel(state.idea);
+  }
+
+  async function applyHookChoice(hookId) {
+    const idea = state.idea;
+    if (!idea) return;
+    const buttons = [...$("hookOptions").querySelectorAll("button")];
+    buttons.forEach((button) => { button.disabled = true; });
+    try {
+      const currentId = idea.selected_hook_id || idea.hook_options?.[0]?.id;
+      if (hookId !== currentId) {
+        $("hookChooserHint").textContent = "Creating the packet version with this opening";
+        const response = await fetch(`${apiV1}/editorial/packets/${idea.packet_id}/choose-hook`, {
+          method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hook_id: hookId }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
+        const next = packetToIdea(idea, data);
+        state.ideas = state.ideas.map((item) => (item.candidate_id === next.candidate_id ? next : item));
+        state.idea = next;
+        renderQueue();
+        // The draft session (if any) belongs to the previous version; the new
+        // version gets its own take set the moment it is needed.
+        state.session = null;
+        renderBeats();
+        setMode(state.mode);
+        showNotice(`Opening changed. Packet version ${next.packet_version} is bound to this take set.`, 6000);
+      }
+      closeHookChooser();
+      await ensureSession();
+    } catch (error) {
+      showNotice(error.message, 7000);
+      $("hookChooserHint").textContent = error.message;
+      buttons.forEach((button) => { button.disabled = false; });
+    }
+  }
+
+  async function openIdea(idea) {
     state.idea = idea;
     state.session = null;
     $("queueView").hidden = true;
     $("studioView").hidden = false;
     $("scriptTitle").textContent = idea.title;
     $("bigIdea").textContent = idea.big_idea;
-    const hook = selectedHook(idea);
-    $("hookPanel").hidden = !hook;
-    if (hook) {
-      $("hookPanel").replaceChildren();
-      const strong = document.createElement("strong");
-      strong.textContent = `Opening: ${hook.text}`;
-      const span = document.createElement("span");
-      span.textContent = `Viewer question: ${hook.question}`;
-      $("hookPanel").append(strong, span);
-    }
+    $("hookChooser").hidden = true;
+    renderHookPanel(idea);
     renderBeats();
     setMode("points");
     updateSessionLabels();
-    ensureSession().catch((error) => showNotice(error.message));
+    try {
+      // An existing take set is already bound to this packet version; read it
+      // before deciding whether the opening may still change.
+      if (idea.active_session_id) await ensureSession();
+      const model = hookChooserModel(idea, {
+        sessionStatus: state.session?.status,
+        clipCount: (state.session?.clips || []).length,
+        recorderActive: Boolean(state.recorder && state.recorder.state !== "inactive"),
+      });
+      if (model.show) {
+        renderHookChooser(model);
+        return;
+      }
+      if (model.locked && model.options.length >= 2) renderHookPanel(idea, model.reason);
+      await ensureSession();
+    } catch (error) {
+      showNotice(error.message);
+    }
   }
 
   function chooseIdea(idea) {
@@ -320,6 +476,9 @@
 
   async function startRecording() {
     try {
+      // Pressing Record with the chooser open confirms the current opening; the
+      // walking reader carries no editorial detail from here on.
+      if (!$("hookChooser").hidden) closeHookChooser();
       await ensureSession();
       const stream = await ensureMedia();
       const localId = crypto.randomUUID();
@@ -479,6 +638,9 @@
     $("studioView").hidden = true;
     $("queueView").hidden = false;
     window.scrollTo({ top: 0, behavior: "smooth" });
+    // Take sets and packet versions change while the studio is open; the queue
+    // must say what is bound now, not what it said when the page loaded.
+    loadQueue();
   }
 
   function syncScrollRail() {
