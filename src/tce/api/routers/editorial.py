@@ -543,27 +543,80 @@ async def choose_packet_hook(
     return packet_to_json(packet)
 
 
-@router.post("/packets/{packet_id}/more-hooks")
+async def _run_more_hooks(sm: Any, ws: uuid.UUID, packet_id: uuid.UUID) -> None:
+    key = str(packet_id)
+    try:
+        outcome = await more_hook_options(sm, ws, packet_id)
+    except Exception as exc:
+        logger.exception("editorial.more_hooks_failed", workspace_id=str(ws), packet_id=key)
+        job_status.update(
+            ws,
+            "more_hooks",
+            key,
+            state="failed",
+            current_activity="Could not write more openings",
+            detail=type(exc).__name__,
+        )
+        return
+    state = {"ok": "done", "waiting_capacity": "waiting", "waiting_worker": "waiting"}.get(
+        outcome.status, "failed"
+    )
+    job_status.update(
+        ws,
+        "more_hooks",
+        key,
+        state=state,
+        job_id=outcome.job_id,
+        current_activity=outcome.detail or f"More openings {outcome.status}",
+        detail=outcome.detail,
+        result={
+            "status": outcome.status,
+            "packet": outcome.packet,
+            "dropped": outcome.errors,
+        },
+    )
+
+
+@router.post("/packets/{packet_id}/more-hooks", status_code=202)
 async def more_packet_hooks(
     packet_id: str,
+    background: BackgroundTasks,
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
-    """More openings for the same script, as a new immutable version.
+    """Ask for more openings for the same script. Returns at once.
 
-    One subscription job. The script, the bullets and the evidence do not change
-    and the opening in use stays in use, so this is safe to ask for while
-    deciding - but not while a take set is recording against the version.
+    One subscription job writes them into a new immutable version; the script,
+    the bullets and the opening in use do not change. The job waits its turn in
+    the worker queue, which can be minutes deep, so the caller polls
+    more-hooks-status rather than holding an HTTP connection open through nginx.
     """
-    outcome = await more_hook_options(sm, ws, packet_id)
-    if outcome.status == "invalid":
-        code = 404 if outcome.detail == "packet not found" else 409
-        raise HTTPException(status_code=code, detail=outcome.detail)
-    if outcome.status in {"waiting_capacity", "waiting_worker"}:
-        raise HTTPException(status_code=503, detail=outcome.detail)
-    if outcome.packet is None:
-        raise HTTPException(status_code=502, detail=outcome.detail or "no opening came back")
-    return {"packet": outcome.packet, "detail": outcome.detail, "dropped": outcome.errors}
+    pid = _parse_uuid(packet_id, "packet")
+    if job_status.is_running(ws, "more_hooks", str(pid)):
+        return {
+            "status": "running",
+            "packet_id": str(pid),
+            "status_url": f"/api/v1/editorial/packets/{pid}/more-hooks-status",
+        }
+    job_status.start(ws, "more_hooks", str(pid), "Queued: writing more openings")
+    background.add_task(_run_more_hooks, sm, ws, pid)
+    return {
+        "status": "running",
+        "packet_id": str(pid),
+        "status_url": f"/api/v1/editorial/packets/{pid}/more-hooks-status",
+    }
+
+
+@router.get("/packets/{packet_id}/more-hooks-status")
+async def more_packet_hooks_status(
+    packet_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+) -> dict[str, Any]:
+    pid = _parse_uuid(packet_id, "packet")
+    entry = job_status.get(ws, "more_hooks", str(pid))
+    if entry is None:
+        return {"packet_id": str(pid), "state": "idle", "current_activity": "Nothing asked for yet"}
+    return {"packet_id": str(pid), **entry}
 
 
 @router.post("/candidates/{candidate_id}/archive")

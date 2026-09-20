@@ -494,25 +494,60 @@ function runWords(run) {
     const button = $("moreHooksButton");
     const label = $("moreHooksState");
     button.disabled = true;
-    label.textContent = "Writing more openings. This takes about a minute.";
+    label.textContent = "Asked. The engine writes them on your PC worker; this can take a few minutes if it is busy.";
     try {
       const response = await fetch(`${apiV1}/editorial/packets/${idea.packet_id}/more-hooks`, {
         method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
-      const next = packetToIdea(idea, data.packet);
-      state.ideas = state.ideas.map((item) => (item.candidate_id === next.candidate_id ? next : item));
-      state.idea = next;
-      label.textContent = data.detail || "More openings are ready.";
-      const model = hookChooserModel(next, { clipCount: 0 });
-      renderHookOptions($("hookViewOptions"), model, (hookId) => {
-        markHookChosen(next);
-        applyHookChoice(hookId);
-      });
+      pollMoreOpenings(idea);
     } catch (error) {
       label.textContent = error.message;
-    } finally {
+      button.disabled = false;
+    }
+  }
+
+  // The job queues behind whatever the worker is already doing, so the page
+  // says where it stands instead of holding a connection open and looking dead.
+  async function pollMoreOpenings(idea, attempt = 0) {
+    const label = $("moreHooksState");
+    const button = $("moreHooksButton");
+    try {
+      const response = await fetch(`${apiV1}/editorial/packets/${idea.packet_id}/more-hooks-status`, { credentials: "same-origin" });
+      const data = await response.json().catch(() => ({}));
+      const activity = data.current_activity || "Working";
+      if (data.state === "done") {
+        const packet = data.result?.packet;
+        if (packet) {
+          const next = packetToIdea(idea, packet);
+          state.ideas = state.ideas.map((item) => (item.candidate_id === next.candidate_id ? next : item));
+          state.idea = next;
+          const model = hookChooserModel(next, { clipCount: 0 });
+          renderHookOptions($("hookViewOptions"), model, (hookId) => {
+            markHookChosen(next);
+            applyHookChoice(hookId);
+          });
+        }
+        label.textContent = data.detail || "More openings are ready.";
+        button.disabled = false;
+        return;
+      }
+      if (data.state === "failed" || data.state === "idle") {
+        label.textContent = data.detail || activity;
+        button.disabled = false;
+        return;
+      }
+      const waited = attempt * 5;
+      label.textContent = waited > 20 ? `${activity} (${waited}s so far)` : activity;
+      if (attempt > 120) {
+        label.textContent = `${activity}. Still queued after ten minutes; it will finish on its own, check back.`;
+        button.disabled = false;
+        return;
+      }
+      setTimeout(() => pollMoreOpenings(idea, attempt + 1), 5000);
+    } catch (error) {
+      label.textContent = `Lost contact while waiting: ${error.message}`;
       button.disabled = false;
     }
   }
