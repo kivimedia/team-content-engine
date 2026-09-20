@@ -349,8 +349,11 @@ def safety_fields(packet: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_packet_prompt(strategy_text: str, cand: TopicCandidate) -> str:
+    # The moment_id is the only citation the validator accepts; without it in the
+    # prompt the model invented labels ("ev1") and every packet failed (20-Sep-2026).
     evidence = [
         {
+            "moment_id": str(c.get("moment_id") or ""),
             "claim_type": c.get("claim_type"),
             "speaker_confidence": c.get("speaker_confidence"),
             "translation_label": c.get("translation_label"),
@@ -359,6 +362,10 @@ def build_packet_prompt(strategy_text: str, cand: TopicCandidate) -> str:
         }
         for c in (cand.citations_private or [])
     ]
+    allowed_ids = [str(value) for value in (cand.moment_ids or [])]
+    for item, fallback in zip(evidence, allowed_ids, strict=False):
+        if not item["moment_id"]:
+            item["moment_id"] = fallback
     return "\n\n".join(
         [
             "STRATEGY:\n" + (strategy_text or "(none)"),
@@ -376,8 +383,9 @@ def build_packet_prompt(strategy_text: str, cand: TopicCandidate) -> str:
                 },
                 indent=1,
             ),
-            "PRIVATE EVIDENCE (for accuracy only; do not quote other speakers or customers):\n"
-            + json.dumps(evidence, indent=1),
+            "PRIVATE EVIDENCE (for accuracy only; do not quote other speakers or customers).\n"
+            "Every hook's moment_ids must be copied verbatim from the moment_id values below; "
+            "inventing a label is a rejected packet:\n" + json.dumps(evidence, indent=1),
         ]
     )
 

@@ -827,3 +827,87 @@ async def test_re_leased_stage_makes_the_first_coordinator_stand_down(
         assert not await runs.finish_stage(db, stage.id, "api:first", {})
         row = await db.get(type(stage), stage.id)
         assert row.lease_owner == "api:second" and row.status == "running"
+
+
+# ---------------------------------------------------------------------------
+# drafting: a rejected finalist is skipped, not fatal
+# ---------------------------------------------------------------------------
+
+
+async def _drafting_run(sm, workspace_id: uuid.UUID, ranked: list[str], target: int = 2):
+    async with sm() as db:
+        run = await runs.create_or_get_run(
+            db,
+            workspace_id,
+            runs.ContentRunRequest(
+                idempotency_key=f"draft-{uuid.uuid4()}",
+                scope_kind="week",
+                window_start=datetime(2026, 9, 14, tzinfo=UTC),
+                window_end=datetime(2026, 9, 21, tzinfo=UTC),
+                target_packet_count=target,
+            ),
+        )
+        await db.flush()
+        for stage in await runs.list_stages(db, run.id):
+            if stage.stage == "ranking":
+                stage.status = "succeeded"
+                stage.output_refs = {"candidate_ids": ranked, "ranked": len(ranked)}
+            elif stage.stage in {"collecting", "extracting", "selecting"}:
+                stage.status = "succeeded"
+        await db.commit()
+        return run
+
+
+def _outcome(packet_id: str | None, detail: str = ""):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        status="ok" if packet_id else "failed",
+        packet={"id": packet_id} if packet_id else None,
+        job_id=uuid.uuid4(),
+        detail=detail,
+        errors=[detail] if detail else [],
+        retry_at=None,
+    )
+
+
+async def test_drafting_skips_a_rejected_finalist_and_uses_the_spare(
+    editorial_sessionmaker, monkeypatch
+):
+    ranked = [str(uuid.uuid4()) for _ in range(4)]
+    seen: list[str] = []
+
+    async def build(_sm, _ws, candidate_id):
+        cid = str(candidate_id)
+        seen.append(cid)
+        # The first finalist's packet cites evidence outside the idea.
+        if cid == ranked[0]:
+            return _outcome(None, "packet hook cited evidence outside the selected idea")
+        return _outcome(f"packet-for-{cid[:8]}")
+
+    monkeypatch.setattr("tce.editorial.packets.build_packet", build)
+    set_worker(monkeypatch, online=True)
+    workspace_id = uuid.uuid4()
+    run = await _drafting_run(editorial_sessionmaker, workspace_id, ranked, target=2)
+    output = await api._execute_stage(editorial_sessionmaker, run, "drafting")
+    assert len(output["packet_ids"]) == 2
+    assert [r["candidate_id"] for r in output["rejected"]] == [ranked[0]]
+    assert "outside the selected idea" in output["rejected"][0]["detail"]
+    # Stops as soon as the target is met: the fourth spare is never built.
+    assert seen == ranked[:3]
+
+
+async def test_drafting_fails_only_when_no_finalist_produces_a_packet(
+    editorial_sessionmaker, monkeypatch
+):
+    ranked = [str(uuid.uuid4()) for _ in range(3)]
+
+    async def build(_sm, _ws, candidate_id):
+        return _outcome(None, "packet failed validation")
+
+    monkeypatch.setattr("tce.editorial.packets.build_packet", build)
+    set_worker(monkeypatch, online=True)
+    workspace_id = uuid.uuid4()
+    run = await _drafting_run(editorial_sessionmaker, workspace_id, ranked)
+    with pytest.raises(ValueError, match=r"no finalist produced a packet \(3 rejected\)"):
+        await api._execute_stage(editorial_sessionmaker, run, "drafting")

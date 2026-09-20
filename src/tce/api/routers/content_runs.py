@@ -259,21 +259,39 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str) -> dict[str, Any]
         return {"candidate_ids": [str(value) for value in ranked], "ranked": len(ranked)}
 
     if stage == "drafting":
-        ids = outputs.get("ranking", {}).get("candidate_ids", [])[: run.target_packet_count]
+        # Ranked finalists beyond the target are spares: one candidate whose
+        # packet the model writes badly (a rejected citation, a failed safety
+        # rule) must not fail the run when another finalist can take its place.
+        ranked_ids = outputs.get("ranking", {}).get("candidate_ids", [])
+        wanted = run.target_packet_count
         packet_ids: list[str] = []
         job_ids: list[str] = []
-        for candidate_id in ids:
+        rejected: list[dict[str, Any]] = []
+        for candidate_id in ranked_ids:
+            if len(packet_ids) >= wanted:
+                break
             outcome = await build_packet(sm, run.workspace_id, uuid.UUID(candidate_id))
             if outcome.status == "waiting_capacity":
                 raise runs.StageWaitingError(
                     "waiting_capacity", outcome.detail or "packet waiting", outcome.retry_at
                 )
             if outcome.packet is None:
-                raise ValueError(outcome.detail or f"packet failed for {candidate_id}")
+                rejected.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "detail": outcome.detail or "packet failed",
+                        "errors": outcome.errors or [],
+                        "job_id": str(outcome.job_id) if outcome.job_id else None,
+                    }
+                )
+                continue
             packet_ids.append(outcome.packet["id"])
             if outcome.job_id:
                 job_ids.append(str(outcome.job_id))
-        return {"packet_ids": packet_ids, "job_ids": job_ids}
+        if not packet_ids:
+            detail = "; ".join(f"{r['candidate_id'][:8]}: {r['detail']}" for r in rejected)
+            raise ValueError(f"no finalist produced a packet ({len(rejected)} rejected). {detail}")
+        return {"packet_ids": packet_ids, "job_ids": job_ids, "rejected": rejected}
 
     if stage == "exporting":
         from tce.api.routers.production import google_client

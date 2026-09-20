@@ -357,3 +357,43 @@ async def test_other_workspace_candidate_not_found(editorial_sessionmaker, fake_
     with pytest.raises(LookupError):
         await packets.build_packet(editorial_sessionmaker, ws, c.id)
     assert fake_llm["calls"] == []
+
+
+def test_packet_prompt_lists_the_moment_ids_the_validator_requires():
+    """20-Sep-2026: the prompt omitted moment_id, the model answered "ev1",
+    and every packet was rejected as citing evidence outside the idea."""
+    cand = TopicCandidate(
+        workspace_id=uuid.uuid4(),
+        week_start=datetime(2026, 9, 7),
+        moment_ids=["11111111-1111-1111-1111-111111111111"],
+        title="t",
+        lesson="l",
+        audience="coaches",
+        public_angle="a",
+        gates={},
+        citations_private=[
+            {
+                "moment_id": "11111111-1111-1111-1111-111111111111",
+                "claim_type": "paraphrased",
+                "excerpt_private": "synthetic",
+            }
+        ],
+    )
+    prompt = packets.build_packet_prompt("strategy", cand)
+    assert '"moment_id": "11111111-1111-1111-1111-111111111111"' in prompt
+    assert "copied verbatim from the moment_id values below" in prompt
+
+
+def test_packet_prompt_falls_back_to_candidate_moment_ids():
+    cand = TopicCandidate(
+        workspace_id=uuid.uuid4(),
+        week_start=datetime(2026, 9, 7),
+        moment_ids=["22222222-2222-2222-2222-222222222222"],
+        title="t",
+        lesson="l",
+        audience="coaches",
+        public_angle="a",
+        gates={},
+        citations_private=[{"claim_type": "quoted", "excerpt_private": "older citation row"}],
+    )
+    assert "22222222-2222-2222-2222-222222222222" in packets.build_packet_prompt("s", cand)
