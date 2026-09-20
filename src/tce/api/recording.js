@@ -21,7 +21,7 @@ function hookChooserModel(idea, context = {}) {
     show,
     locked,
     currentId,
-    reason: locked ? `Opening locked: this take set already has clips on packet v${idea?.packet_version ?? "?"}.` : "",
+    reason: locked ? `Opening locked: this take set has clips on v${idea?.packet_version ?? "?"}.` : "",
     options: options.map((hook, index) => ({
       id: hook.id,
       text: hook.text,
