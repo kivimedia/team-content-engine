@@ -397,10 +397,10 @@ def _collect_only(monkeypatch):
     and would otherwise call the Fathom and GitHub collectors."""
     real = api._execute_stage
 
-    async def execute(sm, run, stage):
+    async def execute(sm, run, stage, attempt=1):
         if stage == "collecting":
             return {"collection": "synthetic"}
-        return await real(sm, run, stage)
+        return await real(sm, run, stage, attempt)
 
     monkeypatch.setattr(api, "_execute_stage", execute)
 
@@ -510,7 +510,7 @@ async def test_daily_evidence_run_has_two_stages_and_reaches_ready(
 ):
     executed: list[str] = []
 
-    async def execute(_sm, _run, stage):
+    async def execute(_sm, _run, stage, _attempt=1):
         executed.append(stage)
         return {"stage": stage}
 
@@ -774,7 +774,7 @@ async def _leased_run(sm, workspace_id: uuid.UUID, owner: str, lease_for: timede
 async def test_slow_stage_keeps_its_lease_and_finishes(editorial_sessionmaker, monkeypatch):
     monkeypatch.setattr(api, "LEASE_HEARTBEAT", timedelta(milliseconds=40))
 
-    async def slow(_sm, _run, stage):
+    async def slow(_sm, _run, stage, _attempt=1):
         await asyncio.sleep(0.25)
         return {"stage": stage}
 
@@ -802,7 +802,7 @@ async def test_re_leased_stage_makes_the_first_coordinator_stand_down(
     monkeypatch.setattr(api, "LEASE_HEARTBEAT", timedelta(milliseconds=40))
     cancelled = asyncio.Event()
 
-    async def never_finishes(_sm, _run, _stage):
+    async def never_finishes(_sm, _run, _stage, _attempt=1):
         try:
             await asyncio.sleep(10)
         except asyncio.CancelledError:
@@ -1305,3 +1305,29 @@ async def test_a_recovered_run_stops_showing_its_old_failure(editorial_sessionma
         row = await runs.get_run(db, workspace_id, run.id)
         assert row.error_detail is None and row.error_code is None
         assert row.state == "collecting"
+
+
+async def test_an_interrupted_selection_starts_a_new_one_on_the_next_attempt(
+    editorial_sessionmaker, monkeypatch
+):
+    """A selection interrupted while enqueueing its shards cannot be rebuilt, so
+    a retry must not reuse its id (caa08171 sat on '3 of 124 shard jobs')."""
+    set_worker(monkeypatch, online=True)
+    seen: list[uuid.UUID] = []
+
+    async def fake_select(_sm, _ws, _week, *, max_candidates, selection_run_id, source_ids=None):
+        seen.append(selection_run_id)
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            status="complete", detail=None, retry_at=None, candidates=[], job_ids=[], coverage={}
+        )
+
+    monkeypatch.setattr("tce.editorial.selector.select_candidates", fake_select)
+    workspace_id = uuid.uuid4()
+    run = await _extracting_run(editorial_sessionmaker, workspace_id)
+    await api._execute_stage(editorial_sessionmaker, run, "selecting", 1)
+    await api._execute_stage(editorial_sessionmaker, run, "selecting", 1)
+    await api._execute_stage(editorial_sessionmaker, run, "selecting", 2)
+    assert seen[0] == seen[1], "the same attempt must reuse its selection"
+    assert seen[2] != seen[0], "a retry must start a new selection"

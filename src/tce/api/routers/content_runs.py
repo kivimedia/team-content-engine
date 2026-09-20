@@ -209,7 +209,7 @@ async def _moments_for_run(db: Any, run: ContentRun) -> int:
     return int((await db.execute(stmt)).scalar_one() or 0)
 
 
-async def _execute_stage(sm: Any, run: ContentRun, stage: str) -> dict[str, Any]:
+async def _execute_stage(sm: Any, run: ContentRun, stage: str, attempt: int = 1) -> dict[str, Any]:
     from tce.editorial.packets import build_packet
     from tce.editorial.selector import select_candidates
     from tce.evidence.collect import collect_fathom, collect_github
@@ -289,7 +289,11 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str) -> dict[str, Any]
 
     week = (run.window_start or datetime.now(UTC)).date()
     if stage == "selecting":
-        selection_id = uuid.uuid5(run.id, "selection")
+        # The selection id carries the attempt: a selection interrupted while
+        # enqueueing its shards (a deploy restart, a crash) can never be resumed -
+        # the selector rebuilds it exactly or refuses - so a retry has to start a
+        # new one instead of finding 3 of 124 shards forever.
+        selection_id = uuid.uuid5(run.id, "selection" if attempt <= 1 else f"selection:{attempt}")
         result = await select_candidates(
             sm,
             run.workspace_id,
@@ -433,7 +437,7 @@ async def _execute_stage_leased(sm: Any, run: ContentRun, stage: Any, owner: str
     """
     import asyncio
 
-    work = asyncio.ensure_future(_execute_stage(sm, run, stage.stage))
+    work = asyncio.ensure_future(_execute_stage(sm, run, stage.stage, stage.attempt_count or 1))
     try:
         while True:
             done, _ = await asyncio.wait({work}, timeout=LEASE_HEARTBEAT.total_seconds())
