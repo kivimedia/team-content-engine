@@ -89,6 +89,7 @@ function runWords(run) {
     mode: "points", sequence: 0, startedAt: 0, activeStartedAt: 0, activeMs: 0,
     timerId: null, pendingWrites: [], pendingSync: new Map(), takeMarkers: [],
     wakeLock: null, pendingIdea: null, textSize: 1, runTimer: null, waiting: [], ideasShown: 5,
+    phases: new Map(), rows: new Map(),
   };
   const supportedMime = [
     "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
@@ -245,14 +246,33 @@ function runWords(run) {
       if (!response.ok) return;
       const data = await response.json();
       const written = new Set(state.ideas.map((idea) => idea.candidate_id));
-      state.waiting = (data.candidates || [])
-        .filter((c) => c.status === "proposed" && !written.has(c.id))
+      const busy = new Set(
+        [...(state.phases || new Map())].filter(([, v]) => v.phase !== "ready").map(([id]) => id),
+      );
+      const fresh = (data.candidates || [])
         .filter((c) => !/^SYNTHETIC/i.test(c.title || ""))
+        .filter((c) => (c.status === "proposed" && !written.has(c.id)) || busy.has(c.id))
         .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+      // An idea being written, or just put away, stays on screen with its own
+      // state until it genuinely moves on.
+      state.waiting = fresh;
       renderIdeas();
     } catch (_) {
       // The queue above is the important half; a failure here stays quiet.
     }
+  }
+
+  // Each idea's own state, kept outside the DOM so re-rendering the list (a
+  // sibling archived, the queue reloaded) never erases what is in flight.
+  function ideaPhase(id) {
+    if (!state.phases) state.phases = new Map();
+    return state.phases.get(id) || { phase: "waiting", label: "" };
+  }
+
+  function setIdeaPhase(id, phase, label) {
+    if (!state.phases) state.phases = new Map();
+    state.phases.set(id, { phase, label: label || "" });
+    paintIdea(id);
   }
 
   function renderIdeas() {
@@ -260,100 +280,158 @@ function runWords(run) {
     const section = $("ideasSection");
     const waiting = state.waiting || [];
     section.hidden = waiting.length === 0;
-    list.replaceChildren();
     const shown = waiting.slice(0, state.ideasShown || 5);
-    shown.forEach((candidate) => list.appendChild(ideaRow(candidate)));
+    if (!state.rows) state.rows = new Map();
+
+    // Reuse the row that already exists for an idea: a row being written keeps
+    // its progress line and its disabled buttons.
+    const keep = new Set(shown.map((c) => c.id));
+    for (const [id, row] of state.rows) {
+      if (!keep.has(id)) { row.remove(); state.rows.delete(id); }
+    }
+    shown.forEach((candidate) => {
+      let row = state.rows.get(candidate.id);
+      if (!row) {
+        row = ideaRow(candidate);
+        state.rows.set(candidate.id, row);
+      }
+      list.appendChild(row);  // appending a live node moves it, it does not clone
+      paintIdea(candidate.id);
+    });
+
+    const being = waiting.filter((c) => ideaPhase(c.id).phase === "writing").length;
+    $("ideasCount").textContent = being
+      ? `${waiting.length} waiting \u00b7 ${being} being written`
+      : `${waiting.length} waiting`;
     const more = $("moreIdeasButton");
     more.hidden = waiting.length <= shown.length;
     more.textContent = `Show more ideas (${waiting.length - shown.length} left)`;
   }
 
+  function paintIdea(id) {
+    const row = state.rows?.get(id);
+    if (!row) return;
+    const { phase, label } = ideaPhase(id);
+    row.dataset.phase = phase;
+    row.classList.toggle("is-away", phase === "away");
+    row.classList.toggle("is-writing", phase === "writing");
+    // A decided idea does not offer the same two choices again.
+    row.querySelector(".idea-row-actions").hidden = phase !== "waiting";
+    row.querySelector(".idea-row-undo").hidden = phase !== "away";
+    row.querySelector(".idea-row-state").textContent = label;
+  }
+
   function ideaRow(candidate) {
     const row = document.createElement("article");
     row.className = "idea-row";
+    row.dataset.candidateId = candidate.id;
     const title = document.createElement("strong");
     title.textContent = candidate.title;
     const lesson = document.createElement("p");
     lesson.textContent = candidate.lesson || "";
+
     const actions = document.createElement("div");
     actions.className = "idea-row-actions";
-    const state_line = document.createElement("span");
-    state_line.className = "idea-row-state";
-
     const write = document.createElement("button");
     write.type = "button";
     write.className = "primary";
     write.textContent = "Write the script";
-    write.addEventListener("click", () => writeScript(candidate, row, write, state_line));
-
+    write.addEventListener("click", () => writeScript(candidate));
     const away = document.createElement("button");
     away.type = "button";
     away.textContent = "Put it away";
-    away.addEventListener("click", () => archiveIdea(candidate, row, state_line));
-
+    away.addEventListener("click", () => archiveIdea(candidate));
     actions.append(write, away);
-    row.append(title, lesson, actions, state_line);
+
+    const undo = document.createElement("button");
+    undo.type = "button";
+    undo.className = "idea-row-undo";
+    undo.hidden = true;
+    undo.textContent = "Bring it back";
+    undo.addEventListener("click", () => restoreIdea(candidate));
+
+    const line = document.createElement("span");
+    line.className = "idea-row-state";
+    row.append(title, lesson, actions, undo, line);
     return row;
   }
 
-  async function writeScript(candidate, row, button, label) {
-    button.disabled = true;
-    label.textContent = "Asked. The engine writes it on your PC worker; it queues behind whatever is already running.";
+  async function writeScript(candidate) {
+    setIdeaPhase(candidate.id, "writing", "Asked. It queues behind whatever the worker is already doing.");
     try {
       const response = await fetch(`${apiV1}/editorial/candidates/${candidate.id}/packet`, {
         method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
-      pollScript(candidate, row, button, label);
+      renderIdeas();
+      pollScript(candidate);
     } catch (error) {
-      label.textContent = error.message;
-      button.disabled = false;
+      setIdeaPhase(candidate.id, "waiting", error.message);
     }
   }
 
-  async function pollScript(candidate, row, button, label, attempt = 0) {
+  async function pollScript(candidate, attempt = 0) {
+    if (ideaPhase(candidate.id).phase !== "writing") return;  // archived meanwhile
     try {
       const response = await fetch(`${apiV1}/editorial/candidates/${candidate.id}/packet-status`, { credentials: "same-origin" });
       const data = await response.json().catch(() => ({}));
       const job = data.job || {};
       if (job.state === "done") {
-        label.textContent = "The script is ready. It is in the queue above.";
+        setIdeaPhase(candidate.id, "ready", "The script is ready. It is in the queue above.");
+        state.waiting = (state.waiting || []).filter((item) => item.id !== candidate.id);
         await loadQueue();
         return;
       }
       if (job.state === "failed") {
-        label.textContent = job.detail || job.current_activity || "The script could not be written.";
-        button.disabled = false;
+        setIdeaPhase(candidate.id, "waiting", job.detail || job.current_activity || "The script could not be written.");
+        renderIdeas();
         return;
       }
       const waited = attempt * 5;
-      label.textContent = (job.current_activity || "Writing the script") + (waited > 20 ? ` (${waited}s so far)` : "");
+      setIdeaPhase(
+        candidate.id,
+        "writing",
+        (job.current_activity || "Writing the script") + (waited > 20 ? ` (${waited}s so far)` : ""),
+      );
       if (attempt > 144) {
-        label.textContent = "Still queued after twelve minutes. It will finish on its own; check the queue later.";
-        button.disabled = false;
+        setIdeaPhase(candidate.id, "writing", "Still queued after twelve minutes. It will finish on its own; check the queue later.");
         return;
       }
-      setTimeout(() => pollScript(candidate, row, button, label, attempt + 1), 5000);
+      setTimeout(() => pollScript(candidate, attempt + 1), 5000);
     } catch (error) {
-      label.textContent = `Lost contact while waiting: ${error.message}`;
-      button.disabled = false;
+      setIdeaPhase(candidate.id, "writing", `Lost contact while waiting: ${error.message}`);
+      setTimeout(() => pollScript(candidate, attempt + 1), 15000);
     }
   }
 
-  async function archiveIdea(candidate, row, label) {
+  async function archiveIdea(candidate) {
+    setIdeaPhase(candidate.id, "away", "Putting it away...");
     try {
       const response = await fetch(`${apiV1}/editorial/candidates/${candidate.id}/archive`, {
         method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
-      row.classList.add("is-away");
-      label.textContent = "Put away. It will not be offered again.";
-      state.waiting = (state.waiting || []).filter((item) => item.id !== candidate.id);
-      setTimeout(renderIdeas, 1200);
+      setIdeaPhase(candidate.id, "away", "Put away. It will not be offered again.");
+      // It leaves the list on the next load, not under your finger: a mistake
+      // stays undoable for as long as the page is open.
     } catch (error) {
-      label.textContent = error.message;
+      setIdeaPhase(candidate.id, "waiting", error.message);
+    }
+  }
+
+  async function restoreIdea(candidate) {
+    setIdeaPhase(candidate.id, "waiting", "Bringing it back...");
+    try {
+      const response = await fetch(`${apiV1}/editorial/candidates/${candidate.id}`, {
+        method: "PATCH", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "proposed" }),
+      });
+      if (!response.ok) throw new Error(`Request failed with ${response.status}`);
+      setIdeaPhase(candidate.id, "waiting", "Back on the list.");
+    } catch (error) {
+      setIdeaPhase(candidate.id, "away", error.message);
     }
   }
 

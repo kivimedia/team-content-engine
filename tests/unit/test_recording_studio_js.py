@@ -251,3 +251,22 @@ def test_the_recorder_offers_a_script_and_an_archive_for_a_waiting_idea():
     assert "/editorial/candidates/${candidate.id}/archive" in js
     # A long queue is reported, never spun on forever.
     assert "Still queued after twelve minutes" in js
+
+
+def test_an_ideas_state_survives_its_neighbours_changing():
+    """Ziv, 20-Sep: "I mark a few as write the script. then mark ONE as put it
+    away - it reloads and removes ALL the markings of work on write the
+    script." Rows are reused by id and the phase lives outside the DOM."""
+    js = JS.read_text(encoding="utf-8")
+    assert "state.phases" in js and "state.rows" in js
+    # The list is no longer wiped and rebuilt on every change.
+    render = js.split("function renderIdeas")[1].split("function paintIdea")[0]
+    assert "list.replaceChildren()" not in render
+    assert "row.remove(); state.rows.delete(id);" in js
+    # A decided idea stops offering the same two choices.
+    assert '.idea-row-actions").hidden = phase !== "waiting"' in js
+    # And a mistake is undoable.
+    assert "Bring it back" in js
+    assert "restoreIdea" in js
+    # A poll that finds its idea archived stops instead of writing over it.
+    assert 'if (ideaPhase(candidate.id).phase !== "writing") return;' in js

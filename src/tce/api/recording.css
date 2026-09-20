@@ -61,7 +61,10 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .idea-row-actions button { min-height: 46px; padding: 0 14px; border: 2px solid var(--ink); border-radius: 10px; font-weight: 800; background: var(--white); }
 .idea-row-actions .primary { background: var(--moss); color: #fff; }
 .idea-row-state { display: block; margin-top: 8px; color: #34435a; font-size: .86rem; }
-.idea-row.is-away { opacity: .55; }
+.idea-row.is-away { opacity: .5; }
+.idea-row.is-writing { border-color: var(--moss); box-shadow: inset 4px 0 0 var(--moss); }
+.idea-row-undo { min-height: 44px; margin-top: 10px; padding: 0 14px; border: 2px solid var(--ink); border-radius: 10px; background: var(--white); font-weight: 800; }
+.ideas-count { margin: -8px 0 14px; color: #4a5a70; font-size: .9rem; font-weight: 700; }
 .empty strong, .empty span { display: block; }
 .studio-view { height: 100%; display: grid; grid-template-rows: minmax(150px, 44%) auto minmax(0, 1fr) auto; overflow: hidden; }
 .camera-stage { position: relative; background: #07111f; overflow: hidden; min-height: 0; }
