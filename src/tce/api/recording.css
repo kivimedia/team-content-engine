@@ -97,7 +97,11 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .tabs { display: grid; grid-template-columns: 1fr 1fr; background: var(--white); border-bottom: 2px solid var(--ink); }
 .tab { min-height: 50px; border: 0; background: #e9e4d8; font-weight: 900; }
 .tab.is-active { background: var(--white); box-shadow: inset 0 -5px 0 var(--signal); }
-.reader { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scroll-behavior: smooth; padding: 16px 16px 45vh; font-size: var(--reader-size, 1.5rem); line-height: 1.42; }
+.reader { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scroll-behavior: smooth; padding: 16px 16px 18px; font-size: var(--reader-size, 1.5rem); line-height: 1.42; }
+/* Room for the last line to reach the top of the reader. As padding it was a
+   floor on a border-box element (45vh = 380px), so the scroller could never
+   shrink into its row; as a child it costs the box nothing. */
+.reader-tail { height: 60%; min-height: 120px; }
 .reader.points { font-family: "Trebuchet MS", sans-serif; font-weight: 700; }
 .reader.script { font-family: Georgia, serif; }
 .reader-line { margin: 0 0 1.25em; scroll-margin-top: 80px; }

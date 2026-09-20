@@ -329,6 +329,10 @@ function runWords(run) {
       line.appendChild(document.createTextNode(text));
       reader.appendChild(line);
     });
+    const tail = document.createElement("div");
+    tail.className = "reader-tail";
+    tail.setAttribute("aria-hidden", "true");
+    reader.appendChild(tail);
     const saved = Number(localStorage.getItem(`tce-reader-${idea.packet_id}-${state.mode}`) || 0);
     requestAnimationFrame(() => { reader.scrollTop = saved; syncScrollRail(); });
   }
