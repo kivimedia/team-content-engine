@@ -323,6 +323,43 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str) -> dict[str, Any]
     raise ValueError(f"unknown stage {stage}")
 
 
+# How often a coordinator renews the lease of the stage it is executing. Well
+# inside runs.DEFAULT_LEASE (5 min): collecting alone took 5m12s on 20-Sep, and
+# the cron tick re-drives any stage whose lease has lapsed.
+LEASE_HEARTBEAT = timedelta(seconds=60)
+
+
+async def _execute_stage_leased(sm: Any, run: ContentRun, stage: Any, owner: str) -> dict[str, Any]:
+    """Run the stage while keeping its lease alive.
+
+    A stage that outlives its lease without a heartbeat is re-leased by the next
+    tick; the first coordinator's finish is then rejected and the work repeats.
+    If the lease is lost anyway (another owner took it), the work is cancelled
+    and LeaseLostError tells the coordinator to stand down without touching
+    the run.
+    """
+    import asyncio
+
+    work = asyncio.ensure_future(_execute_stage(sm, run, stage.stage))
+    try:
+        while True:
+            done, _ = await asyncio.wait({work}, timeout=LEASE_HEARTBEAT.total_seconds())
+            if done:
+                return work.result()
+            async with open_session(sm) as db:
+                kept = await runs.extend_lease(db, stage.id, owner)
+                await db.commit()
+            if not kept:
+                raise runs.LeaseLostError(f"stage {stage.stage} of run {run.id} was re-leased")
+    finally:
+        if not work.done():
+            work.cancel()
+            try:
+                await work
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
 async def coordinate_content_run(sm: Any, workspace_id: uuid.UUID, run_id: uuid.UUID) -> None:
     owner = f"api:{uuid.uuid4()}"
     while True:
@@ -335,7 +372,9 @@ async def coordinate_content_run(sm: Any, workspace_id: uuid.UUID, run_id: uuid.
         if stage is None:
             return
         try:
-            output = await _execute_stage(sm, run, stage.stage)
+            output = await _execute_stage_leased(sm, run, stage, owner)
+        except runs.LeaseLostError:
+            return
         except runs.StageWaitingError as exc:
             async with open_session(sm) as db:
                 await runs.wait_stage(

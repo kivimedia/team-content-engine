@@ -745,3 +745,85 @@ async def test_tick_redrives_waiting_runs_only_when_a_worker_is_online(
     ]
     assert online.json()["worker"]["online"] is True
     assert client.dispatched == [run_id]
+
+
+# ---------------------------------------------------------------------------
+# lease heartbeat: a slow stage is not re-leased by the next tick
+# ---------------------------------------------------------------------------
+
+
+async def _leased_run(sm, workspace_id: uuid.UUID, owner: str, lease_for: timedelta):
+    async with sm() as db:
+        run = await runs.create_or_get_run(
+            db,
+            workspace_id,
+            runs.ContentRunRequest(
+                idempotency_key=f"slow-{owner}",
+                scope_kind="week",
+                window_start=datetime(2026, 9, 14, tzinfo=UTC),
+                window_end=datetime(2026, 9, 21, tzinfo=UTC),
+                final_stage="extracting",
+            ),
+        )
+        await db.flush()
+        stage = await runs.lease_next_stage(db, run.id, owner, lease_for=lease_for)
+        await db.commit()
+        return run, stage, stage.leased_until
+
+
+async def test_slow_stage_keeps_its_lease_and_finishes(editorial_sessionmaker, monkeypatch):
+    monkeypatch.setattr(api, "LEASE_HEARTBEAT", timedelta(milliseconds=40))
+
+    async def slow(_sm, _run, stage):
+        await asyncio.sleep(0.25)
+        return {"stage": stage}
+
+    monkeypatch.setattr(api, "_execute_stage", slow)
+    workspace_id = uuid.uuid4()
+    owner = "api:slow"
+    run, stage, first_until = await _leased_run(
+        editorial_sessionmaker, workspace_id, owner, timedelta(milliseconds=100)
+    )
+    output = await api._execute_stage_leased(editorial_sessionmaker, run, stage, owner)
+    assert output == {"stage": "collecting"}
+    async with editorial_sessionmaker() as db:
+        row = await db.get(type(stage), stage.id)
+        assert row.lease_owner == owner
+        assert row.leased_until > first_until + timedelta(milliseconds=150)
+        # The renewed lease is what the next tick sees: still held, not re-drivable.
+        assert await runs.list_redrivable_runs(db, workspace_id) == []
+        assert await runs.finish_stage(db, stage.id, owner, output)
+        await db.commit()
+
+
+async def test_re_leased_stage_makes_the_first_coordinator_stand_down(
+    editorial_sessionmaker, monkeypatch
+):
+    monkeypatch.setattr(api, "LEASE_HEARTBEAT", timedelta(milliseconds=40))
+    cancelled = asyncio.Event()
+
+    async def never_finishes(_sm, _run, _stage):
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return {}
+
+    monkeypatch.setattr(api, "_execute_stage", never_finishes)
+    workspace_id = uuid.uuid4()
+    run, stage, _ = await _leased_run(
+        editorial_sessionmaker, workspace_id, "api:first", timedelta(milliseconds=30)
+    )
+    await asyncio.sleep(0.05)  # the lease lapses, a tick re-leases it
+    async with editorial_sessionmaker() as db:
+        taken = await runs.lease_next_stage(db, run.id, "api:second")
+        await db.commit()
+    assert taken is not None and taken.lease_owner == "api:second"
+    with pytest.raises(runs.LeaseLostError):
+        await api._execute_stage_leased(editorial_sessionmaker, run, stage, "api:first")
+    assert cancelled.is_set()
+    async with editorial_sessionmaker() as db:
+        assert not await runs.finish_stage(db, stage.id, "api:first", {})
+        row = await db.get(type(stage), stage.id)
+        assert row.lease_owner == "api:second" and row.status == "running"

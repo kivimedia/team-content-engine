@@ -24,6 +24,10 @@ REDRIVABLE_STATES = frozenset({"queued", "waiting_capacity", "waiting_worker", *
 DEFAULT_LEASE = timedelta(minutes=5)
 
 
+class LeaseLostError(RuntimeError):
+    """Another coordinator holds the stage now; this one must stop quietly."""
+
+
 class StageWaitingError(RuntimeError):
     def __init__(
         self,
@@ -239,6 +243,32 @@ async def lease_next_stage(
         await session.flush()
         return stage
     return None
+
+
+async def extend_lease(
+    session: AsyncSession,
+    stage_id: uuid.UUID,
+    owner: str,
+    *,
+    now: datetime | None = None,
+    lease_for: timedelta = DEFAULT_LEASE,
+) -> bool:
+    """Renew a running stage's lease while its owner is still working on it.
+
+    False means the lease is no longer this owner's (expired and re-leased by a
+    scheduler tick, or the stage was finished elsewhere): the caller stops.
+    """
+    now = now or utcnow()
+    stage = (
+        await session.execute(
+            select(ContentRunStage).where(ContentRunStage.id == stage_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if stage is None or stage.status != "running" or stage.lease_owner != owner[:120]:
+        return False
+    stage.leased_until = now + lease_for
+    await session.flush()
+    return True
 
 
 async def finish_stage(
