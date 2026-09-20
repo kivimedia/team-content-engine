@@ -50,6 +50,18 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .idea-card span { display: block; margin-top: 8px; color: #3d4b60; line-height: 1.4; }
 .idea-meta { margin-top: 12px; color: var(--lake); font-weight: 800; font-size: .9rem; }
 .empty { margin-top: 32px; border: 2px dashed var(--line); padding: 28px; text-align: center; }
+.ideas-section { margin-top: 38px; }
+.ideas-section h2 { font-family: Georgia, serif; font-size: 1.35rem; margin: 0; }
+.ideas-hint { margin: 6px 0 16px; color: #3d4b60; line-height: 1.4; }
+.ideas-list { display: grid; gap: 12px; }
+.idea-row { border: 2px solid var(--ink); border-radius: 14px; background: var(--white); padding: 14px; }
+.idea-row strong { display: block; font-family: Georgia, serif; font-size: 1.12rem; line-height: 1.2; }
+.idea-row p { margin: 6px 0 0; color: #3d4b60; line-height: 1.35; font-size: .92rem; }
+.idea-row-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.idea-row-actions button { min-height: 46px; padding: 0 14px; border: 2px solid var(--ink); border-radius: 10px; font-weight: 800; background: var(--white); }
+.idea-row-actions .primary { background: var(--moss); color: #fff; }
+.idea-row-state { display: block; margin-top: 8px; color: #34435a; font-size: .86rem; }
+.idea-row.is-away { opacity: .55; }
 .empty strong, .empty span { display: block; }
 .studio-view { height: 100%; display: grid; grid-template-rows: minmax(150px, 44%) auto minmax(0, 1fr) auto; overflow: hidden; }
 .camera-stage { position: relative; background: #07111f; overflow: hidden; min-height: 0; }

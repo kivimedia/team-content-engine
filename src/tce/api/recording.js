@@ -88,7 +88,7 @@ function runWords(run) {
     ideas: [], idea: null, session: null, stream: null, recorder: null, clip: null,
     mode: "points", sequence: 0, startedAt: 0, activeStartedAt: 0, activeMs: 0,
     timerId: null, pendingWrites: [], pendingSync: new Map(), takeMarkers: [],
-    wakeLock: null, pendingIdea: null, textSize: 1, runTimer: null,
+    wakeLock: null, pendingIdea: null, textSize: 1, runTimer: null, waiting: [], ideasShown: 5,
   };
   const supportedMime = [
     "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
@@ -237,12 +237,133 @@ function runWords(run) {
     });
   }
 
+  // Ideas the engine proposed that have no script yet. This is the decision he
+  // actually makes, and it used to live only in the developer dashboard.
+  async function loadIdeas() {
+    try {
+      const response = await fetch(`${apiV1}/editorial/candidates`, { credentials: "same-origin" });
+      if (!response.ok) return;
+      const data = await response.json();
+      const written = new Set(state.ideas.map((idea) => idea.candidate_id));
+      state.waiting = (data.candidates || [])
+        .filter((c) => c.status === "proposed" && !written.has(c.id))
+        .filter((c) => !/^SYNTHETIC/i.test(c.title || ""))
+        .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+      renderIdeas();
+    } catch (_) {
+      // The queue above is the important half; a failure here stays quiet.
+    }
+  }
+
+  function renderIdeas() {
+    const list = $("ideasList");
+    const section = $("ideasSection");
+    const waiting = state.waiting || [];
+    section.hidden = waiting.length === 0;
+    list.replaceChildren();
+    const shown = waiting.slice(0, state.ideasShown || 5);
+    shown.forEach((candidate) => list.appendChild(ideaRow(candidate)));
+    const more = $("moreIdeasButton");
+    more.hidden = waiting.length <= shown.length;
+    more.textContent = `Show more ideas (${waiting.length - shown.length} left)`;
+  }
+
+  function ideaRow(candidate) {
+    const row = document.createElement("article");
+    row.className = "idea-row";
+    const title = document.createElement("strong");
+    title.textContent = candidate.title;
+    const lesson = document.createElement("p");
+    lesson.textContent = candidate.lesson || "";
+    const actions = document.createElement("div");
+    actions.className = "idea-row-actions";
+    const state_line = document.createElement("span");
+    state_line.className = "idea-row-state";
+
+    const write = document.createElement("button");
+    write.type = "button";
+    write.className = "primary";
+    write.textContent = "Write the script";
+    write.addEventListener("click", () => writeScript(candidate, row, write, state_line));
+
+    const away = document.createElement("button");
+    away.type = "button";
+    away.textContent = "Put it away";
+    away.addEventListener("click", () => archiveIdea(candidate, row, state_line));
+
+    actions.append(write, away);
+    row.append(title, lesson, actions, state_line);
+    return row;
+  }
+
+  async function writeScript(candidate, row, button, label) {
+    button.disabled = true;
+    label.textContent = "Asked. The engine writes it on your PC worker; it queues behind whatever is already running.";
+    try {
+      const response = await fetch(`${apiV1}/editorial/candidates/${candidate.id}/packet`, {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
+      pollScript(candidate, row, button, label);
+    } catch (error) {
+      label.textContent = error.message;
+      button.disabled = false;
+    }
+  }
+
+  async function pollScript(candidate, row, button, label, attempt = 0) {
+    try {
+      const response = await fetch(`${apiV1}/editorial/candidates/${candidate.id}/packet-status`, { credentials: "same-origin" });
+      const data = await response.json().catch(() => ({}));
+      const job = data.job || {};
+      if (job.state === "done") {
+        label.textContent = "The script is ready. It is in the queue above.";
+        await loadQueue();
+        return;
+      }
+      if (job.state === "failed") {
+        label.textContent = job.detail || job.current_activity || "The script could not be written.";
+        button.disabled = false;
+        return;
+      }
+      const waited = attempt * 5;
+      label.textContent = (job.current_activity || "Writing the script") + (waited > 20 ? ` (${waited}s so far)` : "");
+      if (attempt > 144) {
+        label.textContent = "Still queued after twelve minutes. It will finish on its own; check the queue later.";
+        button.disabled = false;
+        return;
+      }
+      setTimeout(() => pollScript(candidate, row, button, label, attempt + 1), 5000);
+    } catch (error) {
+      label.textContent = `Lost contact while waiting: ${error.message}`;
+      button.disabled = false;
+    }
+  }
+
+  async function archiveIdea(candidate, row, label) {
+    try {
+      const response = await fetch(`${apiV1}/editorial/candidates/${candidate.id}/archive`, {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
+      row.classList.add("is-away");
+      label.textContent = "Put away. It will not be offered again.";
+      state.waiting = (state.waiting || []).filter((item) => item.id !== candidate.id);
+      setTimeout(renderIdeas, 1200);
+    } catch (error) {
+      label.textContent = error.message;
+    }
+  }
+
   async function loadQueue() {
     try {
       const data = await api("/recording-queue");
       state.ideas = data.ideas || [];
       renderQueue();
       $("syncState").textContent = `${state.ideas.length} ready script${state.ideas.length === 1 ? "" : "s"}`;
+      loadIdeas();
     } catch (error) {
       $("syncState").textContent = "Could not load scripts";
       showNotice(error.message);
@@ -882,6 +1003,7 @@ function runWords(run) {
   $("homeButton").addEventListener("click", showQueue);
   $("produceNowButton").addEventListener("click", produceNow);
   $("moreHooksButton").addEventListener("click", askForMoreOpenings);
+  $("moreIdeasButton").addEventListener("click", () => { state.ideasShown += 5; renderIdeas(); });
   $("textSizeButton").addEventListener("click", changeTextSize);
   $("pointsTab").addEventListener("click", () => setMode("points"));
   $("scriptTab").addEventListener("click", () => setMode("script"));

@@ -32,9 +32,17 @@
       </div>
       <div id="queue" class="queue" aria-live="polite"></div>
       <div id="emptyQueue" class="empty" hidden>
-        <strong>No ready scripts yet</strong>
-        <span>Return after a packet reaches Ready.</span>
+        <strong>No scripts ready yet</strong>
+        <span>Pick an idea below and ask for its script, or press Produce now.</span>
       </div>
+
+      <section id="ideasSection" class="ideas-section" hidden aria-labelledby="ideasTitle">
+        <h2 id="ideasTitle">Ideas waiting for you</h2>
+        <p class="ideas-hint">From your meetings and code. Ask for a script when one is worth
+          recording, or put it away.</p>
+        <div id="ideasList" class="ideas-list"></div>
+        <button id="moreIdeasButton" type="button" class="secondary-button" hidden>Show more ideas</button>
+      </section>
     </section>
 
     <section id="hookView" class="hook-view" hidden aria-labelledby="hookViewTitle">

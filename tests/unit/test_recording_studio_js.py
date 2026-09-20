@@ -117,6 +117,11 @@ def test_recording_js_and_html_parse():
         "moreHooksButton",
         "moreHooksState",
         "timer",
+        # The decisions he actually makes live in the recorder now, not the
+        # developer dashboard: which idea gets a script, and which is put away.
+        "ideasSection",
+        "ideasList",
+        "moreIdeasButton",
     ):
         assert f'id="{element_id}"' in html
     assert 'class="camera-timer"' in html
@@ -235,3 +240,14 @@ def test_waiting_states_show_the_real_reason_not_the_word_queued():
     )
     failed = {"state": "failed", "error_detail": "boom"}
     assert run_js("runWords(run)", run=failed) == "Stopped: boom"
+
+
+def test_the_recorder_offers_a_script_and_an_archive_for_a_waiting_idea():
+    js = JS.read_text(encoding="utf-8")
+    assert "Write the script" in js
+    assert "Put it away" in js
+    # Both go to the engine's own routes, not to a dashboard page.
+    assert "/editorial/candidates/${candidate.id}/packet" in js
+    assert "/editorial/candidates/${candidate.id}/archive" in js
+    # A long queue is reported, never spun on forever.
+    assert "Still queued after twelve minutes" in js
