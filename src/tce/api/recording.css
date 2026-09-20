@@ -51,7 +51,7 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .idea-meta { margin-top: 12px; color: var(--lake); font-weight: 800; font-size: .9rem; }
 .empty { margin-top: 32px; border: 2px dashed var(--line); padding: 28px; text-align: center; }
 .empty strong, .empty span { display: block; }
-.studio-view { height: 100%; display: grid; grid-template-rows: minmax(120px, 38%) auto minmax(0, 1fr) auto auto; overflow: hidden; }
+.studio-view { height: 100%; display: grid; grid-template-rows: minmax(110px, 32%) auto minmax(0, 1fr) auto auto; overflow: hidden; }
 .camera-stage { position: relative; background: #07111f; overflow: hidden; min-height: 0; }
 .camera-stage video { width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1); }
 .camera-empty { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px; text-align: center; padding: 30px; color: #fff; }
@@ -60,7 +60,7 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .recording-flag { position: absolute; top: 14px; left: 14px; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px; background: #fff; color: #8c1717; font-weight: 900; }
 .recording-flag span { width: 12px; height: 12px; border-radius: 50%; background: var(--signal); }
 .interruption-flag { position: absolute; inset: auto 12px 12px; background: #ffe3a3; color: #4a2d00; padding: 12px; border: 2px solid #7d4e00; font-weight: 800; }
-.script-heading { padding: 10px 14px; border-bottom: 2px solid var(--ink); background: var(--white); overflow-y: auto; max-height: 34vh; }
+.script-heading { padding: 9px 14px; border-bottom: 2px solid var(--ink); background: var(--white); overflow-y: auto; max-height: 19vh; min-height: 0; }
 .script-heading h1 { font-family: Georgia, serif; font-size: 1.12rem; line-height: 1.15; margin: 0; }
 .script-heading > p { margin: 5px 0 0; color: #34435a; line-height: 1.35; font-size: .88rem; }
 .studio-view.is-recording .script-heading > p, .studio-view.is-recording .hook-line-question { display: none; }
@@ -88,15 +88,16 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .hook-option.is-current .hook-use { background: var(--moss); color: #fff; }
 .hook-use:disabled { opacity: .55; cursor: wait; }
 .reader-shell { display: grid; grid-template-columns: 52px minmax(0, 1fr) 40px; min-height: 0; background: var(--white); overflow: hidden; }
+.reader-shell > * { min-height: 0; overflow: hidden; }
 .beat-rail, .scroll-rail { background: #e6edf2; display: flex; flex-direction: column; align-items: center; }
 .beat-rail { gap: 10px; padding: 14px 7px; border-right: 1px solid #9baaba; }
 .beat-button { width: 42px; min-height: 42px; border: 2px solid var(--ink); border-radius: 50%; background: var(--white); font-weight: 900; }
 .beat-button.is-current { background: var(--lake); color: #fff; }
-.reader-main { min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.reader-main { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
 .tabs { display: grid; grid-template-columns: 1fr 1fr; background: var(--white); border-bottom: 2px solid var(--ink); }
 .tab { min-height: 50px; border: 0; background: #e9e4d8; font-weight: 900; }
 .tab.is-active { background: var(--white); box-shadow: inset 0 -5px 0 var(--signal); }
-.reader { height: 100%; overflow-y: auto; overscroll-behavior: contain; scroll-behavior: smooth; padding: 18px 16px 40vh; font-size: var(--reader-size, 1.55rem); line-height: 1.45; }
+.reader { height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scroll-behavior: smooth; padding: 16px 16px 45vh; font-size: var(--reader-size, 1.5rem); line-height: 1.42; }
 .reader.points { font-family: "Trebuchet MS", sans-serif; font-weight: 700; }
 .reader.script { font-family: Georgia, serif; }
 .reader-line { margin: 0 0 1.25em; scroll-margin-top: 80px; }
