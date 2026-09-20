@@ -11196,7 +11196,9 @@ async function edSaveOutcome(cid, pid) {
     window.switchTab = function (t) { const r = orig(t); if (sel.value !== t) sel.value = t; if (t === 'editorial') history.replaceState(null, '', location.pathname + location.search + '#editorial'); return r; };
     document.querySelectorAll('.sidebar-item[data-tab]').forEach(b => b.addEventListener('click', () => { sel.value = b.dataset.tab; }));
   }
-  if (location.hash === '#editorial') switchTab('editorial');
+  // A focused run link is a destination, not a hint: ?content_run= opens the
+  // Editorial view itself, whatever tab was last used on this device.
+  if (location.hash === '#editorial' || edRunFromUrl()) switchTab('editorial');
 })();
 
 /*ED-JS-END*/
