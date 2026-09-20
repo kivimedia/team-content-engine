@@ -27,7 +27,7 @@
         <div class="produce-panel">
           <button id="produceNowButton" type="button">Produce now</button>
           <span id="produceNowState">Collect the last seven days and prepare recording scripts.</span>
-          <a id="produceNowLink" href="/dashboard" hidden>Open this run</a>
+          <a id="produceNowLink" href="#" hidden>Open this run</a>
         </div>
       </div>
       <div id="queue" class="queue" aria-live="polite"></div>
@@ -87,9 +87,8 @@
       <div class="controls" aria-label="Recording controls">
         <button id="recordButton" class="control record" type="button">Record</button>
         <button id="pauseButton" class="control" type="button" disabled>Pause</button>
-        <button id="markerButton" class="control" type="button" disabled>Mark take</button>
-        <button id="finishClipButton" class="control" type="button" disabled>Finish clip</button>
-        <button id="finishSessionButton" class="control finish" type="button" disabled>Finish session</button>
+        <button id="finishClipButton" class="control" type="button" disabled>Finish clip<small>keep this script</small></button>
+        <button id="finishSessionButton" class="control finish" type="button">Finish<small>send for editing</small></button>
       </div>
     </section>
   </main>

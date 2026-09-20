@@ -524,3 +524,48 @@ def test_transport_reset_is_status_zero_not_a_crash(monkeypatch):
     status, body = client.post("/lease", {"worker_id": "w"})
     assert status == 0
     assert "transport error" in body["detail"]
+
+
+def test_worker_keeps_saying_running_while_a_job_runs(monkeypatch):
+    """20-Sep-2026: three workers were inside one long job and every reader -
+    the run's wait state, the recorder, the briefing - said no worker had
+    reported, because status was posted only between jobs."""
+    import threading
+
+    from tce.llm import worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "HEARTBEAT_SECONDS", 0.02)
+    posted: list[tuple[str, str | None]] = []
+
+    class Fake:
+        report_status = lambda self, state, pf, job_id=None: posted.append((state, job_id))  # noqa: E731
+        heartbeat = worker_mod.Worker.heartbeat
+
+    fake = Fake()
+    with fake.heartbeat(None, "job-1234abcd"):
+        threading.Event().wait(0.12)
+    during = len(posted)
+    assert during >= 3, f"expected repeated heartbeats, got {posted}"
+    assert {state for state, _ in posted} == {"running"}
+    assert {job for _, job in posted} == {"job-1234abcd"}
+
+    # It stops with the job: no beat after the block.
+    threading.Event().wait(0.1)
+    assert len(posted) == during
+
+
+def test_a_heartbeat_failure_never_breaks_the_job(monkeypatch):
+    import threading
+
+    from tce.llm import worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "HEARTBEAT_SECONDS", 0.02)
+
+    class Fake:
+        def report_status(self, state, pf, job_id=None):
+            raise RuntimeError("status endpoint down")
+
+        heartbeat = worker_mod.Worker.heartbeat
+
+    with Fake().heartbeat(None, "job-x"):
+        threading.Event().wait(0.08)  # the thread raises repeatedly; the work continues

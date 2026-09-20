@@ -16,6 +16,7 @@ Fail-closed rules:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
@@ -28,7 +29,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -50,6 +51,10 @@ NESTED_SESSION_NAMES = frozenset(
 NESTED_SESSION_PREFIXES = ("CLAUDE_CODE_MESSAGING_",)
 # The worker's own service key is never passed to the model subprocess.
 WORKER_ONLY_NAMES = frozenset({"TCE_PRIVATE_ACCESS_KEY"})
+
+# How often a worker says "still here" while a job runs. Well inside the 180 s
+# staleness window the API uses, so a long job never reads as an absent worker.
+HEARTBEAT_SECONDS = 60
 
 DEFAULT_ALLOWED_AUTH = frozenset({"claude.ai"})
 OPTIONAL_AUTH = frozenset({"oauth_token"})
@@ -573,6 +578,34 @@ class Worker:
         except Exception as exc:  # status is best-effort; leasing still requires auth
             self.log(f"worker-status post failed: {type(exc).__name__}")
 
+    @contextlib.contextmanager
+    def heartbeat(self, preflight: Preflight | None, job_id: str) -> Iterator[None]:
+        """Keep saying "running" while a job runs.
+
+        A worker used to report only between jobs, so a job longer than the
+        180 s staleness window made every reader - the run's wait state, the
+        recorder, the briefing - announce that no worker had reported, while
+        three of them were busy on that very job (seen 20-Sep-2026: receipts
+        351 s and 373 s old mid-job). The thread is a daemon and every failure
+        is swallowed: a status post must never delay or break the work.
+        """
+        stop = threading.Event()
+
+        def beat() -> None:
+            while not stop.wait(HEARTBEAT_SECONDS):
+                try:
+                    self.report_status("running", preflight, job_id=job_id)
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=beat, name=f"heartbeat-{job_id[:8]}", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=2)
+
     def check(self) -> Preflight:
         pf = run_preflight(self.bin_path, self.env, runner=self.runner)
         self.preflight = pf
@@ -832,7 +865,8 @@ class Worker:
                     f"job {job['id']} ({job.get('job_type')}) attempt {job.get('attempt_count')}"
                 )
                 self.report_status("running", pf, job_id=job["id"])
-                outcome = self.execute(job, pf)
+                with self.heartbeat(pf, job["id"]):
+                    outcome = self.execute(job, pf)
                 outbox_path = self.persist_outcome(job["id"], outcome)
                 code, _ = self.submit(job["id"], outcome)
                 self.finish_outbox_delivery(outbox_path, code)

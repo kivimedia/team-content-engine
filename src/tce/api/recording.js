@@ -95,6 +95,11 @@ function runWords(run) {
     "video/mp4;codecs=h264,aac", "video/mp4",
   ].find((value) => window.MediaRecorder && MediaRecorder.isTypeSupported(value));
 
+  function setRecordingChrome(active) {
+    const view = document.getElementById("studioView");
+    if (view) view.classList.toggle("is-recording", Boolean(active));
+  }
+
   function showNotice(message, timeout = 4200) {
     const notice = $("notice");
     notice.textContent = message;
@@ -251,7 +256,9 @@ function runWords(run) {
       host.textContent = `${runWords(run)} (step ${Math.min(done + 1, stages.length)} of ${stages.length})`;
       const link = $("produceNowLink");
       if (link) {
-        link.href = run.focused_path || `/dashboard?content_run=${runId}`;
+        // On bot.kivimedia.co the app lives under /tce; an absolute
+        // /dashboard link lands on KM BOT's own dashboard instead of the run.
+        link.href = `${pathPrefix}${run.focused_path || `/dashboard?content_run=${runId}`}`;
         link.hidden = false;
       }
       if (!["ready", "failed", "cancelled"].includes(run.state)) {
@@ -307,10 +314,15 @@ function runWords(run) {
       const line = document.createElement("p");
       line.className = "reader-line";
       line.id = `${state.mode}-${index}`;
-      const label = document.createElement("span");
-      label.className = "reader-index";
-      label.textContent = state.mode === "points" ? `Point ${index + 1}` : `Phrase p${String(index + 1).padStart(3, "0")}`;
-      line.append(label, document.createTextNode(text));
+      // Points keep their number; spoken phrases do not - "p028" was noise
+      // to read past while talking.
+      if (state.mode === "points") {
+        const label = document.createElement("span");
+        label.className = "reader-index";
+        label.textContent = `Point ${index + 1}`;
+        line.appendChild(label);
+      }
+      line.appendChild(document.createTextNode(text));
       reader.appendChild(line);
     });
     const saved = Number(localStorage.getItem(`tce-reader-${idea.packet_id}-${state.mode}`) || 0);
@@ -378,17 +390,57 @@ function runWords(run) {
     panel.replaceChildren();
     panel.hidden = !hook;
     if (!hook) return;
+    const line = document.createElement("div");
+    line.className = "hook-line";
     const strong = document.createElement("strong");
-    strong.textContent = `Opening: ${hook.text}`;
-    const span = document.createElement("span");
-    span.textContent = `Viewer question: ${hook.question}`;
-    panel.append(strong, span);
+    strong.textContent = hook.text;
+    const question = document.createElement("span");
+    question.className = "hook-line-question";
+    question.textContent = hook.question;
+    line.append(strong, question);
     if (lockNote) {
       const note = document.createElement("span");
       note.className = "hook-lock";
       note.textContent = lockNote;
-      panel.appendChild(note);
+      line.appendChild(note);
     }
+    panel.appendChild(line);
+    // The choice is made once. After that it is one line, and Change brings the
+    // options back - so the camera and the script share the screen instead.
+    const options = (idea.hook_options || []).length;
+    if (options >= 2 && !lockNote) {
+      const change = document.createElement("button");
+      change.type = "button";
+      change.className = "hook-change";
+      change.textContent = "Change";
+      change.addEventListener("click", () => openHookChooser(idea));
+      panel.appendChild(change);
+    }
+  }
+
+  function hookChosenKey(idea) {
+    return `tce-hook-chosen-${idea.candidate_id}-v${idea.packet_version}`;
+  }
+
+  function markHookChosen(idea) {
+    try { localStorage.setItem(hookChosenKey(idea), "1"); } catch { /* private mode */ }
+  }
+
+  function hookAlreadyChosen(idea) {
+    try { return localStorage.getItem(hookChosenKey(idea)) === "1"; } catch { return false; }
+  }
+
+  function openHookChooser(idea) {
+    const model = hookChooserModel(idea, {
+      sessionStatus: state.session?.status,
+      clipCount: (state.session?.clips || []).length,
+      recorderActive: Boolean(state.recorder && state.recorder.state !== "inactive"),
+    });
+    if (!model.show) {
+      showNotice(model.reason || "The opening cannot be changed for this take set.");
+      return;
+    }
+    renderHookChooser(model);
   }
 
   function renderHookChooser(model) {
@@ -431,6 +483,7 @@ function runWords(run) {
   async function applyHookChoice(hookId) {
     const idea = state.idea;
     if (!idea) return;
+    markHookChosen(idea);
     const buttons = [...$("hookOptions").querySelectorAll("button")];
     buttons.forEach((button) => { button.disabled = true; });
     try {
@@ -484,10 +537,11 @@ function runWords(run) {
         clipCount: (state.session?.clips || []).length,
         recorderActive: Boolean(state.recorder && state.recorder.state !== "inactive"),
       });
-      if (model.show) {
+      if (model.show && !hookAlreadyChosen(idea)) {
         renderHookChooser(model);
         return;
       }
+      renderHookPanel(idea);
       if (model.locked && model.options.length >= 2) renderHookPanel(idea, model.reason);
       await ensureSession();
     } catch (error) {
@@ -563,9 +617,7 @@ function runWords(run) {
       $("recordingFlag").hidden = false;
       $("recordButton").disabled = true;
       $("pauseButton").disabled = false;
-      $("markerButton").disabled = false;
       $("finishClipButton").disabled = false;
-      $("finishSessionButton").disabled = true;
       $("pauseButton").textContent = "Pause";
       showNotice("Recording started. Tabs and point jumps stay available.");
     } catch (error) {
@@ -601,12 +653,11 @@ function runWords(run) {
     return active ? state.idea.beats[[...$("beatRail").children].indexOf(active)]?.id : null;
   }
 
-  function markTake() {
-    let elapsed = state.activeMs;
-    if (state.recorder?.state === "recording") elapsed += performance.now() - state.activeStartedAt;
-    state.takeMarkers.push({ at_s: Number((elapsed / 1000).toFixed(2)), beat_id: currentBeatId(), hint: "take_boundary" });
-    showNotice(`Take marker ${state.takeMarkers.length} saved as an editing hint.`);
-  }
+  // Mark take was removed on 20-Sep-2026: the editor finds repeated takes from
+  // the words themselves (it dropped a duplicated line unaided in the first real
+  // edit), so a button asking the person walking and talking to also log
+  // boundaries was work for no gain. The server still accepts take_markers, so
+  // an automatic source of them can be added later without a migration.
 
   function stopRecorderLocally() {
     return new Promise((resolve) => {
@@ -628,7 +679,6 @@ function runWords(run) {
     clearInterval(state.timerId);
     $("recordingFlag").hidden = true;
     $("pauseButton").disabled = true;
-    $("markerButton").disabled = true;
     $("finishClipButton").disabled = true;
     const finalize = (async () => {
       const synced = await retryStoredChunks(clip.id);
@@ -644,7 +694,6 @@ function runWords(run) {
         state.activeMs = 0;
         updateSessionLabels();
         $("recordButton").disabled = false;
-        $("finishSessionButton").disabled = false;
         showNotice("Clip saved and checked for camera and microphone tracks.");
       }
       return response.clip;
@@ -660,10 +709,13 @@ function runWords(run) {
   async function finishSession() {
     try {
       if (state.recorder && state.recorder.state !== "inactive") await finishClip();
+      if (!(state.session?.clips || []).some((clip) => clip.status === "ready")) {
+        showNotice("Nothing recorded yet, so there is nothing to send for editing.");
+        return;
+      }
       await ensureSession();
       const ready = (state.session.clips || []).filter((clip) => clip.status === "ready").sort((a, b) => a.position - b.position);
       if (!ready.length) throw new Error("Finish at least one clip before finishing the session.");
-      $("finishSessionButton").disabled = true;
       $("syncState").textContent = "Assembling clips and checking audio";
       const response = await api(`/recording-sessions/${state.session.id}/finish`, {
         method: "POST", body: JSON.stringify({ selected_clip_ids: ready.map((clip) => clip.id) }),
@@ -674,14 +726,14 @@ function runWords(run) {
       await loadQueue();
     } catch (error) {
       showNotice(error.message, 7000);
-      $("finishSessionButton").disabled = false;
     }
   }
 
   function updateSessionLabels() {
     const clips = state.session?.clips || [];
     $("clipCount").textContent = clips.length ? `${clips.length} clip${clips.length === 1 ? "" : "s"} in this take set` : "No clips yet";
-    $("finishSessionButton").disabled = !clips.some((clip) => clip.status === "ready");
+    // Finish is never disabled: it closes the open clip and then the session,
+    // which is what pressing it means when a clip is still recording.
   }
 
   function showQueue() {
@@ -714,7 +766,6 @@ function runWords(run) {
   $("scriptTab").addEventListener("click", () => setMode("script"));
   $("recordButton").addEventListener("click", startRecording);
   $("pauseButton").addEventListener("click", pauseResume);
-  $("markerButton").addEventListener("click", markTake);
   $("finishClipButton").addEventListener("click", () => finishClip());
   $("finishSessionButton").addEventListener("click", finishSession);
   $("reader").addEventListener("scroll", syncScrollRail, { passive: true });
