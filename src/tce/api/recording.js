@@ -442,6 +442,14 @@ function runWords(run) {
       const data = await response.json().catch(() => ({}));
       const job = data.job || {};
       if (job.state === "done") {
+        // Asking for the script IS the decision to record it: the idea joins
+        // the queue above, which is what the line then claims. Without this the
+        // packet existed and the queue stayed empty.
+        setIdeaPhase(candidate.id, "writing", "Putting it in the queue...");
+        await fetch(`${apiV1}/editorial/candidates/${candidate.id}/feedback`, {
+          method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "approve", created_by: "ziv", note: "Asked for the script in the studio." }),
+        }).catch(() => null);
         setIdeaPhase(candidate.id, "ready", "The script is ready. It is in the queue above.");
         state.waiting = (state.waiting || []).filter((item) => item.id !== candidate.id);
         await loadQueue();

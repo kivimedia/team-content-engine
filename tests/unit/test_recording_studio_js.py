@@ -284,3 +284,14 @@ def test_an_idea_says_where_it_came_from_and_the_engine_says_if_it_can_act():
     # And whether pressing anything will actually start work.
     assert "loadEngineState" in js
     assert "will start when it checks in" in js
+
+
+def test_asking_for_a_script_puts_the_idea_in_the_queue():
+    """The row said 'It is in the queue above' while the recording queue only
+    shows approved ideas, so the script existed and the queue stayed empty."""
+    js = JS.read_text(encoding="utf-8")
+    done = js.split('if (job.state === "done")')[1].split("if (job.state === \"failed\")")[0]
+    assert "/feedback" in done
+    assert '"kind": "approve"' in done or '"approve"' in done
+    assert 'created_by: "ziv"' in done or '"created_by": "ziv"' in done
+    assert "loadQueue()" in done
