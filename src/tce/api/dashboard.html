@@ -468,7 +468,11 @@ img{background:var(--card);border-radius:4px}
   </div>
 </div>
 <script>
-const API = '/api/v1';
+// The dashboard is served both at /dashboard (sslip host) and /tce/dashboard
+// (bot.kivimedia.co). Absolute /api/v1 answers 401 at the KM BOT root, so the
+// prefix comes from where this page actually is.
+const TCE_PREFIX = location.pathname.startsWith('/tce/') ? '/tce' : '';
+const API = TCE_PREFIX + '/api/v1';
 
 // === Global error surfacing ===
 // Silent blank-page failures are the #1 source of "TCE is dead, what broke"
@@ -2425,7 +2429,7 @@ async function renderWalkingVideoPanel(entries, monday) {
 
   // 1. Download DOCX button
   const docxDisabled = !weeklyPlanId;
-  html += '<a href="' + (weeklyPlanId ? '/api/v1/video-scripts/walking/weekly/' + weeklyPlanId + '/export-docx' : '#') + '" ' + (docxDisabled ? 'style="pointer-events:none;opacity:0.4"' : '') + ' class="btn btn-dim" download title="' + (weeklyPlanId ? 'Download all 5 scripts as DOCX' : 'Run Plan Video Week first') + '">&#128196; Download Week Scripts</a>';
+  html += '<a href="' + (weeklyPlanId ? API + '/video-scripts/walking/weekly/' + weeklyPlanId + '/export-docx' : '#') + '" ' + (docxDisabled ? 'style="pointer-events:none;opacity:0.4"' : '') + ' class="btn btn-dim" download title="' + (weeklyPlanId ? 'Download all 5 scripts as DOCX' : 'Run Plan Video Week first') + '">&#128196; Download Week Scripts</a>';
 
   // 2. Split & Edit Week (single entry point: opens a modal for picking a video).
   // Always enabled when weeklyPlanId exists - the modal handles upload + run.
@@ -2488,7 +2492,7 @@ function _startWalkingPipelinePoll(weeklyPlanId, entries, monday) {
         window._clipStatuses = window._clipStatuses || {};
         for (const [scriptId, jobId] of Object.entries(rec.cutsense_jobs)) {
           try {
-            const st = await fetch('/api/v1/video-scripts/cutsense-proxy/jobs/' + jobId + '/status').then(r => r.json());
+            const st = await fetch(API + '/video-scripts/cutsense-proxy/jobs/' + jobId + '/status').then(r => r.json());
             window._clipStatuses[jobId] = st;
           } catch(_) {}
         }
@@ -2572,7 +2576,7 @@ async function uploadFileChunked(file, intent, targetId, opts) {
   const onProgress = opts.onProgress || (() => {});
   const start = Date.now();
 
-  const initResp = await fetch('/api/v1/uploads/init', {
+  const initResp = await fetch(API + '/uploads/init', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({filename: file.name, total_size: file.size, intent}),
@@ -2588,12 +2592,12 @@ async function uploadFileChunked(file, intent, targetId, opts) {
   let offset = init.next_offset || 0;
   while (offset < file.size) {
     if (opts.signal && opts.signal.aborted) {
-      try { await fetch('/api/v1/uploads/' + uploadId, {method: 'DELETE'}); } catch(_){}
+      try { await fetch(API + '/uploads/' + uploadId, {method: 'DELETE'}); } catch(_){}
       throw new Error('Upload aborted');
     }
     const end = Math.min(offset + chunkSize, file.size);
     const chunk = file.slice(offset, end);
-    const patchResp = await fetch('/api/v1/uploads/' + uploadId, {
+    const patchResp = await fetch(API + '/uploads/' + uploadId, {
       method: 'PATCH',
       headers: {
         'Upload-Offset': String(offset),
@@ -2617,7 +2621,7 @@ async function uploadFileChunked(file, intent, targetId, opts) {
     });
   }
 
-  const finResp = await fetch('/api/v1/uploads/' + uploadId + '/finalize', {
+  const finResp = await fetch(API + '/uploads/' + uploadId + '/finalize', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({target_id: targetId}),
@@ -3916,7 +3920,7 @@ function _renderScriptDetailInto(container, script, opts) {
     if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
     try {
       const kindPath = (script.kind === 'walking') ? 'walking' : 'talking_head';
-      const res = await fetch(`/api/v1/video-scripts/${kindPath}/${script.id}/email`, { method: 'POST' });
+      const res = await fetch(API + `/video-scripts/${kindPath}/${script.id}/email`, { method: 'POST' });
       if (!res.ok) {
         const err = await res.text().catch(() => '');
         throw new Error(err || `HTTP ${res.status}`);
@@ -4045,7 +4049,7 @@ function _renderScriptDetailInto(container, script, opts) {
             data = await uploadFileChunked(f, intent, script.id, { onProgress });
           } else {
             data = await uploadFileXhr(
-              '/api/v1/video-scripts/walking/' + script.id + '/upload-' + which,
+              API + '/video-scripts/walking/' + script.id + '/upload-' + which,
               f,
               { onProgress }
             );
@@ -5809,7 +5813,7 @@ async function loadVideos(packageId, pid) {
   const status = document.getElementById('vid-status-' + pid);
   if (!grid) return;
   try {
-    const resp = await fetch('/api/v1/videos?package_id=' + packageId);
+    const resp = await fetch(API + '/videos?package_id=' + packageId);
     if (!resp.ok) {
       const errText = await resp.text();
       throw new Error('Server error (' + resp.status + '): ' + errText.substring(0, 100));
@@ -5859,7 +5863,7 @@ async function loadVideos(packageId, pid) {
 
 async function selectVideo(videoId, selected, btn) {
   try {
-    await fetch('/api/v1/videos/' + videoId + '/select', {
+    await fetch(API + '/videos/' + videoId + '/select', {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ selected })
@@ -5883,7 +5887,7 @@ async function generateVideos(packageId, btn) {
     progressEl.innerHTML = '<div style="width:100%;height:6px;background:var(--border);border-radius:3px;margin-bottom:8px"><div id="vid-bar-' + pid + '" style="height:100%;background:var(--accent2);width:10%;border-radius:3px;transition:width 0.5s ease"></div></div>';
   }
   try {
-    const resp = await fetch('/api/v1/videos/generate', {
+    const resp = await fetch(API + '/videos/generate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ post_package_id: packageId })
@@ -5903,7 +5907,7 @@ async function generateVideos(packageId, btn) {
       await new Promise(r => setTimeout(r, 5000));
       attempts++;
       try {
-        const checkResp = await fetch('/api/v1/videos?package_id=' + packageId);
+        const checkResp = await fetch(API + '/videos?package_id=' + packageId);
         const videos = await checkResp.json();
         if (videos.length > 0) {
           clearInterval(interval);
@@ -6108,7 +6112,7 @@ async function uploadAudio(packageId, pid, file) {
   if (fileInput) fileInput.disabled = true;
   try {
     const data = await uploadFileXhr(
-      '/api/v1/narration/scripts/' + script.id + '/upload-audio',
+      API + '/narration/scripts/' + script.id + '/upload-audio',
       file,
       { onProgress: (p) => { statusEl.textContent = 'Uploading ' + file.name + ': ' + p.percent.toFixed(0) + '% (' + p.mbPerSec.toFixed(1) + ' MB/s)'; } }
     );
@@ -6181,7 +6185,7 @@ async function ttsGenerateForScript(packageId, pid, btn) {
   const statusEl = document.getElementById('scr-tts-status-' + pid);
   if (statusEl) { statusEl.textContent = 'Generating full voiceover...'; statusEl.style.color = 'var(--accent2)'; }
   try {
-    const url = '/api/v1/narration/scripts/' + script.id + '/tts-generate' + (voiceId ? '?voice_id=' + voiceId : '');
+    const url = API + '/narration/scripts/' + script.id + '/tts-generate' + (voiceId ? '?voice_id=' + voiceId : '');
     const resp = await fetch(url, { method: 'POST' });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || 'TTS generation failed');
@@ -6238,7 +6242,7 @@ async function renderNarratedVideo(scriptId, pid, btn) {
     btn.textContent = 'Rendering...';
 
     // Connect SSE
-    const es = new EventSource('/api/v1/videos/queue/' + jobId + '/progress');
+    const es = new EventSource(API + '/videos/queue/' + jobId + '/progress');
     es.onmessage = function(ev) {
       try {
         const d = JSON.parse(ev.data);
@@ -6327,7 +6331,7 @@ async function generateImages(packageId, btn) {
   }
 
   try {
-    const resp = await fetch('/api/v1/content/packages/' + packageId + '/generate-images', { method: 'POST' });
+    const resp = await fetch(API + '/content/packages/' + packageId + '/generate-images', { method: 'POST' });
     if (progressInterval) clearInterval(progressInterval);
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -6725,7 +6729,7 @@ async function inspireFromExample(idx) {
     }
   };
   try {
-    const r = await fetch('/api/v1/pipeline/run', {
+    const r = await fetch(API + '/pipeline/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -6738,7 +6742,7 @@ async function inspireFromExample(idx) {
     // Poll status
     const poll = setInterval(async () => {
       try {
-        const sr = await fetch('/api/v1/pipeline/' + runId + '/status');
+        const sr = await fetch(API + '/pipeline/' + runId + '/status');
         const st = await sr.json();
         const steps = st.step_status || {};
         const running = Object.entries(steps).filter(([,v]) => v === 'running').map(([k]) => k);
@@ -9477,7 +9481,7 @@ async function generateProductDemo(btn) {
   progressEl.innerHTML = '<div style="width:100%;height:6px;background:var(--border);border-radius:3px"><div id="pd-bar" style="height:100%;background:var(--accent2);width:10%;border-radius:3px;transition:width 0.5s ease"></div></div>';
 
   try {
-    const resp = await fetch('/api/v1/videos/product-demo', {
+    const resp = await fetch(API + '/videos/product-demo', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
@@ -9501,7 +9505,7 @@ async function generateProductDemo(btn) {
       await new Promise(r => setTimeout(r, 5000));
       attempts++;
       try {
-        const checkResp = await fetch('/api/v1/pipeline/' + data.run_id + '/status');
+        const checkResp = await fetch(API + '/pipeline/' + data.run_id + '/status');
         const status = await checkResp.json();
         if (status.status === 'completed' || status.status === 'failed') {
           clearInterval(_demoPollInterval);
@@ -10439,7 +10443,7 @@ const ED_RUN_WORDS = {
 };
 async function edLoadRun(id) {
   try {
-    const r = await fetch(`/api/v1/content-runs/${id}`, { credentials: 'same-origin' });
+    const r = await fetch(API + `/content-runs/${id}`, { credentials: 'same-origin' });
     if (!r.ok) { ED.runError = r.status === 404 ? 'That run does not exist in this workspace.' : `Could not load the run (${r.status}).`; ED.run = null; return; }
     ED.run = await r.json();
     ED.runError = null;
