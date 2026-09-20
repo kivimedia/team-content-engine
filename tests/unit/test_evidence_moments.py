@@ -301,3 +301,41 @@ async def test_sources_needing_extraction_can_be_limited_by_kind(editorial_sessi
     both = await sources_needing_extraction(editorial_session, ws, None, None)
     assert [s.external_id for s in only] == ["m-1"]
     assert len(both) == 2
+
+
+def test_commit_group_prompt_is_bounded_and_says_what_it_dropped():
+    # 20-Sep-2026: one group rendered to 2.9 MB (~1.24M tokens) and failed the
+    # 1M limit three times. Messages and file lists must survive; patches go.
+    payload = {
+        "repo": "kivimedia/big",
+        "commits": [
+            {
+                "sha": f"sha{i:03d}",
+                "committed_at": "2026-09-10T10:00:00Z",
+                "message": f"commit {i}",
+                "files": [
+                    {
+                        "path": f"f{i}_{j}.py",
+                        "additions": 1,
+                        "deletions": 0,
+                        "patch_excerpt": "x" * 5000,
+                    }
+                    for j in range(4)
+                ],
+            }
+            for i in range(60)
+        ],
+    }
+    unbounded = moments_mod.render_commit_group(payload, max_chars=10**9)
+    assert len(unbounded) > 1_000_000
+    bounded = moments_mod.render_commit_group(payload, max_chars=100_000)
+    # Patches stop at the budget; only the small per-commit headers may run past it.
+    headers = sum(len(row) + 1 for row in bounded.splitlines() if not row.startswith("x"))
+    assert len(bounded) <= 100_000 + headers
+    assert len(bounded) < 110_000
+    assert bounded.count("## Commit ") == 60
+    assert "- f59_3.py (+1 -0)" in bounded
+    assert "patch excerpt(s) not shown: group prompt budget" in bounded
+    assert bounded.count("### Patch ") < unbounded.count("### Patch ")
+    # The default budget keeps this pathological group under the ceiling too.
+    assert len(moments_mod.render_commit_group(payload)) < moments_mod.GROUP_PROMPT_CHARS + 10_000

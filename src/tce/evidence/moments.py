@@ -34,6 +34,9 @@ JOB_TYPE = "evidence_moments"
 AGENT_NAME = "evidence_moment_extractor"
 CHUNK_CHARS = 24000
 CHUNK_OVERLAP_TURNS = 8
+# Whole-prompt ceiling for one commit group (~150k tokens): far under the CLI's
+# 1M-token limit, and the system prompt, schema and tool overhead fit beside it.
+GROUP_PROMPT_CHARS = 600_000
 SPAN_TOLERANCE_S = 1.0
 _CONFIDENCE_ORDER = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
 
@@ -166,24 +169,49 @@ def chunk_meeting(
     return chunks
 
 
-def render_commit_group(payload: dict[str, Any]) -> str:
+def render_commit_group(payload: dict[str, Any], *, max_chars: int = GROUP_PROMPT_CHARS) -> str:
+    """One prompt for a commit group, bounded in total size.
+
+    Per-file patch excerpts are already truncated when collected, but a group
+    of many commits times many files still summed to a 2.9 MB prompt (~1.24M
+    tokens, over the 1M limit) on 20-Sep-2026, failed three attempts and parked
+    the run. Messages and file lists are always kept; patch excerpts are
+    dropped, with a note, once the budget is spent, so the source is extracted
+    from what fits instead of failing.
+    """
     lines = [f"Repository: {payload.get('repo')}"]
+    used = len(lines[0])
+    patches_dropped = 0
     for c in payload.get("commits", []):
-        lines.append(f"\n## Commit {c['sha']} at {c.get('committed_at')}")
+        head = [f"\n## Commit {c['sha']} at {c.get('committed_at')}"]
         if c.get("reverts"):
-            lines.append(f"Reverts: {', '.join(c['reverts'])}")
+            head.append(f"Reverts: {', '.join(c['reverts'])}")
         if c.get("reverted_by"):
-            lines.append(f"Reverted by: {', '.join(c['reverted_by'])}")
-        lines.append("Message:\n" + (c.get("message") or ""))
-        lines.append("Files at this SHA:")
+            head.append(f"Reverted by: {', '.join(c['reverted_by'])}")
+        head.append("Message:\n" + (c.get("message") or ""))
+        head.append("Files at this SHA:")
         for f in c.get("files", []):
-            lines.append(f"- {f['path']} (+{f.get('additions', 0)} -{f.get('deletions', 0)})")
+            head.append(f"- {f['path']} (+{f.get('additions', 0)} -{f.get('deletions', 0)})")
+        lines.extend(head)
+        used += sum(len(item) + 1 for item in head)
         for f in c.get("files", []):
             if f.get("patch_excluded"):
-                lines.append(f"\n### Patch {f['path']} not shown: {f['patch_excluded']}")
+                block = f"\n### Patch {f['path']} not shown: {f['patch_excluded']}"
             elif f.get("patch_excerpt"):
                 trunc = " (excerpt, truncated)" if f.get("patch_truncated") else ""
-                lines.append(f"\n### Patch {f['path']}{trunc}\n{f['patch_excerpt']}")
+                block = f"\n### Patch {f['path']}{trunc}\n{f['patch_excerpt']}"
+            else:
+                continue
+            if used + len(block) + 1 > max_chars:
+                patches_dropped += 1
+                continue
+            lines.append(block)
+            used += len(block) + 1
+    if patches_dropped:
+        lines.append(
+            f"\n### {patches_dropped} patch excerpt(s) not shown: group prompt budget of "
+            f"{max_chars} characters reached; commit messages and file lists above are complete."
+        )
     return "\n".join(lines)
 
 
