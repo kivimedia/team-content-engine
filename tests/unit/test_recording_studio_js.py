@@ -261,6 +261,7 @@ def test_an_ideas_state_survives_its_neighbours_changing():
     assert "state.phases" in js and "state.rows" in js
     # The list is no longer wiped and rebuilt on every change.
     render = js.split("function renderIdeas")[1].split("function paintIdea")[0]
+    render = render.split("function renderAway")[0]  # the archive list holds no live state
     assert "list.replaceChildren()" not in render
     assert "row.remove(); state.rows.delete(id);" in js
     # A decided idea stops offering the same two choices.
@@ -270,3 +271,16 @@ def test_an_ideas_state_survives_its_neighbours_changing():
     assert "restoreIdea" in js
     # A poll that finds its idea archived stops instead of writing over it.
     assert 'if (ideaPhase(candidate.id).phase !== "writing") return;' in js
+
+
+def test_an_idea_says_where_it_came_from_and_the_engine_says_if_it_can_act():
+    js = JS.read_text(encoding="utf-8")
+    # Provenance, from citations the API already returns.
+    assert "function ideaSource" in js
+    assert "piece${code === 1" in js and "From ${names" in js
+    # What he put away survives a reload, with a way back.
+    assert "function renderAway" in js and "awaySummary" in js
+    assert '["withdrawn", "rejected"].includes(c.status)' in js
+    # And whether pressing anything will actually start work.
+    assert "loadEngineState" in js
+    assert "will start when it checks in" in js

@@ -89,7 +89,7 @@ function runWords(run) {
     mode: "points", sequence: 0, startedAt: 0, activeStartedAt: 0, activeMs: 0,
     timerId: null, pendingWrites: [], pendingSync: new Map(), takeMarkers: [],
     wakeLock: null, pendingIdea: null, textSize: 1, runTimer: null, waiting: [], ideasShown: 5,
-    phases: new Map(), rows: new Map(),
+    phases: new Map(), rows: new Map(), away: [],
   };
   const supportedMime = [
     "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
@@ -249,14 +249,18 @@ function runWords(run) {
       const busy = new Set(
         [...(state.phases || new Map())].filter(([, v]) => v.phase !== "ready").map(([id]) => id),
       );
-      const fresh = (data.candidates || [])
-        .filter((c) => !/^SYNTHETIC/i.test(c.title || ""))
+      const all = (data.candidates || []).filter((c) => !/^SYNTHETIC/i.test(c.title || ""));
+      const fresh = all
         .filter((c) => (c.status === "proposed" && !written.has(c.id)) || busy.has(c.id))
+        .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+      state.away = all
+        .filter((c) => ["withdrawn", "rejected"].includes(c.status))
         .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
       // An idea being written, or just put away, stays on screen with its own
       // state until it genuinely moves on.
       state.waiting = fresh;
       renderIdeas();
+      renderAway();
     } catch (_) {
       // The queue above is the important half; a failure here stays quiet.
     }
@@ -308,6 +312,32 @@ function runWords(run) {
     more.textContent = `Show more ideas (${waiting.length - shown.length} left)`;
   }
 
+  function renderAway() {
+    const away = state.away || [];
+    const section = $("awaySection");
+    section.hidden = away.length === 0;
+    $("awaySummary").textContent = `Put away (${away.length})`;
+    const list = $("awayList");
+    list.replaceChildren();
+    for (const candidate of away.slice(0, 20)) {
+      const row = document.createElement("article");
+      row.className = "idea-row is-away";
+      const title = document.createElement("strong");
+      title.textContent = candidate.title;
+      const back = document.createElement("button");
+      back.type = "button";
+      back.className = "idea-row-undo";
+      back.textContent = "Bring it back";
+      back.addEventListener("click", async () => {
+        back.disabled = true;
+        await restoreIdea(candidate);
+        await loadIdeas();
+      });
+      row.append(title, back);
+      list.appendChild(row);
+    }
+  }
+
   function paintIdea(id) {
     const row = state.rows?.get(id);
     if (!row) return;
@@ -329,6 +359,9 @@ function runWords(run) {
     title.textContent = candidate.title;
     const lesson = document.createElement("p");
     lesson.textContent = candidate.lesson || "";
+    const source = document.createElement("span");
+    source.className = "idea-source";
+    source.textContent = ideaSource(candidate);
 
     const actions = document.createElement("div");
     actions.className = "idea-row-actions";
@@ -352,8 +385,27 @@ function runWords(run) {
 
     const line = document.createElement("span");
     line.className = "idea-row-state";
-    row.append(title, lesson, actions, undo, line);
+    row.append(title, lesson, source, actions, undo, line);
     return row;
+  }
+
+  // Where it came from, in the words he would use: a call, or the code.
+  function ideaSource(candidate) {
+    const citations = candidate.citations_private || [];
+    if (!citations.length) return "";
+    const names = [];
+    let code = 0;
+    for (const c of citations) {
+      if (c.source_kind === "github_commit_group") { code += 1; continue; }
+      const title = (c.source_title || "").trim();
+      const when = (c.occurred_at || "").slice(0, 10);
+      const label = title ? (when ? `${title} (${when})` : title) : "";
+      if (label && !names.includes(label)) names.push(label);
+    }
+    const parts = [];
+    if (names.length) parts.push(`From ${names.slice(0, 2).join(" and ")}`);
+    if (code) parts.push(`${code} piece${code === 1 ? "" : "s"} of your code`);
+    return parts.join(" \u00b7 ");
   }
 
   async function writeScript(candidate) {
@@ -435,6 +487,22 @@ function runWords(run) {
     }
   }
 
+  async function loadEngineState() {
+    try {
+      const response = await fetch(`${apiV1}/content-runs/schedule`, { credentials: "same-origin" });
+      if (!response.ok) return;
+      const worker = (await response.json()).worker || {};
+      const line = $("engineState");
+      // Only worth saying when it changes what pressing a button will do.
+      line.hidden = Boolean(worker.online);
+      line.textContent = worker.online
+        ? ""
+        : `${worker.detail || "No worker is running."} Anything you ask for will start when it checks in.`;
+    } catch (_) {
+      // Silence here is right: the buttons still work.
+    }
+  }
+
   async function loadQueue() {
     try {
       const data = await api("/recording-queue");
@@ -442,6 +510,7 @@ function runWords(run) {
       renderQueue();
       $("syncState").textContent = `${state.ideas.length} ready script${state.ideas.length === 1 ? "" : "s"}`;
       loadIdeas();
+      loadEngineState();
     } catch (error) {
       $("syncState").textContent = "Could not load scripts";
       showNotice(error.message);
