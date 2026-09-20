@@ -10273,6 +10273,7 @@ const ED = {
   activity: null, activityError: null, activityAt: null, worker: null, workerError: null,
   jobs: [], coverage: null, coverageError: null, pollTimer: null, lastUploadSig: '',
   inFlight: [], inFlightSig: '', selectStatus: null, selectStatusError: null, selectStatusAt: 0,
+  run: null, runError: null, runTimer: null,
 };
 
 function edEsc(v) {
@@ -10414,7 +10415,62 @@ function edShiftWeek(days) {
   edSetWeek(edIsoDate(d));
 }
 
+// ?content_run=<uuid> deep link: the focused_path every run carries. One link,
+// one destination - it opens the run itself, live, above that run's own week.
+function edRunFromUrl() {
+  const raw = new URLSearchParams(location.search).get('content_run');
+  if (!raw) return null;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw) ? raw : null;
+}
+const ED_RUN_WORDS = {
+  queued: 'Queued. It starts on the next tick.',
+  collecting: 'Collecting evidence from Fathom and GitHub.',
+  extracting: 'Reading the evidence and pulling out moments.',
+  selecting: 'Choosing this week’s ideas.',
+  ranking: 'Ranking the finalists.',
+  drafting: 'Writing the recording packets.',
+  exporting: 'Writing the Google Docs.',
+  ready: 'Ready. The scripts are in the recording queue.',
+  waiting_worker: 'Waiting for the desktop worker to check in.',
+  waiting_capacity: 'Waiting for subscription capacity.',
+  needs_source_choice: 'Waiting for you to choose a source.',
+  failed: 'Stopped with an error.',
+  cancelled: 'Cancelled.',
+};
+async function edLoadRun(id) {
+  try {
+    const r = await fetch(`/api/v1/content-runs/${id}`, { credentials: 'same-origin' });
+    if (!r.ok) { ED.runError = r.status === 404 ? 'That run does not exist in this workspace.' : `Could not load the run (${r.status}).`; ED.run = null; return; }
+    ED.run = await r.json();
+    ED.runError = null;
+  } catch (e) { ED.runError = 'Could not reach the server for that run.'; ED.run = null; }
+  edRenderRunBanner();
+  const done = ED.run && ['ready', 'failed', 'cancelled'].includes(ED.run.state);
+  clearTimeout(ED.runTimer);
+  if (!done) ED.runTimer = setTimeout(() => edLoadRun(id), 5000);
+}
+function edRenderRunBanner() {
+  const host = document.getElementById('ed-run-banner');
+  if (!host) return;
+  if (ED.runError) { host.innerHTML = '<div class="ed-issue" role="status">' + edEsc(ED.runError) + '</div>'; return; }
+  const run = ED.run;
+  if (!run) { host.innerHTML = '<div class="ed-issue" role="status">Loading that run...</div>'; return; }
+  const stages = run.stages || [];
+  const done = stages.filter((s) => s.status === 'succeeded').length;
+  const current = stages.find((s) => s.status !== 'succeeded');
+  const words = ED_RUN_WORDS[run.state] || run.state;
+  const detail = run.error_detail ? '<div class="ed-sub" style="margin-top:6px">' + edEsc(run.error_detail) + '</div>' : '';
+  const steps = stages.map((s) => {
+    const mark = s.status === 'succeeded' ? '✓' : (s === current ? '→' : '·');
+    return '<span style="margin-right:10px">' + mark + ' ' + edEsc(s.stage) + '</span>';
+  }).join('');
+  host.innerHTML = `<div class="ed-issue" role="status" style="border-left:4px solid var(--blue)">
+    <strong>${edEsc(run.week_label || 'Content run')}</strong> — ${edEsc(words)}
+    <div class="ed-sub" style="margin-top:6px">${done} of ${stages.length} steps done. ${steps}</div>${detail}
+  </div>`;
+}
 function renderEditorial() {
+  const runId = edRunFromUrl();
   if (!ED.week) {
     const linked = edWeekFromUrl();
     if (linked) localStorage.setItem('tce_ed_week', linked);
@@ -10432,6 +10488,7 @@ function renderEditorial() {
         <h2 style="font-size:18px;color:var(--text)">Evidence to recording</h2>
         <div class="ed-sub">Week of ${edEsc(label)}. Ideas come from your meetings and code, never from a guess.</div>
         ${ED.weekNotice ? '<div class="ed-issue" id="ed-week-notice" role="status">' + edEsc(ED.weekNotice) + '</div>' : ''}
+        ${runId ? '<div id="ed-run-banner"></div>' : ''}
       </div>
       <div class="ed-week">
         <button class="btn btn-dim" onclick="edShiftWeek(-7)" aria-label="Previous week">Prev week</button>
@@ -10457,6 +10514,7 @@ function renderEditorial() {
   edLoadCandidates();
   edLoadCoverage();
   edLoadSelectStatus();
+  if (runId) { edRenderRunBanner(); edLoadRun(runId); }
   edPoll();
   edStartPolling();
 }

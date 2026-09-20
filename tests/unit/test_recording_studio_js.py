@@ -20,7 +20,8 @@ JS = API / "recording.js"
 NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(not NODE, reason="node not installed")
 
-HELPERS = ("payoffPhrase", "hookChooserModel", "packetToIdea")
+HELPERS = ("payoffPhrase", "hookChooserModel", "packetToIdea", "runWords")
+CONSTS = ("RUN_WORDS",)
 
 
 def _function(source: str, name: str) -> str:
@@ -29,9 +30,17 @@ def _function(source: str, name: str) -> str:
     return m.group(0)
 
 
+def _const_block(source: str, name: str) -> str:
+    """The top-level `const NAME = { ... };` block, lifted verbatim."""
+    start = source.index(f"const {name} = {{")
+    end = source.index("\n};", start) + len("\n};")
+    return source[start:end]
+
+
 def run_js(expr: str, **bindings):
     source = JS.read_text(encoding="utf-8")
-    script = "\n".join(_function(source, n) for n in HELPERS)
+    script = "\n".join(_const_block(source, n) for n in CONSTS)
+    script += "\n" + "\n".join(_function(source, n) for n in HELPERS)
     for name, value in bindings.items():
         script += f"\nconst {name} = {json.dumps(value)};"
     script += f"\nprocess.stdout.write(JSON.stringify({expr}));"
@@ -189,3 +198,30 @@ def test_choose_hook_response_rebinds_the_idea_to_the_new_version():
     assert merged["candidate_id"] == "c1"
     assert merged["interviewer_prompt"] == "Ask about outcomes."
     assert merged["active_session_id"] is None and merged["active_session_status"] is None
+
+
+@pytest.mark.parametrize(
+    ("run", "expected"),
+    [
+        ({"state": "queued", "stages": []}, "Queued. It starts within five minutes."),
+        ({"state": "collecting"}, "Collecting evidence from Fathom and GitHub."),
+        ({"state": "exporting"}, "Writing the Google Docs."),
+        ({"state": "ready"}, "Ready. Reload this page to see the new scripts."),
+    ],
+)
+def test_run_words_say_what_is_happening_now(run, expected):
+    assert run_js("runWords(run)", run=run) == expected
+
+
+def test_waiting_states_show_the_real_reason_not_the_word_queued():
+    """Ziv clicked Produce now and read \"Run queued. You can leave this page\"
+    while the run was actually parked on a stopped worker (20-Sep-2026)."""
+    detail = "No subscription worker has reported in the last 3 minutes."
+    for state in ("waiting_worker", "waiting_capacity"):
+        assert run_js("runWords(run)", run={"state": state, "error_detail": detail}) == detail
+    assert (
+        run_js("runWords(run)", run={"state": "waiting_worker"})
+        == "Waiting for the desktop subscription worker."
+    )
+    failed = {"state": "failed", "error_detail": "boom"}
+    assert run_js("runWords(run)", run=failed) == "Stopped: boom"

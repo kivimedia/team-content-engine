@@ -54,6 +54,30 @@ function packetToIdea(idea, packet) {
   };
 }
 
+// What a run is doing RIGHT NOW, in words, refreshed every 5 s. "Run queued"
+// and then silence looked identical to a stuck page while the run was in fact
+// waiting for the desktop worker.
+const RUN_WORDS = {
+  queued: "Queued. It starts within five minutes.",
+  collecting: "Collecting evidence from Fathom and GitHub.",
+  extracting: "Reading the evidence and pulling out moments.",
+  selecting: "Choosing this week's ideas.",
+  ranking: "Ranking the finalists.",
+  drafting: "Writing the recording packets.",
+  exporting: "Writing the Google Docs.",
+  ready: "Ready. Reload this page to see the new scripts.",
+  cancelled: "Cancelled.",
+};
+
+function runWords(run) {
+  if (run.state === "waiting_worker" || run.state === "waiting_capacity") {
+    return run.error_detail || "Waiting for the desktop subscription worker.";
+  }
+  if (run.state === "failed") return `Stopped: ${run.error_detail || "see the dashboard"}`;
+  if (run.state === "needs_source_choice") return "Waiting for you to choose a source.";
+  return RUN_WORDS[run.state] || run.state;
+}
+
 (() => {
   "use strict";
 
@@ -64,7 +88,7 @@ function packetToIdea(idea, packet) {
     ideas: [], idea: null, session: null, stream: null, recorder: null, clip: null,
     mode: "points", sequence: 0, startedAt: 0, activeStartedAt: 0, activeMs: 0,
     timerId: null, pendingWrites: [], pendingSync: new Map(), takeMarkers: [],
-    wakeLock: null, pendingIdea: null, textSize: 1,
+    wakeLock: null, pendingIdea: null, textSize: 1, runTimer: null,
   };
   const supportedMime = [
     "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
@@ -214,6 +238,33 @@ function packetToIdea(idea, packet) {
     }
   }
 
+  async function watchRun(runId) {
+    if (!runId) return;
+    clearTimeout(state.runTimer);
+    const host = $("produceNowState");
+    try {
+      const response = await fetch(`${apiV1}/content-runs/${runId}`, { credentials: "same-origin" });
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      const run = await response.json();
+      const stages = run.stages || [];
+      const done = stages.filter((s) => s.status === "succeeded").length;
+      host.textContent = `${runWords(run)} (step ${Math.min(done + 1, stages.length)} of ${stages.length})`;
+      const link = $("produceNowLink");
+      if (link) {
+        link.href = run.focused_path || `/dashboard?content_run=${runId}`;
+        link.hidden = false;
+      }
+      if (!["ready", "failed", "cancelled"].includes(run.state)) {
+        state.runTimer = setTimeout(() => watchRun(runId), 5000);
+      } else if (run.state === "ready") {
+        loadQueue();
+      }
+    } catch (error) {
+      host.textContent = `Run created. Could not read its progress just now (${error.message}); it keeps going without this page.`;
+      state.runTimer = setTimeout(() => watchRun(runId), 15000);
+    }
+  }
+
   async function produceNow() {
     const button = $("produceNowButton");
     button.disabled = true;
@@ -231,8 +282,8 @@ function packetToIdea(idea, packet) {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
-      $("produceNowState").textContent = `Run ${data.state}. You can leave this page and return.`;
       showNotice("Content run created. Existing evidence and completed jobs stay intact.", 7000);
+      watchRun(data.id);
     } catch (error) {
       $("produceNowState").textContent = error.message;
       showNotice(error.message, 7000);
