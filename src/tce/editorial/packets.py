@@ -1175,6 +1175,15 @@ async def voice_pass(
         )
 
 
+def _merged_id_for(merged: list[dict[str, Any]], wanted: dict[str, Any]) -> str | None:
+    """The id the merge gave this opening, found by its text."""
+    text = str(wanted.get("text") or "").strip().casefold()
+    for option in merged:
+        if str(option.get("text") or "").strip().casefold() == text:
+            return str(option.get("id"))
+    return None
+
+
 async def _apply_voice_pass(
     session: AsyncSession,
     ws: uuid.UUID,
@@ -1272,7 +1281,10 @@ async def _apply_voice_pass(
         interviewer_prompt=packet.interviewer_prompt,
         hook_options=merged,
         # The first replacement becomes the one in use: it is the point of the pass.
-        selected_hook_id=str(fresh[0].get("id") or packet.selected_hook_id),
+        # Matched by TEXT, because merge_hook_options deliberately re-ids incoming
+        # openings - selecting the model's own id left the packet pointing at an id
+        # that did not exist, and the recorder silently fell back to the old opening.
+        selected_hook_id=_merged_id_for(merged, fresh[0]) or packet.selected_hook_id,
         beats=list(packet.beats or []),
         citations_private=list(packet.citations_private or []),
         public_safety=dict(packet.public_safety or {}),

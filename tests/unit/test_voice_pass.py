@@ -130,7 +130,13 @@ async def test_a_curiosity_gap_opening_is_rewritten(editorial_sessionmaker, crit
     # The original stays, so he can see what changed.
     assert "Here is why your marketing is not the problem." in texts
     # And the rewritten one is the one in use: that is the point of the pass.
-    assert out.packet["selected_hook_id"] == "v1"
+    # The id is the merge's, not the model's - merge_hook_options re-ids incoming
+    # openings, so selecting the model's own id left the packet pointing at nothing
+    # and the recorder fell back to the opening the pass had just rejected.
+    chosen = next(
+        o for o in out.packet["hook_options"] if o["id"] == out.packet["selected_hook_id"]
+    )
+    assert chosen["text"] == "Most coaches blame the ads before they check the stages."
     assert "scored 3 out of 10" in out.detail
 
 
@@ -150,9 +156,7 @@ async def test_an_opening_that_already_sounds_like_him_is_left_alone(
     assert "sound like him" in out.detail
 
 
-async def test_a_critic_that_returned_nothing_usable_is_not_a_pass(
-    editorial_sessionmaker, critic
-):
+async def test_a_critic_that_returned_nothing_usable_is_not_a_pass(editorial_sessionmaker, critic):
     # A skipped check must never earn a pass.
     sm = editorial_sessionmaker
     cand = a_candidate()
