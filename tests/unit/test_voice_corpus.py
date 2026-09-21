@@ -151,11 +151,37 @@ def test_a_run_that_switches_language_is_marked_mixed():
 
 
 def test_the_opening_is_the_first_sentence():
-    run = runs_from([turn(0, TEACHING)])[0]
+    text = "Most coaches blame the marketing. " + TEACHING
+    run = runs_from([turn(0, text)])[0]
 
-    assert run.opening.startswith("So she will make it possible")
-    assert run.opening.endswith(".")
+    assert run.opening == "Most coaches blame the marketing."
     assert "cup of water" not in run.opening
+
+
+def test_a_sentence_that_continues_a_conversation_is_not_an_opening():
+    # Half his runs begin mid-thought, and those are useless as a hook bank.
+    for start in [
+        "And the club is not your prosperous path.",
+        "Anyway, you need to accept the invite first.",
+        "Yeah, that is what I meant about the pricing.",
+        "But the real problem is somewhere else entirely.",
+        "It's the same thing we talked about last week.",
+    ]:
+        run = runs_from([turn(0, start + " " + TEACHING)])[0]
+        assert run.opening == "", start
+        assert run.first_sentence  # the text is still there, it is just not an opening
+
+
+def test_the_ways_he_really_starts_are_kept():
+    for start in [
+        "Most coaches blame the marketing.",
+        "Here is the thing about pricing.",
+        "The problem is not the ads.",
+        "Nobody tells you this part.",
+        "So here is what I would do.",
+    ]:
+        run = runs_from([turn(0, start + " " + TEACHING)])[0]
+        assert run.opening == start, start
 
 
 def test_prepare_tags_everything_and_keywords_only_for_the_good_ones():

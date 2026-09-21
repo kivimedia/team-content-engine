@@ -68,6 +68,14 @@ _NARRATION = re.compile(
 _OPERATING_PER_100_WORDS = 3.5
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+# A sentence that picks up where the conversation left off is not an opening. These
+# are the words that start a continuation, and half his runs begin with one.
+_CONTINUATION = re.compile(
+    r"^\s*(and|but|or|so\b(?!\s+(?:here|the (?:thing|problem|point|answer)))|anyway|"
+    r"yeah|yes|no|okay|ok|right|exactly|because|also|then|again|"
+    r"it'?s|that'?s|this is|they|he|she|we|you know)\b",
+    re.IGNORECASE,
+)
 # Unicode-aware: an ASCII-only pattern counts every Hebrew run as zero words, which
 # labels it "thin" (a short reply) when the true reason is the language.
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
@@ -95,11 +103,20 @@ class Run:
         return len(_WORD.findall(self.text))
 
     @property
-    def opening(self) -> str:
-        """The first sentence: the bank his openings are drawn from."""
+    def first_sentence(self) -> str:
         parts = _SENTENCE_END.split(self.text.strip(), maxsplit=1)
-        first = (parts[0] if parts else "").strip()
-        return first[:400]
+        return (parts[0] if parts else "").strip()[:400]
+
+    @property
+    def opening(self) -> str:
+        """His first sentence, but only when it actually starts something.
+
+        Most runs begin in the middle of a conversation ("And the club is...",
+        "Anyway, you need to accept the invite"). Those are useless as a bank of
+        openings, which is what he wants the hooks drawn from.
+        """
+        first = self.first_sentence
+        return "" if _CONTINUATION.match(first) else first
 
 
 def build_runs(

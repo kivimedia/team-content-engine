@@ -36,6 +36,7 @@ TABLE_NAMES = (
     "recording_sessions",
     "recording_clips",
     "recording_chunks",
+    "voice_samples",
 )
 
 

@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -54,9 +54,11 @@ class VoiceSample(Base):
     # Content words, stored so retrieval does not re-tokenise the whole corpus.
     keywords: Mapped[list[str]] = mapped_column(JSONType, default=list)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # server_default: utcnow() is deprecated, and the database clock is the one
+    # that matters when a row can be written by a script or by the app.
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, server_default=func.now(), onupdate=func.now()
     )
 
     def to_json(self) -> dict[str, Any]:

@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
+from tce.editorial import voice_retrieval
 from tce.editorial.common import (
     SessionSource,
     coerce_uuid,
@@ -354,7 +355,7 @@ def safety_fields(packet: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_packet_prompt(strategy_text: str, cand: TopicCandidate) -> str:
+def build_packet_prompt(strategy_text: str, cand: TopicCandidate, voice_block: str = "") -> str:
     # The moment_id is the only citation the validator accepts; without it in the
     # prompt the model invented labels ("ev1") and every packet failed (20-Sep-2026).
     evidence = [
@@ -372,9 +373,14 @@ def build_packet_prompt(strategy_text: str, cand: TopicCandidate) -> str:
     for item, fallback in zip(evidence, allowed_ids, strict=False):
         if not item["moment_id"]:
             item["moment_id"] = fallback
+    parts = ["STRATEGY:\n" + (strategy_text or "(none)")]
+    # His own words on this subject, when the corpus has any. Placed before the idea
+    # so the register is set before the task is read.
+    if voice_block:
+        parts.append(voice_block)
     return "\n\n".join(
         [
-            "STRATEGY:\n" + (strategy_text or "(none)"),
+            *parts,
             "SELECTED IDEA:\n"
             + json.dumps(
                 {
@@ -452,9 +458,21 @@ async def build_packet(
             # include_voice: his 36 patterns, the banned vocabulary and the meta-rule.
             # Without it the writer had never been shown how he sounds.
             strategy = await load_effective_strategy(session, ws, include_voice=True)
+            voice_block, voice_used = await voice_retrieval.block_for_idea(
+                session, ws, title=cand.title, lesson=cand.lesson
+            )
             nonce = str(uuid.uuid4())
             # The header line lets a restarted process rebuild this job's key.
-            prompt = f"PACKET REQUEST: {nonce}\n\n" + build_packet_prompt(strategy.text, cand)
+            prompt = f"PACKET REQUEST: {nonce}\n\n" + build_packet_prompt(
+                strategy.text, cand, voice_block
+            )
+            if voice_used["samples"]:
+                activity(
+                    f"Writing in his voice: {len(voice_used['samples'])} stretches of his "
+                    f"own speech ({voice_used['sample_words']} words) on this subject"
+                )
+            elif voice_used.get("error"):
+                activity(f"Writing without the voice corpus: {voice_used['error']}")
             request = LLMRequest(
                 job_type=JOB_TYPE,
                 agent_name=AGENT_NAME,
