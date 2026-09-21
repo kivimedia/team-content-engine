@@ -1,9 +1,14 @@
 """Collect the months of calls that predate the engine.
 
 The engine only ever collected the weeks it ran for, so the corpus of how Ziv talks
-was two weeks deep. Fathom still holds the rest, and the collector already takes any
-window: this walks backwards a month at a time so one long request cannot lose
-everything, and so progress is visible while it runs.
+was two weeks deep. Fathom still holds the rest.
+
+ONE window by default, not one per month. The listing filter is `created_after` with
+no upper bound, so every window paginates from its own start all the way to today and
+then discards whatever falls outside it: the March window walked 68 pages to keep 114
+meetings and threw 558 away. Splitting six months into six windows multiplies that
+pagination sixfold for no coverage at all, and it is what made Fathom answer 429 and
+lose May, June and July on the first run. `--monthly` keeps the old behaviour.
 
 Existing calls are recognised by their external id and skipped, which makes this safe
 to re-run and safe to interrupt.
@@ -39,16 +44,26 @@ async def stored(workspace_id: uuid.UUID) -> tuple[int, datetime | None]:
     return int(row[0] or 0), row[1]
 
 
-async def main(workspace_id: uuid.UUID, months: int, apply: bool, pause: float = 0.0) -> None:
+async def main(
+    workspace_id: uuid.UUID,
+    months: int,
+    apply: bool,
+    pause: float = 0.0,
+    monthly: bool = False,
+) -> None:
     count, earliest = await stored(workspace_id)
     print(f"{count} calls stored, earliest {earliest or '(none)'}")
 
     now = datetime.now(UTC)
-    # A month at a time, newest first: an interrupted backfill still leaves the most
-    # useful half done, and a single failing window does not cost the rest.
-    windows = [
-        (now - timedelta(days=30 * (i + 1)), now - timedelta(days=30 * i)) for i in range(months)
-    ]
+    if monthly:
+        # One window per month, newest first. Costs six paginations for six months.
+        windows = [
+            (now - timedelta(days=30 * (i + 1)), now - timedelta(days=30 * i))
+            for i in range(months)
+        ]
+    else:
+        # One window over the whole span: one pagination, everything in range kept.
+        windows = [(now - timedelta(days=30 * months), now)]
     print(f"{len(windows)} windows back to {windows[-1][0].date()}")
     if not apply:
         print("\nnothing collected. Re-run with --apply.")
@@ -87,5 +102,12 @@ if __name__ == "__main__":
     parser.add_argument("--months", type=int, default=6)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--pause", type=float, default=90.0, help="seconds between windows")
+    parser.add_argument(
+        "--monthly", action="store_true", help="one window per month (six paginations)"
+    )
     args = parser.parse_args()
-    asyncio.run(main(uuid.UUID(args.workspace_id), max(1, args.months), args.apply, args.pause))
+    asyncio.run(
+        main(
+            uuid.UUID(args.workspace_id), max(1, args.months), args.apply, args.pause, args.monthly
+        )
+    )
