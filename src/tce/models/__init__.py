@@ -53,14 +53,6 @@ from tce.models.recording_session import RecordingChunk, RecordingClip, Recordin
 from tce.models.render_queue import RenderQueueJob
 from tce.models.repo_brief import RepoBrief
 from tce.models.research_brief import ResearchBrief
-from tce.models.news import (
-    NewsAnchor,
-    NewsAppraisal,
-    NewsFeed,
-    NewsItem,
-    NewsMatch,
-    NewsWatchlist,
-)
 from tce.models.source_document import SourceDocument
 from tce.models.story_brief import StoryBrief
 from tce.models.system_version import SystemVersion
@@ -118,12 +110,6 @@ __all__ = [
     "RecordingSession",
     "RecordingUpload",
     "NarrationScript",
-    "NewsAnchor",
-    "NewsAppraisal",
-    "NewsFeed",
-    "NewsItem",
-    "NewsMatch",
-    "NewsWatchlist",
     "RenderQueueJob",
     "RepoBrief",
     "ResearchBrief",
