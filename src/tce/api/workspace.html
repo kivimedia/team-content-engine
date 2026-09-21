@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>Editorial workspace</title>
+<link rel="stylesheet" href="workspace.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="identity">
+    <strong id="pageTitle">Today</strong>
+    <span id="pageStatus">Loading</span>
+  </div>
+  <div class="topbar-actions">
+    <button class="icon-button text-size" id="readerSize" type="button"
+            aria-label="Change the reading size">Aa</button>
+  </div>
+</header>
+
+<main id="view" aria-live="polite">
+  <div class="page">
+    <p class="working">Opening your workspace</p>
+  </div>
+</main>
+
+<!-- Contextual conversation. Shown only where there is something to discuss;
+     the label names the object, so it is never a general chat window. -->
+<button class="talk-fab" id="talkFab" type="button" hidden>Talk about this</button>
+
+<nav class="bottom-nav" id="bottomNav" aria-label="Sections">
+  <a href="/today"   data-route="today"   aria-current="page"><span class="glyph" aria-hidden="true">&#9673;</span>Today</a>
+  <a href="/topics"  data-route="topics"><span class="glyph" aria-hidden="true">&#9776;</span>Topics</a>
+  <a href="/week"    data-route="week"><span class="glyph" aria-hidden="true">&#9635;</span>This week</a>
+  <a href="/record"  data-route="record"><span class="glyph" aria-hidden="true">&#9679;</span>Record</a>
+  <a href="/library" data-route="library"><span class="glyph" aria-hidden="true">&#9638;</span>Library</a>
+</nav>
+
+<!-- The conversation sheet. Full height, one obvious close, and it never
+     dismisses on an outside tap: there is a half-typed instruction in it. -->
+<section class="sheet" id="talkSheet" role="dialog" aria-modal="true"
+         aria-labelledby="talkTitle" hidden>
+  <div class="sheet-head">
+    <div>
+      <strong id="talkTitle">Talk about this</strong>
+      <span id="talkContext"></span>
+    </div>
+    <button class="icon-button" id="talkClose" type="button" aria-label="Close the conversation">&#10005;</button>
+  </div>
+  <div class="sheet-body" id="talkBody"></div>
+  <div class="sheet-foot">
+    <div class="mode-row" role="group" aria-label="What this conversation may do">
+      <button class="chip" type="button" data-mode="discuss" aria-pressed="true">Discuss</button>
+      <button class="chip" type="button" data-mode="propose" aria-pressed="false">Propose changes</button>
+    </div>
+    <textarea id="talkInput" rows="3"
+              placeholder="Say what you think. Nothing changes unless you accept it."></textarea>
+    <button class="btn primary wide" id="talkSend" type="button" style="margin-top:10px">Send</button>
+  </div>
+</section>
+
+<script src="workspace.js"></script>
+</body>
+</html>

@@ -20,6 +20,10 @@ DEFAULT_FLAGS: dict[str, bool] = {
     "web_search_enabled": True,
     "image_generation_enabled": True,
     "scheduler_enabled": False,
+    # The editorial workspace (Today, Topics, This week, Library). Off until the
+    # surfaces have been walked through on a real week; /record is the fallback
+    # and is never gated by this.
+    "editorial_workspace_v2": False,
 }
 
 # In-memory cache with TTL

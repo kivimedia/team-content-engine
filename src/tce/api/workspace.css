@@ -1,0 +1,358 @@
+/* The editorial workspace: Today, Topics, This week, the topic room, the script
+   workshop and the Library.
+
+   Same language as recording.css on purpose - identical tokens, Georgia
+   headings, 2px ink rules, hard offset shadows. A man who walks out of the
+   studio into the topic inbox must not feel he changed product.
+
+   Three rules this file keeps everywhere:
+   - every control is at least 46px tall and has a visible label
+   - nothing sticky ever covers content (the page reserves its own footer room)
+   - no colour below full strength on body text; helpers use a solid darker ink
+     rather than opacity, which is how low-contrast text creeps in
+*/
+
+:root {
+  color-scheme: light;
+  --ink: #10213b;
+  --paper: #f7f3e8;
+  --signal: #c72c2c;
+  --lake: #145e96;
+  --moss: #366346;
+  --line: #b8b09d;
+  --white: #fffefa;
+  --amber: #b07d2a;
+  --amber-bg: #fff6e6;
+  /* Body and helper text. Solid values, never opacity on ink. */
+  --body: #34435a;
+  --helper: #4a5a70;
+  --shadow: 0 10px 28px rgba(16, 33, 59, .16);
+  --nav-h: 68px;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--paper);
+  /* The bottom nav is fixed, so the page owns the space under the last card.
+     Padding here rather than a spacer div keeps scroll restoration honest. */
+  padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 18px);
+}
+
+button, input, textarea, select { font: inherit; color: var(--ink); }
+button { cursor: pointer; }
+button:focus-visible, a:focus-visible, input:focus-visible,
+textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+  outline: 3px solid #f0a11a;
+  outline-offset: 3px;
+}
+
+/* ---------------------------------------------------------------- topbar */
+
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px;
+  min-height: 64px; padding: env(safe-area-inset-top) 16px 0;
+  background: var(--ink); color: var(--white); box-shadow: var(--shadow);
+}
+.topbar .identity { min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
+.topbar .identity strong { font-size: 1.06rem; }
+.topbar .identity span {
+  color: #d9e4ef; font-size: .82rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.topbar-actions { display: flex; gap: 8px; }
+.icon-button {
+  min-width: 46px; min-height: 46px; border: 0; border-radius: 50%;
+  background: #29405e; color: #fff; font-size: 1.2rem; font-weight: 800;
+}
+.icon-button:active { background: var(--lake); }
+.icon-button[aria-pressed="true"] { background: var(--lake); }
+
+/* ------------------------------------------------------------------ page */
+
+main { width: min(100%, 860px); margin: 0 auto; }
+.page { padding: 24px 16px 20px; }
+.page-head { margin: 0 0 18px; }
+.kicker { color: var(--moss); font-weight: 800; margin: 0 0 6px; font-size: .92rem; }
+.page h1 {
+  font-family: Georgia, serif; font-size: clamp(1.9rem, 7.5vw, 2.9rem);
+  line-height: 1.02; margin: 0 0 10px; letter-spacing: -.03em;
+}
+.page h2 {
+  font-family: Georgia, serif; font-size: 1.32rem; margin: 30px 0 4px;
+}
+.page .lede { margin: 0; color: var(--body); font-size: 1.04rem; line-height: 1.5; }
+.section-hint { margin: 4px 0 14px; color: var(--helper); line-height: 1.45; font-size: .93rem; }
+
+/* --------------------------------------------------------- the one action */
+
+/* Today's single next useful action. Deliberately the largest thing on the
+   screen: the page exists to answer one question in three seconds. */
+.next-action {
+  display: block; width: 100%; text-align: left;
+  border: 2px solid var(--ink); border-radius: 18px; background: #fff0b8;
+  padding: 18px; box-shadow: 5px 5px 0 var(--ink); margin: 0 0 8px;
+}
+.next-action:active { transform: translate(2px, 2px); box-shadow: 3px 3px 0 var(--ink); }
+.next-action strong {
+  display: block; font-family: Georgia, serif; font-size: 1.5rem; line-height: 1.15;
+}
+.next-action span { display: block; margin-top: 8px; color: #2a3850; line-height: 1.45; }
+
+/* ----------------------------------------------------------------- counts */
+
+.counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 18px 0 0; }
+.count {
+  border: 2px solid var(--line); border-radius: 14px; background: var(--white);
+  padding: 12px 14px;
+}
+.count b { display: block; font-family: Georgia, serif; font-size: 1.7rem; line-height: 1; }
+.count span { display: block; margin-top: 4px; color: var(--helper); font-size: .86rem; line-height: 1.3; }
+.count.is-zero { opacity: 1; background: #f3efe3; }
+
+/* ------------------------------------------------------------------ cards */
+
+.card-list { display: grid; gap: 14px; margin-top: 14px; }
+
+.card {
+  border: 2px solid var(--ink); border-radius: 16px; background: var(--white);
+  padding: 16px; box-shadow: 4px 4px 0 var(--ink);
+}
+.card > h3 {
+  margin: 0; font-family: Georgia, serif; font-size: 1.18rem; line-height: 1.22;
+}
+.card .big-idea { margin: 8px 0 0; color: var(--body); line-height: 1.45; }
+.card .why { margin: 10px 0 0; color: var(--moss); font-weight: 700; line-height: 1.4; font-size: .92rem; }
+.card .source { display: block; margin-top: 8px; color: var(--helper); font-size: .84rem; }
+.card.is-dim { opacity: .62; box-shadow: none; border-color: var(--line); }
+
+/* Rank badge on a week item. A position, never a score. */
+.rank {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 34px; height: 34px; margin-right: 10px; padding: 0 8px;
+  border: 2px solid var(--ink); border-radius: 10px; background: var(--paper);
+  font-family: Georgia, serif; font-weight: 700; font-size: 1.05rem;
+}
+.card-title-row { display: flex; align-items: flex-start; }
+.card-title-row h3 { flex: 1; min-width: 0; }
+
+/* ------------------------------------------------------------------ chips */
+
+.chips {
+  display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 10px;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+.chips::-webkit-scrollbar { display: none; }
+.chip {
+  flex: 0 0 auto; min-height: 44px; padding: 0 16px;
+  border: 2px solid var(--ink); border-radius: 999px; background: var(--white);
+  font-weight: 800; font-size: .92rem; white-space: nowrap;
+}
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--white); }
+
+.tag {
+  display: inline-block; margin: 10px 8px 0 0; padding: 4px 10px;
+  border: 2px solid var(--line); border-radius: 999px;
+  font-size: .8rem; font-weight: 800; color: var(--body); background: var(--paper);
+}
+.tag.is-timely { border-color: var(--amber); background: var(--amber-bg); color: #5a4110; }
+.tag.is-lane { border-color: var(--lake); color: var(--lake); }
+.tag.is-ready { border-color: var(--moss); color: var(--moss); }
+
+/* ---------------------------------------------------------------- actions */
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.btn {
+  min-height: 46px; padding: 0 16px;
+  border: 2px solid var(--ink); border-radius: 10px; background: var(--white);
+  font-weight: 800;
+}
+.btn:active { transform: translateY(1px); }
+.btn[disabled] { opacity: .55; cursor: default; transform: none; }
+.btn.primary { background: var(--moss); color: #fff; }
+.btn.quiet { border-color: var(--line); color: var(--body); }
+.btn.danger { border-color: var(--signal); color: var(--signal); }
+.btn.wide { width: 100%; justify-content: center; }
+.btn-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 14px; }
+
+/* Ordering controls. Every move has a button; nothing here is drag-only. */
+.order-controls { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+.order-controls .btn { min-width: 46px; padding: 0 12px; font-size: .9rem; }
+
+/* ------------------------------------------------------------- brief blocks */
+
+.block {
+  border: 2px solid var(--line); border-radius: 14px; background: var(--white);
+  padding: 14px; margin-top: 12px;
+}
+.block > h4 {
+  margin: 0 0 6px; font-size: .78rem; font-weight: 900; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--helper);
+}
+.block p { margin: 0; color: var(--ink); line-height: 1.5; white-space: pre-wrap; }
+.block .unwritten {
+  color: var(--helper); font-style: italic;
+}
+.block-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.block-actions .btn { min-height: 44px; font-size: .88rem; padding: 0 12px; }
+
+/* ------------------------------------------------------------------ diffs */
+
+.diff { border: 2px solid var(--ink); border-radius: 14px; overflow: hidden; margin-top: 12px; }
+.diff-half { padding: 12px 14px; }
+.diff-half + .diff-half { border-top: 2px solid var(--ink); }
+.diff-half h5 {
+  margin: 0 0 6px; font-size: .76rem; font-weight: 900; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--helper);
+}
+.diff-half p { margin: 0; line-height: 1.5; white-space: pre-wrap; }
+.diff-before { background: #f5efe3; }
+.diff-after { background: #eef6ef; }
+.diff-why { margin: 8px 0 0; color: var(--moss); font-size: .9rem; line-height: 1.4; }
+
+.op { border-bottom: 2px dashed var(--line); padding-bottom: 14px; margin-bottom: 14px; }
+.op:last-of-type { border-bottom: 0; padding-bottom: 0; margin-bottom: 0; }
+.op-pick { display: flex; align-items: center; gap: 10px; margin-top: 10px; min-height: 44px; }
+.op-pick input { width: 22px; height: 22px; accent-color: var(--moss); }
+.op-pick label { font-weight: 800; }
+
+/* ------------------------------------------------------------------ notes */
+
+.notice {
+  margin: 0 0 14px; padding: 10px 12px; border-left: 5px solid var(--amber);
+  background: var(--amber-bg); color: #5a4110; font-size: .9rem; line-height: 1.4;
+}
+.notice.is-bad { border-left-color: var(--signal); background: #fdeeee; color: #6d1b1b; }
+.notice.is-good { border-left-color: var(--moss); background: #eef6ef; color: #1f3d2a; }
+
+.empty {
+  margin-top: 22px; border: 2px dashed var(--line); border-radius: 14px;
+  padding: 26px 18px; text-align: center; color: var(--body); line-height: 1.5;
+}
+.empty strong { display: block; font-family: Georgia, serif; font-size: 1.2rem; margin-bottom: 6px; color: var(--ink); }
+
+/* Progress that says what is happening right now, never a bare spinner. */
+.working {
+  display: flex; align-items: center; gap: 10px; margin-top: 12px;
+  color: var(--body); font-size: .92rem; line-height: 1.4;
+}
+.working::before {
+  content: ""; flex: 0 0 auto; width: 14px; height: 14px; border-radius: 50%;
+  border: 3px solid var(--line); border-top-color: var(--lake);
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .working::before { animation: none; border-top-color: var(--line); }
+}
+
+/* ------------------------------------------------------------- bottom nav */
+
+.bottom-nav {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  background: var(--ink); border-top: 2px solid #000;
+  padding-bottom: env(safe-area-inset-bottom);
+  box-shadow: 0 -8px 24px rgba(16, 33, 59, .22);
+}
+.bottom-nav a {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; min-height: var(--nav-h); padding: 6px 2px;
+  color: #c3d2e2; text-decoration: none; font-size: .72rem; font-weight: 800;
+  text-align: center; line-height: 1.15;
+}
+.bottom-nav a .glyph { font-size: 1.15rem; line-height: 1; }
+.bottom-nav a[aria-current="page"] { color: var(--white); background: #1c3050; }
+.bottom-nav a .badge {
+  position: absolute; transform: translate(18px, -14px);
+  min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px;
+  background: var(--signal); color: #fff; font-size: .68rem; line-height: 18px;
+}
+
+/* --------------------------------------------------------- talk about this */
+
+.talk-fab {
+  position: fixed; right: 16px; z-index: 25;
+  bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 14px);
+  min-height: 52px; padding: 0 20px;
+  border: 2px solid var(--ink); border-radius: 999px;
+  background: var(--lake); color: #fff; font-weight: 800;
+  box-shadow: 4px 4px 0 var(--ink);
+}
+.talk-fab:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--ink); }
+
+/* The conversation is a full-height sheet with one obvious close. It never
+   closes on an outside tap: there is a half-typed instruction inside it. */
+.sheet {
+  position: fixed; inset: 0; z-index: 40;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--paper);
+}
+.sheet-head {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px;
+  padding: calc(env(safe-area-inset-top) + 10px) 16px 10px;
+  background: var(--ink); color: var(--white);
+}
+.sheet-head strong { font-size: 1.05rem; }
+.sheet-head span { display: block; color: #d9e4ef; font-size: .82rem; }
+.sheet-body { overflow-y: auto; padding: 16px; }
+.sheet-foot {
+  border-top: 2px solid var(--line); background: var(--white);
+  padding: 12px 16px calc(env(safe-area-inset-bottom) + 12px);
+}
+.sheet-foot textarea {
+  width: 100%; min-height: 76px; padding: 10px 12px; resize: vertical;
+  border: 2px solid var(--ink); border-radius: 12px; background: var(--white);
+  color: var(--ink); line-height: 1.45;
+}
+.mode-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.mode-row .chip { flex: 1 1 0; min-height: 44px; justify-content: center; text-align: center; }
+
+.msg { margin-bottom: 14px; }
+.msg .who {
+  font-size: .76rem; font-weight: 900; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--helper);
+}
+.msg .bubble {
+  margin-top: 4px; padding: 12px 14px; border: 2px solid var(--line);
+  border-radius: 14px; background: var(--white); line-height: 1.5; white-space: pre-wrap;
+}
+.msg.is-editor .bubble { background: #e9eff6; border-color: var(--lake); }
+.msg.is-queued .bubble { border-style: dashed; color: var(--body); }
+
+/* ------------------------------------------------------------------ toast */
+
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); z-index: 60;
+  bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 76px);
+  max-width: min(92vw, 520px); padding: 12px 16px;
+  border: 2px solid var(--ink); border-radius: 12px;
+  background: var(--ink); color: var(--white); line-height: 1.4;
+  box-shadow: var(--shadow);
+}
+.toast.is-bad { background: var(--signal); border-color: #7d1a1a; }
+
+/* ----------------------------------------------------------------- wider */
+
+@media (min-width: 760px) {
+  .counts { grid-template-columns: repeat(4, 1fr); }
+  .page { padding: 34px 24px 28px; }
+  /* The nav stays at the bottom on every width. It is the same product on a
+     laptop, and moving it would make the phone layout the odd one out. */
+}
+
+/* Reader size, cycled from the topbar. Applies to the blocks he reads, not
+   to chrome, so the buttons never reflow under his thumb. */
+body[data-reader="large"] .block p,
+body[data-reader="large"] .card .big-idea,
+body[data-reader="large"] .msg .bubble { font-size: 1.14rem; }
+body[data-reader="largest"] .block p,
+body[data-reader="largest"] .card .big-idea,
+body[data-reader="largest"] .msg .bubble { font-size: 1.3rem; }

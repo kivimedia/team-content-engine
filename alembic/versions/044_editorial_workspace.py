@@ -4,16 +4,18 @@ Additive only. Nothing existing is altered and nothing reads these tables until 
 `editorial_workspace_v2` flag is on, so this migration is safe to apply ahead of
 the UI that uses it.
 
-Ordered after 043 (the news lane) only because both were written the same day and
-Alembic needs one line, not two heads. The two are independent: nothing here reads
-a news column and nothing there reads a lineup.
+Numbered 044 rather than 043 because a news-lane migration was being written in
+parallel the same day and had already taken the 043 id on disk. It revises 042
+directly: this file must apply against what is actually in git, and that work is
+not committed yet. Whichever of the two lands second re-points itself at the
+other, so the chain stays a line rather than two heads.
 
 Brief version 1 is NOT backfilled here. It is derived from the candidate's own
 columns the first time a topic room is opened (and can be materialised early with
 `scripts/backfill_candidate_briefs.py`), so this migration never rewrites content.
 
 Revision ID: 044
-Revises: 043
+Revises: 042
 Create Date: 2026-09-21
 """
 
@@ -23,7 +25,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision = "044"
-down_revision = "043"
+down_revision = "042"
 branch_labels = None
 depends_on = None
 
