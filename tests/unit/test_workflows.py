@@ -20,7 +20,6 @@ def test_daily_content_workflow_steps():
     """Daily content workflow should have the right agents in order."""
     steps = WORKFLOWS["daily_content"]
     agent_names = [s.agent_name for s in steps]
-    assert "trend_scout" in agent_names
     assert "story_strategist" in agent_names
     assert "research_agent" in agent_names
     assert "facebook_writer" in agent_names

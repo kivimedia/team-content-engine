@@ -123,7 +123,6 @@ def test_all_workflows_have_valid_agents():
     import tce.agents.qa_agent  # noqa: F401
     import tce.agents.research_agent  # noqa: F401
     import tce.agents.story_strategist  # noqa: F401
-    import tce.agents.trend_scout  # noqa: F401
     from tce.agents.registry import agent_registry
 
     registry = agent_registry()

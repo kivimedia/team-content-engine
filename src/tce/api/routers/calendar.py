@@ -795,13 +795,13 @@ async def regenerate_alternatives(
     the operator has invested in).
 
     All prior topics on this slot are passed to the LLM as an exclusion
-    list so each click yields fresh ideas. After 3 regen cycles with no
-    fresh research, the next regen auto-runs trend_scout to seed new
-    angles ("when out of topics, go back to research").
+    list so each click yields fresh ideas. New angles come from the strategy,
+    the portfolio and the entry's own plan context. The `use_fresh_research`
+    flag is accepted and ignored: the trend scan it triggered was retired on
+    21-Sep-2026.
     """
     payload = payload or {}
     count = max(1, min(int(payload.get("count", 3)), 5))
-    use_fresh_research = bool(payload.get("use_fresh_research", False))
 
     entry = await db.get(ContentCalendarEntry, entry_id)
     if not entry:
@@ -830,41 +830,17 @@ async def regenerate_alternatives(
         gift_theme = gift_theme.get("title", "")
     connection_to_gift = pc.get("connection_to_gift", "")
 
-    # Track regen cycles. Auto-trigger fresh research after 3 cycles since
-    # the last research run (or if the operator explicitly asks).
+    # Regen cycles are still counted, so repeated clicks keep yielding new
+    # angles rather than the same three.
     cycles = int(pc.get("alt_regen_cycles", 0))
-    last_research_at = int(pc.get("alt_research_at_cycle", -1))
-    auto_research = (cycles - last_research_at) >= 3
-    do_research = use_fresh_research or auto_research or last_research_at < 0
 
+    # Alternatives used to auto-run trend_scout every third regen cycle for
+    # "fresh research". That agent was retired on 21-Sep-2026: its feeds were
+    # VC and enterprise-AI sources and it had to return a quota of trends, so
+    # the freshness it injected here was corporate news by construction.
+    # Alternatives are now generated from the strategy, the portfolio and the
+    # entry's own plan context, which is where the useful signal already was.
     fresh_trends: list[dict[str, Any]] = []
-    if do_research:
-        try:
-            from tce.agents.cost_tracker import CostTracker
-            from tce.agents.registry import get_agent_class
-
-            scout_cls = get_agent_class("trend_scout")
-            scout = scout_cls(
-                db=db,
-                settings=settings,
-                cost_tracker=CostTracker(db),
-                prompt_manager=None,
-                run_id=uuid.uuid4(),
-                progress_log=None,
-            )
-            scout_ctx = {"scan_type": "daily", "focus_areas": ["AI", "business automation"]}
-            if entry.workspace_id is not None:
-                scout_ctx["workspace_id"] = str(entry.workspace_id)
-            scout_result = await scout._execute(scout_ctx)
-            fresh_trends = (scout_result.get("trend_brief") or {}).get("trends", [])[:10]
-            logger.info(
-                "calendar.alt_research_done",
-                entry_id=str(entry_id),
-                trends=len(fresh_trends),
-            )
-        except Exception as exc:
-            logger.warning("calendar.alt_research_failed", error=str(exc))
-            fresh_trends = []
 
     # Pull strategy + portfolio so alternatives match the same standards
     # as the planner's output (named repos, specific model versions, etc.).
@@ -991,8 +967,6 @@ async def regenerate_alternatives(
     # knows how many cycles since the last research run.
     new_pc = dict(pc)
     new_pc["alt_regen_cycles"] = cycles + 1
-    if do_research:
-        new_pc["alt_research_at_cycle"] = cycles + 1
     entry.plan_context = new_pc
 
     await db.commit()
@@ -1001,13 +975,16 @@ async def regenerate_alternatives(
         entry_id=str(entry_id),
         created=len(created_topics),
         deleted=deleted,
-        used_research=do_research,
+        used_research=False,
         cycle=cycles + 1,
     )
     return {
         "created": len(created_topics),
         "deleted": deleted,
-        "used_research": do_research,
+        # Kept in the response shape so the dashboard does not have to change in
+        # the same commit. It is always False now: the trend scan it reported on
+        # was retired on 21-Sep-2026.
+        "used_research": False,
         "cycle": cycles + 1,
     }
 

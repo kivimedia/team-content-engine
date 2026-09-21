@@ -12,7 +12,6 @@ import tce.agents.platform_writer  # noqa: F401
 import tce.agents.qa_agent  # noqa: F401
 import tce.agents.research_agent  # noqa: F401
 import tce.agents.story_strategist  # noqa: F401
-import tce.agents.trend_scout  # noqa: F401
 from tce.agents.corpus_analyst import CorpusAnalyst
 from tce.agents.engagement_scorer import EngagementScorer
 from tce.agents.platform_writer import FacebookWriter, LinkedInWriter
@@ -22,13 +21,12 @@ from tce.agents.story_strategist import StoryStrategist
 
 
 def test_all_agents_registered():
-    """All 13 agents should be in the registry."""
+    """Every registered agent should be in the registry."""
     registry = agent_registry()
     expected = [
         "corpus_analyst",
         "engagement_scorer",
         "pattern_miner",
-        "trend_scout",
         "research_agent",
         "story_strategist",
         "facebook_writer",

@@ -190,7 +190,7 @@ async def get_planning_costs(
 
     from tce.models.cost_event import CostEvent
 
-    planning_agents = ["weekly_planner", "trend_scout"]
+    planning_agents = ["weekly_planner"]
     result = await db.execute(
         select(
             CostEvent.run_id,

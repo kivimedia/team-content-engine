@@ -19,7 +19,6 @@ from tce.agents import (  # noqa: F401
     repo_storyteller,
     research_agent,
     story_strategist,
-    trend_scout,
     script_agent,
     video_agent,
     video_lead_writer,

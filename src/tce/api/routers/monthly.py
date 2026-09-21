@@ -43,6 +43,9 @@ class MonthPlanRequest(BaseModel):
     sensitive_period: bool = False
     seasonal_context: str | None = None
     niche: str = "general"  # "coaching" for Super Coaching niche
+    # Optional operator-supplied brief. There is no automatic trend scan any
+    # more, so this is the only way outside context enters monthly planning.
+    trend_brief: dict[str, Any] | None = None
 
 
 @router.post("/plan")
@@ -50,7 +53,7 @@ async def plan_month(
     request: MonthPlanRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Start 4-week planning. Runs trend_scout once, then weekly_planner 4x."""
+    """Start 4-week planning. Runs weekly_planner 4x from evidence."""
     plan_id = str(uuid.uuid4())
 
     # Create MonthlyPlan record
@@ -116,32 +119,14 @@ async def plan_month(
                     for c in creators
                 ]
 
-                # Step 1: Run trend_scout ONCE for the whole month
-                status["phase"] = "trend_scanning"
-                status["phase_detail"] = "Scanning trends for the month..."
-
-                trend_scout_cls = get_agent_class("trend_scout")
-                run_id = uuid.uuid4()
+                # Step 1 used to be a single trend_scout run seeding the whole
+                # month. It was retired on 21-Sep-2026: a month of planning
+                # built on one scan of VC and enterprise-AI feeds is four weeks
+                # of corporate topics from a single bad sample. Weeks are now
+                # planned from evidence, or from a brief the operator supplies.
                 cost_tracker = CostTracker(bg_db)
                 prompt_manager = PromptManager(bg_db)
-
-                trend_scout = trend_scout_cls(
-                    db=bg_db,
-                    settings=settings,
-                    cost_tracker=cost_tracker,
-                    prompt_manager=prompt_manager,
-                    run_id=run_id,
-                )
-                scout_ctx = {
-                    "scan_type": "weekly",
-                    "focus_areas": ["AI", "technology", "business automation"],
-                    "niche": request.niche,
-                }
-                scout_result = await trend_scout._execute(scout_ctx)
-                shared_trend_brief = scout_result.get("trend_brief", {})
-                await bg_db.commit()
-
-                status["phase_detail"] = f"Found {len(shared_trend_brief.get('trends', []))} trends"
+                shared_trend_brief: dict[str, Any] = dict(request.trend_brief or {})
 
                 # Load historical topics from past posts to avoid repetition
                 from tce.models.post_package import PostPackage
@@ -186,53 +171,17 @@ async def plan_month(
                         run_id=week_run_id,
                     )
 
-                    # Supplement the shared brief with fresh searches per week
-                    # so later weeks get different angles, not just the same pool
+                    # Every week gets the same supplied brief, if there is one.
+                    # The per-week "variety searches" that used to run here
+                    # queried things like "AI business news" and "startup
+                    # founder story this week" and fed the results back through
+                    # trend_scout. Both went on 21-Sep-2026. Variety now comes
+                    # from all_prior_topics, which is the mechanism that was
+                    # actually preventing repetition.
                     week_brief = dict(shared_trend_brief)
-                    week_trends = list(shared_trend_brief.get("trends", []))
 
-                    if week_idx > 0:
-                        # Run a few supplemental searches for variety
-                        from tce.services.web_search import WebSearchService
-                        supp_search = WebSearchService()
-                        if supp_search.api_key:
-                            variety_queries = [
-                                f"week {week_idx + 1} AI business news",
-                                "startup founder story this week",
-                                "productivity hack tool launch",
-                                "digital marketing trend",
-                            ]
-                            supp_results = []
-                            for vq in variety_queries[week_idx - 1:week_idx + 1]:
-                                sr = await supp_search.search_news(vq, count=5)
-                                supp_results.extend(sr)
-                            if supp_results:
-                                # Ask trend scout to evaluate supplemental results
-                                supp_scout = trend_scout_cls(
-                                    db=bg_db, settings=settings,
-                                    cost_tracker=cost_tracker,
-                                    prompt_manager=prompt_manager,
-                                    run_id=uuid.uuid4(),
-                                )
-                                supp_ctx = {
-                                    "scan_type": "supplemental",
-                                    "focus_areas": ["business", "creator economy", "SaaS"],
-                                }
-                                supp_result = await supp_scout._execute(supp_ctx)
-                                supp_trends = supp_result.get("trend_brief", {}).get("trends", [])
-                                # Merge new trends, avoiding duplicates by headline
-                                existing_headlines = {t.get("headline", "") for t in week_trends}
-                                for st in supp_trends:
-                                    if st.get("headline", "") not in existing_headlines:
-                                        week_trends.append(st)
-                                await bg_db.commit()
-
-                    week_brief["trends"] = week_trends
-
-                    # Skip internal trend_scout by providing trend_brief directly
                     week_context: dict[str, Any] = {
                         "trend_brief": week_brief,
-                        "_skip_trend_scout": True,
                         "founder_voice": founder_voice,
                         "creator_profiles": creator_profiles,
                         "sensitive_period": request.sensitive_period,

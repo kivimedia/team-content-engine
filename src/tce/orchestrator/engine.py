@@ -228,10 +228,6 @@ class PipelineOrchestrator:
             elif step_name == "pattern_miner":
                 ids = await self._saver.save_templates(self.context)
                 self.context["_template_ids"] = [str(i) for i in ids]
-            elif step_name == "trend_scout":
-                tid = await self._saver.save_trend_brief(self.context)
-                if tid:
-                    self.context["_trend_brief_id"] = tid
             elif step_name == "story_strategist":
                 sid, resolved_tpl = await self._saver.save_story_brief(self.context)
                 if sid:

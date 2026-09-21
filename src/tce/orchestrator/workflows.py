@@ -3,11 +3,14 @@
 from tce.orchestrator.step import PipelineStep
 
 # Full daily content workflow (PRD Section 15.3)
+#
+# trend_scout was step 1 here until 21-Sep-2026. It was retired, not disabled:
+# its sources were hardcoded VC and enterprise-AI feeds and its prompt demanded
+# 15 to 25 trends per run, so it had to fill a quota out of whatever those feeds
+# returned. That is the corporate-topic failure the evidence-first pipeline
+# exists to replace. These workflows now start from an operator-supplied topic.
 DAILY_CONTENT_WORKFLOW = [
-    # trend_scout runs 19 web searches then a Claude call with max_tokens=8192;
-    # 60s was too tight once the search fan-out grew. Match the weekly_planner workflow.
-    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=180),
-    PipelineStep(agent_name="story_strategist", depends_on=["trend_scout"], timeout_seconds=120),
+    PipelineStep(agent_name="story_strategist", depends_on=[], timeout_seconds=120),
     PipelineStep(agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=120),
     PipelineStep(
         agent_name="facebook_writer",
@@ -58,8 +61,7 @@ CORPUS_INGESTION_WORKFLOW = [
 
 # Weekly planning workflow (PRD Section 15.2)
 WEEKLY_PLANNING_WORKFLOW = [
-    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=180),
-    PipelineStep(agent_name="story_strategist", depends_on=["trend_scout"], timeout_seconds=180),
+    PipelineStep(agent_name="story_strategist", depends_on=[], timeout_seconds=180),
     PipelineStep(agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=180),
     PipelineStep(agent_name="cta_agent", depends_on=["story_strategist"], timeout_seconds=60),
     PipelineStep(
@@ -98,7 +100,7 @@ FOUNDER_VOICE_EXTRACTION_WORKFLOW = [
     ),
 ]
 
-# Weekly planner workflow - runs trend_scout internally and plans all 5 days
+# Weekly planner workflow - plans all 5 days from evidence-backed candidates
 WEEKLY_PLANNER_WORKFLOW = [
     PipelineStep(agent_name="weekly_planner", depends_on=[], timeout_seconds=300),
 ]
@@ -326,10 +328,10 @@ WEEKLY_REPO_SPOTLIGHT_WORKFLOW = [
 ]
 
 # Video lead workflow - produces long-form talking-head scripts (TJ Robertson style)
-# Uses coaching-niche trend scout, then story strategist, research, and video lead writer
+# Starts from an operator-supplied topic; the trend scout that used to seed it
+# was retired on 21-Sep-2026 (see the note on DAILY_CONTENT_WORKFLOW).
 VIDEO_LEAD_WORKFLOW = [
-    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=180),
-    PipelineStep(agent_name="story_strategist", depends_on=["trend_scout"], timeout_seconds=120),
+    PipelineStep(agent_name="story_strategist", depends_on=[], timeout_seconds=120),
     PipelineStep(agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=120),
     PipelineStep(
         agent_name="video_lead_writer",
@@ -341,8 +343,7 @@ VIDEO_LEAD_WORKFLOW = [
 # Walking-monologue video script (60-120s phone-held vertical, TJ Robertson style).
 # Same upstream chain as video_lead; swaps the writer for walking_video_writer.
 WALKING_VIDEO_WORKFLOW = [
-    PipelineStep(agent_name="trend_scout", depends_on=[], timeout_seconds=180),
-    PipelineStep(agent_name="story_strategist", depends_on=["trend_scout"], timeout_seconds=120),
+    PipelineStep(agent_name="story_strategist", depends_on=[], timeout_seconds=120),
     PipelineStep(agent_name="research_agent", depends_on=["story_strategist"], timeout_seconds=120),
     PipelineStep(
         agent_name="walking_video_writer",

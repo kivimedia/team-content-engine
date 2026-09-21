@@ -38,7 +38,6 @@ from tce.api.routers import (
     relearning,
     repos,
     stack,
-    trends,
     uploads,
     video_scripts,
     videos,
@@ -250,7 +249,6 @@ def create_app() -> FastAPI:
     app.include_router(costs.router, prefix=prefix)
     app.include_router(prompts.router, prefix=prefix)
     app.include_router(feedback.router, prefix=prefix)
-    app.include_router(trends.router, prefix=prefix)
     app.include_router(admin.router, prefix=prefix)
     app.include_router(calendar.router, prefix=prefix)
     app.include_router(scheduler_router.router, prefix=prefix)

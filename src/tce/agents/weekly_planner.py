@@ -18,7 +18,7 @@ import json
 from typing import Any
 
 from tce.agents.base import AgentBase
-from tce.agents.registry import get_agent_class, register_agent
+from tce.agents.registry import register_agent
 
 # Legacy angle vocabulary. Kept as optional suggestions for backward compatibility;
 # no weekday is forced to an angle any more.
@@ -254,34 +254,24 @@ class WeeklyPlanner(AgentBase):
 
         trend_brief: dict[str, Any] = {}
         trends: list[dict[str, Any]] = []
-        if context.get("_skip_trend_scout") and context.get("trend_brief"):
+        # An operator-supplied brief is still honoured. The automatic scan that
+        # used to run here was retired on 21-Sep-2026 along with trend_scout:
+        # it sourced VC and enterprise-AI feeds and had to return 15 to 25 items
+        # per run, so on a week with no evidence it filled the plan with exactly
+        # the corporate topics this pipeline exists to avoid.
+        if context.get("trend_brief"):
             trend_brief = context["trend_brief"]
             trends = trend_brief.get("trends", [])
-            self._report(f"Using shared trend brief as optional context ({len(trends)} items)")
-        elif not evidence_candidates or context.get("include_trends"):
-            self._report("Scanning trends for optional context...")
-            trend_scout_cls = get_agent_class("trend_scout")
-            trend_scout = trend_scout_cls(
-                db=self.db,
-                settings=self.settings,
-                cost_tracker=self.cost_tracker,
-                prompt_manager=self.prompt_manager,
-                run_id=self.run_id,
-                progress_log=self._progress_log,
+            self._report(
+                f"Using the supplied trend brief as optional context ({len(trends)} items)"
             )
-            scout_context = {
-                **context,
-                "scan_type": "weekly",
-                "focus_areas": context.get(
-                    "focus_areas", ["coaching business", "small service business operations"]
-                ),
-            }
-            scout_result = await trend_scout._execute(scout_context)
-            trend_brief = scout_result.get("trend_brief", {})
-            trends = trend_brief.get("trends", [])
-            self._report(f"Found {len(trends)} optional trend items")
+        elif evidence_candidates:
+            self._report("Evidence-backed ideas are the pool this week")
         else:
-            self._report("Skipping trend scan: evidence-backed ideas are the pool this week")
+            self._report(
+                "No evidence-backed ideas for this week, and there is no automatic "
+                "trend scan any more. Collect evidence or supply a topic."
+            )
 
         self._report("Phase 2: Arranging the week...")
 
