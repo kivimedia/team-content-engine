@@ -169,17 +169,26 @@ main { width: min(100%, 860px); margin: 0 auto; }
 /* ---------------------------------------------------------------- actions */
 
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+/* Flex, not block: half of these are <a> and half are <button>, and they have to
+   be indistinguishable. Block left the label hugging the top edge as soon as it
+   wrapped to two lines ("Put in this week" at 390px), and an anchor arrived
+   underlined because nothing reset it. Vertical padding lets a two-line label
+   grow the control instead of crowding it. */
 .btn {
-  min-height: 46px; padding: 0 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 46px; padding: 6px 16px;
   border: 2px solid var(--ink); border-radius: 10px; background: var(--white);
-  font-weight: 800;
+  font-weight: 800; text-align: center; text-decoration: none; color: var(--ink);
+  line-height: 1.25;
 }
 .btn:active { transform: translateY(1px); }
 .btn[disabled] { opacity: .55; cursor: default; transform: none; }
 .btn.primary { background: var(--moss); color: #fff; }
 .btn.quiet { border-color: var(--line); color: var(--body); }
 .btn.danger { border-color: var(--signal); color: var(--signal); }
-.btn.wide { width: 100%; justify-content: center; }
+.btn.wide { width: 100%; }
+/* A grid cell is a block box; the flex display above must survive it. */
+.btn-row .btn, .order-controls .btn, .actions .btn { display: inline-flex; }
 .btn-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 14px; }
 
 /* Ordering controls. Every move has a button; nothing here is drag-only. */
@@ -313,7 +322,7 @@ main { width: min(100%, 860px); margin: 0 auto; }
   color: var(--ink); line-height: 1.45;
 }
 .mode-row { display: flex; gap: 8px; margin-bottom: 10px; }
-.mode-row .chip { flex: 1 1 0; min-height: 44px; justify-content: center; text-align: center; }
+.mode-row .chip { flex: 1 1 0; min-height: 44px; }
 
 .msg { margin-bottom: 14px; }
 .msg .who {
