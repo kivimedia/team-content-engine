@@ -14,7 +14,13 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from tce.db.base import Base
-from tce.models import content_run, editorial, llm_job, recording_session  # noqa: F401
+from tce.models import (  # noqa: F401
+    content_run,
+    editorial,
+    editorial_workspace,
+    llm_job,
+    recording_session,
+)
 
 TABLE_NAMES = (
     "llm_jobs",
@@ -37,6 +43,16 @@ TABLE_NAMES = (
     "recording_clips",
     "recording_chunks",
     "voice_samples",
+    # Editorial workspace (migration 043)
+    "candidate_brief_versions",
+    "topic_decisions",
+    "weekly_lineups",
+    "weekly_lineup_items",
+    "editorial_threads",
+    "editorial_messages",
+    "editorial_change_sets",
+    "editorial_change_operations",
+    "editing_requests",
 )
 
 

@@ -26,6 +26,17 @@ from tce.models.editorial import (
     RecordingUpload,
     TopicCandidate,
 )
+from tce.models.editorial_workspace import (
+    CandidateBriefVersion,
+    EditingRequest,
+    EditorialChangeOperation,
+    EditorialChangeSet,
+    EditorialMessage,
+    EditorialThread,
+    TopicDecision,
+    WeeklyLineup,
+    WeeklyLineupItem,
+)
 from tce.models.founder_voice_profile import FounderVoiceProfile
 from tce.models.image_asset import ImageAsset
 from tce.models.learning_event import LearningEvent
@@ -42,6 +53,14 @@ from tce.models.recording_session import RecordingChunk, RecordingClip, Recordin
 from tce.models.render_queue import RenderQueueJob
 from tce.models.repo_brief import RepoBrief
 from tce.models.research_brief import ResearchBrief
+from tce.models.news import (
+    NewsAnchor,
+    NewsAppraisal,
+    NewsFeed,
+    NewsItem,
+    NewsMatch,
+    NewsWatchlist,
+)
 from tce.models.source_document import SourceDocument
 from tce.models.story_brief import StoryBrief
 from tce.models.system_version import SystemVersion
@@ -67,6 +86,12 @@ __all__ = [
     "ContentCalendarEntry",
     "CostEvent",
     "CreatorProfile",
+    "CandidateBriefVersion",
+    "EditingRequest",
+    "EditorialChangeOperation",
+    "EditorialChangeSet",
+    "EditorialMessage",
+    "EditorialThread",
     "DMFulfillmentLog",
     "EditorialFeedback",
     "ExportIntent",
@@ -93,6 +118,12 @@ __all__ = [
     "RecordingSession",
     "RecordingUpload",
     "NarrationScript",
+    "NewsAnchor",
+    "NewsAppraisal",
+    "NewsFeed",
+    "NewsItem",
+    "NewsMatch",
+    "NewsWatchlist",
     "RenderQueueJob",
     "RepoBrief",
     "ResearchBrief",
@@ -101,6 +132,7 @@ __all__ = [
     "StageResultCache",
     "SystemVersion",
     "TopicCandidate",
+    "TopicDecision",
     "TrackedRepo",
     "TrendBrief",
     "VideoAsset",
@@ -108,6 +140,8 @@ __all__ = [
     "VideoLeadScript",
     "WalkingVideoScript",
     "WeeklyGuide",
+    "WeeklyLineup",
+    "WeeklyLineupItem",
     "WorkerGroupState",
     "WorkspacePortfolio",
     "WorkspaceStrategy",
