@@ -48,6 +48,7 @@ from tce.models.system_version import SystemVersion
 from tce.models.tracked_repo import TrackedRepo
 from tce.models.trend_brief import TrendBrief
 from tce.models.video_asset import VideoAsset
+from tce.models.voice_sample import VoiceSample
 from tce.models.video_lead_script import VideoLeadScript
 from tce.models.walking_video_script import WalkingVideoScript
 from tce.models.weekly_guide import WeeklyGuide
@@ -103,6 +104,7 @@ __all__ = [
     "TrackedRepo",
     "TrendBrief",
     "VideoAsset",
+    "VoiceSample",
     "VideoLeadScript",
     "WalkingVideoScript",
     "WeeklyGuide",

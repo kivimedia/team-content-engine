@@ -31,6 +31,7 @@ from tce.editorial.common import (
     replay_request,
 )
 from tce.editorial.safety import scan_public_text
+from tce.editorial.voice import HOOK_RULE, first_banned
 from tce.llm import LLMRequest, LLMUnavailable
 from tce.models.editorial import EvidenceSource, RecordingPacket, TopicCandidate
 from tce.models.llm_job import LLMJob
@@ -56,7 +57,8 @@ _GIVEAWAY = re.compile(
 # "Comment GUIDE below" style keyword CTAs (case-sensitive on the keyword)
 _KEYWORD_CTA = re.compile(r"\b[Cc]omment\s+[\"']?[A-Z]{3,}\b")
 
-SYSTEM_PROMPT = """\
+SYSTEM_PROMPT = (
+    """\
 You write recording packets for Ziv Raviv, a business coach (Super Coaching: his human \
 team and AI team become the client's). He records walking, phone in hand, one file per \
 idea, reading one short phrase, looking up, saying it.
@@ -79,15 +81,15 @@ outcome that the cited evidence does not measure.
 - facebook_post and linkedin_post adapt the same lesson for text, ending with the same \
 strategy-session invitation. No long dashes.
 - interviewer_prompt: one question an interviewer could ask so Ziv answers in his own words.
-- hook_options: exactly three honest openings, ranked best first. Each names the unresolved
-  viewer question, the phrase ID that pays it off, the evidence moment IDs that support it,
-  and a private ranking rationale. The first option is selected by default and its text must
-  be the first spoken script phrase. Curiosity cannot hide or distort the central lesson.
+"""
+    + HOOK_RULE
+    + """
 - beats: one beat for each walking bullet. Use stable phrase IDs p001, p002 and so on and map
   every beat to an ordered inclusive phrase range.
 - self_check: report honestly whether each rule holds.
 
 Return only JSON matching the schema."""
+)
 
 OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -283,11 +285,15 @@ def validate_packet_output(data: Any) -> dict[str, Any]:
         str(data.get("facebook_post") or ""),
         str(data.get("linkedin_post") or ""),
     ]
+    public += [str(option.get("text") or "") for option in clean_options]
     for text in public:
         m = _GIVEAWAY.search(text) or _KEYWORD_CTA.search(text)
         if m:
             errors.append(f"giveaway-style CTA is not allowed: '{m.group(0)}'")
             break
+    banned = first_banned(public)
+    if banned:
+        errors.append(f"banned vocabulary is not allowed: '{banned}'")
 
     if errors:
         raise PacketValidationError("; ".join(errors))
@@ -443,7 +449,9 @@ async def build_packet(
                 )
             requeue = job_can_requeue(job)
         else:
-            strategy = await load_effective_strategy(session, ws)
+            # include_voice: his 36 patterns, the banned vocabulary and the meta-rule.
+            # Without it the writer had never been shown how he sounds.
+            strategy = await load_effective_strategy(session, ws, include_voice=True)
             nonce = str(uuid.uuid4())
             # The header line lets a restarted process rebuild this job's key.
             prompt = f"PACKET REQUEST: {nonce}\n\n" + build_packet_prompt(strategy.text, cand)
@@ -814,9 +822,7 @@ async def more_hook_options(
             )
         ).scalar_one_or_none()
         if done is not None and done.id != packet.job_id:
-            applied = await _apply_more_hooks(
-                session, ws, packet, cand, done.result_json, done.id
-            )
+            applied = await _apply_more_hooks(session, ws, packet, cand, done.result_json, done.id)
             if applied.status == "ok":
                 return applied
 
@@ -868,9 +874,7 @@ async def _apply_more_hooks(
             data = None
     fresh = (data or {}).get("hook_options")
     if not isinstance(fresh, list) or not fresh:
-        return PacketOutcome(
-            status="failed", job_id=job_id, detail="no usable opening came back"
-        )
+        return PacketOutcome(status="failed", job_id=job_id, detail="no usable opening came back")
     allowed = {str(value) for value in (cand.moment_ids or [])}
     fresh = [
         option
