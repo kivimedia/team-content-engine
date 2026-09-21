@@ -16,6 +16,7 @@ needs no embedding service, and is inspectable: he can see why a sample was chos
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -29,6 +30,15 @@ from tce.models.voice_sample import VoiceSample
 
 logger = structlog.get_logger()
 
+# Call housekeeping: greetings, scheduling, status updates to a team. Real speech,
+# and nothing to do with how he opens an idea.
+_CHATTER = re.compile(
+    r"^\s*(hi|hey|hello|thanks|thank you|welcome|good morning|good evening|"
+    r"i'?m on it|i'?ll get back|let me know|sorry|excuse me|one more thing|"
+    r"can you hear|are you there|i think that you should|we need to schedule)\b",
+    re.IGNORECASE,
+)
+
 # How many stretches reach the prompt. Enough to show range, few enough that the
 # packet prompt stays about the idea rather than about the corpus.
 SAMPLE_COUNT = 6
@@ -38,18 +48,33 @@ OPENING_COUNT = 12
 SAMPLE_CHARS = 1100
 # Scanned before ranking. The corpus is hundreds of rows, not millions.
 SCAN_LIMIT = 1200
+# Below this the overlap is generic words, not the subject. Two stretches where he
+# really talked about this beat six where one did: the other five teach the writer
+# the register of whatever they happened to be about.
+MIN_SCORE = 0.12
+
+
+# Exact tokens miss the obvious: "price" never matches "pricing", "decide" never
+# matches "decision", "book" never matches "bookings" - and those are the words the
+# subject actually lives in. Four characters is enough of a stem to join them and
+# short enough to stay honest about what it is.
+_STEM = 4
+
+
+def stems(words) -> set[str]:
+    return {w[:_STEM] for w in words if w}
 
 
 def score(sample_keywords: list[str], wanted: frozenset[str]) -> float:
-    """Share of the idea's words this stretch also uses.
+    """Share of the idea's subject this stretch also talks about.
 
     Deliberately not symmetric: a long stretch is not penalised for covering more
     ground than the idea, it is rewarded for covering the idea's ground.
     """
     if not wanted or not sample_keywords:
         return 0.0
-    have = set(sample_keywords)
-    return len(have & wanted) / len(wanted)
+    have, want = stems(sample_keywords), stems(wanted)
+    return len(have & want) / len(want)
 
 
 async def for_idea(
@@ -84,8 +109,8 @@ async def for_idea(
         key=lambda pair: (pair[0], pair[1].word_count),
         reverse=True,
     )
-    # A sample that shares nothing with the idea is noise dressed as evidence.
-    return [row for value, row in ranked[:limit] if value > 0]
+    # A sample that barely touches the idea is noise dressed as evidence.
+    return [row for value, row in ranked[:limit] if value >= MIN_SCORE]
 
 
 async def opening_bank(
@@ -117,8 +142,7 @@ async def opening_bank(
     out: list[str] = []
     for opening in rows:
         text = (opening or "").strip()
-        # Six words is a sentence; below that it is "Great question."
-        if not text or len(text.split()) < 6:
+        if not usable_opening(text):
             continue
         key = text.lower()
         if key in seen:
@@ -128,6 +152,29 @@ async def opening_bank(
         if len(out) >= limit:
             break
     return out
+
+
+def usable_opening(text: str) -> bool:
+    """Is this a sentence someone could start a video with?
+
+    A transcript is full of fragments that only look like sentences because the
+    punctuation landed there: "have that we updated my user to include the DJ
+    stuff", "I'm on it, I'm on I'm on it from here". None of that is an opening.
+    """
+    if not text:
+        return False
+    words = text.split()
+    # Six words is a sentence; thirty is already a paragraph nobody opens with.
+    if not 6 <= len(words) <= 30:
+        return False
+    # A fragment picked up mid-sentence does not start with a capital.
+    if not text[0].isupper():
+        return False
+    # His rule: an opening takes a position. A question is the shape he rejected.
+    if text.rstrip().endswith("?"):
+        return False
+    # Housekeeping and chatter, not the start of a lesson.
+    return not _CHATTER.match(text)
 
 
 def render(samples: list[VoiceSample], openings: list[str]) -> str:

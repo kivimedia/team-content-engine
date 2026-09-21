@@ -82,6 +82,59 @@ async def test_a_stretch_that_shares_nothing_is_not_offered_as_evidence(editoria
     assert out == []
 
 
+async def test_a_stretch_that_only_shares_generic_words_is_not_evidence_either(
+    editorial_sessionmaker,
+):
+    # The first pass took anything above zero, so an idea about minimum pricing got
+    # five stretches about product documents and Claude sessions, which teach the
+    # writer the register of whatever they happened to be about.
+    sm = editorial_sessionmaker
+    await add(sm, PRICING)
+    await add(
+        sm,
+        "In your case I recommend taking this extra step before you build it, which is "
+        "to create a product requirement document and chat with it for a few hours "
+        "about what you are building and why and what it is supposed to solve.",
+    )
+
+    async with sm() as s:
+        out = await vr.for_idea(
+            s,
+            WS,
+            title="Your minimum price belongs in your own file",
+            lesson="Keep your floor price internal and decide case by case.",
+        )
+
+    assert len(out) == 1
+    assert "tummy feeling" in out[0].text
+
+
+def test_a_transcript_fragment_is_not_an_opening():
+    # All real, from his corpus. Punctuation landed there; they are not sentences.
+    for bad in [
+        "have that we updated my user to include the DJ stuff.",
+        "can always search for different sessions, go from one to another.",
+        "I'm on it, I'm on I'm on it from here.",
+        "Great question.",
+        "Thanks for joining everyone today, really appreciate it.",
+        "Is that something you would actually pay for right now?",
+    ]:
+        assert not vr.usable_opening(bad), bad
+
+
+def test_the_ways_he_really_opens_are_kept():
+    for good in [
+        "Most coaches price by how they feel that morning.",
+        "The way AI works at the moment is that every time you talk to it it starts fresh.",
+        "Sonnet is kind of amazing, but not as smart and deep as Opus.",
+    ]:
+        assert vr.usable_opening(good), good
+
+
+def test_a_paragraph_is_not_an_opening():
+    assert not vr.usable_opening(" ".join(["word"] * 40))
+
+
 async def test_only_teaching_stretches_are_shown(editorial_sessionmaker):
     sm = editorial_sessionmaker
     await add(sm, FUNNEL, kind="operating")
