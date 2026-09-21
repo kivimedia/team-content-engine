@@ -27,7 +27,9 @@ from tce.models.editorial import EvidenceSource
 from tce.models.voice_sample import VoiceSample
 
 
-async def main(workspace_id: uuid.UUID, apply: bool, show: int) -> None:
+async def main(
+    workspace_id: uuid.UUID, apply: bool, show: int, words_band: tuple[int, int] | None = None
+) -> None:
     async with async_session() as db:
         sources = (
             (
@@ -64,7 +66,12 @@ async def main(workspace_id: uuid.UUID, apply: bool, show: int) -> None:
             print(f"  {kind:<16} {n}")
         print(f"kept: {len(keep)} mini speeches, {words:,} words")
 
-        for run in sorted(keep, key=lambda r: r.word_count, reverse=True)[:show]:
+        band = keep
+        if words_band:
+            low, high = words_band
+            band = [r for r in keep if low <= r.word_count <= high]
+            print(f"{len(band)} of them between {low} and {high} words")
+        for run in sorted(band, key=lambda r: r.word_count, reverse=True)[:show]:
             print(f"\n--- {run.word_count} words, {run.source_title} ---")
             print(f"opening: {run.opening}")
             print(run.text[:600])
@@ -127,5 +134,10 @@ if __name__ == "__main__":
     parser.add_argument("workspace_id")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--show", type=int, default=3)
+    parser.add_argument("--words", help="preview only this band, e.g. 120:400")
     args = parser.parse_args()
-    asyncio.run(main(uuid.UUID(args.workspace_id), args.apply, args.show))
+    band = None
+    if args.words:
+        low, high = args.words.split(":")
+        band = (int(low), int(high))
+    asyncio.run(main(uuid.UUID(args.workspace_id), args.apply, args.show, band))
