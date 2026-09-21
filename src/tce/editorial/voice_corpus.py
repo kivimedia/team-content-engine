@@ -56,6 +56,16 @@ _DEMO = re.compile(
     r"let'?s see what happens|watch what happens|wait for it|it'?s loading)\b",
     re.IGNORECASE,
 )
+# Running a standup: handing tasks round a team, closing items, thanking people for
+# joining. Real speech of his, and the register of an operations meeting rather than
+# of him explaining an idea to a coach.
+_STANDUP = re.compile(
+    r"\b(this one is for you|thank you very much|thank you for joining|"
+    r"make sure that was closed|make sure that is closed|what was done|"
+    r"going round the|next on the list|over to you|who is taking|"
+    r"we'?ve sent logins|anything else from you)\b",
+    re.IGNORECASE,
+)
 # "let me", "I'm going to", "hold on" - the narration of an action in progress.
 _NARRATION = re.compile(
     r"\b(let me (?:just )?(?:show|check|see|look|open|try|find|pull)|"
@@ -220,6 +230,9 @@ def judge(run: Run, *, min_words: int = MIN_WORDS) -> tuple[str, str]:
     average = words / max(len(_SENTENCE_END.split(run.text)), 1)
     if average < MIN_AVG_SENTENCE_WORDS:
         return "merged", f"{average:.1f} words per sentence: reads as merged dialogue"
+    standup = _STANDUP.search(run.text)
+    if standup:
+        return "standup", f"running a team meeting: '{standup.group(0)}'"
     narration = _NARRATION.search(run.text) or _DEMO.search(run.text)
     if narration:
         return "operating", f"narrating an action: '{narration.group(0)}'"

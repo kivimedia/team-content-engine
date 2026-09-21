@@ -35,7 +35,11 @@ logger = structlog.get_logger()
 _CHATTER = re.compile(
     r"^\s*(hi|hey|hello|thanks|thank you|welcome|good morning|good evening|"
     r"i'?m on it|i'?ll get back|let me know|sorry|excuse me|one more thing|"
-    r"can you hear|are you there|i think that you should|we need to schedule)\b",
+    r"can you hear|are you there|i think that you should|we need to schedule|"
+    # Discourse hedges. An opening takes a position; these are how a person eases
+    # into a conversation, and reading them as hooks is how a script goes limp.
+    r"well|i mean|plus|honestly|basically|for example|actually|obviously|"
+    r"i'?m trying|i guess|maybe|probably|kind of|sort of|by the way|anyway)\b",
     re.IGNORECASE,
 )
 

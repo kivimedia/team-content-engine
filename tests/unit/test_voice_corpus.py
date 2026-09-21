@@ -273,3 +273,19 @@ def test_runs_are_cleaned_as_they_are_built():
 
     assert "um," not in run.text
     assert "the point is" in run.text
+
+
+def test_running_a_standup_is_not_teaching():
+    # Real shape from his calls: tasks handed round a team, items closed, thanks.
+    text = (
+        "This one is for you, Hilda, with the dashboard and making sure the CRM has "
+        "terminal mode. Kath, we've sent logins to the hub and to Tim, and make sure "
+        "that was closed. Thank you very much. Two nights of measurement exist now and "
+        "the next thing is the inbox work that nobody has picked up yet this week."
+    )
+    run = runs_from([turn(0, text)])[0]
+
+    kind, reason = vc.judge(run)
+
+    assert kind == "standup"
+    assert "team meeting" in reason
