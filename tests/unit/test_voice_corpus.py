@@ -182,3 +182,68 @@ def test_turns_without_timings_still_group(missing):
         t[missing] = None
 
     assert len(runs_from(turns)) == 1
+
+
+def test_a_whole_call_is_not_a_mini_speech():
+    # A 3,000 word "stretch" is a call whose other speaker the diarization dropped,
+    # so it reads as Ziv interviewing himself.
+    long_text = " ".join(["The point about pricing is that it moves with the booking."] * 80)
+    run = runs_from([turn(0, long_text)])[0]
+
+    kind, reason = vc.judge(run)
+
+    assert kind == "merged"
+    assert "call segment" in reason
+
+
+def test_merged_dialogue_gives_itself_away_by_rhythm():
+    # Real sample from his calls: the other speaker's turns are gone, so what is
+    # left is his fragments strung together.
+    fragments = "People? Yes. Okay. One real weak spot. Stranger messaging email. Save. "
+    run = runs_from([turn(0, fragments * 6)])[0]
+
+    kind, reason = vc.judge(run)
+
+    assert kind == "merged"
+    assert "merged dialogue" in reason
+
+
+def test_a_live_demo_is_not_teaching():
+    text = (
+        "So on the right side you can see here five thousand dollars, that is how much "
+        "I saved by using this system, it is basically just tasks that were done through "
+        "the subscriptions that I have and the marketplace where I can add more agents "
+        "to the fleet that is already running for me every single day of the week."
+    )
+    run = runs_from([turn(0, text)])[0]
+
+    assert vc.judge(run)[0] == "operating"
+
+
+def test_filler_is_removed_but_the_words_are_not():
+    raw = "So, um, this brings us to, uh, yeah, the actual intelligence, right?"
+
+    out = vc.clean_text(raw)
+
+    assert "um" not in out.lower().split()
+    assert "uh" not in out.lower().split()
+    assert "this brings us to" in out
+    assert "actual intelligence" in out
+
+
+def test_a_stutter_collapses_to_one_word():
+    assert vc.clean_text("I i i want to suggest something") == "I want to suggest something"
+    assert vc.clean_text("agents, agents up") == "agents up"
+
+
+def test_cleaning_never_eats_a_real_word():
+    # "Mummy", "under", "human" all contain filler spellings.
+    text = "Her mummy is under the human limit of what one person can do."
+    assert vc.clean_text(text) == text
+
+
+def test_runs_are_cleaned_as_they_are_built():
+    run = runs_from([turn(0, "So, um, the point is, uh, about pricing and what it costs.")])[0]
+
+    assert "um," not in run.text
+    assert "the point is" in run.text

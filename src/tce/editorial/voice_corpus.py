@@ -27,6 +27,12 @@ ZIV_EMAIL = "ravivziv@gmail.com"
 # A run has to be long enough to carry a register. Below this it is a reply, not a
 # mini speech: "yeah", "exactly", "that makes sense".
 MIN_WORDS = 45
+# And short enough to BE one. A 3,000-word "stretch" is a whole call whose other
+# speaker the diarization dropped, so it reads as Ziv interviewing himself.
+MAX_WORDS = 700
+# Merged dialogue gives itself away by rhythm: "People? Yes. Okay. One real weak spot."
+# Teaching runs in long sentences; a merged transcript runs in fragments.
+MIN_AVG_SENTENCE_WORDS = 7.0
 # Gap between his turns that still counts as one continuous stretch. Longer than this
 # and someone else spoke, or he stopped and started a new thought.
 MAX_GAP_S = 12.0
@@ -41,6 +47,13 @@ _OPERATING = re.compile(
     r"loading|spinner|reload|sidebar|menu|toolbar|url|link here|"
     r"terminal|localhost|deploy(?:ing|ed)?|commit(?:ting|ted)?|repo|pull request"
     r")\b",
+    re.IGNORECASE,
+)
+# Live demo narration. Low software-word density, unmistakably a screen being shown.
+_DEMO = re.compile(
+    r"\b(still loading|here it is|there it is|you can see here|as you can see here|"
+    r"on the (?:right|left|top|bottom) (?:side|here)|i'?m logging in|"
+    r"let'?s see what happens|watch what happens|wait for it|it'?s loading)\b",
     re.IGNORECASE,
 )
 # "let me", "I'm going to", "hold on" - the narration of an action in progress.
@@ -106,7 +119,7 @@ def build_runs(
         if not current:
             return
         text = " ".join(str(t.get("text") or "").strip() for t in current).strip()
-        text = re.sub(r"\s+", " ", text)
+        text = clean_text(text)
         if text:
             langs = {str(t.get("language") or "") for t in current}
             runs.append(
@@ -140,6 +153,26 @@ def build_runs(
     return runs
 
 
+# Speech artefacts, not voice. A transcript is thick with them and they teach a writer
+# nothing except to imitate hesitation. Removed conservatively: only standalone filler
+# tokens and an immediately repeated word, never anything that carries meaning.
+_FILLER = re.compile(
+    r"(?<!\w)(?:u[mh]+|e[rh]+|mm+|hmm+|uh-huh|you know,)(?!\w)[,.]?", re.IGNORECASE
+)
+_STUTTER = re.compile(r"\b(\w+)(?:[ ,]+\1\b)+", re.IGNORECASE)
+
+
+def clean_text(text: str) -> str:
+    """The same words with the hesitation taken out."""
+    out = _FILLER.sub(" ", text or "")
+    out = _STUTTER.sub(r"\1", out)
+    out = re.sub(r"\s+([,.!?])", r"\1", out)
+    out = re.sub(r"([,.!?])\1+", r"\1", out)
+    out = re.sub(r"\s+", " ", out).strip()
+    # A sentence that now starts with a comma lost its filler; tidy the seam.
+    return re.sub(r"(?<=[.!?]) *, *", " ", out)
+
+
 def _as_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -165,9 +198,14 @@ def judge(run: Run, *, min_words: int = MIN_WORDS) -> tuple[str, str]:
     words = run.word_count
     if words < min_words:
         return "thin", f"{words} words: a reply, not a stretch of speech"
-    narration = _NARRATION.findall(run.text)
+    if words > MAX_WORDS:
+        return "merged", f"{words} words: a call segment, not one stretch of speech"
+    average = words / max(len(_SENTENCE_END.split(run.text)), 1)
+    if average < MIN_AVG_SENTENCE_WORDS:
+        return "merged", f"{average:.1f} words per sentence: reads as merged dialogue"
+    narration = _NARRATION.search(run.text) or _DEMO.search(run.text)
     if narration:
-        return "operating", f"narrating an action: '{narration[0]}'"
+        return "operating", f"narrating an action: '{narration.group(0)}'"
     hits = _OPERATING.findall(run.text)
     density = len(hits) * 100.0 / max(words, 1)
     if density >= _OPERATING_PER_100_WORDS:
