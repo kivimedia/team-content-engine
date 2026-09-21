@@ -19,6 +19,7 @@ from tce.api.routers import (
     dm_fulfillment,
     documents,
     editorial,
+    editorial_workspace,
     evidence,
     experiments,
     feedback,
@@ -272,6 +273,11 @@ def create_app() -> FastAPI:
     app.include_router(evidence.router, prefix=prefix)
     app.include_router(editorial.router, prefix=prefix)
     app.include_router(production.router, prefix=prefix)
+    # The editorial workspace: Today, topics, the week, changes and the library.
+    # Registered after the two routers above so their existing paths win any
+    # overlap; these are all new paths, so nothing is shadowed today.
+    app.include_router(editorial_workspace.router, prefix=prefix)
+    app.include_router(editorial_workspace.production_router, prefix=prefix)
 
     # Dashboard - no API prefix, served at root /dashboard
     app.include_router(dashboard.router)
