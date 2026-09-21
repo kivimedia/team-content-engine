@@ -11,6 +11,32 @@ RecordingUpload -> PublicationReceipt`, plus `evidence_collection_runs` (coverag
 `editorial_feedback` and `llm_jobs`. Models: `src/tce/models/editorial.py`,
 `src/tce/models/llm_job.py`. Migration `037` is additive only.
 
+### The third lane (news), migration 045
+
+`news_feeds -> news_items -> news_matches -> news_appraisals`, plus `news_anchors` (the
+index of named things in Ziv's work that an announcement can land on) and `news_watchlist`.
+Model: `src/tce/models/news.py`. Additive, and inert until `TCE_NEWS_LANE` is on.
+
+The lane rides this pipeline rather than paralleling it. `SOURCE_KINDS` gains `news_item`
+and `standing_fact`; `evidence_moments.news_ref` is the lane's locator beside `span_start_s`
+(meetings) and `code_refs` (commits); `topic_candidates.news_item_id` present means
+news-led, and `expires_at` carries perishability. The four gates, the invented-outcome
+check, coverage accounting, the ranker and the safety scan all apply unchanged, and no
+fifth gate is added.
+
+One rule is enforced in code rather than in a prompt: **a news-led candidate must cite at
+least one `news_item` moment AND at least one non-news moment** (a call, a commit, or a
+`standing_fact`). A candidate citing only the announcement fails `connects_to_ziv_work`.
+
+`standing_fact` moments are hand-written and never model-written, appear only in the news
+shard as `anchor_context` (never the week pool, never the evergreen reserve), and are capped
+at 0.6 in `anchor_support` against 0.9 for a demonstrated commit.
+
+Provenance note: these files were committed inside `fc36b97`, whose message describes an
+editorial undo fix. Two sessions were working this tree the same evening and a broad
+`git add` swept them in. Nothing is wrong with the code; the commit message simply does not
+describe it. Design and receipts: `plans/21-Sep-26-tce-third-lane-news.md`.
+
 Every row has a non-null `workspace_id`. Routers filter `Model.workspace_id == ws`
 explicitly. Raw content lives only in `*_private` columns. Claim types:
 quoted, paraphrased, inferred, demonstrated, measured. A draft may not state a
