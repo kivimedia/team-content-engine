@@ -86,8 +86,12 @@ async def main(
         counts = (run.counts if run else {}) or {}
         print(
             f"  listed {counts.get('listed', 0)}, "
-            f"new {counts.get('created', counts.get('inserted', 0))}, "
-            f"skipped {counts.get('duplicates_skipped', 0)}"
+            f"in window {counts.get('in_window', 0)}, "
+            # 'processed' is the ledger's key for what it actually stored. Guessing
+            # at 'created'/'inserted' printed "new 0" for a window that had just
+            # stored 424 calls - a status line that lies is worse than none.
+            f"stored {counts.get('processed', 0)}, "
+            f"unchanged {counts.get('unchanged', 0)}"
             + (f", errors {len(run.errors)}" if run and run.errors else "")
         )
 
