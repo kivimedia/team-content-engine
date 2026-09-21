@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tce.editorial.common import ORIGIN_TECHNICAL_VALIDATION
 from tce.models.editorial import RecordingPacket, RecordingUpload, TopicCandidate
 from tce.models.editorial_workspace import (
     EDIT_REQUEST_SCOPES,
@@ -128,9 +129,20 @@ async def list_library(
     if filter_key not in LIBRARY_FILTERS:
         raise LibraryError("bad_filter", f"unknown filter {filter_key}", status=400)
 
+    # A synthetic take proving the pipeline works is not something he recorded,
+    # and it must not sit in his library looking like one. The older /recorded
+    # endpoint has always excluded these; the library is the surface replacing it,
+    # so it has to agree rather than quietly re-introduce the artifact.
+    technical = select(TopicCandidate.id).where(
+        TopicCandidate.workspace_id == ws,
+        TopicCandidate.origin == ORIGIN_TECHNICAL_VALIDATION,
+    )
     result = await db.execute(
         select(RecordingUpload)
-        .where(RecordingUpload.workspace_id == ws)
+        .where(
+            RecordingUpload.workspace_id == ws,
+            RecordingUpload.candidate_id.notin_(technical),
+        )
         .order_by(RecordingUpload.created_at.desc())
     )
     uploads = list(result.scalars().all())

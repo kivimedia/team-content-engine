@@ -475,6 +475,38 @@ async def test_the_library_never_shows_a_button_that_leads_nowhere(
     assert item["state_sentence"]
 
 
+async def test_a_synthetic_pipeline_take_never_appears_in_the_library(
+    client, editorial_sessionmaker
+):
+    """Found on his real data: "SYNTHETIC TECHNICAL TEST" sitting in the Library.
+
+    The older /recorded endpoint has always excluded these. The library replaces
+    that surface, so it has to agree rather than quietly re-introduce the artifact.
+    """
+    ws = uuid.uuid4()
+    real = await add_candidate(editorial_sessionmaker, ws, "A real topic")
+    synthetic = await add_candidate(
+        editorial_sessionmaker, ws, "SYNTHETIC TECHNICAL TEST", origin="technical_validation"
+    )
+    async with editorial_sessionmaker() as s:
+        for cid, digest in ((real, "1"), (synthetic, "2")):
+            s.add(
+                RecordingUpload(
+                    workspace_id=ws,
+                    candidate_id=cid,
+                    original_filename="take.mp4",
+                    storage_path="/tmp/take.mp4",
+                    sha256=digest * 64,
+                    status="uploaded",
+                )
+            )
+        await s.commit()
+
+    body = (await client.get("/api/v1/production/library", headers=headers(ws))).json()
+
+    assert [i["title"] for i in body["items"]] == ["A real topic"]
+
+
 async def test_an_editing_request_is_recorded_against_the_recording(
     client, editorial_sessionmaker
 ):
