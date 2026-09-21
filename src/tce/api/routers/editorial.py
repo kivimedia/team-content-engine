@@ -42,6 +42,7 @@ from tce.editorial.packets import (
     choose_hook,
     list_packets,
     more_hook_options,
+    voice_pass,
 )
 from tce.editorial.selector import MAX_CANDIDATES_CAP, select_candidates
 from tce.models.editorial import EditorialFeedback, RecordingPacket, TopicCandidate
@@ -659,6 +660,23 @@ async def archive_candidate(
         await db.commit()
         fb = await list_feedback(db, ws, cand.id)
     return candidate_to_json(cand, fb)
+
+
+@router.post("/packets/{packet_id}/voice-pass")
+async def packet_voice_pass(
+    packet_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Score a script's openings against his voice and rewrite them if they fail.
+
+    One subscription job. A pass changes nothing; a fail appends replacements as a
+    new packet version with the originals still on it, so the two can be compared.
+    """
+    outcome = await voice_pass(sm, ws, _parse_uuid(packet_id, "packet"))
+    if outcome.status == "invalid":
+        raise HTTPException(status_code=409, detail=outcome.detail or "cannot run the voice pass")
+    return outcome.to_dict()
 
 
 @router.post("/more-ideas")

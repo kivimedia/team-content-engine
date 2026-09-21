@@ -631,6 +631,117 @@ async def list_packets(
     )
 
 
+# ---------------------------------------------------------------------------
+# Voice pass: score the openings, and rewrite them in his register when they fail
+# ---------------------------------------------------------------------------
+
+VOICE_PASS_JOB_TYPE = "recording_packet_voice"
+VOICE_PASS_AGENT = "recording_voice_critic"
+VOICE_PASS_PROMPT_VERSION = "recording_voice.v1"
+# Same bar the Facebook and LinkedIn critic uses.
+VOICE_PASS_MARK = 7
+
+VOICE_PASS_SYSTEM = """\
+You are the Voice Critic for Ziv Raviv's recording scripts. You judge the OPENINGS
+of a script that is already written, against his documented voice, and you replace
+them when they fail.
+
+He recognises the AI default on sight and rejects it: the curiosity gap. "Here is
+why...", "The truth about...", "What nobody tells you...", "Have you ever...",
+any question, any withheld subject, any promise of a secret. Those score 3 or less
+no matter how well written they are.
+
+What passes is what he actually does: a flat statement that takes a position,
+disagreeing with what the viewer believes or naming the mistake they are making.
+The tension comes from disagreement, not from a gap.
+
+Score 1-10. Seven or more passes and you return no replacements. Below seven you
+return exactly three replacement openings, each:
+- in his register, drawn from how he talks in the samples given to you, never
+  quoting them and never reusing their examples or anyone's private situation,
+- naming the belief it contradicts,
+- citing only the evidence moment ids given to you, copied verbatim,
+- with a payoff_phrase_id that exists in the script,
+- with the first one being the strongest.
+
+Return only JSON matching the schema."""
+
+VOICE_PASS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["score", "verdict", "violations", "hook_options"],
+    "properties": {
+        "score": {"type": "integer", "minimum": 1, "maximum": 10},
+        "verdict": {"type": "string", "enum": ["pass", "revise"]},
+        "violations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["quote", "issue"],
+                "properties": {
+                    "quote": {"type": "string"},
+                    "issue": {"type": "string"},
+                },
+            },
+        },
+        "hook_options": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "id",
+                    "text",
+                    "question",
+                    "payoff_phrase_id",
+                    "moment_ids",
+                    "rationale",
+                ],
+                "properties": {
+                    "id": {"type": "string"},
+                    "text": {"type": "string"},
+                    "question": {"type": "string"},
+                    "payoff_phrase_id": {"type": "string"},
+                    "moment_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "rationale": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+
+def build_voice_pass_prompt(
+    packet: RecordingPacket, cand: TopicCandidate, voice_spec: str, voice_block: str
+) -> str:
+    """Everything the critic needs: the rules, his own words, and the script as written."""
+    phrases = list(packet.script_phrases or [])
+    script = [{"id": f"p{i:03d}", "text": text} for i, text in enumerate(phrases, start=1)]
+    openings = [
+        {"id": o.get("id"), "text": o.get("text"), "rationale": o.get("rationale")}
+        for o in (packet.hook_options or [])
+    ]
+    parts = ["HIS VOICE (the rules):\n" + (voice_spec or "(none)")]
+    if voice_block:
+        parts.append(voice_block)
+    parts.append("THE IDEA:\n" + json.dumps({"title": cand.title, "lesson": cand.lesson}, indent=1))
+    parts.append(
+        "THE SCRIPT AS WRITTEN (phrase ids you may pay off):\n" + json.dumps(script, indent=1)
+    )
+    parts.append("THE OPENINGS TO JUDGE:\n" + json.dumps(openings, indent=1))
+    parts.append(
+        "EVIDENCE MOMENT IDS you may cite, copied verbatim:\n"
+        + json.dumps([str(m) for m in (cand.moment_ids or [])], indent=1)
+    )
+    return "\n\n".join(parts)
+
+
+def voice_pass_key_text(ws: uuid.UUID, packet_id: uuid.UUID, version: int) -> str:
+    return f"{VOICE_PASS_JOB_TYPE}:{ws}:{packet_id}:{version}"
+
+
 MORE_HOOKS_JOB_TYPE = "recording_packet_hooks"
 MORE_HOOKS_AGENT = "recording_hook_writer"
 MORE_HOOKS_PROMPT_VERSION = "recording_hooks.v1"
@@ -644,8 +755,10 @@ You write alternative openings for a video Ziv is about to record.
 The script, the lesson and the evidence are fixed. Only the first spoken line
 changes, and the rest of the script must still follow from it.
 
-- Each opening names the unresolved question the viewer has at second zero, and
-  the phrase id later in the script that pays it off.
+- An opening is a flat, plain statement that disagrees with what the viewer
+  currently believes, or names the mistake they are making right now. Not a
+  question, not a tease, not "here is why", and it never withholds the subject to
+  create curiosity. Name the belief it contradicts and the phrase id that pays it off.
 - Cite only the evidence moment ids given to you, copied verbatim.
 - Be different from the openings that already exist: a new angle, a different
   entry point, not a rewording. Say in the rationale what is different about it.
@@ -954,6 +1067,232 @@ async def _apply_more_hooks(
         packet=packet_to_json(clone),
         detail=f"{added} new opening(s) to choose from",
         errors=dropped,
+    )
+
+
+async def voice_pass(
+    sessionmaker_or_session: Any,
+    workspace_id: uuid.UUID | str,
+    packet_id: uuid.UUID | str,
+) -> PacketOutcome:
+    """Score a script's openings against his voice, and rewrite them if they fail.
+
+    One subscription job. A pass changes nothing and says so; a fail appends three
+    replacements as a new packet version, so the openings it judged stay readable
+    next to the ones it wrote. A take set already holding clips blocks the pass for
+    the same reason it blocks choosing: what he is reading must not move.
+    """
+    ws = coerce_uuid(workspace_id)
+    async with open_session(sessionmaker_or_session) as session:
+        packet = (
+            await session.execute(
+                select(RecordingPacket).where(
+                    RecordingPacket.id == coerce_uuid(packet_id),
+                    RecordingPacket.workspace_id == ws,
+                )
+            )
+        ).scalar_one_or_none()
+        if packet is None:
+            return PacketOutcome(status="invalid", detail="packet not found")
+        in_progress = (
+            await session.execute(
+                select(RecordingSession.packet_version).where(
+                    RecordingSession.workspace_id == ws,
+                    RecordingSession.candidate_id == packet.candidate_id,
+                    RecordingSession.status.in_(RECORDING_IN_PROGRESS_STATUSES),
+                )
+            )
+        ).first()
+        if in_progress is not None:
+            return PacketOutcome(
+                status="invalid",
+                detail=(
+                    f"a take set is in progress on packet version {in_progress[0]}; "
+                    "finish that session before rewriting the openings"
+                ),
+            )
+        cand = (
+            await session.execute(
+                select(TopicCandidate).where(
+                    TopicCandidate.id == packet.candidate_id, TopicCandidate.workspace_id == ws
+                )
+            )
+        ).scalar_one_or_none()
+        if cand is None:
+            return PacketOutcome(status="invalid", detail="idea not found")
+
+        # A job that already finished for this packet is applied rather than paid
+        # for twice: the worker keeps running while the API restarts.
+        done = (
+            await session.execute(
+                select(LLMJob)
+                .where(
+                    LLMJob.workspace_id == ws,
+                    LLMJob.job_type == VOICE_PASS_JOB_TYPE,
+                    LLMJob.run_id == packet.candidate_id,
+                    LLMJob.status == "succeeded",
+                )
+                .order_by(LLMJob.completed_at.desc().nullslast())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if done is not None and done.id != packet.job_id:
+            applied = await _apply_voice_pass(session, ws, packet, cand, done.result_json, done.id)
+            if applied.status == "ok":
+                return applied
+
+        strategy = await load_effective_strategy(session, ws, include_voice=True)
+        voice_block, _used = await voice_retrieval.block_for_idea(
+            session, ws, title=cand.title, lesson=cand.lesson
+        )
+        nonce = str(uuid.uuid4())
+        request = LLMRequest(
+            job_type=VOICE_PASS_JOB_TYPE,
+            agent_name=VOICE_PASS_AGENT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"VOICE PASS: {nonce}\n\n"
+                    + build_voice_pass_prompt(packet, cand, strategy.text, voice_block),
+                }
+            ],
+            system=VOICE_PASS_SYSTEM,
+            output_schema=VOICE_PASS_SCHEMA,
+            max_tokens=3000,
+            prompt_version=VOICE_PASS_PROMPT_VERSION,
+            workspace_id=ws,
+            run_id=cand.id,
+            idempotency_key=f"voice-pass:{ws}:{packet.id}:{nonce}",
+        )
+        try:
+            llm = await _llm.complete(request)
+        except LLMUnavailable as exc:
+            return PacketOutcome(
+                status=exc.status, job_id=exc.job_id, detail=exc.detail, retry_at=exc.retry_at
+            )
+        return await _apply_voice_pass(
+            session, ws, packet, cand, llm.structured or llm.text, llm.job_id
+        )
+
+
+async def _apply_voice_pass(
+    session: AsyncSession,
+    ws: uuid.UUID,
+    packet: RecordingPacket,
+    cand: TopicCandidate,
+    payload: Any,
+    job_id: uuid.UUID | None,
+) -> PacketOutcome:
+    """Turn the critic's answer into either a verdict or the next packet version."""
+    data = payload if isinstance(payload, dict) else None
+    if data is None:
+        try:
+            data = json.loads(payload or "")
+        except (TypeError, ValueError):
+            data = None
+    if not isinstance(data, dict) or not isinstance(data.get("score"), int):
+        # A critic that returned nothing usable has not judged anything. It must
+        # never read as a pass.
+        return PacketOutcome(
+            status="failed", job_id=job_id, detail="the voice pass returned no score"
+        )
+    score = int(data["score"])
+    violations = [
+        f"{v.get('quote', '')}: {v.get('issue', '')}".strip(": ")
+        for v in (data.get("violations") or [])
+        if isinstance(v, dict)
+    ]
+    if score >= VOICE_PASS_MARK and data.get("verdict") != "revise":
+        return PacketOutcome(
+            status="ok",
+            job_id=job_id,
+            packet=packet_to_json(packet),
+            detail=f"The openings sound like him ({score} out of 10). Nothing rewritten.",
+            errors=violations,
+        )
+
+    fresh = data.get("hook_options")
+    if not isinstance(fresh, list) or not fresh:
+        return PacketOutcome(
+            status="failed",
+            job_id=job_id,
+            detail=f"scored {score} out of 10 but sent no replacement openings",
+            errors=violations,
+        )
+    allowed = {str(value) for value in (cand.moment_ids or [])}
+    fresh = [
+        option
+        for option in fresh
+        if isinstance(option, dict)
+        and {str(m) for m in (option.get("moment_ids") or [])}.issubset(allowed)
+    ]
+    banned = first_banned([str(o.get("text") or "") for o in fresh])
+    if banned:
+        return PacketOutcome(
+            status="failed",
+            job_id=job_id,
+            detail=f"a replacement opening used banned vocabulary: '{banned}'",
+            errors=violations,
+        )
+    if not fresh:
+        return PacketOutcome(
+            status="failed",
+            job_id=job_id,
+            detail="the replacement openings cited evidence outside this idea",
+            errors=violations,
+        )
+    merged, dropped = merge_hook_options(
+        list(packet.hook_options or []), fresh, len(packet.script_phrases or [])
+    )
+    added = len(merged) - len(packet.hook_options or [])
+    if not added:
+        return PacketOutcome(
+            status="failed",
+            job_id=job_id,
+            detail="; ".join(dropped) or "nothing usable came back",
+            errors=violations + dropped,
+        )
+    maximum = (
+        await session.execute(
+            select(func.max(RecordingPacket.version)).where(
+                RecordingPacket.workspace_id == ws,
+                RecordingPacket.candidate_id == packet.candidate_id,
+            )
+        )
+    ).scalar_one() or 0
+    now = datetime.now(UTC).replace(tzinfo=None)
+    clone = RecordingPacket(
+        workspace_id=ws,
+        candidate_id=packet.candidate_id,
+        version=int(maximum) + 1,
+        bullets=list(packet.bullets or []),
+        script_phrases=list(packet.script_phrases or []),
+        facebook_post=packet.facebook_post,
+        linkedin_post=packet.linkedin_post,
+        interviewer_prompt=packet.interviewer_prompt,
+        hook_options=merged,
+        # The first replacement becomes the one in use: it is the point of the pass.
+        selected_hook_id=str(fresh[0].get("id") or packet.selected_hook_id),
+        beats=list(packet.beats or []),
+        citations_private=list(packet.citations_private or []),
+        public_safety=dict(packet.public_safety or {}),
+        status=packet.status,
+        prompt_version=packet.prompt_version,
+        job_id=job_id,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(clone)
+    await session.commit()
+    return PacketOutcome(
+        status="ok",
+        job_id=job_id,
+        packet=packet_to_json(clone),
+        detail=(
+            f"The openings scored {score} out of 10, so {added} were rewritten in his "
+            "voice. The originals are still on the script to compare."
+        ),
+        errors=violations + dropped,
     )
 
 
