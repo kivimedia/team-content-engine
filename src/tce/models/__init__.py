@@ -42,6 +42,14 @@ from tce.models.image_asset import ImageAsset
 from tce.models.learning_event import LearningEvent
 from tce.models.llm_job import LLMJob
 from tce.models.narration_script import NarrationScript
+from tce.models.news import (
+    NewsAnchor,
+    NewsAppraisal,
+    NewsFeed,
+    NewsItem,
+    NewsMatch,
+    NewsWatchlist,
+)
 from tce.models.notification import Notification
 from tce.models.operator_feedback import OperatorFeedback
 from tce.models.pattern_template import PatternTemplate
@@ -110,6 +118,12 @@ __all__ = [
     "RecordingSession",
     "RecordingUpload",
     "NarrationScript",
+    "NewsAnchor",
+    "NewsAppraisal",
+    "NewsFeed",
+    "NewsItem",
+    "NewsMatch",
+    "NewsWatchlist",
     "RenderQueueJob",
     "RepoBrief",
     "ResearchBrief",

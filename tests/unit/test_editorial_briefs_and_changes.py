@@ -303,6 +303,46 @@ async def test_undo_restores_old_wording_as_a_new_version(editorial_session):
     ]
 
 
+async def test_undo_removes_a_block_the_change_had_added(editorial_session):
+    """Restore replaces the content; it does not merge over what is there now.
+
+    The earlier undo test changed a block that existed in both versions, so a
+    merge looked identical to a replace and the bug hid. Adding a block and then
+    restoring is the case that separates them: `takeaway` has to be gone again,
+    not left behind under a label saying version 1.
+    """
+    ws = uuid.uuid4()
+    candidate, _ = await seeded(editorial_session, ws)
+
+    change_set = await changes.propose(
+        editorial_session,
+        ws,
+        target_type="candidate_brief",
+        target_id=candidate.id,
+        base_version=1,
+        operations=[OperationInput(op="set_field", field="takeaway", after="Open the result.")],
+        summary="Add a takeaway",
+    )
+    await changes.apply(editorial_session, ws, change_set.id)
+    await editorial_session.commit()
+
+    await changes.undo(
+        editorial_session,
+        ws,
+        target_type="candidate_brief",
+        target_id=candidate.id,
+        to_version=1,
+        decided_by="ziv",
+    )
+    await editorial_session.commit()
+
+    v3 = await briefs.get_version(editorial_session, ws, candidate.id, 3)
+    assert v3.brief.get("takeaway", "") == ""
+    # And version 2 still says what it said, because history is append-only.
+    v2 = await briefs.get_version(editorial_session, ws, candidate.id, 2)
+    assert v2.brief["takeaway"] == "Open the result."
+
+
 async def test_partial_approval_applies_only_what_was_accepted(editorial_session):
     ws = uuid.uuid4()
     candidate, _ = await seeded(editorial_session, ws)

@@ -548,7 +548,12 @@ async def apply(
         elif op.op == "move_topic":
             values.setdefault("moves", []).append(after)
         elif op.op == "restore_version":
-            values.update(after if isinstance(after, dict) else {})
+            # REPLACE, not merge. Restoring version 1 over a version 2 that added
+            # a block has to remove that block again; `update` would leave it
+            # behind and call the result "version 1", which is a lie about what
+            # the editor is looking at.
+            if isinstance(after, dict):
+                values = dict(after)
         op.state = "applied"
         applied.append(op.seq)
 
