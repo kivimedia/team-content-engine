@@ -39,7 +39,7 @@ async def stored(workspace_id: uuid.UUID) -> tuple[int, datetime | None]:
     return int(row[0] or 0), row[1]
 
 
-async def main(workspace_id: uuid.UUID, months: int, apply: bool) -> None:
+async def main(workspace_id: uuid.UUID, months: int, apply: bool, pause: float = 0.0) -> None:
     count, earliest = await stored(workspace_id)
     print(f"{count} calls stored, earliest {earliest or '(none)'}")
 
@@ -86,5 +86,6 @@ if __name__ == "__main__":
     parser.add_argument("workspace_id")
     parser.add_argument("--months", type=int, default=6)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--pause", type=float, default=90.0, help="seconds between windows")
     args = parser.parse_args()
-    asyncio.run(main(uuid.UUID(args.workspace_id), max(1, args.months), args.apply))
+    asyncio.run(main(uuid.UUID(args.workspace_id), max(1, args.months), args.apply, args.pause))
