@@ -44,6 +44,8 @@ JOB_TYPE = "recording_packet"
 AGENT_NAME = "recording_packet_writer"
 MIN_BULLETS = 5
 MAX_BULLETS = 7
+# What the writer must produce. The list grows later (more openings, a voice pass).
+HOOK_OPTIONS_WRITTEN = 3
 # A take set in one of these states has clips bound to its packet version; the
 # opening of that version cannot be switched underneath it (see choose_hook).
 RECORDING_IN_PROGRESS_STATUSES = ("recording", "finalizing")
@@ -189,8 +191,14 @@ class PacketOutcome:
         }
 
 
-def validate_packet_output(data: Any) -> dict[str, Any]:
-    """Return a cleaned packet dict or raise PacketValidationError with all problems."""
+def validate_packet_output(data: Any, *, max_hooks: int = HOOK_OPTIONS_WRITTEN) -> dict[str, Any]:
+    """Return a cleaned packet dict or raise PacketValidationError with all problems.
+
+    `max_hooks` is three when a packet is first written and MAX_HOOK_OPTIONS when an
+    existing one is re-validated. Asking for more openings grows that list on
+    purpose, and choose_hook re-validates the whole packet: with a flat rule of
+    exactly three, every opening added after the first three was unselectable.
+    """
     if not isinstance(data, dict):
         raise PacketValidationError("packet output is not a JSON object")
     errors: list[str] = []
@@ -218,8 +226,12 @@ def validate_packet_output(data: Any) -> dict[str, Any]:
     phrase_ids = [f"p{i:03d}" for i in range(1, len(phrases) + 1)]
     phrase_positions = {pid: index for index, pid in enumerate(phrase_ids)}
     options = data.get("hook_options")
-    if not isinstance(options, list) or len(options) != 3:
-        errors.append("hook_options must contain exactly three openings")
+    if not isinstance(options, list) or not HOOK_OPTIONS_WRITTEN <= len(options) <= max_hooks:
+        errors.append(
+            f"hook_options must contain exactly {HOOK_OPTIONS_WRITTEN} openings"
+            if max_hooks == HOOK_OPTIONS_WRITTEN
+            else f"hook_options must contain {HOOK_OPTIONS_WRITTEN} to {max_hooks} openings"
+        )
         options = []
     clean_options: list[dict[str, Any]] = []
     option_ids: set[str] = set()
@@ -1366,7 +1378,8 @@ async def choose_hook(
             "hook_options": options,
             "selected_hook_id": hook_id,
             "beats": list(original.beats or []),
-        }
+        },
+        max_hooks=MAX_HOOK_OPTIONS,
     )
     maximum = (
         await session.execute(

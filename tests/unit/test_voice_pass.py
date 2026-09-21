@@ -66,7 +66,16 @@ def a_packet(cand: TopicCandidate, **over) -> RecordingPacket:
             }
         ],
         "selected_hook_id": "h1",
-        "beats": [],
+        "beats": [
+            {
+                "id": f"b{i}",
+                "label": f"beat {i}",
+                "bullet_index": i - 1,
+                "start_phrase_id": f"p{i:03d}",
+                "end_phrase_id": f"p{i:03d}",
+            }
+            for i in range(1, 6)
+        ],
         "citations_private": [{"moment_id": MOMENT}],
         "public_safety": {"status": "clean", "issues": []},
         "status": "ready",
@@ -273,3 +282,36 @@ async def test_no_worker_is_a_waiting_state_not_a_failure(editorial_sessionmaker
     out = await packets.voice_pass(sm, WS, packet.id)
 
     assert out.status == "waiting_worker"
+
+
+async def test_an_opening_can_be_chosen_after_the_list_has_grown(editorial_sessionmaker, critic):
+    """Ziv, 20-Sep: he asked for more openings. Choosing one of them then failed.
+
+    validate_packet_output enforces "exactly three openings", which is the rule for
+    a freshly written packet. more_hook_options and the voice pass both grow that
+    list on purpose, up to MAX_HOOK_OPTIONS, and choose_hook re-validates the whole
+    packet - so every opening added after the first three was unselectable.
+    """
+    sm = editorial_sessionmaker
+    cand = a_candidate()
+    grown = a_packet(cand)
+    grown.hook_options = [
+        {
+            "id": f"h{i}",
+            "text": f"Opening number {i} that takes a position.",
+            "question": "Which stage?",
+            "payoff_phrase_id": "p004",
+            "moment_ids": [MOMENT],
+            "rationale": "r",
+        }
+        for i in range(1, 7)
+    ]
+    grown.selected_hook_id = "h1"
+    await seed(sm, cand, grown)
+
+    async with sm() as s:
+        clone = await packets.choose_hook(s, WS, grown.id, "h6")
+
+    assert clone.selected_hook_id == "h6"
+    assert clone.script_phrases[0] == "Opening number 6 that takes a position."
+    assert len(clone.hook_options) == 6
