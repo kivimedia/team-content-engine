@@ -1149,25 +1149,31 @@ async def recording_queue(
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    rows = (
-        await db.execute(
-            select(TopicCandidate, RecordingPacket)
-            .join(RecordingPacket, RecordingPacket.candidate_id == TopicCandidate.id)
-            .where(
-                TopicCandidate.workspace_id == ws,
-                RecordingPacket.workspace_id == ws,
-                TopicCandidate.status.in_(("selected", "recorded")),
-                RecordingPacket.status.in_(("ready", "exported")),
-            )
-            .order_by(TopicCandidate.rank.asc().nullslast(), RecordingPacket.created_at.desc())
-        )
-    ).all()
-    seen: set[uuid.UUID] = set()
+    """The ideas Today counts as ready, and only those.
+
+    This used to list every selected or recorded idea that ever got a script,
+    from any week: Today said "1 script ready" and the studio showed 3 (an old
+    week's idea, a technical test and one already recorded) while missing the
+    one Today meant. One source now: this week's lineup, primary slots, in the
+    lineup's order, script ready. The same rows `today.build` counts.
+    """
+    from tce.editorial import lineup as lineup_service
+
+    lineup = await lineup_service.get_lineup(db, ws, lineup_service.week_start_for(None))
+    week = await lineup_service.lineup_to_json(db, ws, lineup) if lineup is not None else {}
+    wanted = [
+        (uuid.UUID(r["candidate_id"]), uuid.UUID(r["packet_id"]))
+        for r in week.get("primary") or []
+        if r.get("script_state") == "ready" and r.get("packet_id")
+    ]
+    rows = []
+    for candidate_id, packet_id in wanted:
+        candidate = await db.get(TopicCandidate, candidate_id)
+        packet = await db.get(RecordingPacket, packet_id)
+        if candidate is not None and packet is not None and candidate.workspace_id == ws:
+            rows.append((candidate, packet))
     ideas: list[dict[str, Any]] = []
     for candidate, packet in rows:
-        if candidate.id in seen:
-            continue
-        seen.add(candidate.id)
         active = (
             await db.execute(
                 select(RecordingSession)

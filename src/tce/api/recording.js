@@ -90,9 +90,14 @@ function packetToIdea(idea, packet) {
     if (typeof paintHomeButton === "function") paintHomeButton();
   }
 
+  // While the camera runs the screen is video on top and the words below: the
+  // header, the title and the full control bar go, and only Pause and Finish
+  // stay, as two small buttons. Defined long ago and never called until 22-Sep.
   function setRecordingChrome(active) {
     const view = document.getElementById("studioView");
     if (view) view.classList.toggle("is-recording", Boolean(active));
+    document.body.classList.toggle("rec-live", Boolean(active));
+    if (state.idea && state.mode === "points") renderReader();
   }
 
   function showNotice(message, timeout = 4200) {
@@ -251,6 +256,11 @@ function packetToIdea(idea, packet) {
     const items = state.mode === "points" ? idea.bullets : idea.script_phrases;
     reader.className = `reader ${state.mode}`;
     reader.replaceChildren();
+    // The opening is the first thing he says, so in Points it is the first line,
+    // not a panel taking a third of the screen. The full script already starts
+    // with it (choosing an opening rewrites the first spoken phrase).
+    const hook = selectedHook(idea);
+    if (state.mode === "points" && hook) reader.appendChild(openingLine(idea, hook));
     items.forEach((text, index) => {
       const line = document.createElement("p");
       line.className = "reader-line";
@@ -272,6 +282,26 @@ function packetToIdea(idea, packet) {
     reader.appendChild(tail);
     const saved = Number(localStorage.getItem(`tce-reader-${idea.packet_id}-${state.mode}`) || 0);
     requestAnimationFrame(() => { reader.scrollTop = saved; syncScrollRail(); });
+  }
+
+  function openingLine(idea, hook) {
+    const line = document.createElement("p");
+    line.className = "reader-line opening";
+    line.id = "points-opening";
+    const label = document.createElement("span");
+    label.className = "reader-index";
+    label.textContent = "Opening";
+    line.append(label, document.createTextNode(hook.text));
+    const recording = Boolean(state.recorder && state.recorder.state !== "inactive");
+    if ((idea.hook_options || []).length >= 2 && !state.hookLock && !recording) {
+      const change = document.createElement("button");
+      change.type = "button";
+      change.className = "hook-change opening-change";
+      change.textContent = "Change";
+      change.addEventListener("click", () => openHookChooser(idea));
+      line.appendChild(change);
+    }
+    return line;
   }
 
   function renderBeats() {
@@ -346,8 +376,11 @@ function packetToIdea(idea, packet) {
     const hook = selectedHook(idea);
     const panel = $("hookPanel");
     panel.replaceChildren();
-    panel.hidden = !hook;
-    if (!hook) return;
+    state.hookLock = lockNote;
+    // The opening now lives in the reader as its first line (renderReader), so
+    // this panel only speaks when the opening is locked and he needs to know why.
+    panel.hidden = !hook || !lockNote;
+    if (!hook || !lockNote) return;
     const line = document.createElement("div");
     line.className = "hook-line";
     const strong = document.createElement("strong");
@@ -680,6 +713,7 @@ function packetToIdea(idea, packet) {
       $("pauseButton").disabled = false;
       $("finishClipButton").disabled = false;
       $("pauseButton").textContent = "Pause";
+      setRecordingChrome(true);
       showNotice("Recording started. Tabs and point jumps stay available.");
     } catch (error) {
       showNotice(`Recording did not start: ${error.message}`, 7000);
@@ -735,6 +769,7 @@ function packetToIdea(idea, packet) {
     const session = state.session;
     const takeMarkers = [...state.takeMarkers];
     await stopRecorderLocally();
+    setRecordingChrome(false);
     const activeSeconds = Number((state.activeMs / 1000).toFixed(3));
     await Promise.all(state.pendingWrites);
     clearInterval(state.timerId);

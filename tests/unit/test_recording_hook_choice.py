@@ -20,7 +20,9 @@ from pydantic import SecretStr
 from tce.api.routers import editorial as editorial_router
 from tce.api.routers import production as prod
 from tce.db.session import get_db
+from tce.editorial.lineup import week_start_for
 from tce.models.editorial import RecordingPacket, TopicCandidate
+from tce.models.editorial_workspace import WeeklyLineup, WeeklyLineupItem
 from tce.settings import settings
 from tests.unit.test_editorial_packets import good_output
 
@@ -88,8 +90,33 @@ async def seed_v2(sessionmaker) -> tuple[TopicCandidate, RecordingPacket]:
     )
     async with sessionmaker() as s:
         s.add_all([cand, packet])
+        await put_in_this_week(s, cand)
         await s.commit()
     return cand, packet
+
+
+async def put_in_this_week(s, cand: TopicCandidate, *, rank: int = 1) -> None:
+    """The studio lists this week's lineup, so a recordable idea has to be in it."""
+    from sqlalchemy import select
+
+    week = week_start_for(None)
+    lineup = (
+        await s.execute(
+            select(WeeklyLineup).where(
+                WeeklyLineup.workspace_id == WS, WeeklyLineup.week_start == week
+            )
+        )
+    ).scalar_one_or_none()
+    if lineup is None:
+        lineup = WeeklyLineup(id=uuid.uuid4(), workspace_id=WS, week_start=week)
+        s.add(lineup)
+        await s.flush()
+    s.add(
+        WeeklyLineupItem(
+            id=uuid.uuid4(), workspace_id=WS, lineup_id=lineup.id,
+            candidate_id=cand.id, rank=rank, slot="primary", lane="other",
+        )
+    )
 
 
 def hook_text(packet_json: dict, hook_id: str) -> str:
@@ -220,3 +247,34 @@ async def test_legacy_packet_offers_no_hook_choice(client, editorial_sessionmake
         headers=AUTH,
     )
     assert r.status_code == 404
+
+
+async def test_the_studio_lists_exactly_what_today_counts(client, editorial_sessionmaker):
+    """Today said 1 script ready and the studio showed 3: an old week's idea, a
+    technical test and one already recorded, and not the one Today meant."""
+    from tce.editorial import today
+
+    cand, _ = await seed_v2(editorial_sessionmaker)
+    output = good_output()
+    async with editorial_sessionmaker() as s:
+        # A selected idea with a ready script that is NOT in this week's lineup.
+        stray = TopicCandidate(
+            id=uuid.uuid4(), workspace_id=WS, week_start=datetime(2026, 9, 7),
+            moment_ids=[], title="Last week's idea", lesson="x", audience="coaches",
+            public_angle="x", gates={}, status="selected",
+        )
+        s.add(stray)
+        s.add(RecordingPacket(
+            id=uuid.uuid4(), workspace_id=WS, candidate_id=stray.id, version=1,
+            bullets=output["bullets"], script_phrases=output["script_phrases"],
+            facebook_post="", linkedin_post="", interviewer_prompt="",
+            citations_private=[], public_safety={"status": "clean", "issues": []},
+            status="ready",
+        ))
+        await s.commit()
+
+    queue = (await client.get("/api/v1/production/recording-queue", headers=AUTH)).json()
+    async with editorial_sessionmaker() as s:
+        counted = (await today.build(s, WS))["attention"]["scripts_ready"]
+    assert [i["candidate_id"] for i in queue["ideas"]] == [str(cand.id)]
+    assert queue["count"] == counted == 1
