@@ -229,19 +229,18 @@ details:not([open]) > *:not(summary) { display: none !important; }
 .reader-line.opening .opening-change { margin-left: 10px; font-size: .74rem; vertical-align: middle; }
 
 /* Recording: video on top, words below, nothing else. The header, the title and
-   the four-button bar give their space to the script; Pause sits bottom left and
-   Finish bottom right, small, over the reader's empty tail. */
+   the four-button bar give their space to the script. Pause and Finish sit on the
+   bottom edge of the VIDEO, left and right, so they never cover a word or the
+   reader's own scroll buttons. */
 body.in-studio.rec-live { grid-template-rows: minmax(0, 1fr); }
 body.rec-live .topbar { display: none; }
 .studio-view.is-recording { position: relative; }
 .studio-view.is-recording .script-heading,
 .studio-view.is-recording .session-strip { display: none; }
 .studio-view.is-recording .camera-stage video { object-fit: cover; }
-.studio-view.is-recording .reader { padding-bottom: 76px; }
 .studio-view.is-recording .controls {
-  position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between;
-  gap: 0; padding: 0 12px calc(10px + env(safe-area-inset-bottom)); background: transparent;
-  border-top: 0; pointer-events: none;
+  position: absolute; left: 0; right: 0; top: calc(50% - 60px); display: flex; justify-content: space-between;
+  gap: 0; padding: 0 12px; background: transparent; border-top: 0; pointer-events: none;
 }
 .studio-view.is-recording .control { pointer-events: auto; min-height: 48px; width: auto; padding: 6px 18px; font-size: .9rem; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
 .studio-view.is-recording #recordButton,
@@ -250,4 +249,8 @@ body.rec-live .topbar { display: none; }
 .studio-view.is-recording #finishClipButton small { display: none; }
 @media (max-width: 759px) {
   .studio-view.is-recording { grid-template-rows: 50% minmax(0, 1fr); }
+}
+@media (min-width: 760px) {
+  /* Wide screens keep the camera as the left column: the buttons go on its foot. */
+  .studio-view.is-recording .controls { top: auto; bottom: 12px; right: 58%; }
 }
