@@ -406,6 +406,117 @@ def plan_shards(pool: list[PoolMoment], shard_size: int | None = None) -> list[l
     return [s for s in shards if s]
 
 
+def _coerce_news_id(news: dict[str, Any] | None) -> uuid.UUID | None:
+    raw = (news or {}).get("news_item_id")
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        return None
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC).replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def _news_fields(cited: list[PoolMoment]) -> dict[str, Any] | None:
+    """What the news rules need, read off the cited news moment's news_ref.
+
+    None for an ordinary candidate, so the evergreen path is untouched.
+    """
+    for pm in cited:
+        if pm.source.source_kind != news_rules.NEWS_KIND:
+            continue
+        ref = pm.moment.news_ref or {}
+        item_id = ref.get("news_item_id")
+        return {
+            "news_item_id": item_id,
+            "scores": ref.get("scores") or {},
+            "published_at": _parse_dt(ref.get("published_at")),
+            "expires_at": _parse_dt(ref.get("expires_at")),
+            "story_weight": ref.get("story_weight") or "small",
+            "perishability": ref.get("perishability"),
+        }
+    return None
+
+
+def split_news(pool: list[PoolMoment]) -> tuple[list[PoolMoment], list[PoolMoment]]:
+    """(everything else, news moments). Standing facts are dropped from both.
+
+    News goes to its own shard so each item can sit beside the anchors it cites.
+    Standing facts are never judged as candidates in their own right - they exist
+    to make a connection citable - so they only ever appear as anchor context.
+    """
+    rest: list[PoolMoment] = []
+    news: list[PoolMoment] = []
+    for pm in pool:
+        kind = pm.source.source_kind
+        if kind == news_rules.STANDING_KIND:
+            continue
+        (news if kind == news_rules.NEWS_KIND else rest).append(pm)
+    return rest, news
+
+
+def anchor_ids_for(news: list[PoolMoment]) -> list[str]:
+    """The anchors named by the week's news moments, in first-seen order."""
+    seen: dict[str, None] = {}
+    for pm in news:
+        ref = pm.moment.news_ref or {}
+        for mid in ref.get("anchor_moment_ids") or []:
+            seen.setdefault(str(mid), None)
+    return list(seen)
+
+
+async def load_context(
+    session: AsyncSession,
+    ws: uuid.UUID,
+    ids: list[str],
+    *,
+    include_standing: bool = True,
+) -> list[PoolMoment]:
+    """Fetch anchor moments by id, plus every active standing fact.
+
+    Anchors may be outside the week entirely (a commit from last month), so they
+    cannot be taken from the pool; standing facts are never in the pool at all.
+    Only ACTIVE moments at their source's CURRENT version are returned, so a
+    stale anchor cannot be cited just because it was once named.
+    """
+    wanted = [uuid.UUID(i) for i in ids if i]
+    clauses = []
+    if wanted:
+        clauses.append(EvidenceMoment.id.in_(wanted))
+    if include_standing:
+        clauses.append(EvidenceSource.source_kind == news_rules.STANDING_KIND)
+    if not clauses:
+        return []
+    rows = (
+        await session.execute(
+            select(EvidenceMoment, EvidenceSource)
+            .join(EvidenceSource, EvidenceMoment.source_id == EvidenceSource.id)
+            .where(
+                EvidenceMoment.workspace_id == ws,
+                EvidenceSource.workspace_id == ws,
+                EvidenceMoment.status == "active",
+                or_(*clauses),
+            )
+        )
+    ).all()
+    out = []
+    for moment, source in rows:
+        if moment.source_version_hash != source.version_hash:
+            continue
+        out.append(PoolMoment(moment=moment, source=source, in_week=False))
+    out.sort(key=_pm_sort_key)
+    return out
+
+
 def _pool_prompt_item(pm: PoolMoment) -> dict[str, Any]:
     m, s = pm.moment, pm.source
     return {
@@ -434,10 +545,28 @@ def build_selection_prompt(
     shard: int = 1,
     shards: int = 1,
     total_moments: int | None = None,
+    context: list[PoolMoment] | None = None,
 ) -> str:
     import json
 
     total = len(pool) if total_moments is None else total_moments
+    context_block: list[str] = []
+    if context:
+        # Only the news shard has context. These are the call, commit and
+        # standing-fact moments the week's news is anchored on. They may be CITED
+        # but are NOT accounted for here: each is accounted in its own shard, or
+        # is a standing fact that is never a candidate by itself. They are written
+        # as `context_moment_id` so the resume parser cannot mistake them for
+        # accountable ids.
+        context_block = [
+            "ANCHOR CONTEXT (private; you may put these ids in a candidate's "
+            "moment_ids to anchor a news item in Ziv's own work, but do NOT account "
+            "for them and do NOT reject them - they are judged elsewhere):\n"
+            + json.dumps([_context_prompt_item(pm) for pm in context], indent=1),
+            "NEWS RULE: a candidate built on a news item MUST also cite at least one "
+            "anchor above, or it is rejected. The news is the trigger; his work is the "
+            "point of view.",
+        ]
     # The first three lines are durable headers parsed by tce.editorial.common.
     return "\n\n".join(
         [
@@ -456,8 +585,22 @@ def build_selection_prompt(
             "reason. Do not leave any moment out.",
             "EVIDENCE POOL (private; excerpts are for your judgment, never for quoting "
             "customers):\n" + json.dumps([_pool_prompt_item(pm) for pm in pool], indent=1),
+            *context_block,
         ]
     )
+
+
+def _context_prompt_item(pm: PoolMoment) -> dict[str, Any]:
+    """An anchor, shown for citation only. Keyed so resume never counts it."""
+    m, s = pm.moment, pm.source
+    return {
+        "context_moment_id": pm.id,
+        "source_kind": s.source_kind,
+        "occurred_at": s.occurred_at.isoformat() if s.occurred_at else None,
+        "lesson_summary": m.lesson_summary,
+        "claim_type": m.claim_type,
+        "excerpt_private": (m.excerpt_private or "")[:EXCERPT_CHARS],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -680,9 +823,36 @@ def enforce_candidates(
         if freshness_role == "evergreen" and any(pm.in_week for pm in cited):
             rank_score += 0.05  # freshness is only a small bonus for evergreen ideas
 
+        # Third lane: a news-led candidate is scored on the news formula, whose
+        # largest term is the support of its NON-news citations. The appraisal's
+        # scores, dates and weight travel on the news moment's news_ref, so this
+        # never joins back to the news tables.
+        news = _news_fields(cited)
+        if news is not None:
+            if news_rules.should_convert_to_evergreen(news["perishability"]):
+                # `durable` is a confession that it was never news. Keep the
+                # lesson, drop the headline, take no news slot.
+                freshness_role = "evergreen"
+                news = None
+            else:
+                parts = news_rules.score_news(
+                    citations=[{"source_kind": pm.source.source_kind,
+                                "claim_type": pm.moment.claim_type,
+                                "speaker_confidence": pm.moment.speaker_confidence}
+                               for pm in cited],
+                    scores=news["scores"],
+                    published_at=news["published_at"],
+                    expires_at=news["expires_at"],
+                    now=datetime.now(UTC).replace(tzinfo=None),
+                )
+                rank_score = parts.total
+                freshness_role = "news"
+                notes.append(f"News score: {parts.explain()}")
+
         audience = raw.get("audience")
         accepted.append(
             {
+                "news": news,
                 "moment_ids": ids,
                 "title": str(raw.get("title") or "").strip()[:300],
                 "lesson": str(raw.get("lesson") or "").strip(),
@@ -1168,6 +1338,8 @@ class ShardSpec:
     moment_ids: list[str]
     requeue_failed: bool = False
     job_status: str | None = None  # stored job status when resuming
+    # News shard only: anchors that may be cited but are not accounted for here.
+    context_ids: list[str] = field(default_factory=list)
 
 
 async def _stored_shard_specs(
@@ -1212,6 +1384,7 @@ async def _stored_shard_specs(
                 shards=meta["shards"],
                 request=req,
                 moment_ids=meta["moment_ids"],
+                context_ids=meta.get("context_ids") or [],
                 requeue_failed=job_can_requeue(job),
                 job_status=job.status,
             )
@@ -1299,6 +1472,17 @@ async def select_candidates(
         pool_by_id = {pm.id: pm for pm in plan.moments}
         if specs:
             result.resumed = True
+            # A resumed news shard needs its anchors back in reach, or every news
+            # candidate it produced would now fail as an ineligible citation. They
+            # are not in the week's pool (a month-old commit, a standing fact), so
+            # they are reloaded by id. include_standing=False: only what the stored
+            # prompt actually showed the model is citable.
+            resumed_context = sorted({i for s in specs for i in s.context_ids})
+            if resumed_context:
+                for pm in await load_context(
+                    session, ws, resumed_context, include_standing=False
+                ):
+                    pool_by_id.setdefault(pm.id, pm)
             stored_max = parse_selection_header(specs[0].request.messages[0]["content"])
             if stored_max and stored_max["max_candidates"] is not None:
                 max_candidates = result.max_candidates = stored_max["max_candidates"]
@@ -1310,7 +1494,20 @@ async def select_candidates(
                 i for i in in_run if i not in pool_by_id
             )
         elif plan.moments and max_candidates > 0:
-            shards = plan_shards(plan.moments)
+            rest, news = split_news(plan.moments)
+            shards = plan_shards(rest)
+            # News gets one dedicated final shard, seated beside the anchors it
+            # names so a candidate can cite them. Empty when the lane is off or
+            # the week had nothing, in which case nothing below changes at all.
+            news_context: list[PoolMoment] = []
+            if news:
+                news_context = await load_context(session, ws, anchor_ids_for(news))
+                shards.append(news)
+            contexts: dict[int, list[PoolMoment]] = (
+                {len(shards): news_context} if news else {}
+            )
+            for pm in news_context:
+                pool_by_id.setdefault(pm.id, pm)
             activity(f"Loading strategy and feedback ({len(plan.moments)} moments in pool)")
             strategy = await load_effective_strategy(session, ws)
             feedback = await summarize_feedback(session, ws)
@@ -1325,12 +1522,14 @@ async def select_candidates(
                     shard=i,
                     shards=len(shards),
                     total_moments=len(plan.moments),
+                    context=contexts.get(i),
                 )
                 specs.append(
                     ShardSpec(
                         shard=i,
                         shards=len(shards),
                         moment_ids=[pm.id for pm in shard],
+                        context_ids=[pm.id for pm in contexts.get(i, [])],
                         request=LLMRequest(
                             job_type=JOB_TYPE,
                             agent_name=AGENT_NAME,
@@ -1459,7 +1658,14 @@ async def select_candidates(
             unaccounted: list[str] = []
             for spec, job_id, data in parsed:
                 shard_ids = set(spec.moment_ids)
-                shard_pool = [pool_by_id[i] for i in spec.moment_ids if i in pool_by_id]
+                # Context anchors are citable here but were never in spec.moment_ids,
+                # so they cannot turn up in `missing` below: accounted exactly once,
+                # in their own shard.
+                shard_pool = [
+                    pool_by_id[i]
+                    for i in [*spec.moment_ids, *spec.context_ids]
+                    if i in pool_by_id
+                ]
                 raw_candidates = data.get("candidates") or []
                 acc, rej = enforce_candidates(raw_candidates, shard_pool, ws_ids)
                 accounted = {
@@ -1679,6 +1885,30 @@ async def select_candidates(
             )
         final = kept
 
+        # Third lane: the floor, the margin and the ceiling, applied to the week's
+        # set as a whole because they are about the week, not about one idea. With
+        # no news in the set this is a no-op and `final` is returned untouched.
+        if any(c.get("news") for c in final):
+            decision = news_rules.apply_slot_rules(
+                final,
+                is_news=lambda c: bool(c.get("news")),
+                score_of=lambda c: float(c.get("rank_score") or 0.0),
+                story_weight_of=lambda c: (c.get("news") or {}).get("story_weight", "small"),
+            )
+            for cand, code, reason in decision.rejected:
+                out = _reject(cand, cand["moment_ids"], "unspecified", code, reason)
+                out["job_id"] = cand.get("job_id")
+                # Keep the evidence visible on the card, but never as reserve: a
+                # news idea must not resurface weeks later through "more ideas".
+                out["citations_private"] = cand.get("citations_private") or []
+                rejected.append(out)
+            if decision.rejected:
+                activity(
+                    f"{len(decision.rejected)} news idea(s) held back by the weekly "
+                    f"news rules; proposing {len(decision.kept)}"
+                )
+            final = decision.kept
+
         # supersede proposed + prior selector rejections; never touch
         # selected/recorded/published/editor-rejected/calibration rows.
         for row in existing:
@@ -1716,6 +1946,10 @@ async def select_candidates(
                 origin=ORIGIN_SELECTOR,
                 created_at=now,
                 updated_at=now,
+                # Third lane: present means news-led, which is what the recorder's
+                # Timely badge reads and what the expiry sweep acts on.
+                news_item_id=_coerce_news_id(cand.get("news")),
+                expires_at=(cand.get("news") or {}).get("expires_at"),
             )
             session.add(row)
             rows.append(row)

@@ -103,6 +103,12 @@ _SHARDS_HEADER = re.compile(r"^SELECTION SHARDS: (\d+)\s*$", re.MULTILINE)
 _MAX_HEADER = re.compile(r"^RETURN AT MOST (\d+) ", re.MULTILINE)
 _PACKET_HEADER = re.compile(r"^PACKET REQUEST: ([0-9a-fA-F-]{36})\s*$", re.MULTILINE)
 _MOMENT_ID = re.compile(r'"moment_id": "([0-9a-fA-F-]{36})"')
+# Anchor context in a news shard: citable, never accountable. It is written under
+# its own key precisely so `_MOMENT_ID` above cannot match it - that regex needs a
+# quote directly before `moment_id`, and here it is preceded by `context_`. If the
+# two shared a key, a RESUMED run would recover the anchors as accountable ids and
+# demand the model account for moments it was only shown so it could cite them.
+_CONTEXT_ID = re.compile(r'"context_moment_id": "([0-9a-fA-F-]{36})"')
 
 
 def job_prompt_text(request_json: dict[str, Any] | None) -> str:
@@ -160,6 +166,7 @@ def parse_selection_header(prompt: str) -> dict[str, Any] | None:
         "shards": int(shard.group(2)) if shard else 1,
         "max_candidates": int(most.group(1)) if most else None,
         "moment_ids": list(dict.fromkeys(_MOMENT_ID.findall(prompt))),
+        "context_ids": list(dict.fromkeys(_CONTEXT_ID.findall(prompt))),
     }
 
 
