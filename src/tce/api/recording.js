@@ -680,9 +680,10 @@ function packetToIdea(idea, packet) {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !supportedMime) {
       throw new Error("This browser cannot record camera video with audio.");
     }
-    state.rawStream = await openCamera();
+    const camera = await openCamera();
+    state.rawStream = camera.stream;
     if (!state.rawStream.getAudioTracks().some((track) => track.enabled)) throw new Error("The recording has no active microphone track.");
-    state.stream = portraitStream(state.rawStream);
+    state.stream = portraitStream(camera);
     $("camera").srcObject = state.stream;
     await $("camera").play();
     $("cameraEmpty").hidden = true;
@@ -707,39 +708,64 @@ function packetToIdea(idea, packet) {
     { width: { ideal: 1080 }, height: { ideal: 1920 } },
   ];
 
+  /* The size a track reports the instant it opens is not the size of its frames.
+     Android reported nothing at all on 22-Sep, so `height >= width` was 0 >= 0,
+     the frames were called portrait and the crop was skipped: the take came back
+     2288x1716, landscape, after the fix was already live. The only number worth
+     believing is the one a <video> element gives once it has real frames, so
+     every attempt is measured that way and the element is kept for the canvas. */
+  function measure(stream) {
+    const element = document.createElement("video");
+    element.playsInline = true;
+    element.muted = true;
+    element.srcObject = stream;
+    element.play().catch(() => { /* metadata still arrives */ });
+    return new Promise((resolve) => {
+      const done = () => resolve({
+        stream, element, width: element.videoWidth || 0, height: element.videoHeight || 0,
+      });
+      if (element.videoWidth) { done(); return; }
+      element.addEventListener("loadedmetadata", done, { once: true });
+      // Never hang the studio on a camera that says nothing: 0x0 falls through
+      // to the next attempt, and a 0x0 last resort is passed through uncropped.
+      setTimeout(done, 2500);
+    });
+  }
+
   async function openCamera() {
     const audio = { echoCancellation: true, noiseSuppression: true };
     const tried = [];
     let fallback = null;
     for (const attempt of CAMERA_ATTEMPTS) {
-      let stream = null;
+      let opened = null;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        opened = await measure(await navigator.mediaDevices.getUserMedia({
           video: { facingMode: "user", ...attempt }, audio,
-        });
+        }));
       } catch (error) {
         tried.push({ attempt, error: error.name });
         continue;
       }
-      const settings = stream.getVideoTracks()[0]?.getSettings() || {};
-      tried.push({ attempt, got: `${settings.width}x${settings.height}` });
-      if ((settings.height || 0) >= (settings.width || 0)) {
-        state.cameraReport = { chose: `${settings.width}x${settings.height}`, portrait: true, tried };
-        if (fallback) fallback.getTracks().forEach((track) => track.stop());
-        return stream;
+      tried.push({ attempt, got: `${opened.width}x${opened.height}` });
+      if (opened.width && opened.height && opened.height >= opened.width) {
+        state.cameraReport = { chose: `${opened.width}x${opened.height}`, portrait: true, tried };
+        if (fallback) fallback.stream.getTracks().forEach((track) => track.stop());
+        return opened;
       }
-      // Landscape: keep the tallest one seen, in case nothing portrait exists.
-      const best = fallback?.getVideoTracks()[0]?.getSettings();
-      if (!best || (settings.height || 0) > (best.height || 0)) {
-        if (fallback) fallback.getTracks().forEach((track) => track.stop());
-        fallback = stream;
+      // Landscape, or a camera that will not say: keep the tallest seen so far.
+      if (!fallback || opened.height > fallback.height) {
+        if (fallback) fallback.stream.getTracks().forEach((track) => track.stop());
+        fallback = opened;
       } else {
-        stream.getTracks().forEach((track) => track.stop());
+        opened.stream.getTracks().forEach((track) => track.stop());
       }
     }
     if (!fallback) throw new Error("The camera did not open.");
-    const settings = fallback.getVideoTracks()[0].getSettings();
-    state.cameraReport = { chose: `${settings.width}x${settings.height}`, portrait: false, tried };
+    state.cameraReport = {
+      chose: `${fallback.width}x${fallback.height}`,
+      portrait: fallback.height >= fallback.width,
+      tried,
+    };
     return fallback;
   }
 
@@ -750,17 +776,15 @@ function packetToIdea(idea, packet) {
      through a 9:16 canvas, centre cropped, and the canvas is what gets recorded
      AND previewed - so what he sees is what the file holds. A camera that is
      already portrait is passed straight through and nothing is re-encoded. */
-  function portraitStream(raw) {
+  function portraitStream(camera) {
+    const raw = camera.stream;
     const track = raw.getVideoTracks()[0];
-    const settings = track ? track.getSettings() : {};
-    const width = settings.width || 0;
-    const height = settings.height || 0;
+    // Measured from real frames, never from getSettings() at open time.
+    const width = camera.width;
+    const height = camera.height;
     if (!track || !width || !height || height >= width) return raw;
 
-    const source = document.createElement("video");
-    source.playsInline = true;
-    source.muted = true;
-    source.srcObject = new MediaStream([track]);
+    const source = camera.element;
     const canvas = document.createElement("canvas");
     canvas.height = Math.min(1280, height);
     canvas.width = Math.round(canvas.height * 9 / 16 / 2) * 2;
@@ -798,8 +822,10 @@ function packetToIdea(idea, packet) {
       // Pressing Record with the chooser open confirms the current opening; the
       // walking reader carries no editorial detail from here on.
       if (!$("hookChooser").hidden) closeHookChooser();
-      await ensureSession();
+      // Camera first here too: a take set opened before the camera is described
+      // carries no camera report, which is how a landscape take got through.
       const stream = await ensureMedia();
+      await ensureSession();
       const localId = crypto.randomUUID();
       const extension = supportedMime.startsWith("video/mp4") ? "mp4" : "webm";
       const response = await api(`/recording-sessions/${state.session.id}/clips`, {

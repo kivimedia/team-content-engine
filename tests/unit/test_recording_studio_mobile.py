@@ -327,6 +327,10 @@ def test_a_landscape_camera_is_previewed_and_recorded_as_a_vertical_video(studio
               };
               paint();
               const landscape = canvas.captureStream(30);
+              // Android reported NO size at all the instant the camera opened, so
+              // the app read 0x0, called it portrait and skipped the crop: the
+              // take came back 2288x1716 with the fix already live.
+              landscape.getVideoTracks().forEach((track) => { track.getSettings = () => ({}); });
               stream.getAudioTracks().forEach((track) => landscape.addTrack(track));
               return landscape;
             };
