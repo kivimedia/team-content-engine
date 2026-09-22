@@ -410,6 +410,16 @@ def _common_fields(raw: dict[str, Any]) -> dict[str, Any] | str:
     }
 
 
+# The source kinds this extractor knows how to read. The third lane's two kinds
+# are deliberately absent: a news_item is read by the news appraiser (its own
+# prompt, its own table) and a standing_fact is written by a person and never
+# extracted at all. They are filtered out in `sources_needing_extraction` rather
+# than falling through to the empty return below, because a source that is
+# eligible but yields no moments is selected again on every single run, forever,
+# and nothing anywhere says so.
+EXTRACTABLE_KINDS = (FATHOM_KIND, GITHUB_KIND)
+
+
 def _jobs_for_source(source: EvidenceSource) -> list[tuple[str, dict[str, Any]]]:
     """(user_message, schema) per job."""
     payload = source.payload_private or {}
@@ -446,6 +456,8 @@ async def sources_needing_extraction(
     stmt = select(EvidenceSource).where(
         EvidenceSource.workspace_id == workspace_id,
         EvidenceSource.fetch_status.in_(("ok", "partial")),
+        # Never hand this extractor a kind it cannot read (see EXTRACTABLE_KINDS).
+        EvidenceSource.source_kind.in_(EXTRACTABLE_KINDS),
     )
     if source_kinds:
         stmt = stmt.where(EvidenceSource.source_kind.in_(source_kinds))
