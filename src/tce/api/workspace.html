@@ -5,6 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light">
 <title>Editorial workspace</title>
+<script>
+/* Set the base before the first asset reference, and everything else in this
+ * head can stay a plain relative href.
+ *
+ * Without it the nested routes were dead. This one page is served at /today and
+ * at /topics/<id>, and the whole app is ALSO mounted under /tce on
+ * bot.kivimedia.co. A relative "workspace.js" on /topics/<id> resolves to
+ * /topics/workspace.js, which does not exist - so the topic room and the script
+ * workshop loaded with no stylesheet and no script at all, and sat on the
+ * "Opening your workspace" placeholder forever. The flat routes worked, which is
+ * exactly why it survived every check that only opened those.
+ *
+ * An inline script in <head> runs during parsing, so the <base> it appends
+ * applies to every tag after it. */
+(function () {
+  var base = document.createElement("base");
+  base.href = window.location.pathname.indexOf("/tce/") === 0 ? "/tce/" : "/";
+  document.head.appendChild(base);
+})();
+</script>
 <link rel="stylesheet" href="workspace.css">
 <link rel="manifest" href="workspace.webmanifest">
 <meta name="theme-color" content="#10213b">
