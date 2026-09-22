@@ -31,9 +31,73 @@ class DocBlock:
     text: str
 
 
+def _day(value: Any) -> str:
+    """"Saturday 26 September" from an ISO string, or the raw value if it will not parse."""
+    if not value:
+        return ""
+    from datetime import datetime
+
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return str(value)
+    return f"{parsed:%A %d %B}".replace(" 0", " ")
+
+
+def news_blocks(block: dict[str, Any] | None) -> list[DocBlock]:
+    """The news section of a Doc, or nothing for an evergreen packet.
+
+    Three headings for three lists, in this order and never merged, because the
+    whole point of keeping them apart in the data is that he can see, while
+    recording, which sentence is the announcement's and which is his. The private
+    anchors (which call, which commit) are deliberately absent: this Doc is shared
+    with the team, and the anchor's job is to earn the right to speak, privately.
+    """
+    if not block:
+        return []
+    out: list[DocBlock] = []
+    source = ", ".join(
+        part
+        for part in (block.get("publisher"), _day(block.get("published_at")))
+        if part
+    )
+    out.append(DocBlock("heading", "The news, before you record"))
+    if block.get("what_happened"):
+        out.append(DocBlock("body", str(block["what_happened"])))
+    if source or block.get("primary_url"):
+        out.append(
+            DocBlock(
+                "body",
+                "Source: " + (source or "the announcement")
+                + (f" - {block['primary_url']}" if block.get("primary_url") else ""),
+            )
+        )
+    if block.get("expires_at"):
+        out.append(DocBlock("body", f"Worth saying until {_day(block['expires_at'])}."))
+
+    facts = block.get("confirmed_facts") or []
+    if facts:
+        out.append(DocBlock("heading", "What is actually confirmed"))
+        for fact in facts:
+            claim = str(fact.get("claim") or "").strip()
+            quote = str(fact.get("quote") or "").strip()
+            if claim:
+                out.append(DocBlock("bullet", f'{claim} ("{quote}")' if quote else claim))
+    reading = block.get("ziv_interpretation") or []
+    if reading:
+        out.append(DocBlock("heading", "Your reading of it (say this as yours, not as fact)"))
+        out += [DocBlock("bullet", str(r)) for r in reading if str(r).strip()]
+    ahead = block.get("predictions") or []
+    if ahead:
+        out.append(DocBlock("heading", "What you expect next (say this as a guess)"))
+        out += [DocBlock("bullet", str(p)) for p in ahead if str(p).strip()]
+    return out
+
+
 def packet_blocks(packet: Any, candidate: Any | None = None) -> list[DocBlock]:
     title = (getattr(candidate, "title", None) or "Recording packet").strip()
     blocks = [DocBlock("title", f"{title} (v{getattr(packet, 'version', 1)})")]
+    blocks += news_blocks(getattr(packet, "news_block", None))
     blocks.append(DocBlock("heading", "Walking bullets"))
     blocks += [DocBlock("bullet", b) for b in (packet.bullets or []) if str(b).strip()]
     blocks.append(DocBlock("heading", "Script, one phrase per line"))

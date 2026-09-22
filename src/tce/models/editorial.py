@@ -241,6 +241,14 @@ class RecordingPacket(_PrivateWorkspaceMixin, Base):
     status: Mapped[str] = mapped_column(String(20), default="draft")
     prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
     job_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    # Third lane, migration 045. Null for every evergreen packet.
+    # {"what_happened", "primary_url", "publisher", "published_at", "expires_at",
+    #  "confirmed_facts": [{"claim","quote"}], "ziv_interpretation": [...],
+    #  "predictions": [...]} - three lists kept apart so a prediction is never
+    #  printed as a fact, in the Doc or anywhere else.
+    news_block: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    # Which of the eight news shapes the script takes.
+    format: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class ExportIntent(_PrivateWorkspaceMixin, Base):

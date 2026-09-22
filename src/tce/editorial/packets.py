@@ -337,6 +337,51 @@ def validate_packet_output(
     return clean_packet
 
 
+async def news_block_for(
+    session: AsyncSession, ws: uuid.UUID, cand: TopicCandidate
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The news block a packet carries, or (None, None) for any other idea.
+
+    Taken from the stored appraisal, whose confirmed facts already survived the
+    check that each quote is really in the announcement. Nothing is re-derived
+    here, so a script can never gain a "fact" the appraisal did not verify.
+    """
+    from tce.models.news import NewsAppraisal, NewsItem
+
+    if not cand.news_item_id:
+        return None, None
+    appraisal = (
+        await session.execute(
+            select(NewsAppraisal)
+            .where(
+                NewsAppraisal.workspace_id == ws,
+                NewsAppraisal.news_item_id == cand.news_item_id,
+                NewsAppraisal.verdict == "publish",
+            )
+            .order_by(NewsAppraisal.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if appraisal is None:
+        return None, None
+    item = await session.get(NewsItem, cand.news_item_id)
+
+    def iso(value: Any) -> str | None:
+        return value.isoformat() if value else None
+
+    block = {
+        "what_happened": appraisal.what_happened,
+        "primary_url": (item.primary_url or item.url) if item else None,
+        "publisher": item.publisher if item else None,
+        "published_at": iso(item.published_at) if item else None,
+        "expires_at": iso(appraisal.expires_at),
+        "confirmed_facts": list(appraisal.confirmed_facts or []),
+        "ziv_interpretation": list(appraisal.ziv_interpretation or []),
+        "predictions": list(appraisal.predictions or []),
+    }
+    return block, appraisal.format
+
+
 async def news_terms_for(
     session: AsyncSession, ws: uuid.UUID, candidate_id: Any
 ) -> list[str] | None:
@@ -562,6 +607,7 @@ async def build_packet(
             except (TypeError, ValueError):
                 data = None
         news_terms = await news_terms_for(session, ws, cand.id)
+        news_block, news_format = await news_block_for(session, ws, cand)
         try:
             clean = validate_packet_output(data, news_terms=news_terms)
         except PacketValidationError as exc:
@@ -658,6 +704,8 @@ async def build_packet(
             job_id=llm.job_id,
             created_at=now,
             updated_at=now,
+            news_block=news_block,
+            format=news_format,
         )
         session.add(packet)
         await session.commit()
@@ -1112,6 +1160,8 @@ async def _apply_more_hooks(
         public_safety=dict(packet.public_safety or {}),
         status=packet.status,
         prompt_version=packet.prompt_version,
+        news_block=packet.news_block,
+        format=packet.format,
         job_id=job_id,
         created_at=now,
         updated_at=now,
@@ -1347,6 +1397,8 @@ async def _apply_voice_pass(
         public_safety=dict(packet.public_safety or {}),
         status=packet.status,
         prompt_version=packet.prompt_version,
+        news_block=packet.news_block,
+        format=packet.format,
         job_id=job_id,
         created_at=now,
         updated_at=now,
@@ -1453,6 +1505,8 @@ async def choose_hook(
         public_safety=dict(original.public_safety or {}),
         status="ready" if (original.public_safety or {}).get("status") == "clean" else "draft",
         prompt_version=original.prompt_version,
+        news_block=original.news_block,
+        format=original.format,
         job_id=original.job_id,
         created_at=now,
         updated_at=now,

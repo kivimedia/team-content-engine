@@ -289,4 +289,7 @@ def packet_to_json(p: RecordingPacket) -> dict[str, Any]:
         "prompt_version": p.prompt_version,
         "job_id": str(p.job_id) if p.job_id else None,
         "created_at": _iso(p.created_at),
+        # Third lane; both null for every evergreen packet.
+        "news_block": getattr(p, "news_block", None),
+        "format": getattr(p, "format", None),
     }

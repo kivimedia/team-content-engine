@@ -27,6 +27,7 @@ from tce.api.routers import (
     llm_jobs,
     monthly,
     narration,
+    news,
     notifications,
     onboarding,
     operator_controls,
@@ -284,6 +285,7 @@ def create_app() -> FastAPI:
     # Evidence-first editorial system (private, fail-closed access per router)
     app.include_router(llm_jobs.router, prefix=prefix)
     app.include_router(evidence.router, prefix=prefix)
+    app.include_router(news.router, prefix=prefix)
     app.include_router(editorial.router, prefix=prefix)
     app.include_router(production.router, prefix=prefix)
     # The editorial workspace: Today, topics, the week, changes and the library.

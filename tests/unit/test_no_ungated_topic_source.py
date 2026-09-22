@@ -73,9 +73,23 @@ def test_trends_router_is_not_mounted():
 
     from tce.api.app import create_app
 
-    paths = {getattr(r, "path", "") for r in create_app().routes}
-    assert not [p for p in paths if "/trends" in p], (
-        f"A /trends route is mounted again: {sorted(p for p in paths if '/trends' in p)}"
+    # Read the OpenAPI paths, not app.routes. In this FastAPI version an included
+    # router appears in app.routes as an object with no `.path`, so the first
+    # version of this test could never have seen a remounted /trends router - it
+    # passed for the wrong reason. The canary below proves this one can see.
+    paths = set(create_app().openapi()["paths"])
+    assert "/api/v1/news/overview" in paths, "the path check is blind again"
+
+    # The router that RAN the scout lived at /api/v1/trends. That prefix must stay
+    # empty. /api/v1/briefs/trends is a different thing: two read-only GETs over the
+    # historical trend_briefs table, kept on purpose as an archive when the scout
+    # was deleted. They generate nothing, so they are allowed - and named here, so
+    # a new route cannot hide behind "it is only under briefs/".
+    scout_routes = sorted(p for p in paths if p.startswith("/api/v1/trends"))
+    assert not scout_routes, f"the trend-scan router is mounted again: {scout_routes}"
+    archive = sorted(p for p in paths if "/trends" in p and not p.startswith("/api/v1/trends"))
+    assert archive == ["/api/v1/briefs/trends", "/api/v1/briefs/trends/{brief_id}"], (
+        f"a new /trends route appeared outside the known read-only archive: {archive}"
     )
 
 

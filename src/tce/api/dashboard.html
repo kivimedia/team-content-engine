@@ -415,7 +415,7 @@ img{background:var(--card);border-radius:4px}
         <button class="sidebar-item active" data-tab="week"><span class="icon">&#128197;</span><span class="label">Week Planner</span></button>
         <button class="sidebar-item" data-tab="builder"><span class="icon">&#128296;</span><span class="label">Week Builder</span></button>
         <button class="sidebar-item" data-tab="guides"><span class="icon">&#128214;</span><span class="label">Guides</span></button>
-        <button class="sidebar-item" data-tab="trends"><span class="icon">&#128200;</span><span class="label">Trends</span></button>
+        <button class="sidebar-item" data-tab="timely"><span class="icon">&#128240;</span><span class="label">Timely</span></button>
       </div>
       <div class="sidebar-group">
         <div class="sidebar-group-label">Editorial</div>
@@ -8863,59 +8863,114 @@ async function downloadGuide(guideId, title) {
 }
 
 // --- TRENDS TAB ---
-async function renderTrends() {
+// The Timely tab: the third lane ("News that excites Ziv").
+// Replaces the old trend scanner, whose POST /trends/scan was deleted with the
+// scout on 21-Sep-2026 - the button it offered would only ever have errored.
+// Nothing here spends a model call or starts a run. It shows whether the lane is
+// on, feed health (down and quiet kept apart), the anchor index, the watchlist,
+// and the standing facts, which are the only anchors a person writes.
+async function renderTimely() {
   const app = document.getElementById('app');
-  app.innerHTML = '<div class="page-content"><div class="section"><div class="section-label">Trend Scanner</div><p style="color:var(--dim);margin-bottom:16px">Scan current trends relevant to your content strategy. Results come from live web search + analysis.</p><div class="btn-group"><button class="btn btn-primary" onclick="scanTrends()">Scan Now</button></div></div><div id="trend-results" style="margin-top:24px"><div class="empty">No recent trend scans. Click "Scan Now" to start.</div></div></div>';
+  app.innerHTML = '<div class="page-content"><div class="empty">Reading what TCE believes your world is...</div></div>';
+  let d;
   try {
-    const briefs = await api('/briefs/trends');
-    if (briefs && briefs.length > 0) {
-      let html = '<div class="section-label">Recent Trend Briefs</div><div class="grid stagger-children">';
-      for (const b of briefs.slice(0, 12)) {
-        html += '<div class="card hover-lift" style="cursor:pointer" onclick="showTrendDetail(\'' + b.id + '\')">';
-        html += '<h3>' + esc(b.focus_area || 'Trend') + '</h3>';
-        html += '<div style="font-size:13px;margin-top:8px;color:var(--text)">' + esc((b.summary || '').slice(0, 120)) + (b.summary && b.summary.length > 120 ? '...' : '') + '</div>';
-        html += '<div style="margin-top:8px;font-size:11px;color:var(--dim);font-family:\'JetBrains Mono\',monospace">' + (b.created_at ? new Date(b.created_at).toLocaleDateString() : '') + '</div>';
-        html += '</div>';
-      }
-      html += '</div>';
-      document.getElementById('trend-results').innerHTML = html;
+    d = await edApi('/news/overview');
+  } catch (e) {
+    app.innerHTML = '<div class="page-content"><div class="empty">Could not read the Timely page: ' + esc(e.message) + '</div></div>';
+    return;
+  }
+  let h = '<div class="page-content">';
+  h += '<div class="section"><div class="section-label">News that excites Ziv</div>';
+  h += '<p style="color:var(--text);margin-bottom:8px">' + (d.lane_on
+    ? 'The lane is on. An announcement reaches you only by matching something below.'
+    : 'The lane is switched off. Nothing is fetched and nothing reaches your topics until it is turned on.') + '</p></div>';
+
+  // Feeds first: "no news today" and "the feeds are down" must never look the same.
+  h += '<div class="section"><div class="section-label">Feeds</div>';
+  if (d.feed_alarms && d.feed_alarms.length) {
+    h += '<div class="card" style="border-color:#c0392b;margin-bottom:12px">';
+    for (const line of d.feed_alarms) h += '<div style="color:var(--text)">' + esc(line) + '</div>';
+    h += '</div>';
+  }
+  if (!d.feeds.length) {
+    h += '<div class="empty">No feeds registered yet.</div>';
+  } else {
+    h += '<table class="table"><tr><th>Feed</th><th>Tier</th><th>Last result</th><th>Fetched</th></tr>';
+    for (const f of d.feeds) {
+      const state = f.down ? 'DOWN (' + f.consecutive_failures + ' in a row)' : (f.status || 'not fetched yet');
+      h += '<tr><td>' + esc(f.name) + '</td><td>' + esc(f.tier) + '</td><td>' + esc(state) + '</td><td>'
+        + (f.last_fetched_at ? new Date(f.last_fetched_at).toLocaleString() : '') + '</td></tr>';
     }
-  } catch(e) { /* ok, just show empty */ }
-}
-async function scanTrends() {
-  try {
-    toast('Trend scan started...');
-    const r = await api('/trends/scan', { method: 'POST', body: '{}' });
-    if (r.scan_id) {
-      const poll = setInterval(async () => {
-        try {
-          const s = await api('/trends/scan/' + r.scan_id);
-          if (s.status === 'completed') { clearInterval(poll); renderTrends(); toast('Trend scan complete!'); }
-          else if (s.status === 'failed') { clearInterval(poll); toast('Scan failed', false); }
-        } catch { clearInterval(poll); }
-      }, 3000);
+    h += '</table>';
+  }
+  h += '</div>';
+
+  // The anchor index, grouped by kind.
+  h += '<div class="section"><div class="section-label">What TCE believes your world is (' + d.anchor_count + ' anchors)</div>';
+  const kinds = Object.keys(d.anchors || {});
+  if (!kinds.length) {
+    h += '<div class="empty">The anchor index has not been built yet.</div>';
+  } else {
+    for (const k of kinds) {
+      h += '<div style="margin:10px 0 4px;font-weight:600;color:var(--text)">' + esc(k.replace('_', ' ')) + '</div><div>';
+      h += d.anchors[k].map(a => '<span class="tag" title="' + esc(a.origin || '') + '">' + esc(a.term)
+        + (a.citable ? ' &#10003;' : '') + '</span>').join(' ');
+      h += '</div>';
     }
-  } catch(e) { toast('Scan failed: ' + e.message, false); }
-}
-async function showTrendDetail(id) {
-  try {
-    const b = await api('/briefs/trends/' + id);
-    const app = document.getElementById('app');
-    let html = '<div class="page-content"><button class="btn btn-dim" onclick="renderTrends()" style="margin-bottom:16px">Back to Trends</button>';
-    html += '<div class="card-hero"><h2 style="font-family:\'JetBrains Mono\',monospace;font-size:18px;margin-bottom:12px">' + esc(b.focus_area || 'Trend Brief') + '</h2>';
-    html += '<div style="color:var(--text);line-height:1.7;white-space:pre-wrap">' + esc(b.summary || 'No summary available') + '</div>';
-    if (b.sources && b.sources.length) {
-      html += '<div style="margin-top:16px"><div class="section-label">Sources</div><div style="display:flex;flex-direction:column;gap:4px">';
-      for (const s of b.sources) html += '<div style="font-size:12px;color:var(--dim)">' + esc(typeof s === 'string' ? s : JSON.stringify(s)) + '</div>';
-      html += '</div></div>';
+  }
+  h += '</div>';
+
+  // The watchlist: somewhere he goes, never something that arrives.
+  h += '<div class="section"><div class="section-label">Watching, not yet connected (' + d.watchlist.length + ')</div>';
+  if (!d.watchlist.length) {
+    h += '<div class="empty">Nothing on the watchlist.</div>';
+  } else {
+    for (const w of d.watchlist) {
+      h += '<div class="card" style="margin-bottom:8px"><h3>' + esc(w.title) + '</h3>';
+      h += '<div style="color:var(--text);font-size:13px">' + esc(w.publisher || '')
+        + (w.published_at ? ' &middot; ' + new Date(w.published_at).toLocaleDateString() : '') + '</div>';
+      if (w.reason) h += '<div style="color:var(--text);margin-top:6px">' + esc(w.reason) + '</div>';
+      if (w.url) h += '<div style="margin-top:6px"><a href="' + esc(w.url) + '" target="_blank" rel="noopener">Read the announcement</a></div>';
+      h += '</div>';
     }
-    html += '</div></div>';
-    app.innerHTML = html;
-    updateBreadcrumb('Trends > ' + (b.focus_area || 'Detail'));
-  } catch(e) { toast('Failed to load trend: ' + e.message, false); }
+  }
+  h += '</div>';
+
+  // Standing facts, editable. One per line: kind | term | what it means.
+  h += '<div class="section"><div class="section-label">Standing facts</div>';
+  h += '<p style="color:var(--text);margin-bottom:8px">What Kivi Media runs for clients, and the problems your clients keep bringing. '
+    + 'Categories, never names: a name, an email or a money figure is refused. One per line: '
+    + '<code>client_solution | term | what it means</code> or <code>problem_pattern | term | what it means</code>.</p>';
+  const lines = (d.standing_facts || []).map(f => [f.anchor_kind, f.anchor_term, f.lesson].join(' | ')).join('\n');
+  h += '<textarea id="timely-facts" rows="14" style="width:100%;color:var(--text);background:var(--card)">' + esc(lines) + '</textarea>';
+  h += '<div class="btn-group" style="margin-top:8px"><button class="btn btn-primary" onclick="saveStandingFacts()">Save standing facts</button></div>';
+  h += '<div id="timely-facts-result" style="margin-top:8px;color:var(--text)"></div></div>';
+
+  h += '</div>';
+  app.innerHTML = h;
 }
 
-// --- HELP TAB ---
+async function saveStandingFacts() {
+  const out = document.getElementById('timely-facts-result');
+  const facts = [];
+  const bad = [];
+  document.getElementById('timely-facts').value.split('\n').forEach((raw, i) => {
+    const line = raw.trim();
+    if (!line) return;
+    const parts = line.split('|').map(s => s.trim());
+    if (parts.length < 3 || !parts[1] || !parts[2]) { bad.push(i + 1); return; }
+    facts.push({ anchor_kind: parts[0], anchor_term: parts[1], lesson: parts.slice(2).join(' | ') });
+  });
+  if (bad.length) { out.textContent = 'Line ' + bad.join(', ') + ' needs three parts: kind | term | what it means.'; return; }
+  out.textContent = 'Saving ' + facts.length + ' standing facts...';
+  try {
+    const r = await edApi('/news/standing-facts', { method: 'PUT', body: JSON.stringify({ facts }) });
+    out.textContent = r.detail || 'Saved.';
+  } catch (e) {
+    out.textContent = 'Not saved: ' + e.message;
+  }
+}
+
 async function renderHelp() {
   const app = document.getElementById('app');
   let html = '<div class="page-content"><div class="section"><div class="section-label">Quick Start Guide</div><div id="help-quickstart"><div class="empty">Loading...</div></div></div>';
@@ -10061,7 +10116,7 @@ function _renderShowFailure(tab, err) {
 }
 
 function render() {
-  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, start: renderStartFromSomething, topic: renderStartFromSomething, repo: renderStartFromSomething, copy: renderStartFromSomething, 'video-studio': renderVideoStudio, 'video-lead': renderVideoStudio, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, trends: renderTrends, help: renderHelp, 'product-demo': renderProductDemo, brands: renderBrands, editorial: () => renderEditorial() };
+  const map = { week: renderWeek, builder: renderWeekBuilder, guides: renderGuides, start: renderStartFromSomething, topic: renderStartFromSomething, repo: renderStartFromSomething, copy: renderStartFromSomething, 'video-studio': renderVideoStudio, 'video-lead': renderVideoStudio, generate: renderGenerate, packages: renderPackages, corpus: renderCorpus, voice: renderVoice, creators: renderCreators, agents: renderAgents, costs: renderCosts, analytics: renderAnalytics, templates: renderTemplates, prompts: renderPrompts, settings: renderSettings, chat: renderChat, timely: renderTimely, help: renderHelp, 'product-demo': renderProductDemo, brands: renderBrands, editorial: () => renderEditorial() };
   updateBreadcrumb(null);
   const tab = currentTab;
   const fn = map[tab] || renderGenerate;
