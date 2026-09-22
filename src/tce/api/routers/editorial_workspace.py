@@ -20,13 +20,14 @@ import uuid
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from tce.api.private_access import require_private_workspace
 from tce.api.routers.editorial import get_editorial_sessionmaker
 from tce.editorial import briefs as brief_service
 from tce.editorial import changes as change_service
+from tce.editorial import conversation
 from tce.editorial import inbox as inbox_service
 from tce.editorial import library as library_service
 from tce.editorial import lineup as lineup_service
@@ -42,6 +43,7 @@ production_router = APIRouter(prefix="/production", tags=["editorial-workspace"]
 
 ServiceError = (
     change_service.ChangeError,
+    conversation.ConversationError,
     lineup_service.LineupError,
     inbox_service.InboxError,
     library_service.LibraryError,
@@ -116,6 +118,18 @@ class ApplyRequest(BaseModel):
 
 class RestoreRequest(BaseModel):
     to_version: int
+
+
+class ThreadRequest(BaseModel):
+    context_type: str
+    # Absent for the editorial room, which is one thread per workspace.
+    context_id: str | None = None
+    label: str | None = None
+
+
+class MessageRequest(BaseModel):
+    text: str
+    mode: str = "discuss"
 
 
 class EditRequestBody(BaseModel):
@@ -454,6 +468,90 @@ async def get_history(
             "candidate_id": candidate_id,
             "versions": [brief_service.brief_to_json(v) for v in versions],
         }
+
+
+# ---------------------------------------------------------------------------
+# Conversation
+# ---------------------------------------------------------------------------
+
+
+@router.post("/threads")
+async def open_thread(
+    body: ThreadRequest,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Get or create the one thread for an object. The room uses the workspace id."""
+    if body.context_type not in ("topic", "packet", "week", "recording", "room"):
+        raise HTTPException(status_code=400, detail="unknown context type")
+    context_id = _uuid(body.context_id, "context") if body.context_id else ws
+    async with open_session(sm) as db:
+        try:
+            thread = await conversation.ensure_thread(
+                db, ws, context_type=body.context_type, context_id=context_id,
+                label=body.label,
+            )
+            messages = await conversation.list_messages(db, ws, thread.id)
+            payload = conversation.thread_to_json(thread, messages)
+            await db.commit()
+            return payload
+        except ServiceError as error:
+            raise _http(error) from error
+
+
+@router.get("/threads/{thread_id}")
+async def read_thread(
+    thread_id: str,
+    after: int = Query(0, ge=0),
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    tid = _uuid(thread_id, "conversation")
+    async with open_session(sm) as db:
+        try:
+            thread = await conversation.get_thread(db, ws, tid)
+            messages = await conversation.list_messages(db, ws, tid, after=after)
+            return conversation.thread_to_json(thread, messages)
+        except ServiceError as error:
+            raise _http(error) from error
+
+
+@router.post("/threads/{thread_id}/messages")
+async def post_message(
+    thread_id: str,
+    body: MessageRequest,
+    background: BackgroundTasks,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Store his turn and queue the reply.
+
+    Returns immediately with a `queued` assistant message. A turn runs on the
+    desktop subscription worker at about one job a minute, so awaiting it inside
+    the request would be a minute-long POST that a phone on mobile data drops.
+    """
+    tid = _uuid(thread_id, "conversation")
+    async with open_session(sm) as db:
+        try:
+            thread = await conversation.get_thread(db, ws, tid)
+            editor, assistant = await conversation.post_message(
+                db, ws, thread, text=body.text, mode=body.mode
+            )
+            payload = {
+                "thread_id": str(thread.id),
+                "messages": [
+                    conversation.message_to_json(editor),
+                    conversation.message_to_json(assistant),
+                ],
+                "pending": True,
+            }
+            message_id = assistant.id
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+
+    background.add_task(conversation.run_turn, sm, ws, tid, message_id)
+    return payload
 
 
 # ---------------------------------------------------------------------------

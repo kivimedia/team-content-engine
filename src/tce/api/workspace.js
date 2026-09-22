@@ -33,8 +33,17 @@
     workshopTab: "outline",
     library: null,
     libraryFilter: "all",
-    pending: null      // a change set awaiting his yes or no
+    pending: null,     // a change set awaiting his yes or no
+    thread: null,      // the open conversation
+    talkMode: "discuss",
+    talkTimer: null,
+    talkContext: null  // {type, id, label} for the current page
   };
+
+  // The conversation footer markup, captured before anything replaces it. The
+  // review sheet reuses the same shell with different controls, so it has to be
+  // able to put this back.
+  var TALK_FOOTER = null;
 
   // ----------------------------------------------------------------- utils
 
@@ -583,6 +592,141 @@
     var sheet = $("talkSheet");
     sheet.hidden = true;
     state.pending = null;
+    state.thread = null;
+    if (state.talkTimer) { clearInterval(state.talkTimer); state.talkTimer = null; }
+  }
+
+  // ----------------------------------------------------------- conversation
+
+  /* The assistant runs on the desktop worker at roughly one job a minute, so
+   * every turn is: store it, show it as thinking, poll. There is no spinner in
+   * here without a sentence attached to it. */
+
+  function restoreTalkFooter() {
+    var foot = $("talkSheet").querySelector(".sheet-foot");
+    foot.innerHTML = TALK_FOOTER;
+    foot.querySelectorAll("[data-mode]").forEach(function (chip) {
+      chip.setAttribute("aria-pressed", chip.dataset.mode === state.talkMode ? "true" : "false");
+      chip.addEventListener("click", function () {
+        state.talkMode = chip.dataset.mode;
+        foot.querySelectorAll("[data-mode]").forEach(function (c) {
+          c.setAttribute("aria-pressed", c.dataset.mode === state.talkMode ? "true" : "false");
+        });
+      });
+    });
+    var send = foot.querySelector("#talkSend");
+    if (send) send.addEventListener("click", sendTalk);
+  }
+
+  async function openTalk() {
+    var context = state.talkContext;
+    if (!context) return;
+    var sheet = $("talkSheet");
+    $("talkTitle").textContent = "Talk about this";
+    $("talkContext").textContent = context.label || "";
+    $("talkBody").innerHTML = working("Opening the conversation");
+    restoreTalkFooter();
+    sheet.hidden = false;
+    try {
+      state.thread = await api("/editorial/threads", {
+        method: "POST",
+        body: { context_type: context.type, context_id: context.id, label: context.label }
+      });
+      state.talkMode = state.thread.last_mode === "propose" ? "propose" : "discuss";
+      restoreTalkFooter();
+      renderTalk();
+      if (state.thread.pending) startTalkPoll();
+    } catch (error) {
+      $("talkBody").innerHTML = '<p class="notice is-bad">' + esc(error.message) + "</p>";
+    }
+  }
+
+  function renderTalk() {
+    var body = $("talkBody");
+    var messages = (state.thread && state.thread.messages) || [];
+    if (!messages.length) {
+      body.innerHTML = '<div class="empty"><strong>Nothing said yet</strong>'
+        + "Think out loud. In Discuss nothing changes, whatever you ask for.</div>";
+      return;
+    }
+    var html = "";
+    messages.forEach(function (m) {
+      var who = m.role === "editor" ? "You" : "TCE";
+      html += '<div class="msg is-' + esc(m.role)
+           + (m.status === "queued" ? " is-queued" : "") + '">';
+      html += '<div class="who">' + esc(who) + "</div>";
+      html += '<div class="bubble">';
+      if (m.status === "queued") {
+        html += esc(m.status_detail || "Thinking about this.");
+      } else if (m.status === "failed") {
+        html += esc(m.status_detail || "That turn did not finish.");
+      } else {
+        html += esc(m.text);
+      }
+      html += "</div>";
+      if (m.change_set_id) {
+        html += '<div class="actions"><button class="btn primary" type="button" '
+             + 'data-review="' + esc(m.change_set_id) + '">Review the change</button></div>';
+      }
+      html += "</div>";
+    });
+    body.innerHTML = html;
+    body.scrollTop = body.scrollHeight;
+  }
+
+  function startTalkPoll() {
+    if (state.talkTimer) clearInterval(state.talkTimer);
+    var started = Date.now();
+    state.talkTimer = setInterval(async function () {
+      if (!state.thread || $("talkSheet").hidden) {
+        clearInterval(state.talkTimer); state.talkTimer = null; return;
+      }
+      try {
+        var fresh = await api("/editorial/threads/" + state.thread.thread_id);
+        state.thread = fresh;
+        renderTalk();
+        if (!fresh.pending) { clearInterval(state.talkTimer); state.talkTimer = null; }
+      } catch (error) { /* a dropped poll is not worth a toast; the next one retries */ }
+      // Five minutes is well past the worker's usual minute. Stop guessing and
+      // let the row say what it says.
+      if (Date.now() - started > 300000) {
+        clearInterval(state.talkTimer); state.talkTimer = null;
+      }
+    }, 4000);
+  }
+
+  async function sendTalk() {
+    var input = $("talkInput");
+    var text = input && input.value.trim();
+    if (!text) { toast("Say something first."); return; }
+    var send = $("talkSend");
+    if (send) { send.disabled = true; send.textContent = "Sending"; }
+    try {
+      var result = await api("/editorial/threads/" + state.thread.thread_id + "/messages", {
+        method: "POST", body: { text: text, mode: state.talkMode }
+      });
+      input.value = "";
+      state.thread.messages = (state.thread.messages || []).concat(result.messages);
+      renderTalk();
+      startTalkPoll();
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      if (send) { send.disabled = false; send.textContent = "Send"; }
+    }
+  }
+
+  async function reviewFromThread(changeSetId) {
+    try {
+      var proposal = await api("/editorial/change-sets/" + changeSetId);
+      if (proposal.state !== "proposed") {
+        toast("That one is already " + proposal.state + ".");
+        return;
+      }
+      showProposal(proposal, proposal.summary);
+    } catch (error) {
+      toast(error.message, true);
+    }
   }
 
   // -------------------------------------------------------- Script workshop
@@ -810,7 +954,10 @@
     if (d.change !== undefined) { openChange(d.change); return; }
     if (d.restore !== undefined) { restore(parseInt(d.restore, 10)); return; }
     if (d.editRequest !== undefined) { askEditRequest(d.editRequest); return; }
+    if (d.review !== undefined) { reviewFromThread(d.review); return; }
   });
+
+  $("talkFab").addEventListener("click", openTalk);
 
   async function restore(version) {
     try {
@@ -845,16 +992,14 @@
     go("/" + link.dataset.route);
   });
 
-  $("talkClose").addEventListener("click", function () {
-    if (state.pending) { rejectPending(); return; }
-    closeSheet();
-  });
+  /* Closing is not deciding. A proposal he walks away from stays `proposed` and
+   * shows up in Today's "changes to review", which is what he wants: only the
+   * explicit "Keep what I have" turns one down. */
+  $("talkClose").addEventListener("click", closeSheet);
 
   // Escape closes the sheet. An outside tap does not: there is a decision in it.
   document.addEventListener("keydown", function (event) {
-    if (event.key === "Escape" && !$("talkSheet").hidden) {
-      if (state.pending) rejectPending(); else closeSheet();
-    }
+    if (event.key === "Escape" && !$("talkSheet").hidden) closeSheet();
   });
 
   var READER_SIZES = ["normal", "large", "largest"];
@@ -869,10 +1014,38 @@
 
   // ------------------------------------------------------------------ boot
 
+  /* The button appears only where there is a specific thing to discuss, and its
+   * label names that thing. A conversation that does not know what is on screen
+   * is a general chat window, which is the thing this deliberately is not. */
+  function setTalkContext(route) {
+    var fab = $("talkFab");
+    if (route.name === "room" && state.room) {
+      state.talkContext = { type: "topic", id: route.id, label: state.room.title };
+    } else if (route.name === "workshop" && state.workshop) {
+      state.talkContext = {
+        type: "packet", id: route.id,
+        label: "Script version " + state.workshop.version
+      };
+    } else if (route.name === "week") {
+      state.talkContext = { type: "week", id: null, label: "This week's list" };
+    } else if (route.name === "topics") {
+      // The editorial room: cross-topic planning, no single object to change.
+      state.talkContext = { type: "room", id: null, label: "Editorial room" };
+    } else {
+      state.talkContext = null;
+    }
+    fab.hidden = !state.talkContext;
+    if (state.talkContext) {
+      fab.textContent = state.talkContext.type === "room"
+        ? "Talk it through" : "Talk about this";
+    }
+  }
+
   async function render() {
     var route = parse();
     state.route = route.name;
     setChrome(route);
+    $("talkFab").hidden = true;
     try {
       if (route.name === "today") await renderToday();
       else if (route.name === "topics") await renderTopics();
@@ -881,6 +1054,7 @@
       else if (route.name === "room") await renderRoom(route.id);
       else if (route.name === "workshop") await renderWorkshop(route.id);
       if (route.name === "room") $("pageTitle").textContent = "Topic";
+      setTalkContext(route);
     } catch (error) {
       $("view").innerHTML = '<div class="page"><div class="empty"><strong>Could not open this</strong>'
         + esc(error.message) + '</div><div class="actions">'
@@ -893,6 +1067,8 @@
     var saved = localStorage.getItem("tce-workspace-reader");
     if (saved) document.body.dataset.reader = saved;
   } catch (e) { /* private mode */ }
+
+  TALK_FOOTER = $("talkSheet").querySelector(".sheet-foot").innerHTML;
 
   render();
 })();
