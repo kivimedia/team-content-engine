@@ -33,7 +33,9 @@ from tce.api.routers import content_runs as content_runs_router
 from tce.api.routers import editorial as editorial_router
 from tce.api.routers import production as prod
 from tce.db.session import get_db
+from tce.editorial.lineup import week_start_for
 from tce.models.editorial import RecordingPacket, TopicCandidate
+from tce.models.editorial_workspace import WeeklyLineup, WeeklyLineupItem
 from tce.settings import settings
 from tests.editorial_db import create_tables
 from tests.unit.test_editorial_packets import good_output
@@ -84,6 +86,14 @@ async def _seed(sessionmaker) -> dict:
     )
     async with sessionmaker() as s:
         s.add_all([cand, packet])
+        # The studio lists this week's lineup, so a recordable idea lives in it.
+        lineup = WeeklyLineup(id=uuid.uuid4(), workspace_id=WS, week_start=week_start_for(None))
+        s.add(lineup)
+        await s.flush()
+        s.add(WeeklyLineupItem(
+            id=uuid.uuid4(), workspace_id=WS, lineup_id=lineup.id, candidate_id=cand.id,
+            rank=1, slot="primary", lane="other",
+        ))
         await s.commit()
     return {
         "candidate_id": str(cand.id),
@@ -277,3 +287,73 @@ def test_phone_hook_chooser_selects_a_new_version_and_locks_after_a_clip(studio,
     unexpected = [e for e in errors if "409" not in e]
     assert not unexpected, unexpected
     Path(tmp_path / "hook-chooser-report.json").write_text(json.dumps(layout, indent=2))
+
+
+def test_a_landscape_camera_is_previewed_and_recorded_as_a_vertical_video(studio, tmp_path):
+    """Chromium's fake camera is landscape, which is exactly what Ziv's Android
+    Chrome handed back on 22-Sep: every clip came out 2288x1288 and cut off the
+    top of his head. What the preview shows must be what the recorder gets."""
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+            )
+        except PlaywrightError as exc:  # pragma: no cover - environment dependent
+            pytest.skip(f"Chromium is not installed for Playwright: {exc}")
+        context = browser.new_context(
+            viewport=PHONE, device_scale_factor=2, is_mobile=True, has_touch=True,
+            permissions=["camera", "microphone"],
+        )
+        page = context.new_page()
+        # Chromium's fake camera is portrait inside a phone context, which is the
+        # case that always worked. Android Chrome hands back a LANDSCAPE camera on
+        # a portrait phone, so the test has to hand the page one too, or it proves
+        # nothing: this version of the test passed against the unfixed code.
+        page.add_init_script(
+            """
+            const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+            navigator.mediaDevices.getUserMedia = async (constraints) => {
+              const stream = await real(constraints);
+              const canvas = document.createElement('canvas');
+              canvas.width = 1280; canvas.height = 720;
+              const context2d = canvas.getContext('2d');
+              const paint = () => {
+                context2d.fillStyle = '#123'; context2d.fillRect(0, 0, 1280, 720);
+                requestAnimationFrame(paint);
+              };
+              paint();
+              const landscape = canvas.captureStream(30);
+              stream.getAudioTracks().forEach((track) => landscape.addTrack(track));
+              return landscape;
+            };
+            """
+        )
+        page.goto(f"{studio['base']}/record")
+        page.wait_for_selector(".idea-card")
+        page.click(".idea-card")
+        page.locator("#hookView .hook-option").first.locator(".hook-use").click()
+        page.wait_for_selector("#studioView:not([hidden])")
+
+        shapes = page.wait_for_function(
+            """() => {
+                 const preview = document.getElementById('camera').srcObject;
+                 const track = preview && preview.getVideoTracks()[0];
+                 const settings = track && track.getSettings();
+                 if (!settings || !settings.width) return null;
+                 return {preview: [settings.width, settings.height],
+                         audio: preview.getAudioTracks().length};
+               }""",
+            timeout=20000,
+        ).json_value()
+
+        width, height = shapes["preview"]
+        assert height > width, f"the preview is still landscape: {width}x{height}"
+        assert abs(width / height - 9 / 16) < 0.02, f"{width}x{height} is not 9:16"
+        assert shapes["audio"] == 1, "the cropped stream lost the microphone"
+        page.screenshot(path=str(tmp_path / "studio-portrait.png"))
+        context.close()
+        browser.close()
