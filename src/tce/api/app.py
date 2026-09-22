@@ -153,6 +153,17 @@ async def lifespan(app: FastAPI):
     if settings.content_run_poller and os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
         schedule_poller = asyncio.create_task(content_runs.poll_weekly_schedules(async_session))
 
+    # Notification reconciler. Compares state against what he has been told once
+    # a minute. It is not a hook inside the packet writer or the renderer: those
+    # run as background tasks that can die, and a missed hook is a notification
+    # that never arrives with nothing to show why.
+    notify_poller = None
+    if os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
+        from tce.editorial import notify as notify_service
+
+        if notify_service.push_available():
+            notify_poller = asyncio.create_task(notify_service.poll(async_session))
+
     if settings.scheduler_enabled and os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
         try:
             from tce.services.scheduler import scheduler
@@ -165,6 +176,8 @@ async def lifespan(app: FastAPI):
     yield
 
     media_recovery.cancel()
+    if notify_poller:
+        notify_poller.cancel()
     if schedule_poller:
         schedule_poller.cancel()
 

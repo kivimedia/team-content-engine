@@ -144,6 +144,12 @@ class Settings(BaseSettings):
     private_access_key: SecretStr = SecretStr("")
     editor_default_workspace_id: str = ""
 
+    # Web push. Absent keys simply mean no notifications are sent; nothing else
+    # in the app depends on them, and the reconciler stays asleep.
+    vapid_public_key: str = ""
+    vapid_private_key: SecretStr = SecretStr("")
+    vapid_subject: str = "mailto:ziv@kivimedia.co"
+
     # Evidence intake
     fathom_api_key: SecretStr = SecretStr("")
     fathom_api_base: str = "https://api.fathom.ai/external/v1"

@@ -53,6 +53,8 @@ TABLE_NAMES = (
     "editorial_change_sets",
     "editorial_change_operations",
     "editing_requests",
+    "notification_subscriptions",
+    "notification_events",
 )
 
 

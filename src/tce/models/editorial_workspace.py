@@ -99,6 +99,10 @@ CHANGE_OP_STATES = ("proposed", "accepted", "rejected", "applied", "skipped")
 EDIT_REQUEST_SCOPES = ("whole", "timestamp", "section")
 EDIT_REQUEST_STATES = ("open", "in_progress", "done", "rejected")
 
+# What a notification can be about. Each one is a thing he asked for that has
+# finished while he was not looking; nothing here is an announcement.
+NOTIFICATION_KINDS = ("script_ready", "edit_ready", "needs_review", "upload_recovery")
+
 
 # ---------------------------------------------------------------------------
 # The topic brief, versioned
@@ -411,3 +415,59 @@ class EditingRequest(_PrivateWorkspaceMixin, Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+
+class NotificationSubscription(_PrivateWorkspaceMixin, Base):
+    """One browser's push endpoint.
+
+    The endpoint URL and its keys are a capability: anyone holding them can push
+    to that device. They are stored because there is nowhere else to put them,
+    never logged, and never returned by any read endpoint.
+    """
+
+    __tablename__ = "notification_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "endpoint_hash", name="uq_notification_endpoint"),
+    )
+
+    # sha256 of the endpoint. The unique key, so re-subscribing the same browser
+    # updates one row instead of collecting a row per page load.
+    endpoint_hash: Mapped[str] = mapped_column(String(64), index=True)
+    endpoint: Mapped[str] = mapped_column(Text)
+    p256dh: Mapped[str] = mapped_column(String(200))
+    auth: Mapped[str] = mapped_column(String(100))
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # active | gone. A 404/410 from the push service means the browser dropped
+    # it; that is normal and is not an error worth telling him about.
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class NotificationEvent(_PrivateWorkspaceMixin, Base):
+    """One thing worth telling him, and whether it was delivered.
+
+    `dedupe_key` is the whole point: the reconciler runs every minute and would
+    otherwise re-send "your script is ready" sixty times an hour.
+    """
+
+    __tablename__ = "notification_events"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "dedupe_key", name="uq_notification_dedupe"),
+    )
+
+    kind: Mapped[str] = mapped_column(String(30), index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(200))
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    # Where tapping it should land, relative to the app root.
+    path: Mapped[str] = mapped_column(String(300), default="/today")
+    # pending | sent | no_subscribers | failed
+    state: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

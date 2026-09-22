@@ -18,6 +18,7 @@ _RECORDING_JS_PATH = Path(__file__).parent / "recording.js"
 _WORKSPACE_HTML_PATH = Path(__file__).parent / "workspace.html"
 _WORKSPACE_CSS_PATH = Path(__file__).parent / "workspace.css"
 _WORKSPACE_JS_PATH = Path(__file__).parent / "workspace.js"
+_WORKSPACE_SW_PATH = Path(__file__).parent / "workspace-sw.js"
 _CACHE: str | None = None
 
 # Every editorial workspace path serves the same shell; the page reads the URL
@@ -101,6 +102,47 @@ async def workspace_css():
     from fastapi.responses import Response
 
     return Response(_WORKSPACE_CSS_PATH.read_text(encoding="utf-8"), media_type="text/css")
+
+
+@router.get("/workspace-sw.js", include_in_schema=False)
+async def workspace_sw():
+    """The push service worker.
+
+    `Service-Worker-Allowed: /` lets it control the whole app even though it is
+    served from a path, which is what makes a notification tap reuse the tab he
+    already has open instead of stacking windows.
+    """
+    from fastapi.responses import Response
+
+    return Response(
+        _WORKSPACE_SW_PATH.read_text(encoding="utf-8"),
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/workspace.webmanifest", include_in_schema=False)
+async def workspace_manifest():
+    """Makes the workspace installable.
+
+    This is not decoration on iOS: Safari only delivers web push to a site that
+    has been added to the Home Screen, so without a manifest the notification
+    feature would silently do nothing on the one device he actually uses.
+    """
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        {
+            "name": "TCE editorial workspace",
+            "short_name": "TCE",
+            "start_url": "today",
+            "scope": "./",
+            "display": "standalone",
+            "background_color": "#f7f3e8",
+            "theme_color": "#10213b",
+        },
+        media_type="application/manifest+json",
+    )
 
 
 @router.get("/workspace.js", include_in_schema=False)

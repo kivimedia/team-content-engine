@@ -27,7 +27,7 @@ from tce.api.private_access import require_private_workspace
 from tce.api.routers.editorial import get_editorial_sessionmaker
 from tce.editorial import briefs as brief_service
 from tce.editorial import changes as change_service
-from tce.editorial import conversation
+from tce.editorial import conversation, notify
 from tce.editorial import inbox as inbox_service
 from tce.editorial import library as library_service
 from tce.editorial import lineup as lineup_service
@@ -43,6 +43,7 @@ production_router = APIRouter(prefix="/production", tags=["editorial-workspace"]
 
 ServiceError = (
     change_service.ChangeError,
+    notify.NotifyError,
     conversation.ConversationError,
     lineup_service.LineupError,
     inbox_service.InboxError,
@@ -130,6 +131,18 @@ class ThreadRequest(BaseModel):
 class MessageRequest(BaseModel):
     text: str
     mode: str = "discuss"
+
+
+class SubscribeRequest(BaseModel):
+    endpoint: str
+    # The browser's own keys, from PushSubscription.toJSON().
+    p256dh: str
+    auth: str
+    user_agent: str | None = None
+
+
+class UnsubscribeRequest(BaseModel):
+    endpoint: str
 
 
 class EditRequestBody(BaseModel):
@@ -560,6 +573,64 @@ async def post_message(
 
     background.add_task(conversation.run_turn, sm, ws, tid, message_id)
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+
+@router.get("/notifications/config")
+async def notifications_config(
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """What the page needs to decide whether to offer notifications at all.
+
+    Never returns an endpoint or its keys: those are a capability to push to his
+    phone, and a read endpoint is not where they belong.
+    """
+    async with open_session(sm) as db:
+        subscriptions = await notify.active_subscriptions(db, ws)
+    return {
+        "available": notify.push_available(),
+        "public_key": notify.vapid_public_key(),
+        "subscribed": len(subscriptions),
+        "reason": (
+            "" if notify.push_available()
+            else "Push is not configured on this server yet."
+        ),
+    }
+
+
+@router.post("/notifications/subscribe")
+async def notifications_subscribe(
+    body: SubscribeRequest,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    async with open_session(sm) as db:
+        try:
+            await notify.subscribe(
+                db, ws, endpoint=body.endpoint, p256dh=body.p256dh, auth=body.auth,
+                user_agent=body.user_agent,
+            )
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+    return {"subscribed": True}
+
+
+@router.post("/notifications/unsubscribe")
+async def notifications_unsubscribe(
+    body: UnsubscribeRequest,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    async with open_session(sm) as db:
+        removed = await notify.unsubscribe(db, ws, endpoint=body.endpoint)
+        await db.commit()
+    return {"removed": removed}
 
 
 # ---------------------------------------------------------------------------

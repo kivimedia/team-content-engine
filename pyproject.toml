@@ -24,6 +24,7 @@ dependencies = [
     "jsonschema>=4.20",
     "aiohttp>=3.9",
     "tzdata>=2024.1",  # editorial week = Asia/Jerusalem; slim images may lack zoneinfo
+    "pywebpush>=2.0",  # web push for "your script is ready"; unused until VAPID keys exist
 ]
 
 [project.optional-dependencies]

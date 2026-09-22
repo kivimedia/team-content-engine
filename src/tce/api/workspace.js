@@ -37,7 +37,8 @@
     thread: null,      // the open conversation
     talkMode: "discuss",
     talkTimer: null,
-    talkContext: null  // {type, id, label} for the current page
+    talkContext: null, // {type, id, label} for the current page
+    notifyConfig: null
   };
 
   // The conversation footer markup, captured before anything replaces it. The
@@ -164,6 +165,9 @@
     view.innerHTML = '<div class="page">' + working("Reading your week") + "</div>";
     var data = await api("/editorial/today");
     state.today = data;
+    // Best effort. Today must still paint if the push config cannot be read.
+    try { state.notifyConfig = await api("/editorial/notifications/config"); }
+    catch (e) { state.notifyConfig = null; }
 
     var week = data.week || {};
     var counts = data.attention || {};
@@ -192,6 +196,10 @@
     html += countCard(counts.editing, "being edited", "/library");
     html += countCard(counts.pending_reviews, "changes to review", "/topics");
     html += "</div>";
+
+    // Offered right under the counts, where the waiting is: a script takes
+    // minutes and today it finishes on a page he is not looking at.
+    html += notifyRow(state.notifyConfig);
 
     html += "<h2>This week's recording list</h2>";
     if (!primary.length) {
@@ -977,6 +985,120 @@
     }
   }
 
+  // ---------------------------------------------------------- notifications
+
+  /* Why this is a button he presses and not something that happens on load: a
+   * permission prompt he did not ask for gets denied once and then the browser
+   * never asks again. It is offered where the waiting actually hurts - Today,
+   * under the counts - and it says plainly when it cannot work. */
+
+  function base64ToUint8(base64) {
+    var padded = (base64 + "=".repeat((4 - base64.length % 4) % 4))
+      .replace(/-/g, "+").replace(/_/g, "/");
+    var raw = atob(padded);
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  // iOS delivers web push only to a site added to the Home Screen. Saying so is
+  // the difference between a feature that looks broken and one he can turn on.
+  function iosNeedsInstall() {
+    var ios = /iPad|iPhone|iPod/.test(navigator.userAgent)
+      || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    var installed = window.matchMedia("(display-mode: standalone)").matches
+      || window.navigator.standalone === true;
+    return ios && !installed;
+  }
+
+  function notifyState() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      return { can: false, why: "This browser cannot do notifications." };
+    }
+    if (iosNeedsInstall()) {
+      return {
+        can: false,
+        why: "On iPhone, add this page to your Home Screen first (Share, then Add to "
+           + "Home Screen). Notifications only work from there."
+      };
+    }
+    if (Notification.permission === "denied") {
+      return { can: false, why: "Notifications are blocked in your browser settings." };
+    }
+    return { can: true, why: "" };
+  }
+
+  async function enableNotifications() {
+    var status = notifyState();
+    if (!status.can) { toast(status.why, true); return; }
+    try {
+      var config = await api("/editorial/notifications/config");
+      if (!config.available || !config.public_key) {
+        toast(config.reason || "Push is not configured on the server.", true);
+        return;
+      }
+      var permission = await Notification.requestPermission();
+      if (permission !== "granted") { toast("Left off."); return; }
+
+      var registration = await navigator.serviceWorker.register(
+        prefix + "/workspace-sw.js", { scope: prefix + "/" }
+      );
+      await navigator.serviceWorker.ready;
+      var existing = await registration.pushManager.getSubscription();
+      var subscription = existing || await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: base64ToUint8(config.public_key)
+      });
+      var json = subscription.toJSON();
+      await api("/editorial/notifications/subscribe", {
+        method: "POST",
+        body: {
+          endpoint: json.endpoint,
+          p256dh: json.keys.p256dh,
+          auth: json.keys.auth,
+          user_agent: navigator.userAgent
+        }
+      });
+      toast("On. You will get a buzz when a script or an edit is ready.");
+      await render();
+    } catch (error) {
+      toast("Could not turn them on: " + error.message, true);
+    }
+  }
+
+  async function disableNotifications() {
+    try {
+      var registration = await navigator.serviceWorker.getRegistration(prefix + "/");
+      var subscription = registration && await registration.pushManager.getSubscription();
+      if (subscription) {
+        await api("/editorial/notifications/unsubscribe", {
+          method: "POST", body: { endpoint: subscription.endpoint }
+        });
+        await subscription.unsubscribe();
+      }
+      toast("Off.");
+      await render();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  function notifyRow(config) {
+    if (!config) return "";
+    var status = notifyState();
+    if (config.subscribed) {
+      return '<p class="section-hint">Notifications are on for this device. '
+           + '<button class="btn quiet" type="button" data-notify="off" '
+           + 'style="min-height:38px;margin-left:6px">Turn off</button></p>';
+    }
+    if (!status.can) {
+      return '<p class="notice">' + esc(status.why) + "</p>";
+    }
+    if (!config.available) return "";
+    return '<div class="actions"><button class="btn quiet" type="button" data-notify="on">'
+         + "Tell me when a script is ready</button></div>";
+  }
+
   // ----------------------------------------------------------------- events
 
   async function decide(candidateId, decision) {
@@ -1042,6 +1164,10 @@
     if (d.editRequest !== undefined) { askEditRequest(d.editRequest); return; }
     if (d.review !== undefined) { reviewFromThread(d.review); return; }
     if (d.rewrite !== undefined) { openRewrite(d.rewrite); return; }
+    if (d.notify !== undefined) {
+      if (d.notify === "on") enableNotifications(); else disableNotifications();
+      return;
+    }
   });
 
   $("talkFab").addEventListener("click", openTalk);
