@@ -34,7 +34,13 @@ from tce.db.base import Base
 
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
-SOURCE_KINDS = ("fathom_meeting", "github_commit_group")
+# news_item and standing_fact belong to the third lane (models/news.py, migration
+# 045). A news item is an announcement with its primary document; a standing fact
+# is a hand-written durable fact about the business - a system Kivi Media runs for
+# a category of client, or a problem the owners Ziv coaches keep bringing - which
+# exists so those connections are citable at all. Both are inert until
+# TCE_NEWS_LANE is on.
+SOURCE_KINDS = ("fathom_meeting", "github_commit_group", "news_item", "standing_fact")
 CLAIM_TYPES = ("quoted", "paraphrased", "inferred", "demonstrated", "measured")
 REJECTION_GATES = (
     "small_service_business",
@@ -125,6 +131,11 @@ class EvidenceMoment(_PrivateWorkspaceMixin, Base):
     span_end_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     # commits: [{"repo", "sha", "path", "url_at_sha"}]
     code_refs: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONType, nullable=True)
+    # news_item / standing_fact: the third lane's locator, beside span_start_s for
+    # meetings and code_refs for commits.
+    # {"news_item_id", "primary_url", "publisher", "published_at", "quoted_span",
+    #  "content_sha256", "source_version", "anchor_moment_ids"}
+    news_ref: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     speaker: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # high | medium | low | unknown - low when turns look interleaved or mislabeled
     speaker_confidence: Mapped[str] = mapped_column(String(10), default="unknown")
@@ -171,6 +182,15 @@ class TopicCandidate(_PrivateWorkspaceMixin, Base):
     job_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     # Calibration rows (e.g. manually accepted sample ideas) are labelled here
     origin: Mapped[str] = mapped_column(String(30), default="selector")
+    # Third lane. Present means news-led: the candidate cites a news_item moment
+    # and must also cite a non-news one (enforce_candidates), so the announcement
+    # is the trigger and a call, a commit or a standing fact is the point of view.
+    news_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("news_items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # When the claim stops being worth saying. A sweep sets meta.exclude_reason on
+    # the source, which source_is_excluded() already drops from the pool.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class EditorialFeedback(_PrivateWorkspaceMixin, Base):

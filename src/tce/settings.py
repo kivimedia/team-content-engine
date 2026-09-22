@@ -116,6 +116,12 @@ class Settings(BaseSettings):
     # Feature flags
     weekly_walking_pipeline: bool = False  # TCE_WEEKLY_WALKING_PIPELINE=1 to enable
 
+    # The third lane ("News that excites Ziv"). Off by default and shipped off:
+    # with this false nothing fetches a feed, nothing builds an anchor index and
+    # the selector sees no news moments, so turning it off is the whole rollback.
+    # The daily-news schedule ships disabled separately.
+    news_lane: bool = False  # TCE_NEWS_LANE=1 to enable
+
     # Recurring generation schedules. Off by default so a restart can never spend.
     scheduler_enabled: bool = False
 

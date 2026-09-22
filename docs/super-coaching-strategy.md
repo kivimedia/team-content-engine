@@ -15,7 +15,10 @@ belongs in a workspace strategy override stored in the database, never in this f
    themselves.
 
 A topic must be useful to one of these owners in their ordinary working week. Content for
-enterprise buyers, developers, investors or general "AI news" audiences is out of scope.
+enterprise buyers, developers or investors is out of scope. AI is in scope whenever it makes
+sense for the coaches and small service-business owners Ziv works with, or when it applies to
+Kivi Media's own clients or solutions. What is out of scope is AI written for an audience of
+people who follow AI.
 
 ## THE OFFER
 
@@ -43,13 +46,32 @@ Rules that follow from this:
 - **One lesson per idea.** If a draft teaches two things, split it or drop one.
 - **Keep coaching lessons that do not mention AI.** Selling, course design, delegation,
   client communication and management lessons are core material. Do not turn every idea
-  into AI commentary, and do not position Ziv as an AI-news commentator.
+  into AI commentary. When a change genuinely reaches Kivi Media's work or the owners Ziv
+  coaches, saying so is the job, not commentary.
 - **A product release is evidence, not the idea.** The publishable idea is the decision
   behind it, the owner problem it solves, and something the reader can use.
 - **Evergreen beats news.** Recent news is optional context. A news claim must be verified
   as current before it is stated. Freshness is a small bonus, never the reason to pick a topic.
 - **Fewer is fine.** Three strong original ideas a week is the recommended launch. Return
   fewer rather than padding with weaker angles.
+
+### When an outside change can start an idea
+
+An announcement, release, price change or policy change may start an idea only when all four
+are true:
+
+1. It connects to a named thing: a product or repo Ziv runs, a system Kivi Media runs for a
+   client, or a recurring problem the owners he coaches actually have. Named, written down,
+   pointed at. Not a resemblance.
+2. A coach or a small service-business owner would do something differently because of it,
+   this month.
+3. Ziv can say something about it that a person reading the announcement could not work out
+   for themselves.
+4. The claim is confirmed in the announcement itself, not in a summary of it.
+
+The announcement is never the idea and never the opening line. The idea is what Ziv did,
+changed or decided because of it. One of these a week, or two when the story is big enough to
+earn the second. Zero is a normal week.
 
 ## CLAIMS DISCIPLINE
 
