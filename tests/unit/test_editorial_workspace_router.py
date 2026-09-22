@@ -584,3 +584,41 @@ async def test_another_workspace_is_never_read(client, editorial_sessionmaker):
 
     body = (await client.get("/api/v1/editorial/topics", headers=headers(mine))).json()
     assert body["topics"] == []
+
+
+async def test_start_recording_points_at_the_idea_not_the_list(
+    client, editorial_sessionmaker
+):
+    """Ziv: "too many clicks to just start the work."
+
+    Getting from a topic he had already chosen to actually recording it meant
+    opening the topic, opening the workshop, going to the studio and then finding
+    the same card in the queue again. Today's record action now carries the
+    candidate, and the studio opens it directly.
+    """
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Ready to record")
+    await client.post(
+        f"/api/v1/editorial/topics/{cid}/decide",
+        json={"decision": "this_week"},
+        headers=headers(ws),
+    )
+    async with editorial_sessionmaker() as s:
+        s.add(
+            RecordingPacket(
+                workspace_id=ws,
+                candidate_id=cid,
+                version=1,
+                bullets=["a"],
+                script_phrases=["b"],
+                status="ready",
+                citations_private=[],
+                public_safety={},
+            )
+        )
+        await s.commit()
+
+    body = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+
+    assert body["next_action"]["key"] == "record"
+    assert body["next_action"]["href"] == f"/record?candidate={cid}"

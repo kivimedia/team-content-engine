@@ -51,9 +51,12 @@
   </div>
 </main>
 
-<!-- Contextual conversation. Shown only where there is something to discuss;
-     the label names the object, so it is never a general chat window. -->
-<button class="talk-fab" id="talkFab" type="button" hidden>Talk about this</button>
+<!-- The bottom action bar. Carries the thing he most wants to do on this page:
+     Start recording when a script is ready, and the contextual conversation,
+     whose label names the object so it is never a general chat window. It is a
+     bar rather than a floating pill so it never sits on top of another button,
+     and the page reserves its height. -->
+<div class="action-bar" id="actionBar" hidden></div>
 
 <nav class="bottom-nav" id="bottomNav" aria-label="Sections">
   <a href="/today"   data-route="today"   aria-current="page"><span class="glyph" aria-hidden="true">&#9673;</span>Today</a>

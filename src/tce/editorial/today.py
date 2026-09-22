@@ -93,7 +93,9 @@ def _next_action(
             "key": "record",
             "label": "Start recording",
             "detail": f"{ready[0]['title']} is first.",
-            "href": "/record",
+            # Straight to the idea, not to the list he already chose from. The
+            # studio takes `?candidate=` and opens it.
+            "href": f"/record?candidate={ready[0]['candidate_id']}",
         }
     if primary:
         missing = len(primary) - len(ready)

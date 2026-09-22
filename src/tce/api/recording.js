@@ -1427,6 +1427,37 @@ function recordedPending(item) {
     if (state.recorder && state.recorder.state !== "inactive") { event.preventDefault(); event.returnValue = ""; }
   });
 
+  /* Deep link straight into one idea.
+     Without this, getting from a topic he has already chosen to actually
+     recording it meant: open the topic, open the script workshop, go to the
+     studio, then find the same card in the queue and tap it again. Four taps to
+     reach a screen he had already told us he wanted. `?candidate=<uuid>` (or
+     `?packet=<uuid>`) opens it directly; the opening chooser still appears if
+     the opening is not settled, because that is a real decision and not a step
+     to skip. An id that is not in the queue falls back to the list rather than
+     erroring - the script may not be ready yet. */
+  function openFromQuery() {
+    var params = new URLSearchParams(window.location.search);
+    var candidateId = params.get("candidate");
+    var packetId = params.get("packet");
+    if (!candidateId && !packetId) return false;
+    var wanted = state.ideas.find(function (idea) {
+      return (candidateId && idea.candidate_id === candidateId)
+        || (packetId && idea.packet_id === packetId);
+    });
+    if (!wanted) {
+      showNotice("That script is not ready to record yet. Here is what is.");
+      return false;
+    }
+    // Drop the query so a reload, or the back button, does not reopen it after
+    // he has deliberately come back to the list.
+    window.history.replaceState({}, "", `${pathPrefix}/record`);
+    chooseIdea(wanted);
+    return true;
+  }
+
   updateSyncLabel();
-  loadQueue();
+  loadQueue().then(function () {
+    try { openFromQuery(); } catch (error) { /* the list still works */ }
+  });
 })();

@@ -139,6 +139,14 @@
   }
 
   function go(path, replace) {
+    /* The studio is a different page, not one of this shell's routes. Pushing
+       it would change the URL and then re-render Today, because `parse` has no
+       pattern for /record - the address bar would say one thing and the screen
+       another. Anything outside the shell gets a real navigation. */
+    if (path.indexOf("/record") === 0) {
+      window.location.href = prefix + path;
+      return;
+    }
     var full = prefix + path;
     if (replace) window.history.replaceState({}, "", full);
     else window.history.pushState({}, "", full);
@@ -213,8 +221,11 @@
         html += weekCard(item, index, false);
       });
       html += "</div>";
-      if (week.ready_count > 0) {
-        html += '<div class="actions"><a class="btn primary" href="' + prefix + '/record">Start recording</a></div>';
+      var readyFirst = primary.filter(function (i) { return i.script_state === "ready"; })[0];
+      if (readyFirst) {
+        html += '<div class="actions"><a class="btn primary" href="' + prefix
+             + "/record?candidate=" + esc(readyFirst.candidate_id)
+             + '">Start recording</a></div>';
       }
     }
     html += "</div>";
@@ -386,6 +397,8 @@
     html += '<div class="actions">';
     html += '<button class="btn" type="button" data-open-room="' + esc(item.candidate_id) + '">Open the topic</button>';
     if (item.packet_id && item.script_state === "ready") {
+      html += '<a class="btn primary" href="' + prefix + "/record?candidate="
+           + esc(item.candidate_id) + '">Record this one</a>';
       html += '<button class="btn" type="button" data-open-script="' + esc(item.packet_id) + '">Open the script</button>';
     } else if (!item.packet_id) {
       html += '<button class="btn primary" type="button" data-ask-script="' + esc(item.candidate_id) + '">Prepare the script</button>';
@@ -440,8 +453,11 @@
     html += "<h2>The script</h2>";
     if (data.script) {
       html += '<p class="section-hint">Version ' + data.script.version + ", " + esc(data.script.status) + ".</p>";
-      html += '<div class="actions"><button class="btn primary" type="button" data-open-script="'
-           + esc(data.script.packet_id) + '">Open the script workshop</button></div>';
+      // Recording lives in the bar at the bottom of the screen, one tap from
+      // here. This is for reading and changing the words, which is a different
+      // errand.
+      html += '<div class="actions"><button class="btn" type="button" data-open-script="'
+           + esc(data.script.packet_id) + '">Read and change the script</button></div>';
     } else {
       html += '<p class="section-hint">' + esc(data.script_note) + "</p>";
       html += '<div class="actions"><button class="btn primary" type="button" data-ask-script="'
@@ -1085,7 +1101,6 @@
 
     html += '<div class="actions" style="margin-top:22px">';
     html += '<button class="btn" type="button" data-open-room="' + esc(data.candidate_id) + '">Open the topic</button>';
-    html += '<a class="btn primary" href="' + prefix + '/record">Go to the studio</a>';
     html += "</div></div>";
     view.innerHTML = html;
     status("Script version " + data.version);
@@ -1369,7 +1384,6 @@
     }
   });
 
-  $("talkFab").addEventListener("click", openTalk);
 
   async function restore(version) {
     try {
@@ -1430,7 +1444,6 @@
    * label names that thing. A conversation that does not know what is on screen
    * is a general chat window, which is the thing this deliberately is not. */
   function setTalkContext(route) {
-    var fab = $("talkFab");
     if (route.name === "room" && state.room) {
       state.talkContext = {
         type: "topic", id: route.id, label: state.room.title,
@@ -1460,18 +1473,66 @@
     } else {
       state.talkContext = null;
     }
-    fab.hidden = !state.talkContext;
+    /* The bar carries the thing he most wants to do here, not just Talk.
+       Recording was four taps from a topic he had already chosen; when a script
+       is ready it is now one, from wherever he happens to be. */
+    var record = recordTarget(route);
+    var bar = $("actionBar");
+    bar.innerHTML = "";
+    if (record) {
+      bar.insertAdjacentHTML("beforeend",
+        '<a class="bar-btn is-record" href="' + esc(record.href) + '">'
+        + esc(record.label) + "</a>");
+    }
+    if (state.talkContext) {
+      bar.insertAdjacentHTML("beforeend",
+        '<button class="bar-btn is-talk" type="button" id="talkFab">'
+        + esc(state.talkContext.action) + "</button>");
+      $("talkFab").addEventListener("click", openTalk);
+    }
+    var show = !!(record || state.talkContext);
+    bar.hidden = !show;
+    bar.classList.toggle("is-split", !!(record && state.talkContext));
     // The bar is fixed, so the page has to reserve its height or the last card
     // sits underneath it.
-    document.body.classList.toggle("has-talk", !!state.talkContext);
-    if (state.talkContext) fab.textContent = state.talkContext.action;
+    document.body.classList.toggle("has-talk", show);
+  }
+
+  /* Where "Start recording" should go from this page, or null when there is
+     nothing ready to record. Deep links into the studio so he lands on the idea
+     rather than on the list he already chose from. */
+  function recordTarget(route) {
+    if (route.name === "room" && state.room && state.room.script
+        && ["ready", "exported"].indexOf(state.room.script.status) !== -1) {
+      return { href: prefix + "/record?candidate=" + state.room.candidate_id,
+               label: "Start recording" };
+    }
+    if (route.name === "workshop" && state.workshop
+        && ["ready", "exported"].indexOf(state.workshop.status) !== -1) {
+      return { href: prefix + "/record?candidate=" + state.workshop.candidate_id,
+               label: "Start recording" };
+    }
+    var first = firstReadyThisWeek();
+    if ((route.name === "week" || route.name === "today") && first) {
+      return { href: prefix + "/record?candidate=" + first.candidate_id,
+               label: "Start recording" };
+    }
+    return null;
+  }
+
+  function firstReadyThisWeek() {
+    var week = (state.route === "today" && state.today) ? state.today.week : state.week;
+    if (!week) return null;
+    return (week.primary || []).filter(function (item) {
+      return item.script_state === "ready";
+    })[0] || null;
   }
 
   async function render() {
     var route = parse();
     state.route = route.name;
     setChrome(route);
-    $("talkFab").hidden = true;
+    $("actionBar").hidden = true;
     document.body.classList.remove("has-talk");
     try {
       if (route.name === "today") await renderToday();
