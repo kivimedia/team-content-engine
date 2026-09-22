@@ -19,6 +19,7 @@ from tce.models import (  # noqa: F401
     editorial,
     editorial_workspace,
     llm_job,
+    news,
     recording_session,
 )
 
@@ -55,6 +56,13 @@ TABLE_NAMES = (
     "editing_requests",
     "notification_subscriptions",
     "notification_events",
+    # Third lane (migration 045)
+    "news_feeds",
+    "news_items",
+    "news_anchors",
+    "news_matches",
+    "news_appraisals",
+    "news_watchlist",
 )
 
 
