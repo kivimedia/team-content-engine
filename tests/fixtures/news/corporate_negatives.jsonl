@@ -1,0 +1,25 @@
+{"id": "n01", "shape": "funding", "title": "Anthropic raises $3.5 billion at a $61.5 billion valuation", "summary": "The round was led by Lightspeed Venture Partners with participation from existing investors."}
+{"id": "n02", "shape": "funding", "title": "Cursor maker Anysphere raises Series C to accelerate agentic coding", "summary": "The funding round brings total capital raised to over $200 million."}
+{"id": "n03", "shape": "funding", "title": "AI voice startup closes $40M seed round", "summary": "The seed round was oversubscribed, according to people familiar with the matter."}
+{"id": "n04", "shape": "valuation", "title": "OpenAI valued at $300 billion in secondary share sale", "summary": "Employees sold shares at a valuation nearly double last year's."}
+{"id": "n05", "shape": "valuation", "title": "Databricks goes public in the largest software IPO of the year", "summary": "Shares opened above the indicated range."}
+{"id": "n06", "shape": "benchmark", "title": "New model tops the LMSYS leaderboard across coding and reasoning", "summary": "It outperforms the previous state of the art on SWE-bench and MMLU."}
+{"id": "n07", "shape": "benchmark", "title": "Open weights model beats proprietary rivals on HumanEval", "summary": "The benchmark results were independently reproduced."}
+{"id": "n08", "shape": "benchmark", "title": "Gemini scores a new state of the art on GPQA", "summary": "Google says the result reflects improvements in reasoning."}
+{"id": "n09", "shape": "exec_move", "title": "OpenAI appoints a new chief technology officer", "summary": "The incoming CTO joins as the company scales enterprise operations."}
+{"id": "n10", "shape": "exec_move", "title": "Stability AI chief executive steps down", "summary": "The board named an interim replacement while it searches for a successor."}
+{"id": "n11", "shape": "exec_move", "title": "Meta hires the founder of a rival lab as its chief scientist", "summary": "The move follows a wave of senior departures."}
+{"id": "n12", "shape": "earnings", "title": "Microsoft beats estimates as Azure AI revenue accelerates", "summary": "Quarterly results showed cloud revenue of $28 billion."}
+{"id": "n13", "shape": "earnings", "title": "Salesforce reports Q3 results with AI annual recurring revenue up sharply", "summary": "Executives highlighted Agentforce momentum on the earnings call."}
+{"id": "n14", "shape": "partnership", "title": "Accenture partners with Nvidia to build enterprise AI practice", "summary": "The strategic partnership targets Fortune 500 deployments."}
+{"id": "n15", "shape": "partnership", "title": "SAP teams up with a foundation model provider for its cloud suite", "summary": "The partnership with the lab covers ERP workloads."}
+{"id": "n16", "shape": "survey", "title": "Survey finds 78 percent of enterprises now pilot generative AI", "summary": "The study shows adoption reaches a majority for the first time."}
+{"id": "n17", "shape": "survey", "title": "State of AI report finds agent deployments still rare in production", "summary": "The annual report surveyed 1,200 technology leaders."}
+{"id": "n18", "shape": "survey", "title": "Research finds AI could affect 40 percent of jobs worldwide", "summary": "The report was published by an international economic body."}
+{"id": "n19", "shape": "speculation", "title": "The future of work in an age of autonomous agents", "summary": "Analysts argue agents could transform white collar labour within a decade."}
+{"id": "n20", "shape": "speculation", "title": "Is this the end of the SaaS business model?", "summary": "Some investors believe agents will replace seat-based software entirely."}
+{"id": "n21", "shape": "speculation", "title": "Why AI may disrupt the consulting industry", "summary": "A look at what this means for the industry over the next five years."}
+{"id": "n22", "shape": "enterprise", "title": "ServiceNow launches an enterprise agent orchestration platform", "summary": "The platform targets large IT service management deployments with governance and audit controls."}
+{"id": "n23", "shape": "enterprise", "title": "Palantir expands its AI platform for defence and government customers", "summary": "The expansion covers classified deployment environments."}
+{"id": "n24", "shape": "enterprise", "title": "Snowflake adds a governed agent layer for data teams", "summary": "The feature is aimed at enterprise data engineering organisations."}
+{"id": "n25", "shape": "demo_hype", "title": "Watch an AI agent build a full web app in twelve minutes", "summary": "The demo video has been viewed millions of times, though no product was released."}

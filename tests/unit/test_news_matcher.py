@@ -116,15 +116,26 @@ def test_rejecting_them_costs_no_model_call():
     makes it reach for an LLM, this import-level guarantee is the thing that
     should have to be deleted first, deliberately.
     """
+    import ast
     import inspect
 
     from tce.news import matcher
 
-    source = inspect.getsource(matcher)
-    for forbidden in ("llm", "complete(", "LLMRequest", "anthropic", "httpx"):
-        assert forbidden not in source.lower().replace("llm_", ""), (
-            f"the matcher references {forbidden!r}; the gate must stay deterministic"
-        )
+    tree = ast.parse(inspect.getsource(matcher))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+            if node.module.startswith("tce."):
+                imported.add(node.module)
+
+    forbidden = {"httpx", "requests", "urllib", "anthropic", "openai", "tce.llm"}
+    assert not (imported & forbidden), (
+        f"the matcher imports {sorted(imported & forbidden)}; the gate must stay "
+        "deterministic and offline, or it becomes a model's judgement that drifts"
+    )
 
 
 def test_each_negative_names_why_it_was_dropped():
@@ -229,7 +240,10 @@ def test_stop_terms_alone_never_qualify():
 
 def test_one_client_problem_is_not_enough():
     result = match_item(
-        title="A tool for businesses where leads come in, sit there, and nobody ever gets back to them",
+        title=(
+            "A tool for businesses where leads come in, sit there, and nobody "
+            "ever gets back to them"
+        ),
         anchors=INDEX,
     )
     assert not result.matched

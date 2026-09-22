@@ -87,28 +87,72 @@ def test_no_workflow_step_references_a_trend_scout():
         assert "trend_scout" not in agents, f"workflow {name} still starts at trend_scout"
 
 
+def _blocklist_line_range() -> tuple[str, int, int]:
+    """Where the news lane declares the hosts it refuses.
+
+    A blocklist has to name what it blocks, so that one assignment is the single
+    place these hostnames may legally appear. Locating it by AST rather than by
+    filename means renaming or moving the constant does not quietly widen the
+    exemption: if `BLOCKED_HOSTS` stops existing there, every occurrence in the
+    tree becomes an offence again.
+    """
+    path = SRC / "news" / "feeds.py"
+    if not path.exists():
+        return ("", -1, -1)
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "BLOCKED_HOSTS" for t in node.targets
+        ):
+            return ("news/feeds.py", node.lineno, node.end_lineno or node.lineno)
+    return ("", -1, -1)
+
+
 def test_popularity_feeds_are_not_queried_anywhere():
     """The feeds themselves, not just the agent that used them.
 
     Deleting trend_scout while leaving its source list somewhere reachable is
-    how this comes back as a "small helper". Comments are allowed to name these
-    hosts, because the retirement notes do; string literals are not.
+    how this comes back as a "small helper". Comments may name these hosts,
+    because the retirement notes do. String literals may not, with exactly one
+    exemption: the news lane's own BLOCKED_HOSTS, which exists to refuse them.
     """
+    exempt_file, start, end = _blocklist_line_range()
     offenders: list[str] = []
     for path in _python_files():
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover
             continue
+        rel = path.relative_to(SRC).as_posix()
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 low = node.value.lower()
                 for host in RETIRED_FEED_HOSTS:
-                    if host in low:
-                        offenders.append(f"{path.relative_to(SRC)}:{node.lineno} -> {host}")
+                    if host not in low:
+                        continue
+                    if rel == exempt_file and start <= node.lineno <= end:
+                        continue  # the blocklist naming what it blocks
+                    offenders.append(f"{rel}:{node.lineno} -> {host}")
     assert not offenders, (
         "Retired popularity feeds are referenced in code again:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_the_blocklist_exemption_is_narrow():
+    """The exemption must be a real declaration, not a hole anyone can widen."""
+    exempt_file, start, end = _blocklist_line_range()
+    assert exempt_file == "news/feeds.py", (
+        "BLOCKED_HOSTS is not where the guard expects it; the exemption above is "
+        "no longer anchored to a real declaration"
+    )
+    assert 0 < end - start < 30, "the exempt block grew unexpectedly large"
+
+    from tce.news.feeds import BLOCKED_HOSTS, is_blocked_host
+
+    # Naming them is only acceptable because naming them is how they are refused.
+    for host in ("techcrunch.com", "venturebeat.com"):
+        assert host in BLOCKED_HOSTS
+        assert is_blocked_host(f"https://{host}/feed")
 
 
 def test_every_topic_candidate_write_goes_through_the_selector():
