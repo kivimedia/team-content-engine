@@ -78,18 +78,21 @@ textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
 /* ------------------------------------------------------------------ page */
 
 main { width: min(100%, 860px); margin: 0 auto; }
-.page { padding: 24px 16px 20px; }
-.page-head { margin: 0 0 18px; }
-.kicker { color: var(--moss); font-weight: 800; margin: 0 0 6px; font-size: .92rem; }
+.page { padding: 16px 16px 20px; }
+.page-head { margin: 0 0 12px; }
+.kicker { color: var(--moss); font-weight: 800; margin: 0 0 4px; font-size: .86rem; }
+/* The topbar already names the page, so on a phone this is the second time he
+   reads the word "Topics". It stays (it is the anchor when he scrolls back up)
+   but it does not get to cost him the first card. */
 .page h1 {
-  font-family: Georgia, serif; font-size: clamp(1.9rem, 7.5vw, 2.9rem);
-  line-height: 1.02; margin: 0 0 10px; letter-spacing: -.03em;
+  font-family: Georgia, serif; font-size: clamp(1.55rem, 6vw, 2.9rem);
+  line-height: 1.04; margin: 0 0 6px; letter-spacing: -.03em;
 }
 .page h2 {
   font-family: Georgia, serif; font-size: 1.32rem; margin: 30px 0 4px;
 }
-.page .lede { margin: 0; color: var(--body); font-size: 1.04rem; line-height: 1.5; }
-.section-hint { margin: 4px 0 14px; color: var(--helper); line-height: 1.45; font-size: .93rem; }
+.page .lede { margin: 0; color: var(--body); font-size: .98rem; line-height: 1.45; }
+.section-hint { margin: 4px 0 10px; color: var(--helper); line-height: 1.45; font-size: .9rem; }
 
 /* --------------------------------------------------------- the one action */
 
@@ -151,12 +154,17 @@ main { width: min(100%, 860px); margin: 0 auto; }
    drag, and a wheel does not scroll a horizontal box. Hidden overflow is only
    ever safe when the thing overflowing is decoration, and a filter is not. */
 .chips {
-  display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0 10px;
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 8px;
 }
+/* inline-flex for the same reason as .btn: a flex child is blockified and loses
+   the browser's own button centring, and an <a> styled as a chip arrives
+   underlined. */
 .chip {
-  flex: 0 0 auto; min-height: 44px; padding: 0 16px;
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  min-height: 44px; padding: 0 13px;
   border: 2px solid var(--ink); border-radius: 999px; background: var(--white);
-  font-weight: 800; font-size: .92rem; white-space: nowrap;
+  font-weight: 800; font-size: .88rem; white-space: nowrap;
+  text-decoration: none; color: var(--ink);
 }
 .chip[aria-pressed="true"] { background: var(--ink); color: var(--white); }
 
