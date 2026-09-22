@@ -145,11 +145,14 @@ main { width: min(100%, 860px); margin: 0 auto; }
 
 /* ------------------------------------------------------------------ chips */
 
+/* Wrap. Never scroll.
+   This started as a horizontal scroller with the scrollbar hidden, which on a
+   mouse meant the last two filters simply could not be reached: no scrollbar to
+   drag, and a wheel does not scroll a horizontal box. Hidden overflow is only
+   ever safe when the thing overflowing is decoration, and a filter is not. */
 .chips {
-  display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 10px;
-  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0 10px;
 }
-.chips::-webkit-scrollbar { display: none; }
 .chip {
   flex: 0 0 auto; min-height: 44px; padding: 0 16px;
   border: 2px solid var(--ink); border-radius: 999px; background: var(--white);

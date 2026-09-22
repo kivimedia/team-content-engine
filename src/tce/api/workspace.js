@@ -822,13 +822,25 @@
     }
   }
 
+  /* The nav ships absolute hrefs so the markup reads plainly, but this page is
+   * served at BOTH /today and /tce/today (bot.kivimedia.co mounts the whole app
+   * under /tce). The in-app routes survive because `go()` prepends the prefix;
+   * Record does not, because it is a real navigation to another page and is
+   * deliberately not intercepted. Without this it landed on
+   * bot.kivimedia.co/record, which is the KM BOT app and a 404. */
+  Array.prototype.forEach.call($("bottomNav").querySelectorAll("a"), function (a) {
+    a.setAttribute("href", prefix + a.getAttribute("href"));
+  });
+
   // Bottom nav uses real links, so a long press can open one in a new tab. Only
   // the in-app routes are intercepted; /record is a different page on purpose.
   $("bottomNav").addEventListener("click", function (event) {
     var link = event.target.closest("a");
     if (!link || link.dataset.route === "record") return;
     event.preventDefault();
-    go(link.getAttribute("href"));
+    // From the route, not the href: the href now carries the prefix and `go`
+    // adds it again. The four in-app routes are named exactly like their paths.
+    go("/" + link.dataset.route);
   });
 
   $("talkClose").addEventListener("click", function () {

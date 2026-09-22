@@ -46,13 +46,16 @@ from tce.models.editorial_workspace import TOPIC_DECISIONS, TopicDecision
 # Two chips that select identical rows would be a lie about how the engine works.
 FILTERS = ("best", "calls", "code", "news", "evergreen", "later", "away")
 
+# Short on purpose. These wrap onto two rows at 390px; "From my calls" and
+# "Saved for later" pushed it to three and shoved the first real card off the
+# screen, which costs him a scroll before he has decided anything.
 FILTER_LABELS = {
     "best": "Best matches",
-    "calls": "From my calls",
-    "code": "From my code",
+    "calls": "Calls",
+    "code": "Code",
     "news": "AI news",
     "evergreen": "Evergreen",
-    "later": "Saved for later",
+    "later": "Later",
     "away": "Put away",
 }
 
