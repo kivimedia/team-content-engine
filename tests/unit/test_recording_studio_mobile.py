@@ -432,3 +432,81 @@ def test_a_portrait_camera_is_used_whole_and_never_cropped(studio, tmp_path):
         )
         context.close()
         browser.close()
+
+
+def test_the_camera_ladder_never_holds_two_cameras_open(studio, tmp_path):
+    """His phone's camera report, 22-Sep: exact 1080x1920 came back 1920x1080, and
+    every attempt after it failed with NotReadableError, because the ladder kept
+    that stream open while asking for the next. Android opens ONE camera. The
+    720x1280 portrait mode was never even tried."""
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+            )
+        except PlaywrightError as exc:  # pragma: no cover - environment dependent
+            pytest.skip(f"Chromium is not installed for Playwright: {exc}")
+        context = browser.new_context(
+            viewport=PHONE, device_scale_factor=2, is_mobile=True, has_touch=True,
+            permissions=["camera", "microphone"],
+        )
+        page = context.new_page()
+        page.add_init_script(
+            """
+            window.__live = [];
+            window.__busy = 0;
+            const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+            navigator.mediaDevices.getUserMedia = async (constraints) => {
+              if (window.__live.some((t) => t.readyState === 'live')) {
+                window.__busy += 1;
+                throw new DOMException('Could not start video source', 'NotReadableError');
+              }
+              const v = constraints.video || {};
+              const w = v.width && (v.width.exact || v.width.ideal);
+              const h = v.height && (v.height.exact || v.height.ideal);
+              // Like his phone: 1080x1920 is answered in landscape; 720x1280 is a
+              // real portrait mode; anything else is 1920x1440 landscape.
+              let size = [1920, 1440];
+              if (w === 1080 && h === 1920) size = [1920, 1080];
+              if (w === 720 && h === 1280) size = [720, 1280];
+              const stream = await real(constraints);
+              stream.getVideoTracks().forEach((t) => t.stop());
+              const canvas = document.createElement('canvas');
+              [canvas.width, canvas.height] = size;
+              const ctx = canvas.getContext('2d');
+              const paint = () => {
+                ctx.fillStyle = '#123'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                requestAnimationFrame(paint);
+              };
+              paint();
+              const made = canvas.captureStream(30);
+              made.getVideoTracks().forEach((t) => window.__live.push(t));
+              stream.getAudioTracks().forEach((t) => made.addTrack(t));
+              return made;
+            };
+            """
+        )
+        page.goto(f"{studio['base']}/record")
+        page.wait_for_selector(".idea-card")
+        page.click(".idea-card")
+        page.locator("#hookView .hook-option").first.locator(".hook-use").click()
+        page.wait_for_selector("#studioView:not([hidden])")
+
+        shape = page.wait_for_function(
+            """() => {
+                 const preview = document.getElementById('camera').srcObject;
+                 const track = preview && preview.getVideoTracks()[0];
+                 const s = track && track.getSettings();
+                 return s && s.width ? [s.width, s.height] : null;
+               }""",
+            timeout=30000,
+        ).json_value()
+        busy = page.evaluate("() => window.__busy")
+        assert busy == 0, f"{busy} attempt(s) hit a camera the ladder itself still held open"
+        assert shape == [720, 1280], f"the phone's real portrait mode was not found: {shape}"
+        context.close()
+        browser.close()

@@ -239,7 +239,10 @@ body.rec-live .topbar { display: none; }
 .studio-view.is-recording { position: relative; }
 .studio-view.is-recording .script-heading,
 .studio-view.is-recording .session-strip { display: none; }
-.studio-view.is-recording .camera-stage video { object-fit: cover; }
+/* The WHOLE frame being recorded, never a fill-the-box crop of it: `cover` cut
+   the top and bottom off a tall picture in a short box and he saw his face
+   zoomed the moment Record started ("it zooms in to my face. bad"). */
+.studio-view.is-recording .camera-stage video { object-fit: contain; }
 .studio-view.is-recording .controls {
   position: absolute; left: 0; right: 0; top: calc(50% - 60px); display: flex; justify-content: space-between;
   gap: 0; padding: 0 12px; background: transparent; border-top: 0; pointer-events: none;

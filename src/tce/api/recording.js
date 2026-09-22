@@ -732,41 +732,63 @@ function packetToIdea(idea, packet) {
     });
   }
 
+  /* 🚨 ONE CAMERA AT A TIME. Android opens the camera once: the ladder used to
+     keep its best stream so far open while trying the next attempt, so every
+     attempt after the first landscape answer failed with NotReadableError - on
+     his phone the 720x1280 and exact-9:16 portrait modes were never tried at all
+     (camera report, 22-Sep). Each attempt is now measured and CLOSED, and only the
+     winner is opened again at the end. */
   async function openCamera() {
     const audio = { echoCancellation: true, noiseSuppression: true };
+    const open = (attempt) => navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", ...attempt }, audio,
+    }).then(measure);
+    const stop = (opened) => opened.stream.getTracks().forEach((track) => track.stop());
     const tried = [];
-    let fallback = null;
+    let best = null;
     for (const attempt of CAMERA_ATTEMPTS) {
       let opened = null;
       try {
-        opened = await measure(await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user", ...attempt }, audio,
-        }));
+        opened = await open(attempt);
       } catch (error) {
         tried.push({ attempt, error: error.name });
         continue;
       }
       tried.push({ attempt, got: `${opened.width}x${opened.height}` });
-      if (opened.width && opened.height && opened.height >= opened.width) {
+      const portrait = opened.width && opened.height && opened.height >= opened.width;
+      if (portrait) {
         state.cameraReport = { chose: `${opened.width}x${opened.height}`, portrait: true, tried };
-        if (fallback) fallback.stream.getTracks().forEach((track) => track.stop());
-        return opened;
+        return describe(opened);
       }
-      // Landscape, or a camera that will not say: keep the tallest seen so far.
-      if (!fallback || opened.height > fallback.height) {
-        if (fallback) fallback.stream.getTracks().forEach((track) => track.stop());
-        fallback = opened;
-      } else {
-        opened.stream.getTracks().forEach((track) => track.stop());
-      }
+      // The tallest landscape frame is the least zoom once cropped. Remember the
+      // ATTEMPT, not the stream: the camera must be free for the next try.
+      if (!best || opened.height > best.height) best = { attempt, height: opened.height };
+      stop(opened);
     }
-    if (!fallback) throw new Error("The camera did not open.");
+    if (!best) throw new Error("The camera did not open.");
+    const chosen = await open(best.attempt);
     state.cameraReport = {
-      chose: `${fallback.width}x${fallback.height}`,
-      portrait: fallback.height >= fallback.width,
+      chose: `${chosen.width}x${chosen.height}`,
+      portrait: chosen.height >= chosen.width,
       tried,
     };
-    return fallback;
+    return describe(chosen);
+  }
+
+  /* What the camera could have given, next to what it gave: the largest mode and
+     the screen's rotation are what tell "this phone has no portrait mode" apart
+     from "the browser would not hand it over". */
+  function describe(opened) {
+    try {
+      const track = opened.stream.getVideoTracks()[0];
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      state.cameraReport = {
+        ...(state.cameraReport || {}),
+        max: caps.width && caps.height ? `${caps.width.max}x${caps.height.max}` : "",
+        angle: screen.orientation ? screen.orientation.angle : null,
+      };
+    } catch { /* the report is a diagnosis, never a reason not to record */ }
+    return opened;
   }
 
   /* Every clip this phone recorded on 22-Sep came out 2288x1288: upright, but
@@ -786,7 +808,9 @@ function packetToIdea(idea, packet) {
 
     const source = camera.element;
     const canvas = document.createElement("canvas");
-    canvas.height = Math.min(1280, height);
+    // The source's full height (up to 1920), never squeezed: a 1440-tall frame
+    // used to be thrown down to 1280 on top of the crop.
+    canvas.height = Math.min(1920, height);
     canvas.width = Math.round(canvas.height * 9 / 16 / 2) * 2;
     const context = canvas.getContext("2d");
     const cropWidth = Math.min(width, height * 9 / 16);
@@ -838,7 +862,7 @@ function packetToIdea(idea, packet) {
       state.startedAt = Date.now();
       state.takeMarkers = [];
       state.pendingWrites = [];
-      state.recorder = new MediaRecorder(stream, { mimeType: supportedMime, videoBitsPerSecond: 3500000, audioBitsPerSecond: 128000 });
+      state.recorder = new MediaRecorder(stream, { mimeType: supportedMime, videoBitsPerSecond: 8000000, audioBitsPerSecond: 128000 });
       state.recorder.ondataavailable = (event) => {
         if (!event.data?.size) return;
         const sequence = state.sequence++;
