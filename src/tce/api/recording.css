@@ -151,7 +151,9 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .reader-index { display: block; color: var(--lake); font: 800 .72rem "Trebuchet MS", sans-serif; margin-bottom: 5px; }
 .scroll-rail { border-left: 1px solid #9baaba; padding: 8px 5px; gap: 8px; }
 .scroll-rail button { width: 44px; min-height: 44px; border: 0; background: var(--ink); color: #fff; border-radius: 8px; font-weight: 900; }
-.scroll-rail input { writing-mode: vertical-lr; direction: rtl; flex: 1; width: 28px; accent-color: var(--signal); }
+/* No rtl: it put the top of the script at the bottom of the bar, so the dot
+   travelled up while the words went down. */
+.scroll-rail input { writing-mode: vertical-lr; flex: 1; width: 28px; accent-color: var(--signal); }
 .session-strip { display: flex; justify-content: space-between; gap: 10px; padding: 7px 14px; background: var(--ink); color: #fff; font-size: .78rem; font-weight: 800; }
 .session-strip[hidden] { display: none; }
 /* Seconds belong on the picture he is looking at. */

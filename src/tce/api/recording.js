@@ -652,15 +652,69 @@ function packetToIdea(idea, packet) {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !supportedMime) {
       throw new Error("This browser cannot record camera video with audio.");
     }
-    state.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user", width: { ideal: 1080 }, height: { ideal: 1920 } },
+    state.rawStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: "user",
+        width: { ideal: 1080 },
+        height: { ideal: 1920 },
+        // Android Chrome hands back a landscape camera on a portrait phone
+        // whatever the width and height say, so this is a request, not a promise.
+        aspectRatio: { ideal: 9 / 16 },
+      },
       audio: { echoCancellation: true, noiseSuppression: true },
     });
-    if (!state.stream.getAudioTracks().some((track) => track.enabled)) throw new Error("The recording has no active microphone track.");
+    if (!state.rawStream.getAudioTracks().some((track) => track.enabled)) throw new Error("The recording has no active microphone track.");
+    state.stream = portraitStream(state.rawStream);
     $("camera").srcObject = state.stream;
     await $("camera").play();
     $("cameraEmpty").hidden = true;
     return state.stream;
+  }
+
+  /* Every clip this phone recorded on 22-Sep came out 2288x1288: upright, but
+     framed landscape, so it cut the top of his head off and could not be posted
+     as a vertical video. Chrome on Android gives a landscape camera on a portrait
+     phone and ignores the size hints. When that happens the frames are drawn
+     through a 9:16 canvas, centre cropped, and the canvas is what gets recorded
+     AND previewed - so what he sees is what the file holds. A camera that is
+     already portrait is passed straight through and nothing is re-encoded. */
+  function portraitStream(raw) {
+    const track = raw.getVideoTracks()[0];
+    const settings = track ? track.getSettings() : {};
+    const width = settings.width || 0;
+    const height = settings.height || 0;
+    if (!track || !width || !height || height >= width) return raw;
+
+    const source = document.createElement("video");
+    source.playsInline = true;
+    source.muted = true;
+    source.srcObject = new MediaStream([track]);
+    const canvas = document.createElement("canvas");
+    canvas.height = Math.min(1280, height);
+    canvas.width = Math.round(canvas.height * 9 / 16 / 2) * 2;
+    const context = canvas.getContext("2d");
+    const cropWidth = Math.min(width, height * 9 / 16);
+    const cropX = (width - cropWidth) / 2;
+
+    const draw = () => {
+      if (state.portraitStopped) return;
+      if (source.readyState >= 2) {
+        context.drawImage(source, cropX, 0, cropWidth, height, 0, 0, canvas.width, canvas.height);
+      }
+      state.portraitFrame = requestAnimationFrame(draw);
+    };
+    state.portraitStopped = false;
+    source.play().catch(() => { /* a paused element still paints once it can */ });
+    draw();
+
+    const out = canvas.captureStream(30);
+    raw.getAudioTracks().forEach((audio) => out.addTrack(audio));
+    // When the camera itself stops, stop painting too.
+    track.addEventListener("ended", () => {
+      state.portraitStopped = true;
+      cancelAnimationFrame(state.portraitFrame);
+    });
+    return out;
   }
 
   async function requestWakeLock() {

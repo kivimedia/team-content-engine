@@ -226,3 +226,28 @@ def test_choose_hook_response_rebinds_the_idea_to_the_new_version():
 # on the record page meant being shown seventeen undecided ideas straight after
 # choosing one. Their tests went with them rather than being left to describe a
 # flow that no longer exists.
+
+
+def test_a_landscape_camera_is_cropped_to_a_vertical_video():
+    """22-Sep: every clip this phone recorded was 2288x1288. Upright, but framed
+    landscape, cutting off the top of his head and unpostable as a vertical."""
+    js = JS.read_text(encoding="utf-8")
+    assert "function portraitStream(" in js
+    assert "aspectRatio" in js, "the portrait camera is not even asked for"
+    # The canvas is what gets recorded AND previewed, or he cannot see the crop.
+    assert "canvas.captureStream" in js
+    assert "state.stream = portraitStream(state.rawStream);" in js
+    assert 'srcObject = state.stream;' in js
+    body = js[js.index("function portraitStream("):]
+    body = body[: body.index("\n  async function requestWakeLock")]
+    assert "height >= width) return raw" in body, "a portrait camera must pass through untouched"
+    assert "9 / 16" in body
+
+
+def test_the_reader_slider_runs_the_way_the_words_do():
+    """`direction: rtl` put the top of the script at the bottom of the bar, so the
+    red dot climbed while the words scrolled down."""
+    css = (API / "recording.css").read_text(encoding="utf-8")
+    rail = next(line for line in css.splitlines() if line.startswith(".scroll-rail input"))
+    assert "vertical-lr" in rail
+    assert "direction: rtl" not in rail
