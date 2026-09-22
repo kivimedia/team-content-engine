@@ -104,6 +104,12 @@ STOP_TERMS = frozenset(
         "business",
         "system",
         "systems",
+        # Real names of his that are also ordinary words: a settings key
+        # (search_api_key) and repos (boards, clara). Alone they match Pinterest
+        # boards and anyone called Clara, never his work.
+        "search",
+        "boards",
+        "clara",
     }
 )
 

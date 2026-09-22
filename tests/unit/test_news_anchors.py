@@ -81,6 +81,14 @@ def test_a_phrase_containing_a_stop_word_is_fine():
     assert DerivedAnchor("capability", "prompt caching", "manual").usable()
 
 
+@pytest.mark.parametrize(
+    ("kind", "term"), [("vendor", "search"), ("dependency", "boards"), ("dependency", "clara")]
+)
+def test_his_names_that_are_ordinary_words_are_not_anchors(kind, term):
+    """Found in the first production dry run: these would match Pinterest boards."""
+    assert not DerivedAnchor(kind, term, "env").usable()
+
+
 def test_very_short_terms_are_rejected():
     assert not DerivedAnchor("vendor", "ab", "manual").usable()
 
