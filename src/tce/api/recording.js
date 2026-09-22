@@ -362,7 +362,12 @@ function packetToIdea(idea, packet) {
         body: JSON.stringify({
           candidate_id: state.idea.candidate_id,
           packet_id: state.idea.packet_id,
-          device_meta: { user_agent: navigator.userAgent.slice(0, 300), viewport: `${innerWidth}x${innerHeight}` },
+          device_meta: {
+            user_agent: navigator.userAgent.slice(0, 300),
+            viewport: `${innerWidth}x${innerHeight}`,
+            orientation: screen.orientation?.type || "",
+            camera: state.cameraReport || null,
+          },
         }),
       });
       state.session = data.session;
@@ -628,10 +633,10 @@ function packetToIdea(idea, packet) {
     setMode("points");
     updateSessionLabels();
     try {
-      await ensureSession();
-      // The top half is worth its space only if it shows him: the preview runs
-      // from the moment the studio opens, not from the first Record.
+      // The camera first, so what it actually gave is written into the take set:
+      // a phone that has no portrait mode can only be diagnosed from its own data.
       await ensureMedia();
+      await ensureSession();
     } catch (error) {
       showNotice(error.message);
     }
@@ -652,23 +657,67 @@ function packetToIdea(idea, packet) {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !supportedMime) {
       throw new Error("This browser cannot record camera video with audio.");
     }
-    state.rawStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: "user",
-        width: { ideal: 1080 },
-        height: { ideal: 1920 },
-        // Android Chrome hands back a landscape camera on a portrait phone
-        // whatever the width and height say, so this is a request, not a promise.
-        aspectRatio: { ideal: 9 / 16 },
-      },
-      audio: { echoCancellation: true, noiseSuppression: true },
-    });
+    state.rawStream = await openCamera();
     if (!state.rawStream.getAudioTracks().some((track) => track.enabled)) throw new Error("The recording has no active microphone track.");
     state.stream = portraitStream(state.rawStream);
     $("camera").srcObject = state.stream;
     await $("camera").play();
     $("cameraEmpty").hidden = true;
     return state.stream;
+  }
+
+  /* Ask the phone for a real portrait camera before settling for cropping one.
+     A cropped 16:9 frame is the worst of both: Chrome has already thrown away the
+     top and bottom to make it wide, and cropping the sides to 9:16 then throws
+     away two thirds of what is left, which is why he saw himself "zoomed in A
+     LOT". So: portrait modes first (nothing is cropped at all if one works), then
+     the TALLEST frame on offer - 4:3 keeps far more of him than 16:9 - and the
+     crop takes its full height. Each attempt that comes back landscape is stopped
+     before the next, so the camera light never stacks up. */
+  const CAMERA_ATTEMPTS = [
+    { width: { exact: 1080 }, height: { exact: 1920 } },
+    { width: { exact: 720 }, height: { exact: 1280 } },
+    { aspectRatio: { exact: 9 / 16 } },
+    // No portrait mode: take the most vertical field of view there is, to crop.
+    { width: { ideal: 1440 }, height: { ideal: 1920 }, aspectRatio: { ideal: 3 / 4 } },
+    { width: { ideal: 1080 }, height: { ideal: 1440 }, aspectRatio: { ideal: 3 / 4 } },
+    { width: { ideal: 1080 }, height: { ideal: 1920 } },
+  ];
+
+  async function openCamera() {
+    const audio = { echoCancellation: true, noiseSuppression: true };
+    const tried = [];
+    let fallback = null;
+    for (const attempt of CAMERA_ATTEMPTS) {
+      let stream = null;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", ...attempt }, audio,
+        });
+      } catch (error) {
+        tried.push({ attempt, error: error.name });
+        continue;
+      }
+      const settings = stream.getVideoTracks()[0]?.getSettings() || {};
+      tried.push({ attempt, got: `${settings.width}x${settings.height}` });
+      if ((settings.height || 0) >= (settings.width || 0)) {
+        state.cameraReport = { chose: `${settings.width}x${settings.height}`, portrait: true, tried };
+        if (fallback) fallback.getTracks().forEach((track) => track.stop());
+        return stream;
+      }
+      // Landscape: keep the tallest one seen, in case nothing portrait exists.
+      const best = fallback?.getVideoTracks()[0]?.getSettings();
+      if (!best || (settings.height || 0) > (best.height || 0)) {
+        if (fallback) fallback.getTracks().forEach((track) => track.stop());
+        fallback = stream;
+      } else {
+        stream.getTracks().forEach((track) => track.stop());
+      }
+    }
+    if (!fallback) throw new Error("The camera did not open.");
+    const settings = fallback.getVideoTracks()[0].getSettings();
+    state.cameraReport = { chose: `${settings.width}x${settings.height}`, portrait: false, tried };
+    return fallback;
   }
 
   /* Every clip this phone recorded on 22-Sep came out 2288x1288: upright, but

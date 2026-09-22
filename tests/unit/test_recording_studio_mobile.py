@@ -357,3 +357,74 @@ def test_a_landscape_camera_is_previewed_and_recorded_as_a_vertical_video(studio
         page.screenshot(path=str(tmp_path / "studio-portrait.png"))
         context.close()
         browser.close()
+
+
+def test_a_portrait_camera_is_used_whole_and_never_cropped(studio, tmp_path):
+    """Cropping is the last resort, not the plan: a phone that HAS a portrait mode
+    must be recorded untouched, or he sees himself "zoomed in A LOT" for nothing."""
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+            )
+        except PlaywrightError as exc:  # pragma: no cover - environment dependent
+            pytest.skip(f"Chromium is not installed for Playwright: {exc}")
+        context = browser.new_context(
+            viewport=PHONE, device_scale_factor=2, is_mobile=True, has_touch=True,
+            permissions=["camera", "microphone"],
+        )
+        page = context.new_page()
+        # A phone with a real portrait mode: 720x1280 when asked, landscape if not.
+        page.add_init_script(
+            """
+            window.__opened = [];
+            const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+            navigator.mediaDevices.getUserMedia = async (constraints) => {
+              const video = constraints.video || {};
+              const wants = video.width && (video.width.exact || video.width.ideal);
+              const tall = video.height && (video.height.exact || video.height.ideal);
+              const portrait = Boolean(tall && wants && tall > wants);
+              window.__opened.push(portrait ? 'portrait' : 'landscape');
+              const stream = await real(constraints);
+              const canvas = document.createElement('canvas');
+              canvas.width = portrait ? 720 : 1280;
+              canvas.height = portrait ? 1280 : 720;
+              const ctx = canvas.getContext('2d');
+              const paint = () => {
+                ctx.fillStyle = '#123';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                requestAnimationFrame(paint);
+              };
+              paint();
+              const made = canvas.captureStream(30);
+              stream.getAudioTracks().forEach((track) => made.addTrack(track));
+              return made;
+            };
+            """
+        )
+        page.goto(f"{studio['base']}/record")
+        page.wait_for_selector(".idea-card")
+        page.click(".idea-card")
+        page.locator("#hookView .hook-option").first.locator(".hook-use").click()
+        page.wait_for_selector("#studioView:not([hidden])")
+
+        shape = page.wait_for_function(
+            """() => {
+                 const preview = document.getElementById('camera').srcObject;
+                 const track = preview && preview.getVideoTracks()[0];
+                 const settings = track && track.getSettings();
+                 if (!settings || !settings.width) return null;
+                 return [settings.width, settings.height];
+               }""",
+            timeout=20000,
+        ).json_value()
+        assert shape == [720, 1280], f"a portrait camera was not used as it came: {shape}"
+        assert page.evaluate("() => window.__opened[0]") == "portrait", (
+            "the portrait camera was not even asked for first"
+        )
+        context.close()
+        browser.close()
