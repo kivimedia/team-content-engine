@@ -214,3 +214,12 @@ dialog h2 { font-family: Georgia, serif; margin-top: 0; }
    letting the last idea sit underneath it. */
 body:not(.in-studio) .queue-view { padding-bottom: calc(68px + env(safe-area-inset-bottom) + 24px); }
 body.in-studio .bottom-nav { display: none; }
+
+/* A closed <details> must actually be closed.
+   The browser hides a collapsed details' children with its own rule, but an
+   author `display: grid` on .recorded-list and .ideas-list beats it - author
+   styles win over UA styles whatever the specificity. So "Recorded (1)" and
+   "Put away (3)" were rendering their full contents while still showing a shut
+   triangle, which is why the queue was longer than it looked and why items sat
+   under the nav. Restated here at author level so it applies. */
+details:not([open]) > *:not(summary) { display: none !important; }
