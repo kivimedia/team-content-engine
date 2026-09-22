@@ -1248,6 +1248,9 @@
       state.talkContext = null;
     }
     fab.hidden = !state.talkContext;
+    // The bar is fixed, so the page has to reserve its height or the last card
+    // sits underneath it.
+    document.body.classList.toggle("has-talk", !!state.talkContext);
     if (state.talkContext) {
       fab.textContent = state.talkContext.type === "room"
         ? "Talk it through" : "Talk about this";
@@ -1259,6 +1262,7 @@
     state.route = route.name;
     setChrome(route);
     $("talkFab").hidden = true;
+    document.body.classList.remove("has-talk");
     try {
       if (route.name === "today") await renderToday();
       else if (route.name === "topics") await renderTopics();

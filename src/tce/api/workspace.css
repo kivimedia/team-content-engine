@@ -298,15 +298,22 @@ main { width: min(100%, 860px); margin: 0 auto; }
 
 /* --------------------------------------------------------- talk about this */
 
+/* A bar, not a floating pill.
+   As a pill it sat on top of whatever happened to scroll under it - in the topic
+   room, directly over a block's "Ask for a rewrite" button. A floating control
+   cannot be given unobstructed space while the page scrolls beneath it, so it
+   stops floating: this spans the width above the nav, and `body.has-talk`
+   reserves exactly its height so nothing is ever underneath it. */
 .talk-fab {
-  position: fixed; right: 16px; z-index: 25;
-  bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 14px);
-  min-height: 52px; padding: 0 20px;
-  border: 2px solid var(--ink); border-radius: 999px;
-  background: var(--lake); color: #fff; font-weight: 800;
-  box-shadow: 4px 4px 0 var(--ink);
+  position: fixed; left: 0; right: 0; z-index: 25;
+  bottom: calc(var(--nav-h) + env(safe-area-inset-bottom));
+  min-height: 56px; padding: 0 16px;
+  border: 0; border-top: 2px solid var(--ink);
+  background: var(--lake); color: #fff; font-weight: 800; font-size: 1rem;
+  box-shadow: 0 -4px 14px rgba(16, 33, 59, .18);
 }
-.talk-fab:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--ink); }
+.talk-fab:active { background: #0f4d7d; }
+body.has-talk { padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 74px); }
 
 /* The conversation is a full-height sheet with one obvious close. It never
    closes on an outside tap: there is a half-typed instruction inside it. */
