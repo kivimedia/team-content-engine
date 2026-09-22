@@ -17,6 +17,7 @@ change set. Nothing here mutates a row that already exists.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -67,7 +68,7 @@ def seed_brief(candidate: TopicCandidate) -> dict[str, str]:
 
     brief["why_this_is_yours"] = _why_this_is_yours(candidate)
     brief["evidence"] = _evidence_summary(candidate)
-    brief["claims_to_avoid"] = candidate.public_safety_notes or ""
+    brief["claims_to_avoid"] = _readable(candidate.public_safety_notes or "")
 
     # Absent, not empty: the room shows "Nothing written yet" and an invitation,
     # which reads as a prompt instead of as a field he already answered blank.
@@ -75,6 +76,29 @@ def seed_brief(candidate: TopicCandidate) -> dict[str, str]:
         brief.pop(key, None)
 
     return {k: v for k, v in brief.items() if k in BRIEF_FIELDS}
+
+
+_UUID_PATTERN = re.compile(
+    r"\s*\b(?:for|in|on|at)?\s*(?:moment|source|packet|phrase)?\s*"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b:?",
+    re.IGNORECASE,
+)
+
+
+def _readable(text: str) -> str:
+    """Strip the engine's internal ids out of anything he reads.
+
+    The selector writes notes like "Translation ... for moment 45586105-e117-...:
+    paraphrase, do not quote." The instruction is useful; the uuid is noise he
+    explicitly asked never to see ("no phrase ids visible - useless and
+    distracting"). The sentence survives, the id does not.
+    """
+    cleaned = _UUID_PATTERN.sub("", text)
+    # Tidy the punctuation the removal leaves behind.
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([,.:;])", r"\1", cleaned)
+    cleaned = re.sub(r"\(\s*\)", "", cleaned)
+    return cleaned.strip().lstrip(":").strip()
 
 
 def _why_this_is_yours(candidate: TopicCandidate) -> str:

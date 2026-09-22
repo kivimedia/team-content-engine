@@ -576,3 +576,29 @@ async def test_an_unsafe_proposed_line_is_flagged_before_it_can_be_accepted(edit
 
     codes = {i["code"] for i in change_set.validation["issues"]}
     assert "safety" in codes
+
+
+async def test_an_internal_moment_id_never_reaches_a_block_he_reads(editorial_session):
+    """He asked never to see phrase ids: "useless and distracting".
+
+    The selector writes real instructions with a uuid embedded. The instruction is
+    worth reading; the id is noise.
+    """
+    ws = uuid.uuid4()
+    candidate = make_candidate(
+        ws,
+        public_safety_notes=(
+            "Translation (English adaptation from Hebrew) for moment "
+            "45586105-e117-45a9-b968-20ccbd682576: paraphrase, do not quote."
+        ),
+    )
+    editorial_session.add(candidate)
+    await editorial_session.flush()
+    brief = await briefs.ensure_brief(editorial_session, ws, candidate)
+    await editorial_session.commit()
+
+    claims = brief.brief["claims_to_avoid"]
+    assert "45586105" not in claims
+    assert "moment" not in claims.lower()
+    # The instruction itself survives intact.
+    assert "paraphrase, do not quote" in claims
