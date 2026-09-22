@@ -213,7 +213,6 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str, attempt: int = 1)
     from tce.editorial.packets import build_packet
     from tce.editorial.selector import select_candidates
     from tce.evidence.collect import collect_fathom, collect_github
-    from tce.evidence.moments import extract_moments
     from tce.production.export import export_packet_durable
     from tce.settings import settings
 
@@ -227,65 +226,16 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str, attempt: int = 1)
             raise ValueError("week runs require window_start and window_end")
         fathom = await collect_fathom(sm, run.workspace_id, run.window_start, run.window_end)
         github = await collect_github(sm, run.workspace_id, run.window_start, run.window_end)
-        return {"collection_run_ids": [str(fathom), str(github)]}
+        # After his own evidence, so an anchor built from this morning's commits is
+        # already there when the news is matched against it.
+        news = await _news_step(sm, run, appraise=False)
+        out = {"collection_run_ids": [str(fathom), str(github)]}
+        return {**out, "news": news} if news else out
 
     if stage == "extracting":
-        extraction_id = await extract_moments(
-            sm,
-            run.workspace_id,
-            None if source_ids else run.window_start,
-            None if source_ids else run.window_end,
-            source_ids=source_ids or None,
-        )
-        async with open_session(sm) as db:
-            ledger = await db.get(EvidenceCollectionRun, extraction_id)
-            if ledger is None:
-                raise runs.StageWaitingError("waiting_capacity", "extraction ledger missing")
-            counts = ledger.counts or {}
-            processed = int(counts.get("processed") or 0)
-            failed = int(counts.get("failed") or 0)
-            unavailable = int(counts.get("unavailable") or 0)
-            detail = ledger.current_activity or "extraction incomplete"
-            if not ledger.complete:
-                # A ledger that STOPPED with failed or unavailable sources is not
-                # a capacity problem, and calling it one was a lie the run then
-                # showed to Ziv: a single failed source out of 31 parked a whole
-                # daily run as "waiting for subscription capacity" while the
-                # workers were idle. Only work still in flight waits.
-                if ledger.finished_at is None:
-                    raise runs.StageWaitingError("waiting_capacity", detail)
-                # `processed` counts what THIS pass extracted. A re-drive skips
-                # every source already extracted at its current version, so
-                # processed=0 usually means the work is done, not that there is
-                # nothing: asking the ledger instead of the evidence failed two
-                # runs on 20-Sep that had thousands of moments already stored.
-                stored = await _moments_for_run(db, run)
-                if stored:
-                    return {
-                        "extraction_run_id": str(extraction_id),
-                        "processed": processed,
-                        "failed": failed,
-                        "unavailable": unavailable,
-                        "moments_available": stored,
-                        "partial": True,
-                        "detail": detail,
-                    }
-                if unavailable or not processed:
-                    raise runs.StageWaitingError(
-                        "waiting_capacity",
-                        f"No evidence has been extracted for this run yet: {detail}",
-                    )
-                # Some sources failed, most did not: the run continues on the
-                # evidence it has and says what it left behind.
-                return {
-                    "extraction_run_id": str(extraction_id),
-                    "processed": processed,
-                    "failed": failed,
-                    "unavailable": unavailable,
-                    "partial": True,
-                    "detail": detail,
-                }
-        return {"extraction_run_id": str(extraction_id)}
+        news = await _news_step(sm, run, appraise=True)
+        result = await _extracting_stage(sm, run, source_ids)
+        return {**result, "news": news} if news else result
 
     week = (run.window_start or datetime.now(UTC)).date()
     if stage == "selecting":
@@ -424,6 +374,105 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str, attempt: int = 1)
 # inside runs.DEFAULT_LEASE (5 min): collecting alone took 5m12s on 20-Sep, and
 # the cron tick re-drives any stage whose lease has lapsed.
 LEASE_HEARTBEAT = timedelta(seconds=60)
+
+
+async def _extracting_stage(sm: Any, run: ContentRun, source_ids: list[Any]) -> dict[str, Any]:
+    """The extracting stage, unchanged: moved out so the news step can wrap it."""
+    from tce.evidence.moments import extract_moments
+
+    extraction_id = await extract_moments(
+        sm,
+        run.workspace_id,
+        None if source_ids else run.window_start,
+        None if source_ids else run.window_end,
+        source_ids=source_ids or None,
+    )
+    async with open_session(sm) as db:
+        ledger = await db.get(EvidenceCollectionRun, extraction_id)
+        if ledger is None:
+            raise runs.StageWaitingError("waiting_capacity", "extraction ledger missing")
+        counts = ledger.counts or {}
+        processed = int(counts.get("processed") or 0)
+        failed = int(counts.get("failed") or 0)
+        unavailable = int(counts.get("unavailable") or 0)
+        detail = ledger.current_activity or "extraction incomplete"
+        if not ledger.complete:
+            # A ledger that STOPPED with failed or unavailable sources is not
+            # a capacity problem, and calling it one was a lie the run then
+            # showed to Ziv: a single failed source out of 31 parked a whole
+            # daily run as "waiting for subscription capacity" while the
+            # workers were idle. Only work still in flight waits.
+            if ledger.finished_at is None:
+                raise runs.StageWaitingError("waiting_capacity", detail)
+            # `processed` counts what THIS pass extracted. A re-drive skips
+            # every source already extracted at its current version, so
+            # processed=0 usually means the work is done, not that there is
+            # nothing: asking the ledger instead of the evidence failed two
+            # runs on 20-Sep that had thousands of moments already stored.
+            stored = await _moments_for_run(db, run)
+            if stored:
+                return {
+                    "extraction_run_id": str(extraction_id),
+                    "processed": processed,
+                    "failed": failed,
+                    "unavailable": unavailable,
+                    "moments_available": stored,
+                    "partial": True,
+                    "detail": detail,
+                }
+            if unavailable or not processed:
+                raise runs.StageWaitingError(
+                    "waiting_capacity",
+                    f"No evidence has been extracted for this run yet: {detail}",
+                )
+            # Some sources failed, most did not: the run continues on the
+            # evidence it has and says what it left behind.
+            return {
+                "extraction_run_id": str(extraction_id),
+                "processed": processed,
+                "failed": failed,
+                "unavailable": unavailable,
+                "partial": True,
+                "detail": detail,
+            }
+    return {"extraction_run_id": str(extraction_id)}
+
+
+async def _news_step(sm: Any, run: ContentRun, *, appraise: bool) -> dict[str, Any] | None:
+    """The third lane's share of a daily run. It must never fail the run.
+
+    Collecting runs the deterministic half (anchors, expiry, feeds, matching: no
+    model). Extracting runs the appraisal, which needs the subscription worker the
+    stage already waits for. Targeted runs over chosen meetings skip it. With the
+    lane off it returns None and nothing about the run changes. Any error is
+    caught and reported in the stage output: "news had a bad day" must never
+    become "your calls were not collected".
+    """
+    from tce.news import discovery
+
+    if run.scope_kind == "sources" or not discovery.lane_on():
+        return None
+    try:
+        async with open_session(sm) as db:
+            if appraise:
+                from tce import llm as _llm
+
+                out = await discovery.appraise_pending(db, run.workspace_id, complete=_llm.complete)
+            else:
+                import httpx
+
+                from tce.services.url_fetcher import fetch_url_text
+
+                async with httpx.AsyncClient(
+                    timeout=20.0, follow_redirects=True, headers={"user-agent": "tce-news/1.0"}
+                ) as client:
+                    out = await discovery.discover(
+                        db, run.workspace_id, client=client, fetch_text=fetch_url_text
+                    )
+            await db.commit()
+            return out
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        return {"error": f"{type(exc).__name__}: {exc}"[:500]}
 
 
 async def _execute_stage_leased(sm: Any, run: ContentRun, stage: Any, owner: str) -> dict[str, Any]:

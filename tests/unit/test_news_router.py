@@ -93,3 +93,112 @@ async def test_a_standing_fact_naming_someone_is_refused_with_the_reason(client)
     r = client.put("/api/v1/news/standing-facts", headers=h(WS_A), json=body)
     assert r.status_code == 422
     assert "categories" in r.json()["detail"]
+
+
+# --- the manual request -------------------------------------------------------
+
+from datetime import datetime, timedelta  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from tce.models.editorial import EvidenceMoment, EvidenceSource  # noqa: E402
+
+PAGE = (
+    "Twilio forwarded calls that are not answered now fall back to the configured "
+    "voicemail after twenty seconds."
+)
+VERDICT = {
+    "verdict": "publish",
+    "verdict_reason": "Changes a shop's unanswered calls.",
+    "what_happened": "Unanswered forwarded calls fall back to voicemail.",
+    "audience_consequence": "Missed calls route differently.",
+    "distinct_claim": "I run reception for shops.",
+    "do_differently": ["Check where an unanswered call ends up."],
+    "confirmed_facts": [{"claim": "Fallback", "quote": "fall back to the configured voicemail"}],
+    "ziv_interpretation": ["Owners never check this."],
+    "predictions": ["Fewer silent calls."],
+    "format": "changes_my_product",
+    "perishability": "week",
+    "story_weight": "small",
+    "weight_reason": "",
+    "scores": {"owner_relevance": 5, "consequence_specificity": 4, "distinctiveness": 4},
+}
+
+
+@pytest.fixture
+def fakes(monkeypatch):
+    import tce.llm
+    import tce.services.url_fetcher as fetcher
+
+    async def page(url, timeout_s=15.0):
+        return {"title": "Forwarding fallback", "body_text": PAGE}
+
+    async def model(request):
+        return SimpleNamespace(structured=VERDICT, job_id=uuid.uuid4())
+
+    monkeypatch.setattr(fetcher, "fetch_url_text", page)
+    monkeypatch.setattr(tce.llm, "complete", model)
+
+
+@pytest.fixture
+async def his_commit(editorial_sessionmaker):
+    async with editorial_sessionmaker() as s:
+        src = EvidenceSource(
+            id=uuid.uuid4(), workspace_id=WS_A, source_kind="github_commit_group",
+            external_id="kivimedia/receptionist@1", version_hash="v1",
+            occurred_at=datetime.utcnow() - timedelta(days=2), fetch_status="ok",
+            payload_private={"repo": "kivimedia/receptionist", "commits": []},
+        )
+        s.add(src)
+        s.add(EvidenceMoment(
+            id=uuid.uuid4(), workspace_id=WS_A, source_id=src.id, source_version_hash="v1",
+            excerpt_private="Route unanswered Twilio calls to after-hours voicemail.",
+            lesson_summary="Unanswered calls should land somewhere.", claim_type="demonstrated",
+            speaker_confidence="high", status="active", sensitivity_flags=[],
+        ))
+        await s.commit()
+
+
+async def test_a_news_site_writeup_is_refused_with_what_to_do(client):
+    r = client.post("/api/v1/news/check", headers=h(WS_A),
+                    json={"url": "https://techcrunch.com/2026/09/story"})
+    assert r.json()["status"] == "unverified"
+    assert "announcement itself" in r.json()["why"]
+
+
+async def test_a_manual_check_matches_names_it_and_appraises(client, fakes, his_commit):
+    r = client.post("/api/v1/news/check", headers=h(WS_A),
+                    json={"url": "https://vendor.example/r/forwarding"})
+    body = r.json()
+    assert body["status"] == "matched" and body["appraising"] is True
+    assert "twilio" in body["why"].lower(), "the match was not named"
+
+    item = client.get(f"/api/v1/news/items/{body['item_id']}", headers=h(WS_A)).json()
+    assert item["state"] == "appraised"
+    assert item["appraisal"]["verdict"] == "publish"
+    assert "next weekly selection" in item["appraisal"]["next"]
+
+
+async def test_a_non_match_says_why_and_spends_nothing(client, fakes, monkeypatch):
+    import tce.llm
+    import tce.services.url_fetcher as fetcher
+
+    async def page(url, timeout_s=15.0):
+        return {"title": "A theme", "body_text": "A new colour theme for the settings page."}
+
+    calls = []
+
+    async def model(request):  # pragma: no cover - must not run
+        calls.append(request)
+
+    monkeypatch.setattr(fetcher, "fetch_url_text", page)
+    monkeypatch.setattr(tce.llm, "complete", model)
+    body = client.post("/api/v1/news/check", headers=h(WS_A),
+                       json={"url": "https://vendor.example/r/theme"}).json()
+    assert body["status"] == "no_match" and body["why"]
+    assert "appraising" not in body and calls == []
+
+
+async def test_another_workspace_cannot_read_the_item(client, fakes, his_commit):
+    body = client.post("/api/v1/news/check", headers=h(WS_A),
+                       json={"url": "https://vendor.example/r/forwarding"}).json()
+    assert client.get(f"/api/v1/news/items/{body['item_id']}", headers=h(WS_B)).status_code == 404

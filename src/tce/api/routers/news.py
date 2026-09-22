@@ -20,7 +20,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -186,3 +186,98 @@ async def replace_standing_facts(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         await session.commit()
     return result
+
+
+# ---------------------------------------------------------------------------
+# The manual request
+# ---------------------------------------------------------------------------
+
+
+class CheckIn(BaseModel):
+    url: str = Field(min_length=8, max_length=1000)
+
+
+async def _appraise_in_background(sessionmaker: Any, ws: uuid.UUID, item_id: uuid.UUID) -> None:
+    """The one model call, outside the request. Waiting for capacity is fine."""
+    from tce import llm as _llm
+    from tce.news import discovery
+
+    async with sessionmaker() as session:
+        await discovery.appraise_pending(
+            session, ws, complete=_llm.complete, only_item=item_id
+        )
+        await session.commit()
+
+
+@router.post("/check")
+async def check(
+    body: CheckIn,
+    background: BackgroundTasks,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sessionmaker: async_sessionmaker[AsyncSession] = Depends(get_news_sessionmaker),
+) -> dict[str, Any]:
+    """"Is this announcement worth anything to me?"
+
+    Answers the matching question immediately, with what it matched named. If it
+    matched, one appraisal is queued and GET /news/items/{id} says how it went.
+    """
+    from tce.news import discovery
+    from tce.services.url_fetcher import fetch_url_text
+
+    async with sessionmaker() as session:
+        out = await discovery.check_one(session, ws, url=body.url, fetch_text=fetch_url_text)
+        await session.commit()
+    if out.get("status") == "matched":
+        background.add_task(
+            _appraise_in_background, sessionmaker, ws, uuid.UUID(out["item_id"])
+        )
+        out["appraising"] = True
+    return out
+
+
+@router.get("/items/{item_id}")
+async def item_status(
+    item_id: uuid.UUID,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sessionmaker: async_sessionmaker[AsyncSession] = Depends(get_news_sessionmaker),
+) -> dict[str, Any]:
+    from tce.models.news import NewsAppraisal
+
+    async with sessionmaker() as session:
+        item = await session.get(NewsItem, item_id)
+        if item is None or item.workspace_id != ws:
+            raise HTTPException(status_code=404, detail="no such item")
+        appraisal = (
+            await session.execute(
+                select(NewsAppraisal)
+                .where(NewsAppraisal.news_item_id == item.id, NewsAppraisal.workspace_id == ws)
+                .order_by(NewsAppraisal.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    state = (
+        "appraised" if appraisal
+        else "waiting for the appraisal" if item.matched
+        else f"not taken further: {item.prefilter_reason or 'not matched'}"
+    )
+    return {
+        "item_id": str(item.id),
+        "title": item.title,
+        "url": item.primary_url or item.url,
+        "state": state,
+        "appraisal": None if appraisal is None else {
+            "verdict": appraisal.verdict,
+            "reason": appraisal.verdict_reason,
+            "format": appraisal.format,
+            "expires_at": _iso(appraisal.expires_at),
+            "story_weight": appraisal.story_weight,
+            "do_differently": list(appraisal.do_differently or []),
+            "next": (
+                "It joins the next weekly selection as a candidate."
+                if appraisal.verdict == "publish"
+                else "It is on the watchlist on the Timely tab."
+                if appraisal.verdict == "watch"
+                else "Not taken further."
+            ),
+        },
+    }
