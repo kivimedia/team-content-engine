@@ -245,10 +245,13 @@ body.rec-live .topbar { display: none; }
   gap: 0; padding: 0 12px; background: transparent; border-top: 0; pointer-events: none;
 }
 .studio-view.is-recording .control { pointer-events: auto; min-height: 48px; width: auto; padding: 6px 18px; font-size: .9rem; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
+/* Finish means finished: the button on the right ends the take and sends it for
+   editing (it saves the clip first). "Finish clip" only closed the clip, so he
+   pressed it, nothing looked finished, and he could not get out - "I cant
+   finish! its not working". */
 .studio-view.is-recording #recordButton,
-.studio-view.is-recording #finishSessionButton { display: none; }
-.studio-view.is-recording #finishClipButton { background: var(--moss); color: #fff; }
-.studio-view.is-recording #finishClipButton small { display: none; }
+.studio-view.is-recording #finishClipButton { display: none; }
+.studio-view.is-recording #finishSessionButton small { display: none; }
 @media (max-width: 759px) {
   .studio-view.is-recording { grid-template-rows: 50% minmax(0, 1fr); }
 }

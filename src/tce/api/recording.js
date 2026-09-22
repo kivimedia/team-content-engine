@@ -864,6 +864,8 @@ function packetToIdea(idea, packet) {
       $("recordButton").disabled = true;
       $("pauseButton").disabled = false;
       $("finishClipButton").disabled = false;
+      // The one button that ends it while recording must never be greyed out.
+      $("finishSessionButton").disabled = false;
       $("pauseButton").textContent = "Pause";
       setRecordingChrome(true);
       showNotice("Recording started. Tabs and point jumps stay available.");
@@ -930,7 +932,7 @@ function packetToIdea(idea, packet) {
     $("finishClipButton").disabled = true;
     const finalize = (async () => {
       const synced = await retryStoredChunks(clip.id);
-      if (!synced) throw new Error("Some chunks are still on this phone. Reconnect and press Finish clip again.");
+      if (!synced) throw new Error("Some of the video is still on this phone. Reconnect and press Finish again.");
       const response = await api(`/recording-clips/${clip.id}/finish`, {
         method: "POST", body: JSON.stringify({ active_duration_s: activeSeconds, take_markers: takeMarkers }),
       });

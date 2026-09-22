@@ -236,8 +236,11 @@ def test_a_landscape_camera_is_cropped_to_a_vertical_video():
     assert "aspectRatio" in js, "the portrait camera is not even asked for"
     # The canvas is what gets recorded AND previewed, or he cannot see the crop.
     assert "canvas.captureStream" in js
-    assert "state.stream = portraitStream(state.rawStream);" in js
+    assert "state.stream = portraitStream(camera);" in js
     assert 'srcObject = state.stream;' in js
+    # Measured from real frames: a camera that reports nothing is not portrait.
+    assert "function measure(stream)" in js
+    assert "element.videoWidth" in js
     body = js[js.index("function portraitStream("):]
     body = body[: body.index("\n  async function requestWakeLock")]
     assert "height >= width) return raw" in body, "a portrait camera must pass through untouched"
@@ -267,3 +270,18 @@ def test_the_opening_and_a_first_point_that_repeat_it_are_one_line():
     # One id per line: a standalone opening must not answer to point 1's jump.
     assert 'openingLine(idea, hook.text, "points-opening")' in js
     assert 'openingLine(idea, text, "points-0")' in js
+
+
+def test_while_recording_the_right_hand_button_finishes_for_real():
+    """"I cant finish! its not working": the only finish button on screen while
+    recording was Finish clip, which closes the clip and sends nothing."""
+    css = (API / "recording.css").read_text(encoding="utf-8")
+    hidden = css[css.index(".studio-view.is-recording #recordButton,") :][:200]
+    assert "#finishClipButton { display: none; }" in hidden, hidden
+    assert ".studio-view.is-recording #finishSessionButton small { display: none; }" in css
+    js = JS.read_text(encoding="utf-8")
+    # And it is never the greyed-out one.
+    assert '$("finishSessionButton").disabled = false;' in js
+    # The message about unsent video must name the button that is on screen.
+    assert "press Finish again" in js
+    assert "press Finish clip again" not in js
