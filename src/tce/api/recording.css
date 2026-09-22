@@ -129,9 +129,9 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .hook-use { min-height: 46px; margin-top: 4px; border: 2px solid var(--ink); border-radius: 10px; background: var(--white); font-weight: 900; }
 .hook-option.is-current .hook-use { background: var(--moss); color: #fff; }
 .hook-use:disabled { opacity: .55; cursor: wait; }
-.reader-shell { display: grid; grid-template-columns: 52px minmax(0, 1fr) 40px; min-height: 0; background: var(--white); overflow: hidden; }
+.reader-shell { display: grid; grid-template-columns: 52px minmax(0, 1fr) 52px; min-height: 0; background: var(--white); overflow: hidden; }
 .reader-shell > * { min-height: 0; overflow: hidden; }
-.beat-rail, .scroll-rail { background: #e6edf2; display: flex; flex-direction: column; align-items: center; }
+.beat-rail, .size-rail { background: #e6edf2; display: flex; flex-direction: column; align-items: center; }
 .beat-rail { gap: 10px; padding: 14px 7px; border-right: 1px solid #9baaba; }
 .beat-button { width: 42px; min-height: 42px; border: 2px solid var(--ink); border-radius: 50%; background: var(--white); font-weight: 900; }
 .beat-button.is-current { background: var(--lake); color: #fff; }
@@ -149,11 +149,10 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .reader-line { margin: 0 0 1.25em; scroll-margin-top: 80px; }
 .reader-line.is-focus { background: #fff0b8; box-shadow: 0 0 0 7px #fff0b8; }
 .reader-index { display: block; color: var(--lake); font: 800 .72rem "Trebuchet MS", sans-serif; margin-bottom: 5px; }
-.scroll-rail { border-left: 1px solid #9baaba; padding: 8px 5px; gap: 8px; }
-.scroll-rail button { width: 44px; min-height: 44px; border: 0; background: var(--ink); color: #fff; border-radius: 8px; font-weight: 900; }
-/* No rtl: it put the top of the script at the bottom of the bar, so the dot
-   travelled up while the words went down. */
-.scroll-rail input { writing-mode: vertical-lr; flex: 1; width: 28px; accent-color: var(--signal); }
+.size-rail { border-left: 1px solid #9baaba; padding: 8px 4px; gap: 10px; justify-content: flex-start; }
+.size-rail button { width: 44px; min-height: 48px; border: 0; background: var(--ink); color: #fff; border-radius: 8px; font-weight: 900; font-size: 1rem; }
+.size-value { font-size: .72rem; font-weight: 800; color: var(--ink); }
+.icon-button-spacer { width: 44px; }
 .session-strip { display: flex; justify-content: space-between; gap: 10px; padding: 7px 14px; background: var(--ink); color: #fff; font-size: .78rem; font-weight: 800; }
 .session-strip[hidden] { display: none; }
 /* Seconds belong on the picture he is looking at. */
@@ -168,7 +167,7 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .secondary-button { min-height: 52px; padding: 0 18px; border: 2px solid var(--ink); border-radius: 12px; background: var(--white); font-weight: 900; }
 .secondary-button:disabled { opacity: .5; }
 .hook-view-state { color: #34435a; font-size: .9rem; line-height: 1.35; }
-.controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; padding: 9px 9px calc(9px + env(safe-area-inset-bottom)); background: #d7dfdf; border-top: 2px solid var(--ink); }
+.controls { display: grid; grid-template-columns: repeat(5, 1fr); gap: 7px; padding: 9px 9px calc(9px + env(safe-area-inset-bottom)); background: #d7dfdf; border-top: 2px solid var(--ink); }
 .control { min-height: 56px; border: 2px solid var(--ink); border-radius: 12px; background: var(--white); font-size: .74rem; font-weight: 900; padding: 5px 3px; line-height: 1.1; }
 .control small { display: block; font-size: .62rem; font-weight: 700; opacity: .75; margin-top: 2px; }
 .control.record { background: var(--signal); color: #fff; }
@@ -262,3 +261,7 @@ body.rec-live .topbar { display: none; }
   /* Wide screens keep the camera as the left column: the buttons go on its foot. */
   .studio-view.is-recording .controls { top: auto; bottom: 12px; right: 58%; }
 }
+
+/* Phone camera: the native app records, so it is never offered mid-take. */
+.control.native { background: #e8eef6; }
+.studio-view.is-recording #nativeCameraButton { display: none; }

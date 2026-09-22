@@ -15,7 +15,7 @@
       <strong>Walking studio</strong>
       <span id="syncState">Loading your scripts</span>
     </div>
-    <button id="textSizeButton" class="icon-button text-size" type="button" aria-label="Change text size">Aa</button>
+    <span class="icon-button-spacer" aria-hidden="true"></span>
   </header>
 
   <main>
@@ -82,10 +82,13 @@
           </div>
           <div id="reader" class="reader" tabindex="0"></div>
         </div>
-        <nav class="scroll-rail" aria-label="Scroll reader">
-          <button id="scrollUp" type="button" aria-label="Scroll up">⌃</button>
-          <input id="scrollPosition" type="range" min="0" max="100" value="0" aria-label="Reader position">
-          <button id="scrollDown" type="button" aria-label="Scroll down">⌄</button>
+        <!-- Text size, where the scroll slider was. The slider was "very un
+             intuitive, first too slow then too fast" and the words scroll with a
+             finger anyway; the size is the thing he actually adjusts. -->
+        <nav class="size-rail" aria-label="Text size">
+          <button id="textBigger" type="button" aria-label="Bigger text">A+</button>
+          <span id="textSizeValue" class="size-value" aria-live="polite">100%</span>
+          <button id="textSmaller" type="button" aria-label="Smaller text">A&#8722;</button>
         </nav>
       </div>
 
@@ -99,7 +102,12 @@
         <button id="pauseButton" class="control" type="button" disabled>Pause</button>
         <button id="finishClipButton" class="control" type="button" disabled>Finish clip<small>keep this script</small></button>
         <button id="finishSessionButton" class="control finish" type="button">Finish<small>send for editing</small></button>
+        <button id="nativeCameraButton" class="control native" type="button">Phone camera<small>full quality</small></button>
       </div>
+      <!-- The phone's own selfie camera: full sensor, portrait, the phone's own
+           stabilisation. The browser cannot get a portrait picture out of this
+           phone (camera report, 22-Sep), so this is the route to quality. -->
+      <input id="nativeCameraInput" type="file" accept="video/*" capture="user" hidden>
     </section>
   </main>
 

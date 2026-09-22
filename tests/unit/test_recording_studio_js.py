@@ -247,13 +247,39 @@ def test_a_landscape_camera_is_cropped_to_a_vertical_video():
     assert "9 / 16" in body
 
 
-def test_the_reader_slider_runs_the_way_the_words_do():
-    """`direction: rtl` put the top of the script at the bottom of the bar, so the
-    red dot climbed while the words scrolled down."""
-    css = (API / "recording.css").read_text(encoding="utf-8")
-    rail = next(line for line in css.splitlines() if line.startswith(".scroll-rail input"))
-    assert "vertical-lr" in rail
-    assert "direction: rtl" not in rail
+def test_the_right_rail_is_text_size_not_a_scroll_slider():
+    """The slider was "very un intuitive, first too slow then too fast" (23-Sep);
+    plus and minus for the text size is what he adjusts mid-take."""
+    html = (API / "recording.html").read_text(encoding="utf-8")
+    js = JS.read_text(encoding="utf-8")
+    for gone in ("scrollPosition", "scrollUp", "scrollDown", "textSizeButton"):
+        assert f'id="{gone}"' not in html, f"{gone} is still on the page"
+        assert f'$("{gone}")' not in js, f"{gone} is still wired in the script"
+    assert 'id="textBigger"' in html and 'id="textSmaller"' in html
+    assert 'changeTextSize(.1)' in js and 'changeTextSize(-.1)' in js
+    # Bounded, not cycling: one tap too many must never throw the words back to
+    # their smallest mid-take, which the old single button did.
+    body = js[js.index("function changeTextSize(") :][:400]
+    assert "Math.min(TEXT_MAX, Math.max(TEXT_MIN" in body
+    assert 'localStorage.setItem("tce-reader-size"' in body
+
+
+def test_the_phone_camera_uploads_through_the_clip_path_and_frees_the_camera():
+    """Chrome on his phone never hands over a portrait frame, so the native selfie
+    camera is the route to a vertical video without a crop."""
+    html = (API / "recording.html").read_text(encoding="utf-8")
+    assert 'id="nativeCameraInput" type="file" accept="video/*" capture="user"' in html
+    js = JS.read_text(encoding="utf-8")
+    body = js[js.index("async function uploadNativeVideo(") :][:3500]
+    # The same checked path as a browser take: pieces with a checksum, then the
+    # audio-and-video check, then sent for editing.
+    assert '"X-Chunk-Sha256": digest' in body
+    assert "/finish`" in body and "await finishSession();" in body
+    # Radical transparency: which piece of how many, in megabytes.
+    assert "piece ${index + 1} of ${pieces}" in body
+    # And the native app cannot open a camera this page is still holding.
+    opener = js[js.index("function openNativeCamera(") :][:500]
+    assert opener.index("releaseBrowserCamera();") < opener.index('$("nativeCameraInput").click();')
 
 
 def test_the_opening_and_a_first_point_that_repeat_it_are_one_line():

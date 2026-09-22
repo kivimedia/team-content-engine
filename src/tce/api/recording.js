@@ -78,6 +78,7 @@ function packetToIdea(idea, packet) {
     timerId: null, pendingWrites: [], pendingSync: new Map(), takeMarkers: [],
     wakeLock: null, pendingIdea: null, textSize: 1,
     sessionPending: null, sessionPendingFor: null,
+    rawStream: null, cameraReport: null, cameraEpoch: 0,
   };
   const supportedMime = [
     "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
@@ -680,7 +681,15 @@ function packetToIdea(idea, packet) {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !supportedMime) {
       throw new Error("This browser cannot record camera video with audio.");
     }
+    // The camera search takes seconds. If the phone camera was asked for in the
+    // meantime, whatever this finds is handed straight back: the native app
+    // cannot open a camera this page grabbed after it was told to let go.
+    const epoch = state.cameraEpoch;
     const camera = await openCamera();
+    if (epoch !== state.cameraEpoch) {
+      camera.stream.getTracks().forEach((track) => track.stop());
+      throw new Error("The phone camera is in use.");
+    }
     state.rawStream = camera.stream;
     if (!state.rawStream.getAudioTracks().some((track) => track.enabled)) throw new Error("The recording has no active microphone track.");
     state.stream = portraitStream(camera);
@@ -1035,16 +1044,113 @@ function packetToIdea(idea, packet) {
   }
 
   function syncScrollRail() {
+    // The slider this used to drive is gone; where he was reading is still kept.
     const reader = $("reader");
-    const max = Math.max(1, reader.scrollHeight - reader.clientHeight);
-    $("scrollPosition").value = String(Math.round(reader.scrollTop / max * 100));
     if (state.idea) localStorage.setItem(`tce-reader-${state.idea.packet_id}-${state.mode}`, String(reader.scrollTop));
   }
 
-  function changeTextSize() {
-    state.textSize = state.textSize >= 1.4 ? .85 : state.textSize + .15;
+  /* Plus and minus, in steps of 10%, remembered on this phone. The old single
+     button cycled 85 -> 100 -> 115 -> 130 -> back to 85, so one tap too many
+     threw the words back to their smallest mid-take. */
+  const TEXT_MIN = .7;
+  const TEXT_MAX = 2;
+  function applyTextSize() {
     $("reader").style.setProperty("--reader-size", `${(1.55 * state.textSize).toFixed(2)}rem`);
-    showNotice(`Reader text size ${Math.round(state.textSize * 100)}%.`);
+    $("textSizeValue").textContent = `${Math.round(state.textSize * 100)}%`;
+    $("textSmaller").disabled = state.textSize <= TEXT_MIN + 1e-9;
+    $("textBigger").disabled = state.textSize >= TEXT_MAX - 1e-9;
+  }
+  function changeTextSize(step) {
+    const next = Math.round((state.textSize + step) * 10) / 10;
+    state.textSize = Math.min(TEXT_MAX, Math.max(TEXT_MIN, next));
+    try { localStorage.setItem("tce-reader-size", String(state.textSize)); } catch { /* private mode */ }
+    applyTextSize();
+  }
+  function restoreTextSize() {
+    let saved = NaN;
+    try { saved = Number(localStorage.getItem("tce-reader-size")); } catch { /* private mode */ }
+    if (saved >= TEXT_MIN && saved <= TEXT_MAX) state.textSize = saved;
+    applyTextSize();
+  }
+
+  /* THE PHONE'S OWN CAMERA. Chrome on his phone answers every portrait request
+     with a landscape frame (camera report, 22-Sep: asked 720x1280, got 1280x720;
+     largest mode 3056x2296 landscape), so a vertical video made in the browser is
+     always a crop, and a crop is a zoom. The native selfie camera records the
+     whole sensor in portrait with the phone's own stabilisation. Its file goes up
+     through the same clip path as a browser take - pieces with a checksum each,
+     then the same audio-and-video check - and is sent for editing. */
+  const NATIVE_PIECE = 16 * 1024 * 1024;
+  function releaseBrowserCamera() {
+    // The native app cannot open a camera this page is still holding - including
+    // one a search still in flight is about to open (cameraEpoch).
+    state.cameraEpoch += 1;
+    state.portraitStopped = true;
+    for (const stream of [state.stream, state.rawStream]) {
+      if (stream) stream.getTracks().forEach((track) => track.stop());
+    }
+    state.stream = null;
+    state.rawStream = null;
+    $("camera").srcObject = null;
+    $("cameraEmpty").hidden = false;
+  }
+  function openNativeCamera() {
+    if (state.recorder && state.recorder.state !== "inactive") {
+      showNotice("Finish this take first. The phone camera records its own.");
+      return;
+    }
+    releaseBrowserCamera();
+    $("nativeCameraInput").click();
+  }
+  function videoDuration(file) {
+    return new Promise((resolve) => {
+      const probe = document.createElement("video");
+      probe.preload = "metadata";
+      probe.onloadedmetadata = () => { resolve(Number(probe.duration) || 0); URL.revokeObjectURL(probe.src); };
+      probe.onerror = () => resolve(0);
+      probe.src = URL.createObjectURL(file);
+    });
+  }
+  async function uploadNativeVideo(file) {
+    if (!file) return;
+    const mb = (bytes) => (bytes / 1e6).toFixed(0);
+    const name = String(file.name || "");
+    const dot = name.lastIndexOf(".");
+    const typed = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+    const extension = ["mp4", "mov", "webm"].includes(typed) ? typed
+      : (file.type || "").includes("quicktime") ? "mov" : (file.type || "").includes("webm") ? "webm" : "mp4";
+    const mime = file.type || (extension === "mov" ? "video/quicktime" : `video/${extension}`);
+    const say = (text) => { $("syncState").textContent = text; showNotice(text, 60000); };
+    try {
+      say(`Saving your ${mb(file.size)} MB video to this idea`);
+      await ensureSession();
+      const created = await api(`/recording-sessions/${state.session.id}/clips`, {
+        method: "POST",
+        body: JSON.stringify({ local_clip_id: crypto.randomUUID(), mime_type: mime, extension }),
+      });
+      const clip = created.clip;
+      const pieces = Math.max(1, Math.ceil(file.size / NATIVE_PIECE));
+      for (let index = 0; index < pieces; index += 1) {
+        const blob = file.slice(index * NATIVE_PIECE, Math.min(file.size, (index + 1) * NATIVE_PIECE), mime);
+        say(`Uploading your video: piece ${index + 1} of ${pieces} (${mb(index * NATIVE_PIECE)} of ${mb(file.size)} MB)`);
+        const digest = await sha256(blob);
+        const put = () => api(`/recording-clips/${clip.id}/chunks/${index}`, {
+          method: "PUT", body: blob, headers: { "Content-Type": mime, "X-Chunk-Sha256": digest },
+        });
+        // One retry per piece: a phone on the move drops a request now and then.
+        try { await put(); } catch { await put(); }
+      }
+      say("Checking the video has sound and picture");
+      const finished = await api(`/recording-clips/${clip.id}/finish`, {
+        method: "POST", body: JSON.stringify({ active_duration_s: await videoDuration(file), take_markers: [] }),
+      });
+      state.session.clips = [...(state.session.clips || []).filter((item) => item.id !== finished.clip.id), finished.clip];
+      await finishSession();
+    } catch (error) {
+      say(`The video did not upload: ${error.message}. It is still on your phone - press Phone camera and pick it again.`);
+    } finally {
+      $("nativeCameraInput").value = "";
+    }
   }
 
   /* The house means home, and home is Today - except inside the studio, where
@@ -1069,7 +1175,11 @@ function packetToIdea(idea, packet) {
     link.setAttribute("href", pathPrefix + link.getAttribute("href"));
   });
   $("moreHooksButton").addEventListener("click", askForMoreOpenings);
-  $("textSizeButton").addEventListener("click", changeTextSize);
+  $("textBigger").addEventListener("click", () => changeTextSize(.1));
+  $("textSmaller").addEventListener("click", () => changeTextSize(-.1));
+  restoreTextSize();
+  $("nativeCameraButton").addEventListener("click", openNativeCamera);
+  $("nativeCameraInput").addEventListener("change", (event) => uploadNativeVideo(event.target.files && event.target.files[0]));
   $("pointsTab").addEventListener("click", () => setMode("points"));
   $("scriptTab").addEventListener("click", () => setMode("script"));
   $("recordButton").addEventListener("click", startRecording);
@@ -1077,12 +1187,6 @@ function packetToIdea(idea, packet) {
   $("finishClipButton").addEventListener("click", () => finishClip());
   $("finishSessionButton").addEventListener("click", finishSession);
   $("reader").addEventListener("scroll", syncScrollRail, { passive: true });
-  $("scrollUp").addEventListener("click", () => $("reader").scrollBy({ top: -innerHeight * .28, behavior: "smooth" }));
-  $("scrollDown").addEventListener("click", () => $("reader").scrollBy({ top: innerHeight * .28, behavior: "smooth" }));
-  $("scrollPosition").addEventListener("input", (event) => {
-    const reader = $("reader");
-    reader.scrollTop = (reader.scrollHeight - reader.clientHeight) * Number(event.target.value) / 100;
-  });
   $("switchDialog").addEventListener("close", async () => {
     if ($("switchDialog").returnValue !== "confirm" || !state.pendingIdea) { state.pendingIdea = null; return; }
     const next = state.pendingIdea;
