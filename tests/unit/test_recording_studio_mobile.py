@@ -354,6 +354,31 @@ def test_a_landscape_camera_is_previewed_and_recorded_as_a_vertical_video(studio
             timeout=20000,
         ).json_value()
 
+        # Words on top, video below: the lens is at the top of the phone, and text
+        # read from the lower half pulls the eyes down and away from it (23-Sep).
+        def tops():
+            return page.evaluate(
+                """() => ({reader: document.querySelector('.reader-shell').getBoundingClientRect().top,
+                          camera: document.querySelector('.camera-stage').getBoundingClientRect().top,
+                          cameraBottom: document.querySelector('.camera-stage').getBoundingClientRect().bottom,
+                          finish: document.getElementById('finishSessionButton').getBoundingClientRect().top})"""
+            )
+        idle = tops()
+        assert idle["reader"] < idle["camera"], f"the words are below the video: {idle}"
+        page.evaluate(
+            "() => { document.getElementById('studioView').classList.add('is-recording');"
+            " document.body.classList.add('rec-live'); }"
+        )
+        live = tops()
+        assert live["reader"] < live["camera"], f"while recording the words are below the video: {live}"
+        assert live["camera"] <= live["finish"] <= live["cameraBottom"], (
+            f"Finish is not on the foot of the video: {live}"
+        )
+        page.evaluate(
+            "() => { document.getElementById('studioView').classList.remove('is-recording');"
+            " document.body.classList.remove('rec-live'); }"
+        )
+
         width, height = shapes["preview"]
         assert height > width, f"the preview is still landscape: {width}x{height}"
         assert abs(width / height - 9 / 16) < 0.02, f"{width}x{height} is not 9:16"
@@ -570,6 +595,17 @@ def test_the_phone_camera_button_sends_a_native_video_for_editing(studio, tmp_pa
                 assert apart, f"{a['id']} overlaps {b['id']}"
         page.screenshot(path=str(tmp_path / "studio-controls-phone.png"))
 
+        # Two taps: the first floats the script (or says it cannot), the second
+        # opens the camera - a tap is permission for one of those, not both.
+        page.click("#nativeCameraButton")
+        page.wait_for_function(
+            "() => /Open camera/.test(document.getElementById('nativeCameraButton').textContent)",
+            timeout=15000,
+        )
+        # The words take the page once the browser camera is let go.
+        assert page.evaluate(
+            "() => getComputedStyle(document.querySelector('.camera-stage')).display"
+        ) == "none"
         with page.expect_file_chooser() as chooser:
             page.click("#nativeCameraButton")
         chooser.value.set_files(str(video))

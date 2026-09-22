@@ -278,8 +278,15 @@ def test_the_phone_camera_uploads_through_the_clip_path_and_frees_the_camera():
     # Radical transparency: which piece of how many, in megabytes.
     assert "piece ${index + 1} of ${pieces}" in body
     # And the native app cannot open a camera this page is still holding.
-    opener = js[js.index("function openNativeCamera(") :][:500]
+    opener = js[js.index("async function openNativeCamera(") :]
+    opener = opener[: opener.index("\n  }\n")]
     assert opener.index("releaseBrowserCamera();") < opener.index('$("nativeCameraInput").click();')
+    # The camera chooser is never opened after an await: a tap is permission for
+    # one thing, and floating the script already spent it.
+    before_click = opener[: opener.index('$("nativeCameraInput").click();')]
+    assert "await" not in before_click, "an await before the camera click loses the tap"
+    # And the floating window is told where to go: the top, under the lens.
+    assert "TOP of the screen, right under the camera" in js
 
 
 def test_the_opening_and_a_first_point_that_repeat_it_are_one_line():

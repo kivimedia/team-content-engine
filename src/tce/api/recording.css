@@ -243,7 +243,7 @@ body.rec-live .topbar { display: none; }
    zoomed the moment Record started ("it zooms in to my face. bad"). */
 .studio-view.is-recording .camera-stage video { object-fit: contain; }
 .studio-view.is-recording .controls {
-  position: absolute; left: 0; right: 0; top: calc(50% - 60px); display: flex; justify-content: space-between;
+  position: absolute; left: 0; right: 0; bottom: calc(12px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between;
   gap: 0; padding: 0 12px; background: transparent; border-top: 0; pointer-events: none;
 }
 .studio-view.is-recording .control { pointer-events: auto; min-height: 48px; width: auto; padding: 6px 18px; font-size: .9rem; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
@@ -254,8 +254,19 @@ body.rec-live .topbar { display: none; }
 .studio-view.is-recording #recordButton,
 .studio-view.is-recording #finishClipButton { display: none; }
 .studio-view.is-recording #finishSessionButton small { display: none; }
+/* WORDS ON TOP, CAMERA BELOW (phone). The front lens is at the top edge of the
+   phone, so the words he reads have to sit right under it: with the text in the
+   lower half his eyes looked down and away from the lens ("if I am looking down
+   to the text my eyes doesnt look like they are close to the camera", 23-Sep).
+   Pause and Finish sit on the foot of the video, the bottom of the screen. */
 @media (max-width: 759px) {
-  .studio-view.is-recording { grid-template-rows: 50% minmax(0, 1fr); }
+  .studio-view { grid-template-rows: auto minmax(0, 1fr) minmax(150px, 40%) auto auto; }
+  .studio-view > .script-heading { order: 1; }
+  .studio-view > .reader-shell { order: 2; }
+  .studio-view > .camera-stage { order: 3; }
+  .studio-view > .session-strip { order: 4; }
+  .studio-view > .controls { order: 5; }
+  .studio-view.is-recording { grid-template-rows: minmax(0, 1fr) 45%; }
 }
 @media (min-width: 760px) {
   /* Wide screens keep the camera as the left column: the buttons go on its foot. */
@@ -265,3 +276,13 @@ body.rec-live .topbar { display: none; }
 /* Phone camera: the native app records, so it is never offered mid-take. */
 .control.native { background: #e8eef6; }
 .studio-view.is-recording #nativeCameraButton { display: none; }
+
+/* Phone camera mode: the page's own camera box has nothing to show, so the
+   script takes the whole height - which is what a split screen half needs. */
+body.native-mode .camera-stage { display: none; }
+body.native-mode .studio-view { grid-template-rows: auto minmax(0, 1fr) auto auto; }
+@media (max-width: 759px) {
+  body.native-mode .studio-view { grid-template-rows: auto minmax(0, 1fr) auto auto; }
+}
+/* The canvas feeding the floating window must be in the page but never seen. */
+.prompter-source { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; left: 0; bottom: 0; }
