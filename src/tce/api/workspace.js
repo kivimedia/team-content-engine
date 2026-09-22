@@ -489,8 +489,94 @@
     }
     html += '<div class="block-actions">';
     html += '<button class="btn" type="button" data-change="' + esc(block.field) + '">Change</button>';
+    html += '<button class="btn quiet" type="button" data-rewrite="' + esc(block.field) + '">Ask for a rewrite</button>';
     html += "</div></section>";
     return html;
+  }
+
+  /* Quick rewrites are the same conversation, with the instruction written for
+   * him and the field named precisely. No second backend path: whatever comes
+   * back is a proposal, reviewed exactly like one he typed himself. */
+  var QUICK_ACTIONS = [
+    ["practical", "Make it more practical"],
+    ["plain", "Make it less corporate"],
+    ["me", "Make it sound more like me"],
+    ["shorter", "Make it shorter"],
+    ["opinion", "Make it more opinionated"],
+    ["coaching", "Tie it harder to coaching"],
+    ["nosell", "Take the sales angle out"]
+  ];
+
+  var QUICK_INSTRUCTIONS = {
+    practical: "more practical: say what to actually do, not what to understand",
+    plain: "less corporate: plain words a coach would say out loud",
+    me: "more like me: direct, opinionated, no hedging, no consultant vocabulary",
+    shorter: "shorter: same point, fewer words, nothing padded",
+    opinion: "more opinionated: take a clear position instead of presenting options",
+    coaching: "tied harder to coaching: make the cost to their clients explicit",
+    nosell: "with the sales angle removed: teach the point, do not pitch"
+  };
+
+  async function openRewrite(field) {
+    var label = BLOCK_LABELS[field] || field;
+    state.talkMode = "propose";
+    var sheet = $("talkSheet");
+    $("talkTitle").textContent = "Ask for a rewrite";
+    $("talkContext").textContent = label;
+    $("talkBody").innerHTML = working("Opening the conversation");
+    sheet.hidden = false;
+
+    try {
+      state.thread = await api("/editorial/threads", {
+        method: "POST",
+        body: { context_type: "topic", context_id: state.room.candidate_id,
+                label: state.room.title }
+      });
+    } catch (error) {
+      $("talkBody").innerHTML = '<p class="notice is-bad">' + esc(error.message) + "</p>";
+      return;
+    }
+
+    // Quick actions replace the mode row: in here the mode is not a choice, it
+    // is the whole point, so offering Discuss would only be a way to get nothing.
+    var foot = sheet.querySelector(".sheet-foot");
+    var chips = '<div class="chips">' + QUICK_ACTIONS.map(function (a) {
+      return '<button class="chip" type="button" data-quick="' + a[0] + '">' + esc(a[1]) + "</button>";
+    }).join("") + "</div>";
+    foot.innerHTML = chips
+      + '<textarea id="talkInput" rows="2" placeholder="Or say exactly what you want changed..."></textarea>'
+      + '<button class="btn primary wide" id="talkSend" type="button" style="margin-top:10px">Ask for it</button>';
+
+    foot.querySelectorAll("[data-quick]").forEach(function (chip) {
+      chip.addEventListener("click", function () {
+        sendRewrite(field, label, QUICK_INSTRUCTIONS[chip.dataset.quick]);
+      });
+    });
+    $("talkSend").addEventListener("click", function () {
+      var custom = $("talkInput").value.trim();
+      if (!custom) { toast("Pick one, or say what you want changed."); return; }
+      sendRewrite(field, label, custom);
+    });
+
+    renderTalk();
+  }
+
+  async function sendRewrite(field, label, instruction) {
+    // The field key is named explicitly so the model cannot drift onto another
+    // block, and `changes.propose` refuses it if it does anyway.
+    var text = 'Rewrite the "' + label + '" block (field key `' + field + '`) to be '
+             + instruction + ". Propose a change to that field only.";
+    $("talkBody").innerHTML = working("Asking for a rewrite of " + label.toLowerCase());
+    try {
+      var result = await api("/editorial/threads/" + state.thread.thread_id + "/messages", {
+        method: "POST", body: { text: text, mode: "propose" }
+      });
+      state.thread.messages = (state.thread.messages || []).concat(result.messages);
+      renderTalk();
+      startTalkPoll();
+    } catch (error) {
+      toast(error.message, true);
+    }
   }
 
   /* Editing a block does not write it. It builds a proposal, shows the
@@ -955,6 +1041,7 @@
     if (d.restore !== undefined) { restore(parseInt(d.restore, 10)); return; }
     if (d.editRequest !== undefined) { askEditRequest(d.editRequest); return; }
     if (d.review !== undefined) { reviewFromThread(d.review); return; }
+    if (d.rewrite !== undefined) { openRewrite(d.rewrite); return; }
   });
 
   $("talkFab").addEventListener("click", openTalk);
