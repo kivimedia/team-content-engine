@@ -41,7 +41,9 @@ DEFAULT_PRIMARY_SLOTS = 3
 LANE_LABELS = {
     "build": "Build",
     "coaching": "Coaching",
-    "ai_news": "AI news",
+    # Ziv's own name for the lane (21-Sep). The key stays "ai_news" because other
+    # code and stored lineups read it; only what he sees changes.
+    "ai_news": "News that excites Ziv",
     "other": "Other",
 }
 

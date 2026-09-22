@@ -191,7 +191,12 @@ class PacketOutcome:
         }
 
 
-def validate_packet_output(data: Any, *, max_hooks: int = HOOK_OPTIONS_WRITTEN) -> dict[str, Any]:
+def validate_packet_output(
+    data: Any,
+    *,
+    max_hooks: int = HOOK_OPTIONS_WRITTEN,
+    news_terms: list[str] | None = None,
+) -> dict[str, Any]:
     """Return a cleaned packet dict or raise PacketValidationError with all problems.
 
     `max_hooks` is three when a packet is first written and MAX_HOOK_OPTIONS when an
@@ -310,7 +315,7 @@ def validate_packet_output(data: Any, *, max_hooks: int = HOOK_OPTIONS_WRITTEN) 
 
     if errors:
         raise PacketValidationError("; ".join(errors))
-    return {
+    clean_packet = {
         "bullets": [b.strip() for b in bullets],
         "script_phrases": [p.strip() for p in phrases],
         "facebook_post": data["facebook_post"].strip(),
@@ -321,6 +326,45 @@ def validate_packet_output(data: Any, *, max_hooks: int = HOOK_OPTIONS_WRITTEN) 
         "beats": clean_beats,
         "self_check": data.get("self_check") if isinstance(data.get("self_check"), dict) else {},
     }
+    # Third lane only. None for every evergreen packet, so nothing above changes
+    # for the two lanes that already work.
+    if news_terms is not None:
+        from tce.editorial.news_packet import news_errors
+
+        problems = news_errors(clean_packet, news_terms)
+        if problems:
+            raise PacketValidationError("; ".join(problems))
+    return clean_packet
+
+
+async def news_terms_for(
+    session: AsyncSession, ws: uuid.UUID, candidate_id: Any
+) -> list[str] | None:
+    """The names a news idea's opening must not use, or None for any other idea.
+
+    None is the important return: it is what keeps every evergreen packet on
+    exactly the validation it had before the third lane existed.
+    """
+    from tce.editorial.news_packet import forbidden_terms_for
+    from tce.models.news import NewsAppraisal, NewsItem
+
+    cand = await session.get(TopicCandidate, coerce_uuid(candidate_id))
+    if cand is None or cand.workspace_id != ws or not cand.news_item_id:
+        return None
+    item = await session.get(NewsItem, cand.news_item_id)
+    appraisal = (
+        await session.execute(
+            select(NewsAppraisal)
+            .where(
+                NewsAppraisal.workspace_id == ws,
+                NewsAppraisal.news_item_id == cand.news_item_id,
+            )
+            .order_by(NewsAppraisal.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    ref = {"publisher": item.publisher} if item is not None else {}
+    return forbidden_terms_for(ref, (appraisal.anchors if appraisal else None) or [])
 
 
 async def _participants(session: AsyncSession, ws: uuid.UUID, cand: TopicCandidate) -> list[str]:
@@ -517,8 +561,9 @@ async def build_packet(
                 data = json.loads(llm.text)
             except (TypeError, ValueError):
                 data = None
+        news_terms = await news_terms_for(session, ws, cand.id)
         try:
-            clean = validate_packet_output(data)
+            clean = validate_packet_output(data, news_terms=news_terms)
         except PacketValidationError as exc:
             # Persist nothing; the job is reported as failed so it can be re-run.
             return PacketOutcome(
@@ -1380,6 +1425,8 @@ async def choose_hook(
             "beats": list(original.beats or []),
         },
         max_hooks=MAX_HOOK_OPTIONS,
+        # Switching to another opening must not smuggle a news headline back in.
+        news_terms=await news_terms_for(session, ws, original.candidate_id),
     )
     maximum = (
         await session.execute(

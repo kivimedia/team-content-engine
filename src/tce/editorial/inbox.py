@@ -126,6 +126,34 @@ async def _packet_counts(
     return {row[0]: row[1] for row in result.all()}
 
 
+# Inside this window a timely idea says so, in the same weight as everything else.
+_RECORD_FIRST_WINDOW_S = 48 * 3600
+
+
+def freshness_note_for(candidate: TopicCandidate, *, now: datetime | None = None) -> str:
+    """A date, never a countdown.
+
+    "Worth saying until Friday 26 September" is a scheduling fact he can act on. A
+    ticking clock, a colour change or a progress bar would be the system inventing
+    the urgency the editorial rules forbid in the scripts themselves. Inside the
+    last two days it adds "record this one first", in plain words and no bigger.
+    """
+    if candidate.freshness_role != "news":
+        return ""
+    until = getattr(candidate, "expires_at", None)
+    if until is None:
+        # A news-flagged idea from before the third lane carried no expiry.
+        return "Timely"
+    now = now or datetime.now(UTC).replace(tzinfo=None)
+    left = (until - now).total_seconds()
+    if left <= 0:
+        return f"Went stale on {until:%A %d %B}".replace(" 0", " ")
+    note = f"Worth saying until {until:%A %d %B}".replace(" 0", " ")
+    if left <= _RECORD_FIRST_WINDOW_S:
+        note += " · record this one first"
+    return note
+
+
 def _matches(
     filter_key: str,
     candidate: TopicCandidate,
@@ -193,9 +221,7 @@ def _row_to_json(
         "lane": lane,
         "lane_label": LANE_LABELS.get(lane, lane),
         "timely": candidate.freshness_role == "news",
-        "freshness_note": (
-            "Timely · worth more this week than next" if candidate.freshness_role == "news" else ""
-        ),
+        "freshness_note": freshness_note_for(candidate),
         "decision": decision.decision if decision else None,
         "note": decision.note if decision else None,
         "has_script": packet_count > 0,
@@ -385,6 +411,7 @@ async def topic_room(
         "lane": lane,
         "lane_label": LANE_LABELS.get(lane, lane),
         "timely": candidate.freshness_role == "news",
+        "freshness_note": freshness_note_for(candidate),
         "provenance": _provenance(candidate),
         "decision": decision.decision if decision else None,
         "note": decision.note if decision else None,

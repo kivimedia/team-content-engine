@@ -112,6 +112,16 @@ def _why_this_is_yours(candidate: TopicCandidate) -> str:
     kinds = [c.get("source_kind") for c in cites if isinstance(c, dict)]
     calls = sum(1 for k in kinds if k == "fathom_meeting")
     commits = sum(1 for k in kinds if k == "github_commit_group")
+    # Third lane. A news idea may rest on a standing fact alone - a system Kivi
+    # Media runs, or a problem his clients keep bringing - which is the route
+    # Ziv's 21-Sep correction opened. Without counting it here this sentence came
+    # back EMPTY, and an empty sentence makes is_inbox_eligible keep the idea out
+    # of the inbox entirely: it would pass every gate and still never be seen.
+    standing = sum(1 for k in kinds if k == "standing_fact")
+    news = next(
+        (c for c in cites if isinstance(c, dict) and c.get("source_kind") == "news_item"),
+        None,
+    )
 
     parts: list[str] = []
     if calls:
@@ -120,8 +130,18 @@ def _why_this_is_yours(candidate: TopicCandidate) -> str:
         parts.append(
             f"{commits} pieces of your code" if commits > 1 else "something you built"
         )
+    if standing:
+        parts.append(
+            "the work you run for clients" if standing == 1 else "work you run for clients"
+        )
     if not parts:
         return ""
+
+    if news is not None:
+        # The news is the trigger, never the reason: the sentence still leads with
+        # his work, and the announcement is named as what changed.
+        what = str(news.get("source_title") or "an announcement").strip()
+        return f"{what} touches {' and '.join(parts)}.".strip()
 
     reasons = [r for r in (candidate.reasons_to_care or []) if isinstance(r, str) and r.strip()]
     tail = f" {reasons[0].strip()}" if reasons else ""
