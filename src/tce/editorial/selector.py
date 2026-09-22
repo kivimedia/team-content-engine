@@ -33,6 +33,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
+from tce.editorial import news_rules
 from tce.editorial.common import (
     ORIGIN_SELECTOR,
     ORIGIN_SELECTOR_REJECTED,
@@ -280,7 +281,14 @@ def _pm_sort_key(pm: PoolMoment) -> tuple[datetime, str]:
 
 def _pick_reserve(reserve: list[PoolMoment], limit: int) -> list[PoolMoment]:
     """Newest-first round robin across sources, so one busy source cannot fill the
-    whole reserve. Deterministic for a given pool."""
+    whole reserve. Deterministic for a given pool.
+
+    News and standing facts are excluded outright. A reserve moment resurfaces
+    weeks later through "more ideas", which is the feature for a call or a commit
+    and a defect for an announcement: the card would come back long after the
+    thing stopped being true.
+    """
+    reserve = [pm for pm in reserve if not news_rules.excluded_from_reserve(pm.source.source_kind)]
     by_source: dict[str, list[PoolMoment]] = {}
     for pm in sorted(reserve, key=_pm_sort_key, reverse=True):
         by_source.setdefault(str(pm.source.id), []).append(pm)
@@ -592,6 +600,26 @@ def enforce_candidates(
             continue
 
         cited = [by_id[i] for i in ids]
+
+        # The third lane's one rule, enforced in code rather than in the prompt:
+        # news supplies the trigger, his own work supplies the point of view. A
+        # candidate citing only the announcement fails the gate he already wrote.
+        # (The arithmetic enforces it a second time in news_rules.score_news,
+        # where anchor_support is the largest single term and would be zero.)
+        cited_kinds = [{"source_kind": pm.source.source_kind} for pm in cited]
+        if news_rules.needs_anchor(cited_kinds):
+            rejected.append(
+                _reject(
+                    raw,
+                    ids,
+                    news_rules.GATE_NEEDS_ANCHOR,
+                    news_rules.CODE_NEEDS_ANCHOR,
+                    "this cites the announcement and nothing of his: no call, no "
+                    "commit, no standing fact. The news is the trigger, not the idea.",
+                )
+            )
+            continue
+
         public_text = " ".join(str(raw.get(k) or "") for k in ("title", "lesson", "public_angle"))
         if _OUTCOME_LANGUAGE.search(public_text) and not any(
             pm.moment.claim_type == "measured" for pm in cited
@@ -1700,6 +1728,12 @@ async def select_candidates(
                 "reason": rej["reason"],
             }
             reserve = rej["code"] in RESERVE_CODES and bool(rej.get("citations_private"))
+            # A news candidate that lost its week must never be promotable by
+            # "more ideas": it would come back weeks later as a fresh card about
+            # something that already happened. Belt and braces with _pick_reserve,
+            # which keeps news moments out of the pool in the first place.
+            if reserve and news_rules.is_news_led(rej.get("citations_private") or []):
+                reserve = False
             gates["_reserve"] = reserve
             session.add(
                 TopicCandidate(
