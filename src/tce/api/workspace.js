@@ -230,18 +230,20 @@
     });
     html += "</div>";
 
-    if (data.withheld_note) {
-      html += '<p class="notice">' + esc(data.withheld_note) + "</p>";
-    }
-
     var topics = data.topics || [];
     if (!topics.length) {
+      if (data.withheld_note) {
+        html += '<p class="notice">' + esc(data.withheld_note) + "</p>";
+      }
       html += '<div class="empty"><strong>Nothing here</strong>'
             + esc(data.filter === "best"
                  ? "Everything is decided. The next weekly run collects new evidence."
                  : "No ideas match this filter.") + "</div>";
     } else {
-      html += '<p class="section-hint">' + topics.length + " of " + data.total + " shown</p>";
+      // The count and what was held back are one line, not a line plus a banner.
+      // Both are still said; they just do not cost him the first card.
+      html += '<p class="section-hint">' + topics.length + " of " + data.total + " shown"
+           + (data.withheld_note ? ". " + esc(data.withheld_note) : "") + "</p>";
       html += '<div class="card-list">';
       topics.forEach(function (topic) { html += topicCard(topic); });
       html += "</div>";
