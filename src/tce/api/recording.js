@@ -127,6 +127,18 @@ function recordedPending(item) {
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+
+  /* Shared with the editorial workspace, which can hold the microphone for
+     voice on a different page. Set while a clip is being captured, cleared the
+     moment the recorder is released, and cleared on unload so a crashed tab
+     cannot leave voice locked out forever. */
+  const CAMERA_FLAG = "tce-camera-active";
+  const cameraFlag = (on) => {
+    try {
+      if (on) localStorage.setItem(CAMERA_FLAG, String(Date.now()));
+      else localStorage.removeItem(CAMERA_FLAG);
+    } catch { /* private mode */ }
+  };
   const pathPrefix = window.location.pathname.startsWith("/tce/") ? "/tce" : "";
   const apiV1 = `${pathPrefix}/api/v1`;
   const state = {
@@ -1183,6 +1195,11 @@ function recordedPending(item) {
         state.pendingWrites.push(task);
       };
       state.recorder.start(3000);
+      // The editorial workspace is a different page that can hold the microphone
+      // for voice. Two things must never own the mic at once, and the studio
+      // wins: it is capturing a take that cannot be redone. The workspace reads
+      // this flag and refuses to start listening while it is set.
+      cameraFlag(true);
       await requestWakeLock();
       state.timerId = setInterval(updateTimer, 250);
       $("recordingFlag").hidden = false;
@@ -1263,6 +1280,7 @@ function recordedPending(item) {
       if (state.session?.id === session.id && state.clip?.id === clip.id) {
         state.clip = null;
         state.recorder = null;
+        cameraFlag(false);
         state.activeMs = 0;
         updateSessionLabels();
         $("recordButton").disabled = false;
@@ -1274,6 +1292,7 @@ function recordedPending(item) {
     finalize.catch((error) => showNotice(error.message, 7000));
     state.clip = null;
     state.recorder = null;
+    cameraFlag(false);
     $("recordButton").disabled = false;
     return clip;
   }
@@ -1379,6 +1398,9 @@ function recordedPending(item) {
   });
   window.addEventListener("online", () => { updateSyncLabel(); retryStoredChunks(); });
   window.addEventListener("offline", updateSyncLabel);
+  // A crashed or closed studio tab must not leave voice locked out forever.
+  window.addEventListener("pagehide", () => cameraFlag(false));
+
   window.addEventListener("beforeunload", (event) => {
     if (state.recorder && state.recorder.state !== "inactive") { event.preventDefault(); event.returnValue = ""; }
   });

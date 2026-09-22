@@ -340,6 +340,12 @@ body.has-talk { padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) 
   color: var(--ink); line-height: 1.45;
 }
 .mode-row { display: flex; gap: 8px; margin-bottom: 10px; }
+/* Speak, Read aloud, Send. Send is widest because it is the one he reaches for
+   most and the one that must not be mis-tapped while walking. */
+.talk-controls { display: grid; grid-template-columns: auto auto 1fr; gap: 8px; margin-top: 10px; }
+.talk-controls .btn { min-height: 50px; }
+#voiceBtn[aria-pressed="true"] { background: var(--signal); color: #fff; border-color: var(--ink); }
+#speakBtn[aria-pressed="true"] { background: var(--lake); color: #fff; border-color: var(--ink); }
 .mode-row .chip { flex: 1 1 0; min-height: 44px; }
 
 .msg { margin-bottom: 14px; }

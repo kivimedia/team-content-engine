@@ -553,7 +553,11 @@
     }).join("") + "</div>";
     foot.innerHTML = chips
       + '<textarea id="talkInput" rows="2" placeholder="Or say exactly what you want changed..."></textarea>'
-      + '<button class="btn primary wide" id="talkSend" type="button" style="margin-top:10px">Ask for it</button>';
+      + '<div class="talk-controls">'
+      + '<button class="btn" id="voiceBtn" type="button" aria-pressed="false">Speak</button>'
+      + '<button class="btn quiet" id="speakBtn" type="button" aria-pressed="false">Read aloud</button>'
+      + '<button class="btn primary" id="talkSend" type="button">Ask for it</button>'
+      + '</div>';
 
     foot.querySelectorAll("[data-quick]").forEach(function (chip) {
       chip.addEventListener("click", function () {
@@ -563,8 +567,10 @@
     $("talkSend").addEventListener("click", function () {
       var custom = $("talkInput").value.trim();
       if (!custom) { toast("Pick one, or say what you want changed."); return; }
+      if (voice.listening) stopVoice();
       sendRewrite(field, label, custom);
     });
+    bindVoiceControls(foot);
 
     renderTalk();
   }
@@ -684,6 +690,8 @@
 
   function closeSheet() {
     var sheet = $("talkSheet");
+    if (voice.listening) stopVoice();
+    if (window.speechSynthesis) { try { window.speechSynthesis.cancel(); } catch (e) { /**/ } }
     sheet.hidden = true;
     state.pending = null;
     state.thread = null;
@@ -710,6 +718,30 @@
     });
     var send = foot.querySelector("#talkSend");
     if (send) send.addEventListener("click", sendTalk);
+    bindVoiceControls(foot);
+  }
+
+  /* The footer markup is rebuilt whenever the sheet changes purpose, so the
+     voice controls are bound from one place rather than once at boot. */
+  function bindVoiceControls(foot) {
+    var mic = foot.querySelector("#voiceBtn");
+    if (mic) {
+      if (!speechSupported() || cameraBusy()) {
+        mic.disabled = true;
+        mic.title = cameraBusy()
+          ? "The studio is recording. Voice waits until the take is finished."
+          : "This browser cannot listen.";
+      }
+      mic.addEventListener("click", startVoice);
+    }
+    var speaker = foot.querySelector("#speakBtn");
+    if (speaker) {
+      var on = false;
+      try { on = localStorage.getItem("tce-speak-replies") === "1"; } catch (e) { /**/ }
+      speaker.setAttribute("aria-pressed", on ? "true" : "false");
+      speaker.addEventListener("click", toggleSpeakReplies);
+    }
+    paintVoiceButton();
   }
 
   async function openTalk() {
@@ -777,9 +809,18 @@
       }
       try {
         var fresh = await api("/editorial/threads/" + state.thread.thread_id);
+        var wasPending = state.thread.pending;
         state.thread = fresh;
         renderTalk();
-        if (!fresh.pending) { clearInterval(state.talkTimer); state.talkTimer = null; }
+        if (!fresh.pending) {
+          clearInterval(state.talkTimer); state.talkTimer = null;
+          if (wasPending) {
+            var last = (fresh.messages || []).filter(function (m) {
+              return m.role === "assistant" && m.status === "complete";
+            }).pop();
+            if (last) speak(last.text);
+          }
+        }
       } catch (error) { /* a dropped poll is not worth a toast; the next one retries */ }
       // Five minutes is well past the worker's usual minute. Stop guessing and
       // let the row say what it says.
@@ -800,6 +841,7 @@
         method: "POST", body: { text: text, mode: state.talkMode }
       });
       input.value = "";
+      if (voice.listening) stopVoice();
       state.thread.messages = (state.thread.messages || []).concat(result.messages);
       renderTalk();
       startTalkPoll();
@@ -808,6 +850,156 @@
     } finally {
       if (send) { send.disabled = false; send.textContent = "Send"; }
     }
+  }
+
+  // ------------------------------------------------------------------ voice
+
+  /* Voice is an input method over the conversation contract, not a second
+   * assistant. That is the plan's own decision and it is also the only honest
+   * design here: every model call in TCE is a job leased by the desktop worker
+   * at about one a minute, so there is no sub-second back-and-forth to be had.
+   * What voice removes is the typing, which is the part that is actually hard
+   * while walking with a phone at arm's length.
+   *
+   * So: speak, watch the words appear, FIX them if the recogniser misheard, and
+   * send. Everything after that is the path already proven by typing - discuss
+   * changes nothing, propose produces a diff you accept.
+   *
+   * Recognition runs in the browser. No audio leaves the page to us, nothing is
+   * stored, and it costs nothing.
+   */
+
+  var CAMERA_FLAG = "tce-camera-active";
+
+  function cameraBusy() {
+    try {
+      var stamp = parseInt(localStorage.getItem(CAMERA_FLAG) || "0", 10);
+      // A stale flag from a tab that died without firing pagehide must not lock
+      // voice out permanently. Anything older than an hour is not a live take.
+      return stamp > 0 && (Date.now() - stamp) < 3600000;
+    } catch (e) { return false; }
+  }
+
+  function speechSupported() {
+    return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  }
+
+  var voice = { rec: null, listening: false, base: "", heard: "" };
+
+  function stopVoice(reason) {
+    if (voice.rec) {
+      try { voice.rec.onend = null; voice.rec.stop(); } catch (e) { /* already dead */ }
+    }
+    voice.rec = null;
+    voice.listening = false;
+    paintVoiceButton();
+    if (reason) toast(reason);
+  }
+
+  function paintVoiceButton() {
+    var btn = $("voiceBtn");
+    if (!btn) return;
+    btn.setAttribute("aria-pressed", voice.listening ? "true" : "false");
+    btn.textContent = voice.listening ? "Stop listening" : "Speak";
+  }
+
+  function startVoice() {
+    if (voice.listening) { stopVoice(); return; }
+    if (!speechSupported()) {
+      toast("This browser cannot listen. Type it instead.", true);
+      return;
+    }
+    if (cameraBusy()) {
+      toast("The studio is recording. Voice waits until the take is finished.", true);
+      return;
+    }
+    var input = $("talkInput");
+    var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var rec = new Recognition();
+    rec.lang = "en-GB";
+    rec.continuous = true;
+    // Interim results are the point: he has to see it getting him right or
+    // wrong while he is still talking, not after.
+    rec.interimResults = true;
+
+    // Keep whatever he had already typed; voice appends to it.
+    voice.base = (input.value || "").trim();
+    voice.heard = "";
+
+    rec.onresult = function (event) {
+      var settled = "";
+      var pending = "";
+      for (var i = event.resultIndex; i < event.results.length; i++) {
+        var chunk = event.results[i][0].transcript;
+        if (event.results[i].isFinal) settled += chunk;
+        else pending += chunk;
+      }
+      if (settled) voice.heard = (voice.heard + " " + settled).trim();
+      var joined = (voice.base + " " + voice.heard + " " + pending).trim();
+      input.value = joined;
+      // The transcript is an ordinary textarea, so correcting it is just
+      // editing. The acceptance test asks for visible AND correctable.
+      input.scrollTop = input.scrollHeight;
+    };
+
+    rec.onerror = function (event) {
+      if (event.error === "no-speech" || event.error === "aborted") return;
+      if (event.error === "not-allowed") {
+        stopVoice("The microphone is blocked in your browser settings.");
+        return;
+      }
+      // Network loss is the interesting one: what he already said stays in the
+      // box and he can finish by typing.
+      stopVoice("Lost the microphone. What you said is still in the box.");
+    };
+
+    rec.onend = function () {
+      // Some browsers end the session on a pause; restart while he still wants
+      // to talk, unless the camera claimed the mic in the meantime.
+      if (voice.listening && !cameraBusy()) {
+        try { rec.start(); return; } catch (e) { /* fall through to stopped */ }
+      }
+      voice.listening = false;
+      paintVoiceButton();
+    };
+
+    try {
+      rec.start();
+    } catch (e) {
+      toast("Could not start listening: " + e.message, true);
+      return;
+    }
+    voice.rec = rec;
+    voice.listening = true;
+    paintVoiceButton();
+  }
+
+  /* Say the reply out loud. Browser speech, so it costs nothing and needs no
+   * key. Off unless he turned it on, because a phone that starts talking in a
+   * quiet room is a worse surprise than a silent one. */
+  function speak(text) {
+    if (!window.speechSynthesis) return;
+    var on = false;
+    try { on = localStorage.getItem("tce-speak-replies") === "1"; } catch (e) { /**/ }
+    if (!on || !text) return;
+    try {
+      window.speechSynthesis.cancel();
+      var utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.05;
+      window.speechSynthesis.speak(utterance);
+    } catch (e) { /* never let speech break the page */ }
+  }
+
+  function toggleSpeakReplies() {
+    var on = false;
+    try {
+      on = localStorage.getItem("tce-speak-replies") === "1";
+      localStorage.setItem("tce-speak-replies", on ? "0" : "1");
+    } catch (e) { /**/ }
+    if (on && window.speechSynthesis) window.speechSynthesis.cancel();
+    toast(on ? "Replies stay silent." : "Replies will be read out loud.");
+    var btn = $("speakBtn");
+    if (btn) btn.setAttribute("aria-pressed", on ? "false" : "true");
   }
 
   async function reviewFromThread(changeSetId) {
