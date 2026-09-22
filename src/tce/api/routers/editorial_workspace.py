@@ -484,6 +484,14 @@ async def open_thread(
     """Get or create the one thread for an object. The room uses the workspace id."""
     if body.context_type not in ("topic", "packet", "week", "recording", "room"):
         raise HTTPException(status_code=400, detail="unknown context type")
+    # Only the room and the week are workspace-wide. Letting the others fall back
+    # to the workspace id builds a thread pointing at an object that does not
+    # exist, and the failure only shows up a minute later when the turn runs.
+    if body.context_type in ("topic", "packet", "recording") and not body.context_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"a {body.context_type} conversation needs a {body.context_type} id",
+        )
     context_id = _uuid(body.context_id, "context") if body.context_id else ws
     async with open_session(sm) as db:
         try:
