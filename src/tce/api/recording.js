@@ -156,6 +156,8 @@ function recordedPending(item) {
 
   function setStudioMode(active) {
     document.body.classList.toggle("in-studio", Boolean(active));
+    // The nav is hidden in the studio and the house changes meaning with it.
+    if (typeof paintHomeButton === "function") paintHomeButton();
   }
 
   function setRecordingChrome(active) {
@@ -1362,7 +1364,27 @@ function recordedPending(item) {
     showNotice(`Reader text size ${Math.round(state.textSize * 100)}%.`);
   }
 
-  $("homeButton").addEventListener("click", showQueue);
+  /* The house means home, and home is Today - except inside the studio, where
+     the only thing above it is the list you came from and there is no bottom nav
+     to get back with. The label always says which, so it is never a guess. */
+  function inStudio() { return document.body.classList.contains("in-studio"); }
+
+  function paintHomeButton() {
+    const button = $("homeButton");
+    if (!button) return;
+    button.setAttribute("aria-label", inStudio() ? "Back to the list" : "Back to Today");
+    button.title = inStudio() ? "Back to the list" : "Back to Today";
+  }
+
+  $("homeButton").addEventListener("click", () => {
+    if (inStudio()) { showQueue(); return; }
+    window.location.href = `${pathPrefix}/today`;
+  });
+
+  // The nav ships absolute hrefs; this page is served at /record and /tce/record.
+  document.querySelectorAll("#bottomNav a").forEach((link) => {
+    link.setAttribute("href", pathPrefix + link.getAttribute("href"));
+  });
   $("produceNowButton").addEventListener("click", produceNow);
   $("moreHooksButton").addEventListener("click", askForMoreOpenings);
   $("moreIdeasButton").addEventListener("click", moreIdeas);

@@ -10,7 +10,7 @@
 </head>
 <body>
   <header class="topbar">
-    <button id="homeButton" class="icon-button" type="button" aria-label="Open script queue">⌂</button>
+    <button id="homeButton" class="icon-button" type="button" aria-label="Back to Today">⌂</button>
     <div class="identity">
       <strong>Walking studio</strong>
       <span id="syncState">Loading your scripts</span>
@@ -137,6 +137,20 @@
       </div>
     </form>
   </dialog>
+
+  <!-- The same five destinations as the rest of the workspace. The studio is
+       still one page of its own, but choosing what to record should not feel
+       like leaving the app. It is hidden once the studio opens, where the four
+       recording controls own the bottom of the screen. Hrefs get the /tce
+       prefix in JS, because this page is served under both roots. -->
+  <nav class="bottom-nav" id="bottomNav" aria-label="Sections">
+    <a href="/today"   data-route="today"><span class="glyph" aria-hidden="true">&#9673;</span>Today</a>
+    <a href="/topics"  data-route="topics"><span class="glyph" aria-hidden="true">&#9776;</span>Topics</a>
+    <a href="/week"    data-route="week"><span class="glyph" aria-hidden="true">&#9635;</span>This week</a>
+    <a href="/record"  data-route="record" aria-current="page"><span class="glyph" aria-hidden="true">&#9679;</span>Record</a>
+    <a href="/library" data-route="library"><span class="glyph" aria-hidden="true">&#9638;</span>Library</a>
+  </nav>
+
   <script src="recording.js" defer></script>
 </body>
 </html>

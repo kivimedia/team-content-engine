@@ -189,3 +189,28 @@ dialog h2 { font-family: Georgia, serif; margin-top: 0; }
 }
 @media (max-width: 420px) { .produce-panel { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .reader { scroll-behavior: auto; } }
+
+/* ------------------------------------------------------------- bottom nav */
+/* Same five destinations, same look, as the rest of the workspace: choosing
+   what to record should not feel like leaving the app. Present on the queue and
+   the opening chooser; hidden in the studio, where the four recording controls
+   own the bottom of the screen and a sixth row would push the camera up. */
+.bottom-nav {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  background: var(--ink); border-top: 2px solid #000;
+  padding-bottom: env(safe-area-inset-bottom);
+  box-shadow: 0 -8px 24px rgba(16, 33, 59, .22);
+}
+.bottom-nav a {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; min-height: 68px; padding: 6px 2px;
+  color: #c3d2e2; text-decoration: none; font-size: .72rem; font-weight: 800;
+  text-align: center; line-height: 1.15;
+}
+.bottom-nav a .glyph { font-size: 1.15rem; line-height: 1; }
+.bottom-nav a[aria-current="page"] { color: var(--white); background: #1c3050; }
+/* The queue scrolls normally, so it reserves the nav's height rather than
+   letting the last idea sit underneath it. */
+body:not(.in-studio) .queue-view { padding-bottom: calc(68px + env(safe-area-inset-bottom) + 24px); }
+body.in-studio .bottom-nav { display: none; }

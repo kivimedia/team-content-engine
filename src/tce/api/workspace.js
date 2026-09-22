@@ -771,8 +771,15 @@
     var body = $("talkBody");
     var messages = (state.thread && state.thread.messages) || [];
     if (!messages.length) {
-      body.innerHTML = '<div class="empty"><strong>Nothing said yet</strong>'
-        + "Think out loud. In Discuss nothing changes, whatever you ask for.</div>";
+      var isRoom = state.talkContext && state.talkContext.type === "room";
+      var opener = isRoom
+        ? "Talk about the ideas as a set, before you pick one. Which of these is "
+          + "actually strongest? Is the mix wrong? Does any of this say what I "
+          + "really do? Nothing here changes a topic."
+        : "Think out loud. In Discuss nothing changes, whatever you ask for.";
+      body.innerHTML = '<div class="empty"><strong>'
+        + (isRoom ? "Talk it through first" : "Nothing said yet") + "</strong>"
+        + esc(opener) + "</div>";
       return;
     }
     var html = "";
@@ -1425,17 +1432,31 @@
   function setTalkContext(route) {
     var fab = $("talkFab");
     if (route.name === "room" && state.room) {
-      state.talkContext = { type: "topic", id: route.id, label: state.room.title };
+      state.talkContext = {
+        type: "topic", id: route.id, label: state.room.title,
+        action: "Talk about this topic"
+      };
     } else if (route.name === "workshop" && state.workshop) {
       state.talkContext = {
         type: "packet", id: route.id,
-        label: "Script version " + state.workshop.version
+        label: "Script version " + state.workshop.version,
+        action: "Talk about this script"
       };
     } else if (route.name === "week") {
-      state.talkContext = { type: "week", id: null, label: "This week's list" };
-    } else if (route.name === "topics") {
-      // The editorial room: cross-topic planning, no single object to change.
-      state.talkContext = { type: "room", id: null, label: "Editorial room" };
+      state.talkContext = {
+        type: "week", id: null, label: "This week's list",
+        action: "Talk about this week"
+      };
+    } else if (route.name === "topics" || route.name === "today") {
+      /* The editorial room: the whole week and everything still waiting, before
+         he has picked anything. This is the conversation he wants FIRST - which
+         one is strongest, is the mix wrong, none of these says what I do - and
+         it was reachable but unnamed, so it read as just another "talk about
+         this" and he could not tell it was the cross-topic one. */
+      state.talkContext = {
+        type: "room", id: null, label: "All your ideas and this week",
+        action: "Talk about the whole week"
+      };
     } else {
       state.talkContext = null;
     }
@@ -1443,10 +1464,7 @@
     // The bar is fixed, so the page has to reserve its height or the last card
     // sits underneath it.
     document.body.classList.toggle("has-talk", !!state.talkContext);
-    if (state.talkContext) {
-      fab.textContent = state.talkContext.type === "room"
-        ? "Talk it through" : "Talk about this";
-    }
+    if (state.talkContext) fab.textContent = state.talkContext.action;
   }
 
   async function render() {
