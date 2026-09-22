@@ -389,8 +389,9 @@
       }
       html += '<button class="btn quiet" type="button" data-slot="' + (isReserve ? "primary" : "reserve")
            + '" data-id="' + esc(item.candidate_id) + '">'
-           + (isReserve ? "Put in this week" : "Move to reserve") + "</button>";
-      html += '<button class="btn quiet" type="button" data-remove="' + esc(item.candidate_id) + '">Remove</button>';
+           + (isReserve ? "Record it this week" : "Not this week, keep as a spare") + "</button>";
+      html += '<button class="btn quiet" type="button" data-remove="' + esc(item.candidate_id)
+           + '">Take out of the week</button>';
       html += "</div>";
     }
 
@@ -432,6 +433,8 @@
     html += "<h1>" + esc(data.title) + "</h1>";
     if (data.provenance) html += '<p class="lede">' + esc(data.provenance) + "</p>";
     html += "</div>";
+
+    html += pairTabs("topic", data.candidate_id, data.script ? data.script.packet_id : null);
 
     if (data.timely) html += '<span class="tag is-timely">Timely</span>';
     if (data.lane_label) html += '<span class="tag is-lane">' + esc(data.lane_label) + "</span>";
@@ -495,6 +498,24 @@
     }[origin] || "";
   }
 
+  /* One switcher, on both screens. They are two views of the same idea - the
+     thinking and the words - and moving between them was a button that read like
+     leaving the page. */
+  function pairTabs(active, candidateId, packetId) {
+    if (!candidateId) return "";
+    var html = '<div class="chips" role="group" aria-label="This idea">';
+    html += '<button class="chip" type="button" data-open-room="' + esc(candidateId)
+         + '" aria-pressed="' + (active === "topic" ? "true" : "false") + '">The topic</button>';
+    if (packetId) {
+      html += '<button class="chip" type="button" data-open-script="' + esc(packetId)
+           + '" aria-pressed="' + (active === "script" ? "true" : "false") + '">The script</button>';
+    } else {
+      html += '<button class="chip" type="button" disabled '
+           + 'title="No script yet">The script</button>';
+    }
+    return html + "</div>";
+  }
+
   var BLOCK_LABELS = {
     topic: "Topic", audience: "Who it helps", big_idea: "The point",
     why_now: "Why now", why_this_is_yours: "Why this is yours",
@@ -512,10 +533,89 @@
       html += '<p class="unwritten">Nothing written yet.</p>';
     }
     html += '<div class="block-actions">';
-    html += '<button class="btn" type="button" data-change="' + esc(block.field) + '">Change</button>';
+    html += '<button class="icon-btn" type="button" data-edit="' + esc(block.field)
+         + '" aria-label="Edit ' + esc(BLOCK_LABELS[block.field] || block.field)
+         + '" title="Edit">&#9998;</button>';
     html += '<button class="btn quiet" type="button" data-rewrite="' + esc(block.field) + '">Ask for a rewrite</button>';
     html += "</div></section>";
     return html;
+  }
+
+  /* Edit in place. This was a window.prompt, which on a phone is a cramped
+     single-line box over a greyed page - the worst possible surface for the
+     paragraph he is actually rewriting. Now the block turns into a textarea
+     sized to its own content, and Save writes a new version directly.
+
+     No diff sheet for his own typing: the diff exists so an assistant cannot
+     change his words without showing him, and he is looking at the words he
+     just typed. History and restore are untouched. */
+  function openInlineEdit(field) {
+    var section = document.querySelector('.block[data-field="' + field + '"]');
+    if (!section || section.dataset.editing === "1") return;
+    var block = (state.room.brief.blocks || []).filter(function (b) {
+      return b.field === field;
+    })[0];
+    if (!block) return;
+
+    section.dataset.editing = "1";
+    var label = BLOCK_LABELS[field] || field;
+    var current = block.value || "";
+    var body = section.querySelector("p");
+    var actions = section.querySelector(".block-actions");
+    if (body) body.hidden = true;
+    if (actions) actions.hidden = true;
+
+    var editor = document.createElement("div");
+    editor.className = "block-editor";
+    editor.innerHTML =
+      '<textarea class="block-input" aria-label="' + esc(label) + '"></textarea>'
+      + '<div class="block-actions">'
+      + '<button class="btn primary" type="button" data-save="1">Save</button>'
+      + '<button class="btn quiet" type="button" data-cancel="1">Cancel</button>'
+      + "</div>";
+    section.appendChild(editor);
+
+    var input = editor.querySelector(".block-input");
+    input.value = current;
+    // Grow to the text rather than making him scroll a three-line window.
+    var grow = function () {
+      input.style.height = "auto";
+      input.style.height = Math.min(input.scrollHeight + 4, 400) + "px";
+    };
+    input.addEventListener("input", grow);
+    grow();
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+
+    var close = function () {
+      editor.remove();
+      if (body) body.hidden = false;
+      if (actions) actions.hidden = false;
+      delete section.dataset.editing;
+    };
+
+    editor.querySelector("[data-cancel]").addEventListener("click", close);
+    editor.querySelector("[data-save]").addEventListener("click", async function () {
+      var next = input.value;
+      if (next === current) { close(); return; }
+      var save = editor.querySelector("[data-save]");
+      save.disabled = true;
+      save.textContent = "Saving";
+      try {
+        var result = await api("/editorial/topics/" + state.room.candidate_id + "/brief", {
+          method: "POST",
+          body: { field: field, value: next, base_version: state.room.brief.version }
+        });
+        state.room = result.room;
+        toast("Saved as version " + result.version + ". The old one is in History.");
+        await render();
+      } catch (error) {
+        save.disabled = false;
+        save.textContent = "Save";
+        toast(error.message, true);
+        if (error.status === 409) await render();
+      }
+    });
   }
 
   /* Quick rewrites are the same conversation, with the instruction written for
@@ -1059,6 +1159,8 @@
     html += '<p class="lede">' + esc(data.outline.length) + " " + plural(data.outline.length, "point")
          + ", " + data.script.length + " " + plural(data.script.length, "line") + ".</p></div>";
 
+    html += pairTabs("script", data.candidate_id, data.packet_id);
+
     if (data.frozen_reason) html += '<p class="notice">' + esc(data.frozen_reason) + "</p>";
     if ((data.public_safety || {}).status === "issues") {
       html += '<p class="notice is-bad">This version has '
@@ -1081,15 +1183,31 @@
       var openings = data.openings || {};
       html += '<p class="section-hint">Three at a time. Asking for more re-ranks them rather than making the list longer.</p>';
       (openings.shown || []).forEach(function (hook, index) {
-        html += '<section class="block">';
+        var inUse = hook.id === openings.selected_hook_id;
+        html += '<section class="block' + (inUse ? " is-current" : "") + '">';
         html += "<h4>" + (index === 0 ? "Recommended" : "Option " + (index + 1))
-             + (hook.id === openings.selected_hook_id ? " &middot; in use" : "") + "</h4>";
+             + (inUse ? " &middot; in use" : "") + "</h4>";
         html += "<p>" + esc(hook.text || hook.line || "") + "</p>";
-        if (hook.viewer_question) html += '<p class="diff-why">' + esc(hook.viewer_question) + "</p>";
-        html += "</section>";
+        if (hook.question || hook.viewer_question) {
+          html += '<p class="diff-why">' + esc(hook.question || hook.viewer_question) + "</p>";
+        }
+        // Choosing was the whole point of the tab and there was no way to do it.
+        html += '<div class="block-actions">';
+        if (inUse) {
+          html += '<span class="tag is-ready">This is the one you open with</span>';
+        } else if (data.frozen_reason) {
+          html += '<span class="tag">Locked: this script has been recorded</span>';
+        } else {
+          html += '<button class="btn primary" type="button" data-choose-hook="'
+               + esc(hook.id) + '">Use this opening</button>';
+        }
+        html += "</div></section>";
       });
       if (!(openings.shown || []).length) {
         html += '<div class="empty"><strong>No openings yet</strong>They are written with the script.</div>';
+      } else if (!data.frozen_reason) {
+        html += '<div class="actions"><button class="btn quiet" type="button" '
+             + 'data-more-hooks="1">Ask for different openings</button></div>';
       }
     } else {
       var posts = data.posts || {};
@@ -1182,6 +1300,31 @@
     });
     html += "</div></article>";
     return html;
+  }
+
+  async function chooseHook(hookId) {
+    try {
+      // Choosing writes a new immutable script version, the same as any other
+      // change to the words. The workshop reloads onto it.
+      var packet = await api(
+        "/editorial/packets/" + state.workshop.packet_id + "/choose-hook",
+        { method: "POST", body: { hook_id: hookId } }
+      );
+      toast("That is your opening now. Saved as version " + packet.version + ".");
+      go("/scripts/" + packet.id, true);
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function askMoreHooks() {
+    try {
+      await api("/editorial/packets/" + state.workshop.packet_id + "/more-hooks",
+                { method: "POST" });
+      toast("Asked. New openings are written on your PC worker; it takes a few minutes.");
+    } catch (error) {
+      toast(error.message, true);
+    }
   }
 
   async function askEditRequest(uploadId) {
@@ -1355,10 +1498,24 @@
     }
   }
 
+  /* Every clickable data-attribute, in one list, with the selector DERIVED from
+     it. It used to be a hand-written selector string beside a hand-written set
+     of branches, and the two drifted: `rewrite`, `review` and `notify` had
+     branches but were missing from the string, so "Ask for a rewrite", "Review
+     the change" and the notifications toggle were silently dead. Nothing threw,
+     nothing logged - the click simply matched nothing. Adding an action here is
+     now the only step. */
+  var CLICK_ACTIONS = [
+    "go", "filter", "libfilter", "decide", "open-room", "open-script", "move",
+    "slot", "remove", "ask-script", "change", "edit", "restore", "wtab",
+    "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks"
+  ];
+  var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
+    return "[data-" + name + "]";
+  }).join(",");
+
   document.addEventListener("click", function (event) {
-    var target = event.target.closest("[data-go],[data-filter],[data-libfilter],[data-decide],"
-      + "[data-open-room],[data-open-script],[data-move],[data-slot],[data-remove],"
-      + "[data-ask-script],[data-change],[data-restore],[data-wtab],[data-edit-request]");
+    var target = event.target.closest(CLICK_SELECTOR);
     if (!target) return;
     var d = target.dataset;
 
@@ -1373,10 +1530,13 @@
     if (d.slot !== undefined) { moveItem(d.id, "slot", d.slot); return; }
     if (d.remove !== undefined) { moveItem(d.remove, "remove"); return; }
     if (d.askScript !== undefined) { askForScript(d.askScript); return; }
+    if (d.edit !== undefined) { openInlineEdit(d.edit); return; }
     if (d.change !== undefined) { openChange(d.change); return; }
     if (d.restore !== undefined) { restore(parseInt(d.restore, 10)); return; }
     if (d.editRequest !== undefined) { askEditRequest(d.editRequest); return; }
     if (d.review !== undefined) { reviewFromThread(d.review); return; }
+    if (d.chooseHook !== undefined) { chooseHook(d.chooseHook); return; }
+    if (d.moreHooks !== undefined) { askMoreHooks(); return; }
     if (d.rewrite !== undefined) { openRewrite(d.rewrite); return; }
     if (d.notify !== undefined) {
       if (d.notify === "on") enableNotifications(); else disableNotifications();

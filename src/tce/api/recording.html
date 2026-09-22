@@ -22,38 +22,15 @@
     <section id="queueView" class="queue-view" aria-labelledby="queueTitle">
       <div class="queue-intro">
         <p class="kicker">This recording sitting</p>
-        <h1 id="queueTitle">Choose the next idea</h1>
-        <p>Each idea keeps its own clips. You can move between scripts without losing a take.</p>
-        <div class="produce-panel">
-          <button id="produceNowButton" type="button">Produce now</button>
-          <span id="produceNowState">Collect the last seven days and prepare recording scripts.</span>
-          <a id="produceNowLink" href="#" hidden>Open this run</a>
-        </div>
+        <h1 id="queueTitle">Ready to record</h1>
+        <p>Tap one and the camera opens. Each idea keeps its own clips, so you can
+          move between scripts without losing a take.</p>
       </div>
       <div id="queue" class="queue" aria-live="polite"></div>
       <div id="emptyQueue" class="empty" hidden>
-        <strong>No scripts ready yet</strong>
-        <span>Pick an idea below and ask for its script, or press Produce now.</span>
+        <strong>Nothing is ready to record yet</strong>
+        <span>Choose your topics in Topics and prepare their scripts from This week.</span>
       </div>
-
-      <section id="ideasSection" class="ideas-section" hidden aria-labelledby="ideasTitle">
-        <h2 id="ideasTitle">Ideas waiting for you</h2>
-        <p class="ideas-hint">From your meetings and code. Ask for a script when one is worth
-          recording, or put it away.</p>
-        <p id="ideasCount" class="ideas-count"></p>
-        <p id="engineState" class="engine-state" hidden></p>
-        <div id="ideasList" class="ideas-list"></div>
-        <button id="moreIdeasButton" type="button" class="secondary-button" hidden>Show more ideas</button>
-        <p id="moreIdeasNote" class="more-ideas-note" hidden></p>
-        <details id="recordedSection" class="recorded-section" hidden>
-          <summary id="recordedSummary">Recorded</summary>
-          <div id="recordedList" class="recorded-list"></div>
-        </details>
-        <details id="awaySection" class="away-section" hidden>
-          <summary id="awaySummary">Put away</summary>
-          <div id="awayList" class="ideas-list"></div>
-        </details>
-      </section>
     </section>
 
     <section id="hookView" class="hook-view" hidden aria-labelledby="hookViewTitle">

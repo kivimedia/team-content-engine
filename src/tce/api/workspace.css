@@ -401,3 +401,22 @@ body[data-reader="large"] .msg .bubble { font-size: 1.14rem; }
 body[data-reader="largest"] .block p,
 body[data-reader="largest"] .card .big-idea,
 body[data-reader="largest"] .msg .bubble { font-size: 1.3rem; }
+
+/* ------------------------------------------------------- inline block edit */
+/* A pen, not the word "Change", and the block becomes a real textarea in place.
+   This was a window.prompt: a cramped one-line box over a greyed page, which is
+   the worst possible surface for rewriting a paragraph on a phone. */
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 46px; min-height: 46px; padding: 0 10px;
+  border: 2px solid var(--ink); border-radius: 10px; background: var(--white);
+  font-size: 1.15rem; line-height: 1;
+}
+.icon-btn:active { transform: translateY(1px); }
+.block-editor { margin-top: 10px; }
+.block-input {
+  width: 100%; min-height: 96px; padding: 10px 12px; resize: vertical;
+  border: 2px solid var(--ink); border-radius: 12px; background: var(--white);
+  color: var(--ink); line-height: 1.5; font: inherit;
+}
+.block.is-current { border-color: var(--moss); box-shadow: inset 5px 0 0 var(--moss); }

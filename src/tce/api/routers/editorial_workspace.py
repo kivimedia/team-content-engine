@@ -121,6 +121,12 @@ class RestoreRequest(BaseModel):
     to_version: int
 
 
+class EditBlockRequest(BaseModel):
+    field: str
+    value: str
+    base_version: int | None = None
+
+
 class ThreadRequest(BaseModel):
     context_type: str
     # Absent for the editorial room, which is one thread per workspace.
@@ -466,6 +472,54 @@ async def restore_version(
             return result
         except ServiceError as error:
             raise _http(error) from error
+
+
+@router.post("/topics/{candidate_id}/brief")
+async def edit_brief_block(
+    candidate_id: str,
+    body: EditBlockRequest,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Save one block he typed himself, in one call.
+
+    A diff sheet exists so an ASSISTANT cannot change his words without showing
+    him. Making him review a sentence he just typed is ceremony, not safety - he
+    is looking at it. So this proposes and applies in one step, which still
+    writes a new immutable version and still leaves the old one restorable from
+    History. Nothing about the audit trail is weaker; only the extra tap is gone.
+    """
+    cid = _uuid(candidate_id, "topic")
+    async with open_session(sm) as db:
+        try:
+            change_set = await change_service.propose(
+                db,
+                ws,
+                target_type="candidate_brief",
+                target_id=cid,
+                base_version=body.base_version,
+                operations=[
+                    change_service.OperationInput(
+                        op="set_field", field=body.field, after=body.value
+                    )
+                ],
+                summary=f"Edit {body.field.replace('_', ' ')}",
+                origin="quick_action",
+            )
+            if change_set.state == "invalid":
+                issues = (change_set.validation or {}).get("issues") or []
+                message = issues[0]["message"] if issues else "that cannot be saved"
+                await db.commit()
+                raise HTTPException(
+                    status_code=400, detail={"code": "invalid", "message": message}
+                )
+            result = await change_service.apply(db, ws, change_set.id, decided_by="ziv")
+            payload = await inbox_service.topic_room(db, ws, cid)
+            await db.commit()
+        except ServiceError as error:
+            await db.commit()
+            raise _http(error) from error
+    return {"saved": True, "version": result["version"], "room": payload}
 
 
 @router.get("/topics/{candidate_id}/history")
