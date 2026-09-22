@@ -258,9 +258,13 @@ function packetToIdea(idea, packet) {
     reader.replaceChildren();
     // The opening is the first thing he says, so in Points it is the first line,
     // not a panel taking a third of the screen. The full script already starts
-    // with it (choosing an opening rewrites the first spoken phrase).
-    const hook = selectedHook(idea);
-    if (state.mode === "points" && hook) reader.appendChild(openingLine(idea, hook));
+    // with it (choosing an opening rewrites the first spoken phrase). When the
+    // chosen opening IS the first point almost word for word - which is what
+    // choosing the recommended one usually gives - the two are one line, not the
+    // same sentence printed twice.
+    const hook = state.mode === "points" ? selectedHook(idea) : null;
+    const merged = Boolean(hook && items.length && sameLine(hook.text, items[0]));
+    if (hook && !merged) reader.appendChild(openingLine(idea, hook.text, "points-opening"));
     items.forEach((text, index) => {
       const line = document.createElement("p");
       line.className = "reader-line";
@@ -268,6 +272,10 @@ function packetToIdea(idea, packet) {
       // Points keep their number; spoken phrases do not - "p028" was noise
       // to read past while talking.
       if (state.mode === "points") {
+        if (merged && index === 0) {
+          reader.appendChild(openingLine(idea, text, "points-0"));
+          return;
+        }
         const label = document.createElement("span");
         label.className = "reader-index";
         label.textContent = `Point ${index + 1}`;
@@ -284,14 +292,29 @@ function packetToIdea(idea, packet) {
     requestAnimationFrame(() => { reader.scrollTop = saved; syncScrollRail(); });
   }
 
-  function openingLine(idea, hook) {
+  /* Two lines are the same line when one starts with the other: the opening and
+     the first point differ only by a trailing clause ("...on the phone." against
+     "...on the phone after the event"). Unicode aware, so a Hebrew script is
+     compared, not emptied. */
+  function sameLine(a, b) {
+    const flat = (text) => String(text || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const one = flat(a);
+    const two = flat(b);
+    if (!one || !two) return false;
+    return one.startsWith(two) || two.startsWith(one);
+  }
+
+  function openingLine(idea, text, id) {
     const line = document.createElement("p");
     line.className = "reader-line opening";
-    line.id = "points-opening";
+    // Merged into point 1 it IS point 1, so it answers to that point's jump
+    // button; standing on its own it needs an id of its own, not a second
+    // "points-0" that would swallow the jump to the first point.
+    line.id = id;
     const label = document.createElement("span");
     label.className = "reader-index";
     label.textContent = "Opening";
-    line.append(label, document.createTextNode(hook.text));
+    line.append(label, document.createTextNode(text));
     const recording = Boolean(state.recorder && state.recorder.state !== "inactive");
     if ((idea.hook_options || []).length >= 2 && !state.hookLock && !recording) {
       const change = document.createElement("button");

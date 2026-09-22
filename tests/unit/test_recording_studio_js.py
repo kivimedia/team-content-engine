@@ -251,3 +251,19 @@ def test_the_reader_slider_runs_the_way_the_words_do():
     rail = next(line for line in css.splitlines() if line.startswith(".scroll-rail input"))
     assert "vertical-lr" in rail
     assert "direction: rtl" not in rail
+
+
+def test_the_opening_and_a_first_point_that_repeat_it_are_one_line():
+    """Choosing the recommended opening usually gives back the first bullet almost
+    word for word ("...back on the phone." / "...back on the phone after the
+    event"), and the reader printed both."""
+    js = JS.read_text(encoding="utf-8")
+    assert "function sameLine(" in js
+    body = js[js.index("function sameLine(") : js.index("function openingLine(")]
+    # Unicode aware, or a Hebrew script compares as two empty strings and every
+    # line merges with every other one.
+    assert r"\p{L}" in body and "/gu" in body
+    assert "startsWith" in body
+    # One id per line: a standalone opening must not answer to point 1's jump.
+    assert 'openingLine(idea, hook.text, "points-opening")' in js
+    assert 'openingLine(idea, text, "points-0")' in js
