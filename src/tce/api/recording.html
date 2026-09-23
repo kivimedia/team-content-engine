@@ -79,6 +79,11 @@
           <div class="tabs" role="tablist" aria-label="Reader mode">
             <button id="pointsTab" class="tab is-active" type="button" role="tab" aria-selected="true">Points</button>
             <button id="scriptTab" class="tab" type="button" role="tab" aria-selected="false">Full script</button>
+            <!-- At the right end of this bar, not on the rail: in a split-screen
+                 half the rail is too short for five buttons and pushed A+ under
+                 the header. Swap words and video; words over the video. -->
+            <button id="flipLayoutButton" class="tab tab-icon" type="button" aria-label="Swap words and video" title="Swap words and video">&#8645;</button>
+            <button id="overlayButton" class="tab tab-icon" type="button" aria-label="Words over the video" title="Words over the video" aria-pressed="false">&#9680;</button>
           </div>
           <div id="reader" class="reader" tabindex="0"></div>
         </div>
@@ -100,7 +105,7 @@
       <div class="controls" aria-label="Recording controls">
         <button id="recordButton" class="control record" type="button">Record</button>
         <button id="pauseButton" class="control" type="button" disabled>Pause</button>
-        <button id="finishClipButton" class="control" type="button" disabled>Finish clip<small>keep this script</small></button>
+        <button id="finishClipButton" class="control" type="button" disabled>Stop<small>keep this take</small></button>
         <button id="finishSessionButton" class="control finish" type="button">Finish<small>send for editing</small></button>
         <button id="nativeCameraButton" class="control native" type="button">Phone camera<small>full quality</small></button>
       </div>

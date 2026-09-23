@@ -286,3 +286,57 @@ body.native-mode .studio-view { grid-template-rows: auto minmax(0, 1fr) auto aut
 }
 /* The canvas feeding the floating window must be in the page but never seen. */
 .prompter-source { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; left: 0; bottom: 0; }
+
+/* STUCK MID-TAKE (23-Sep). In a half-height window the video was painted over
+   Pause and Finish: they showed, but every tap landed on the video. The
+   recording buttons always sit above everything else. */
+.studio-view.is-recording .controls { z-index: 30; }
+/* Stop keeps the take and brings the full bar back; Finish sends it. */
+.studio-view.is-recording #finishClipButton { display: block; }
+.studio-view.is-recording #finishClipButton small { display: none; }
+
+/* Points / Full script go BELOW the words, so the words themselves sit right
+   under the lens at the top of the phone. */
+.reader-main { grid-template-rows: minmax(0, 1fr) auto; }
+.reader-main > .tabs { order: 2; border-bottom: 0; border-top: 2px solid var(--ink); }
+.reader-main > .reader { order: 1; }
+
+/* A+ and A- only; if a split-screen half is shorter still, the rail scrolls
+   rather than pushing them off the screen. */
+.size-rail { overflow-y: auto; gap: 6px; }
+.size-rail button { min-height: 44px; }
+/* Points | Full script | swap | overlay. */
+.tabs { grid-template-columns: 1fr 1fr 52px 52px; }
+.tab-icon { font-size: 1.25rem; background: #2c4a6e; color: #fff; border-left: 1px solid rgba(255, 255, 255, .25); }
+#overlayButton[aria-pressed="true"] { background: var(--signal); color: #fff; }
+
+/* SWAPPED: video on top, words below. */
+@media (max-width: 759px) {
+  body.layout-flipped .studio-view > .camera-stage { order: 1; }
+  body.layout-flipped .studio-view > .script-heading { order: 2; }
+  body.layout-flipped .studio-view > .reader-shell { order: 3; }
+  body.layout-flipped .studio-view { grid-template-rows: minmax(150px, 40%) auto minmax(0, 1fr) auto auto; }
+  body.layout-flipped .studio-view.is-recording { grid-template-rows: 45% minmax(0, 1fr); }
+}
+
+/* WORDS OVER THE VIDEO (the BIGVU-style prompter). The video fills the whole
+   studio and the reader floats over its top half on a see-through backing;
+   white words with a shadow stay readable over any background. */
+body.overlay-mode .studio-view { position: relative; grid-template-rows: minmax(0, 1fr) auto auto; }
+body.overlay-mode .studio-view > .camera-stage { order: 1; grid-row: 1 / -1; grid-column: 1 / -1; min-height: 0; height: 100%; }
+body.overlay-mode .studio-view > .camera-stage video { object-fit: cover; }
+body.overlay-mode .studio-view > .script-heading { display: none; }
+body.overlay-mode .studio-view > .reader-shell {
+  position: absolute; left: 0; right: 0; top: 0; height: 52%; z-index: 20;
+  background: linear-gradient(rgba(7, 17, 31, .55), rgba(7, 17, 31, .15));
+}
+body.overlay-mode .reader-shell, body.overlay-mode .reader-main, body.overlay-mode .reader,
+body.overlay-mode .beat-rail, body.overlay-mode .size-rail { background: transparent; border: 0; }
+body.overlay-mode .reader, body.overlay-mode .reader-line { color: #fff; text-shadow: 0 2px 6px rgba(0, 0, 0, .85); }
+body.overlay-mode .reader-index { color: #ffe08a; }
+body.overlay-mode .reader-line.opening { border-left-color: #ffe08a; }
+body.overlay-mode .tabs { background: rgba(7, 17, 31, .45); border-top-color: rgba(255, 255, 255, .5); }
+body.overlay-mode .tab { background: transparent; color: #fff; }
+body.overlay-mode .tab.is-active { color: var(--ink); background: rgba(255, 255, 255, .85); }
+body.overlay-mode .beat-button { background: rgba(255, 255, 255, .85); }
+body.overlay-mode .controls { position: relative; z-index: 25; }

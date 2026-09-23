@@ -623,3 +623,103 @@ def test_the_phone_camera_button_sends_a_native_video_for_editing(studio, tmp_pa
         assert held == 0, "the page still held the camera the native app needed"
         context.close()
         browser.close()
+
+
+TAPPABLE_JS = """(ids) => ids.map((id) => {
+  const b = document.getElementById(id);
+  const r = b.getBoundingClientRect();
+  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  return {id, shown: getComputedStyle(b).display !== 'none' && r.height > 0,
+          inside: r.top >= 0 && r.bottom <= innerHeight, tappable: !!hit && (hit === b || b.contains(hit)),
+          hit: hit && (hit.id || hit.className)};
+})"""
+
+
+def test_split_screen_recording_can_always_be_stopped_and_the_layouts_switch(studio, tmp_path):
+    """23-Sep, in split screen: "I need a way ... to click a stop recording button!
+    I am stuck". Pause and Finish were painted but the video sat on top of them,
+    so every tap hit the video. Pressed for real, in a half-height window."""
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    split = {"width": 390, "height": 420}
+    with sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+            )
+        except PlaywrightError as exc:  # pragma: no cover - environment dependent
+            pytest.skip(f"Chromium is not installed for Playwright: {exc}")
+        context = browser.new_context(
+            viewport=split, device_scale_factor=2, is_mobile=True, has_touch=True,
+            permissions=["camera", "microphone"],
+        )
+        page = context.new_page()
+        page.goto(f"{studio['base']}/record")
+        page.wait_for_selector(".idea-card")
+        page.click(".idea-card")
+        page.locator("#hookView .hook-option").first.locator(".hook-use").click()
+        page.wait_for_selector("#studioView:not([hidden])")
+
+        # Points / Full script sit UNDER the words, so the words are nearest the lens.
+        order = page.evaluate(
+            "() => ({tabs: document.querySelector('.tabs').getBoundingClientRect().top,"
+            " reader: document.getElementById('reader').getBoundingClientRect().top})"
+        )
+        assert order["reader"] < order["tabs"], f"the tabs are above the words: {order}"
+
+        page.wait_for_timeout(1500)
+        page.click("#recordButton")
+        page.wait_for_function(
+            "() => document.getElementById('studioView').classList.contains('is-recording')",
+            timeout=20000,
+        )
+        buttons = page.evaluate(TAPPABLE_JS, ["pauseButton", "finishClipButton", "finishSessionButton"])
+        for b in buttons:
+            assert b["shown"] and b["inside"] and b["tappable"], f"cannot stop the take: {b}"
+        assert page.locator("#finishClipButton").inner_text().startswith("Stop")
+        page.screenshot(path=str(tmp_path / "split-recording.png"))
+
+        # Stop really stops: the take is kept and the full bar comes back.
+        page.click("#finishClipButton")
+        page.wait_for_function(
+            "() => !document.getElementById('studioView').classList.contains('is-recording')",
+            timeout=20000,
+        )
+
+        # Swap: video on top, words below.
+        page.click("#flipLayoutButton")
+        swapped = page.evaluate(
+            "() => ({camera: document.querySelector('.camera-stage').getBoundingClientRect().top,"
+            " reader: document.querySelector('.reader-shell').getBoundingClientRect().top})"
+        )
+        assert swapped["camera"] < swapped["reader"], f"the swap did not put the video on top: {swapped}"
+        page.click("#flipLayoutButton")
+
+        # Words over the video: the video fills the studio, the words float over it
+        # on a see-through backing, and the rail buttons stay reachable.
+        page.click("#overlayButton")
+        over = page.evaluate(
+            """() => { const v = document.getElementById('studioView').getBoundingClientRect();
+                 const c = document.querySelector('.camera-stage').getBoundingClientRect();
+                 const r = document.querySelector('.reader-shell').getBoundingClientRect();
+                 return {studio: [v.top, v.bottom], camera: [c.top, c.bottom], reader: [r.top, r.bottom],
+                         readerBg: getComputedStyle(document.getElementById('reader')).backgroundColor,
+                         text: getComputedStyle(document.getElementById('reader')).color,
+                         pressed: document.getElementById('overlayButton').getAttribute('aria-pressed')}; }"""
+        )
+        assert over["pressed"] == "true"
+        assert over["camera"][0] <= over["studio"][0] + 1, f"the video does not start at the top: {over}"
+        assert over["camera"][1] - over["camera"][0] >= 0.6 * (over["studio"][1] - over["studio"][0]), over
+        assert over["reader"][0] < over["camera"][1] and over["reader"][1] > over["camera"][0], (
+            f"the words are not over the video: {over}"
+        )
+        assert over["readerBg"] in ("rgba(0, 0, 0, 0)", "transparent"), over["readerBg"]
+        assert over["text"] == "rgb(255, 255, 255)", over["text"]
+        rail = page.evaluate(TAPPABLE_JS, ["overlayButton", "flipLayoutButton", "textBigger", "textSmaller"])
+        for b in rail:
+            assert b["tappable"], f"a rail button is covered in overlay mode: {b}"
+        page.screenshot(path=str(tmp_path / "split-overlay.png"))
+        context.close()
+        browser.close()

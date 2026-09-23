@@ -1314,6 +1314,32 @@ function packetToIdea(idea, packet) {
     link.setAttribute("href", pathPrefix + link.getAttribute("href"));
   });
   $("moreHooksButton").addEventListener("click", askForMoreOpenings);
+  /* Two layout switches on the right rail, remembered on this phone: swap words
+     and video, and words over the video (the see-through prompter). */
+  function applyLayout() {
+    let flipped = false;
+    let overlay = false;
+    try {
+      flipped = localStorage.getItem("tce-layout-flipped") === "1";
+      overlay = localStorage.getItem("tce-layout-overlay") === "1";
+    } catch { /* private mode: defaults */ }
+    document.body.classList.toggle("layout-flipped", flipped);
+    document.body.classList.toggle("overlay-mode", overlay);
+    $("overlayButton").setAttribute("aria-pressed", String(overlay));
+  }
+  function toggleLayout(key) {
+    try {
+      const on = localStorage.getItem(key) === "1";
+      localStorage.setItem(key, on ? "0" : "1");
+    } catch { /* private mode: the switch still works for this visit */
+      document.body.classList.toggle(key === "tce-layout-flipped" ? "layout-flipped" : "overlay-mode");
+      return;
+    }
+    applyLayout();
+  }
+  $("flipLayoutButton").addEventListener("click", () => toggleLayout("tce-layout-flipped"));
+  $("overlayButton").addEventListener("click", () => toggleLayout("tce-layout-overlay"));
+  applyLayout();
   $("textBigger").addEventListener("click", () => changeTextSize(.1));
   $("textSmaller").addEventListener("click", () => changeTextSize(-.1));
   restoreTextSize();

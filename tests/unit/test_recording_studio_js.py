@@ -309,9 +309,11 @@ def test_while_recording_the_right_hand_button_finishes_for_real():
     """"I cant finish! its not working": the only finish button on screen while
     recording was Finish clip, which closes the clip and sends nothing."""
     css = (API / "recording.css").read_text(encoding="utf-8")
-    hidden = css[css.index(".studio-view.is-recording #recordButton,") :][:200]
-    assert "#finishClipButton { display: none; }" in hidden, hidden
     assert ".studio-view.is-recording #finishSessionButton small { display: none; }" in css
+    # And beside it, Stop: keeps the take without sending it (23-Sep, "I am stuck").
+    assert ".studio-view.is-recording #finishClipButton { display: block; }" in css
+    # Above the video, which covered them in a split-screen half.
+    assert ".studio-view.is-recording .controls { z-index: 30; }" in css
     js = JS.read_text(encoding="utf-8")
     # And it is never the greyed-out one.
     assert '$("finishSessionButton").disabled = false;' in js
