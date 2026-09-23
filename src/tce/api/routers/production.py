@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -964,9 +964,60 @@ async def render_upload(
     return upload_json(row)
 
 
+def serve_video(
+    request: Request, path: Path, media_type: str, filename: str, *, download: bool
+) -> Response:
+    """A video to PLAY by default, or to save with ?download=1.
+
+    Every Watch button used to download the file, because FileResponse with a
+    filename says "attachment" ("when I click watch it - it downloads the
+    video", 23-Sep). And the server's Starlette (0.38) answers no Range
+    requests, so an in-page player could not seek. This answers both: inline or
+    attachment by choice, and byte ranges for scrubbing.
+    """
+    size = path.stat().st_size
+    # No quotes or line breaks in a header value.
+    safe_name = "".join(ch for ch in filename if ch not in '"\r\n')
+    disposition = f'{"attachment" if download else "inline"}; filename="{safe_name}"'
+    headers = {"Accept-Ranges": "bytes", "Content-Disposition": disposition}
+    spec = request.headers.get("range", "")
+    if not spec.startswith("bytes="):
+        return FileResponse(path, media_type=media_type, headers=headers)
+    first = spec[len("bytes="):].split(",")[0].strip()
+    start_text, _, end_text = first.partition("-")
+    try:
+        if start_text == "":
+            start = max(0, size - int(end_text))
+            end = size - 1
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text else size - 1
+    except ValueError:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+    end = min(end, size - 1)
+    if start > end or start >= size:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+
+    def body(start: int = start, end: int = end):
+        with path.open("rb") as handle:
+            handle.seek(start)
+            left = end - start + 1
+            while left > 0:
+                chunk = handle.read(min(1 << 20, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+                yield chunk
+
+    headers.update({"Content-Range": f"bytes {start}-{end}/{size}", "Content-Length": str(end - start + 1)})
+    return StreamingResponse(body(), status_code=206, media_type=media_type, headers=headers)
+
+
 @router.get("/uploads/{upload_id}/video")
 async def recorded_file(
     upload_id: uuid.UUID,
+    request: Request,
+    download: bool = False,
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -979,8 +1030,8 @@ async def recorded_file(
     path = Path(row.storage_path) if row.storage_path else None
     if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="The video file is not on this server")
-    return FileResponse(
-        path, media_type=_video_media_type(path), filename=row.original_filename or path.name
+    return serve_video(
+        request, path, _video_media_type(path), row.original_filename or path.name, download=download
     )
 
 
@@ -996,15 +1047,16 @@ def _video_media_type(path: Path) -> str:
 @router.get("/uploads/{upload_id}/edited")
 async def edited_file(
     upload_id: uuid.UUID,
+    request: Request,
+    download: bool = False,
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
     row = await _upload(db, ws, upload_id)
     if not row.edited_path or not Path(row.edited_path).exists():
         raise HTTPException(status_code=404, detail="No edited file yet")
-    return FileResponse(
-        row.edited_path, media_type="video/mp4", filename=Path(row.edited_path).name
-    )
+    edited = Path(row.edited_path)
+    return serve_video(request, edited, "video/mp4", edited.name, download=download)
 
 
 # ---------------------------------------------------------------------------

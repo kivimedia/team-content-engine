@@ -243,7 +243,9 @@ def test_a_landscape_camera_is_cropped_to_a_vertical_video():
     assert "element.videoWidth" in js
     body = js[js.index("function portraitStream("):]
     body = body[: body.index("\n  async function requestWakeLock")]
-    assert "height >= width) return raw" in body, "a portrait camera must pass through untouched"
+    # Only a frame that is already 9:16 and encodable passes through; a 3:4
+    # portrait (his 3000x4000) is cropped to 9:16 and scaled to full HD.
+    assert "Math.abs(width / height - TARGET) < 0.01 && height <= 1920) return raw" in body
     assert "9 / 16" in body
 
 
@@ -272,7 +274,7 @@ def test_the_phone_camera_mode_is_gone_and_the_browser_asks_for_full_resolution(
     assert "nativeCamera" not in html and "nativeCamera" not in js
     assert "requestPictureInPicture" not in js
     assert "{ width: { ideal: 4096 }, height: { ideal: 3072 }, aspectRatio: { ideal: 4 / 3 } }" in js
-    assert "canvas.height = Math.min(1920, height);" in js
+    assert "canvas.height = Math.round(Math.min(1920, cropHeight) / 2) * 2;" in js
 
 def test_the_opening_and_a_first_point_that_repeat_it_are_one_line():
     """Choosing the recommended opening usually gives back the first bullet almost

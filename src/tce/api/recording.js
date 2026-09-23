@@ -809,22 +809,33 @@ function packetToIdea(idea, packet) {
     // Measured from real frames, never from getSettings() at open time.
     const width = camera.width;
     const height = camera.height;
-    if (!track || !width || !height || height >= width) return raw;
+    if (!track || !width || !height) return raw;
+    // Pass straight through only a frame that is ALREADY a 9:16 video of a size
+    // the phone can encode. His phone's first portrait answer was 3000x4000: a
+    // 3:4 picture (black bands above and below in a phone-shaped box) at 12
+    // megapixels a frame, which it could only record at 20 frames a second
+    // (take c2e0b4fb, 23-Sep). Everything else goes through the canvas.
+    const TARGET = 9 / 16;
+    if (Math.abs(width / height - TARGET) < 0.01 && height <= 1920) return raw;
 
     const source = camera.element;
     const canvas = document.createElement("canvas");
-    // The source's full height (up to 1920), never squeezed: a 1440-tall frame
-    // used to be thrown down to 1280 on top of the crop.
-    canvas.height = Math.min(1920, height);
-    canvas.width = Math.round(canvas.height * 9 / 16 / 2) * 2;
-    const context = canvas.getContext("2d");
-    const cropWidth = Math.min(width, height * 9 / 16);
+    // Crop the largest 9:16 area out of the middle: trim the sides of a wide or
+    // 3:4 frame, the top and bottom of an over-tall one.
+    const cropWidth = width / height > TARGET ? height * TARGET : width;
+    const cropHeight = width / height > TARGET ? height : width / TARGET;
     const cropX = (width - cropWidth) / 2;
+    const cropY = (height - cropHeight) / 2;
+    // Full HD vertical at most: 1080x1920 is what a phone's own camera records,
+    // and a quarter of the pixels of the 3000x4000 source keeps it at 30 fps.
+    canvas.height = Math.round(Math.min(1920, cropHeight) / 2) * 2;
+    canvas.width = Math.round(canvas.height * TARGET / 2) * 2;
+    const context = canvas.getContext("2d");
 
     const draw = () => {
       if (state.portraitStopped) return;
       if (source.readyState >= 2) {
-        context.drawImage(source, cropX, 0, cropWidth, height, 0, 0, canvas.width, canvas.height);
+        context.drawImage(source, cropX, cropY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
       }
       state.portraitFrame = requestAnimationFrame(draw);
     };

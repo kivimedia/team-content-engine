@@ -665,3 +665,60 @@ def test_split_screen_recording_can_always_be_stopped_and_the_layouts_switch(stu
         page.screenshot(path=str(tmp_path / "split-overlay.png"))
         context.close()
         browser.close()
+
+
+
+def test_a_huge_three_by_four_camera_is_recorded_as_full_hd_nine_by_sixteen(studio, tmp_path):
+    """Take c2e0b4fb, 23-Sep: his phone's camera answered 3000x4000. Passed through
+    whole it showed black bands above and below (3:4 in a 9:16 box) and recorded
+    at 20 fps (12 megapixels a frame). The video must come out 1080x1920."""
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+            )
+        except PlaywrightError as exc:  # pragma: no cover - environment dependent
+            pytest.skip(f"Chromium is not installed for Playwright: {exc}")
+        context = browser.new_context(
+            viewport=PHONE, device_scale_factor=2, is_mobile=True, has_touch=True,
+            permissions=["camera", "microphone"],
+        )
+        page = context.new_page()
+        page.add_init_script(
+            """
+            const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+            navigator.mediaDevices.getUserMedia = async (constraints) => {
+              const stream = await real(constraints);
+              stream.getVideoTracks().forEach((t) => t.stop());
+              const canvas = document.createElement('canvas');
+              canvas.width = 3000; canvas.height = 4000;
+              const ctx = canvas.getContext('2d');
+              const paint = () => { ctx.fillStyle = '#123'; ctx.fillRect(0, 0, 3000, 4000); requestAnimationFrame(paint); };
+              paint();
+              const made = canvas.captureStream(30);
+              stream.getAudioTracks().forEach((t) => made.addTrack(t));
+              return made;
+            };
+            """
+        )
+        page.goto(f"{studio['base']}/record")
+        page.wait_for_selector(".idea-card")
+        page.click(".idea-card")
+        page.locator("#hookView .hook-option").first.locator(".hook-use").click()
+        page.wait_for_selector("#studioView:not([hidden])")
+        shape = page.wait_for_function(
+            """() => {
+                 const preview = document.getElementById('camera').srcObject;
+                 const track = preview && preview.getVideoTracks()[0];
+                 const s = track && track.getSettings();
+                 return s && s.width ? [s.width, s.height] : null;
+               }""",
+            timeout=30000,
+        ).json_value()
+        assert shape == [1080, 1920], f"a 3000x4000 camera was not turned into full HD 9:16: {shape}"
+        context.close()
+        browser.close()

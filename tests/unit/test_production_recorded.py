@@ -69,6 +69,37 @@ async def test_the_video_plays_back(client, editorial_sessionmaker):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("video/mp4")
     assert r.content.startswith(b"synthetic-video-bytes")
+    # Played in the page, not downloaded: "when I click watch it - it downloads".
+    assert r.headers["content-disposition"].startswith("inline")
+    assert r.headers["accept-ranges"] == "bytes"
+
+
+async def test_download_is_its_own_request(client, editorial_sessionmaker):
+    _cand, _p, upload = await record_one(client, editorial_sessionmaker)
+    r = await client.get(
+        f"/api/v1/production/uploads/{upload['id']}/video?download=1", headers=AUTH
+    )
+    assert r.status_code == 200
+    assert r.headers["content-disposition"].startswith("attachment")
+
+
+async def test_a_player_can_seek_with_byte_ranges(client, editorial_sessionmaker):
+    """The server's Starlette answers no Range requests on its own, so a player
+    could not jump to the middle of a take."""
+    _cand, _p, upload = await record_one(client, editorial_sessionmaker)
+    url = f"/api/v1/production/uploads/{upload['id']}/video"
+    whole = (await client.get(url, headers=AUTH)).content
+
+    part = await client.get(url, headers={**AUTH, "Range": "bytes=2-6"})
+    assert part.status_code == 206
+    assert part.content == whole[2:7]
+    assert part.headers["content-range"] == f"bytes 2-6/{len(whole)}"
+
+    tail = await client.get(url, headers={**AUTH, "Range": "bytes=-4"})
+    assert tail.status_code == 206 and tail.content == whole[-4:]
+
+    beyond = await client.get(url, headers={**AUTH, "Range": f"bytes={len(whole) + 5}-"})
+    assert beyond.status_code == 416
 
 
 async def test_captions_are_only_offered_once_they_exist(client, editorial_sessionmaker):

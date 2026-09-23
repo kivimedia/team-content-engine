@@ -420,3 +420,8 @@ body[data-reader="largest"] .msg .bubble { font-size: 1.3rem; }
   color: var(--ink); line-height: 1.5; font: inherit;
 }
 .block.is-current { border-color: var(--moss); box-shadow: inset 5px 0 0 var(--moss); }
+
+/* The in-card player: the whole frame, never cropped, sized for a phone. */
+.player { margin-top: 12px; display: grid; gap: 8px; justify-items: end; }
+.player[hidden] { display: none; }
+.player video { width: 100%; max-height: 72vh; background: #000; border-radius: 10px; object-fit: contain; }

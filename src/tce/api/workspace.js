@@ -1286,10 +1286,16 @@
     // Only actions with a real destination. The server already decided which.
     html += '<div class="actions">';
     (item.actions || []).forEach(function (action) {
-      if (action.key === "watch_raw") {
-        html += '<a class="btn" href="' + apiV1 + "/production/uploads/" + esc(item.upload_id) + '/video">' + esc(action.label) + "</a>";
-      } else if (action.key === "watch_edit") {
-        html += '<a class="btn primary" href="' + apiV1 + "/production/uploads/" + esc(item.upload_id) + '/edited">' + esc(action.label) + "</a>";
+      // Watch plays it here; Download saves it. They used to be one link, so
+      // every Watch downloaded the file ("have a download button do that",
+      // 23-Sep). The server serves inline with byte ranges so the player seeks.
+      if (action.key === "watch_raw" || action.key === "watch_edit") {
+        var file = apiV1 + "/production/uploads/" + esc(item.upload_id)
+                 + (action.key === "watch_edit" ? "/edited" : "/video");
+        html += '<button class="btn' + (action.key === "watch_edit" ? " primary" : "")
+             + '" type="button" data-watch="' + file + '">' + esc(action.label) + "</button>";
+        html += '<a class="btn quiet" href="' + file + '?download=1" download>'
+             + (action.key === "watch_edit" ? "Download the edit" : "Download") + "</a>";
       } else if (action.key === "captions") {
         html += '<a class="btn quiet" href="' + apiV1 + "/production/uploads/" + esc(item.upload_id) + '/captions.srt">' + esc(action.label) + "</a>";
       } else if (action.key === "request_edit") {
@@ -1298,8 +1304,33 @@
         html += '<a class="btn quiet" href="' + prefix + '/record">' + esc(action.label) + "</a>";
       }
     });
-    html += "</div></article>";
+    html += '</div><div class="player" hidden></div></article>';
     return html;
+  }
+
+  /* The player opens inside the card it belongs to, under its buttons: one
+     video at a time, and Close (or tapping Watch again) puts it away. */
+  function toggleWatch(button) {
+    var card = button.closest("article");
+    var box = card && card.querySelector(".player");
+    if (!box) return;
+    var src = button.getAttribute("data-watch");
+    if (!box.hidden && box.getAttribute("data-src") === src) { closePlayer(box); return; }
+    document.querySelectorAll(".player").forEach(function (other) { if (other !== box) closePlayer(other); });
+    box.setAttribute("data-src", src);
+    box.innerHTML = '<video controls playsinline preload="metadata" src="' + src + '"></video>'
+                  + '<button class="btn quiet" type="button" data-watch-close>Close</button>';
+    box.hidden = false;
+    var video = box.querySelector("video");
+    video.play().catch(function () { /* the controls are there to press */ });
+    box.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+  function closePlayer(box) {
+    var video = box.querySelector("video");
+    if (video) { video.pause(); video.removeAttribute("src"); video.load(); }
+    box.innerHTML = "";
+    box.hidden = true;
+    box.removeAttribute("data-src");
   }
 
   async function chooseHook(hookId) {
@@ -1508,7 +1539,8 @@
   var CLICK_ACTIONS = [
     "go", "filter", "libfilter", "decide", "open-room", "open-script", "move",
     "slot", "remove", "ask-script", "change", "edit", "restore", "wtab",
-    "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks"
+    "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
+    "watch", "watch-close"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -1534,6 +1566,8 @@
     if (d.change !== undefined) { openChange(d.change); return; }
     if (d.restore !== undefined) { restore(parseInt(d.restore, 10)); return; }
     if (d.editRequest !== undefined) { askEditRequest(d.editRequest); return; }
+    if (d.watch !== undefined) { toggleWatch(target); return; }
+    if (d.watchClose !== undefined) { closePlayer(target.closest(".player")); return; }
     if (d.review !== undefined) { reviewFromThread(d.review); return; }
     if (d.chooseHook !== undefined) { chooseHook(d.chooseHook); return; }
     if (d.moreHooks !== undefined) { askMoreHooks(); return; }
