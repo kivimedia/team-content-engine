@@ -32,6 +32,7 @@ from tce.editorial.common import current_week_start, week_bounds
 from tce.models.editorial import RecordingPacket, TopicCandidate
 from tce.models.editorial_workspace import (
     LINEUP_SLOTS,
+    TopicDecision,
     WeeklyLineup,
     WeeklyLineupItem,
 )
@@ -250,12 +251,17 @@ async def add_topic(
     *,
     slot: str = "primary",
     added_by: str | None = None,
+    rank: int | None = None,
 ) -> WeeklyLineupItem:
     """Put a topic in the week. Overflowing the primary slots lands in reserve.
 
     The overflow is deliberate and silent-free: the caller is told which slot it
     landed in, so the UI can say "this week is full, it went to reserve" instead
     of refusing the tap.
+
+    `rank` puts it back at a known place (the one it was taken out of) instead of
+    at the end, moving the ones below it down one. It is ignored when the topic
+    overflows into reserve, because that place was in the other list.
     """
     if slot not in LINEUP_SLOTS:
         raise LineupError("bad_slot", f"unknown slot {slot}", status=400)
@@ -273,18 +279,25 @@ async def add_topic(
 
     items = await list_items(db, ws, lineup.id)
     primary_count = sum(1 for i in items if i.slot == "primary")
+    wanted_slot = slot
     if slot == "primary" and primary_count >= lineup.primary_slots:
         slot = "reserve"
 
-    rank = sum(1 for i in items if i.slot == slot) + 1
+    siblings = [i for i in items if i.slot == slot]
+    at = len(siblings) + 1
+    if rank is not None and slot == wanted_slot and 1 <= rank < at:
+        for sibling in siblings:
+            if sibling.rank >= rank:
+                sibling.rank += 1
+        at = rank
     item = WeeklyLineupItem(
         workspace_id=ws,
         lineup_id=lineup.id,
         candidate_id=candidate.id,
-        rank=rank,
+        rank=at,
         slot=slot,
         lane=lane_for(candidate),
-        reason=reason_for(candidate, rank=rank, slot=slot),
+        reason=reason_for(candidate, rank=at, slot=slot),
         status="planned",
         added_by=added_by,
     )
@@ -292,6 +305,8 @@ async def add_topic(
     lineup.revision += 1
     lineup.updated_by = added_by
     await db.flush()
+    if at != len(siblings) + 1:
+        await _renumber(db, ws, lineup.id)
     return item
 
 
@@ -326,17 +341,45 @@ async def remove_topic(
     await _renumber(db, ws, lineup.id)
 
 
+async def _live_candidate(
+    db: AsyncSession, ws: uuid.UUID, candidate_id: Any
+) -> TopicCandidate | None:
+    """A topic that may be put (back) in a week: this workspace's, and neither
+    rejected nor put away since."""
+    try:
+        cid = uuid.UUID(str(candidate_id))
+    except (TypeError, ValueError):
+        return None
+    result = await db.execute(
+        select(TopicCandidate).where(
+            TopicCandidate.workspace_id == ws,
+            TopicCandidate.id == cid,
+            TopicCandidate.status.notin_(("rejected", "withdrawn")),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def apply_order(
     db: AsyncSession,
     ws: uuid.UUID,
     lineup: WeeklyLineup,
     order: list[dict[str, Any]],
+    *,
+    create_missing: bool = False,
+    added_by: str | None = None,
 ) -> None:
     """Set slot and rank for every named item. Unnamed items keep their place.
 
     Called by the change-set engine for `reorder_week` and by the direct reorder
     endpoint. It does not bump `revision`; the caller owns that, so one user
     action is one revision even when it moves three items.
+
+    `create_missing` is for undo only: an order recorded before a topic was taken
+    out names that topic, and putting the order back has to put the topic back
+    too. Without it a named topic that is not in the week is skipped, which is
+    what the direct reorder endpoint wants. A topic rejected or put away since is
+    never brought back; the caller checks the result and says so.
     """
     items = {str(i.candidate_id): i for i in await list_items(db, ws, lineup.id)}
     for entry in order:
@@ -344,6 +387,27 @@ async def apply_order(
             continue
         item = items.get(str(entry.get("candidate_id")))
         if item is None:
+            if not create_missing:
+                continue
+            candidate = await _live_candidate(db, ws, entry.get("candidate_id"))
+            if candidate is None:
+                continue
+            slot = entry.get("slot") if entry.get("slot") in LINEUP_SLOTS else "primary"
+            rank = entry.get("rank")
+            rank = rank if isinstance(rank, int) and rank > 0 else len(items) + 1
+            item = WeeklyLineupItem(
+                workspace_id=ws,
+                lineup_id=lineup.id,
+                candidate_id=candidate.id,
+                rank=rank,
+                slot=slot,
+                lane=lane_for(candidate),
+                reason=reason_for(candidate, rank=rank, slot=slot),
+                status="planned",
+                added_by=added_by,
+            )
+            db.add(item)
+            items[str(candidate.id)] = item
             continue
         slot = entry.get("slot")
         if slot in LINEUP_SLOTS:
@@ -430,6 +494,72 @@ async def move(
     lineup.updated_by = moved_by
     await db.flush()
     return lineup
+
+
+# ---------------------------------------------------------------------------
+# The week follows the decision
+# ---------------------------------------------------------------------------
+
+
+async def follow_decision(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    candidate: TopicCandidate,
+    decision: TopicDecision | None,
+    *,
+    by: str | None = None,
+) -> dict[str, Any]:
+    """Keep this week's list in step with the topic's decision.
+
+    Choosing a topic for this week and listing it are one act from his side, so
+    un-choosing it (later, discuss, away, or back to undecided) takes it off the
+    list as well; otherwise "saved for later" and "in this week" are both true at
+    once. Where it stood is kept on the decision, so choosing it again this week
+    (a restore, an undo) puts it back at that place rather than at the end.
+
+    A recorded item stays: `remove_topic` refuses, and the caller's decision is
+    refused with it, so nothing is half done.
+
+    Returns {"placed": {slot, rank, revision} | None, "added": bool,
+    "removed": {slot, rank} | None}.
+    """
+    week_start = week_start_for(None)
+    week_label = week_start.date().isoformat()
+    now = decision.decision if decision is not None else None
+
+    if now == "this_week":
+        lineup = await ensure_lineup(db, ws, week_start)
+        listed = {i.candidate_id for i in await list_items(db, ws, lineup.id)}
+        place = dict((decision.week_place if decision is not None else None) or {})
+        here = place.get("week_start") == week_label
+        slot = place.get("slot") if here and place.get("slot") in LINEUP_SLOTS else "primary"
+        rank = place.get("rank") if here and isinstance(place.get("rank"), int) else None
+        item = await add_topic(db, ws, lineup, candidate, slot=slot, rank=rank, added_by=by)
+        added = candidate.id not in listed
+        if added and decision is not None:
+            decision.week_place = None
+            await db.flush()
+        return {
+            "placed": {"slot": item.slot, "rank": item.rank, "revision": lineup.revision},
+            "added": added,
+            "removed": None,
+        }
+
+    lineup = await get_lineup(db, ws, week_start)
+    if lineup is None:
+        return {"placed": None, "added": False, "removed": None}
+    item = next(
+        (i for i in await list_items(db, ws, lineup.id) if i.candidate_id == candidate.id),
+        None,
+    )
+    if item is None:
+        return {"placed": None, "added": False, "removed": None}
+    removed = {"slot": item.slot, "rank": item.rank}
+    await remove_topic(db, ws, lineup, candidate.id, removed_by=by)
+    if decision is not None:
+        decision.week_place = {"week_start": week_label, **removed}
+        await db.flush()
+    return {"placed": None, "added": False, "removed": removed}
 
 
 # ---------------------------------------------------------------------------

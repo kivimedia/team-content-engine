@@ -169,8 +169,10 @@ class TopicDecision(_PrivateWorkspaceMixin, Base):
     candidate_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("topic_candidates.id", ondelete="CASCADE"), index=True
     )
-    # this_week | discuss | later | away
-    decision: Mapped[str] = mapped_column(String(20), index=True)
+    # this_week | discuss | later | away, or NULL once a decision was taken back
+    # (undo, or restoring an idea that was never decided before it was put away).
+    # The row stays so the note survives; NULL reads as undecided everywhere.
+    decision: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     # Free text the editor attached when deciding. Survives put-away and restore.
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     decided_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -178,6 +180,9 @@ class TopicDecision(_PrivateWorkspaceMixin, Base):
     # Where it came back from, when it came back. Lets "Save for later" restore
     # without losing what was already decided once.
     previous_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Where it stood in this week's list when a decision took it off
+    # ({week_start, slot, rank}), so choosing it again puts it back there.
+    week_place: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
 
 
 # ---------------------------------------------------------------------------

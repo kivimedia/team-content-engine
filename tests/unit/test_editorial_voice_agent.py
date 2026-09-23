@@ -28,7 +28,7 @@ from tce.models.editorial import (
     RecordingPacket,
     TopicCandidate,
 )
-from tce.models.editorial_workspace import EditorialChangeSet, IdeaResearch
+from tce.models.editorial_workspace import EditorialChangeSet, IdeaResearch, TopicDecision
 from tce.models.recording_session import RecordingSession
 from tce.settings import settings
 
@@ -357,7 +357,11 @@ async def test_undo_puts_a_brief_back_and_is_listed_as_undone(client, editorial_
     original = (await topic(client, ws, "topic"))["topic"]["brief"]["values"]["big_idea"]
     applied = (
         await change(
-            client, ws, cid, "brief", [{"field": "big_idea", "after": "A worse big idea."}]
+            client,
+            ws,
+            cid,
+            "brief",
+            [{"field": "big_idea", "after": "A worse big idea.", "expect": original}],
         )
     ).json()
 
@@ -402,9 +406,17 @@ async def test_undo_refuses_when_the_text_was_changed_again_since(client, editor
     cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea")
     await add_packet(editorial_sessionmaker, ws, cid)
     first = (
-        await change(client, ws, cid, "script", [{"field": "bullets.0", "after": "Two."}])
+        await change(
+            client,
+            ws,
+            cid,
+            "script",
+            [{"field": "bullets.0", "after": "Two.", "expect": "First point."}],
+        )
     ).json()
-    await change(client, ws, cid, "script", [{"field": "bullets.0", "after": "Three."}])
+    await change(
+        client, ws, cid, "script", [{"field": "bullets.0", "after": "Three.", "expect": "Two."}]
+    )
 
     response = await client.post(
         f"/api/v1/editorial/change-sets/{first['change_set_id']}/undo", headers=headers(ws)
@@ -420,9 +432,21 @@ async def test_undo_of_the_latest_script_change_works_on_the_current_version(
     ws = uuid.uuid4()
     cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea")
     await add_packet(editorial_sessionmaker, ws, cid)
-    await change(client, ws, cid, "script", [{"field": "bullets.1", "after": "Other."}])
+    await change(
+        client,
+        ws,
+        cid,
+        "script",
+        [{"field": "bullets.1", "after": "Other.", "expect": "Second point."}],
+    )
     last = (
-        await change(client, ws, cid, "script", [{"field": "bullets.0", "after": "Two."}])
+        await change(
+            client,
+            ws,
+            cid,
+            "script",
+            [{"field": "bullets.0", "after": "Two.", "expect": "First point."}],
+        )
     ).json()
     response = await client.post(
         f"/api/v1/editorial/change-sets/{last['change_set_id']}/undo", headers=headers(ws)
@@ -546,6 +570,303 @@ async def test_changes_he_typed_are_not_listed_as_voice(client, editorial_sessio
     )
     items = (await client.get("/api/v1/editorial/voice/activity", headers=headers(ws))).json()
     assert items["items"] == []
+
+
+# ------------------------------------------------ undo that really puts it back
+
+
+async def decide(client, ws, cid, decision, *, by="ziv", note=None):
+    payload = {"decision": decision, "by": by}
+    if note is not None:
+        payload["note"] = note
+    return await client.post(
+        f"/api/v1/editorial/topics/{cid}/decide", json=payload, headers=headers(ws)
+    )
+
+
+async def week_ids(client, ws, slot="primary"):
+    body = (await client.get("/api/v1/editorial/weeks/current/lineup", headers=headers(ws))).json()
+    return [row["candidate_id"] for row in body[slot]]
+
+
+async def undo(client, ws, change_set_id):
+    return await client.post(
+        f"/api/v1/editorial/change-sets/{change_set_id}/undo",
+        json={"by": "voice"},
+        headers=headers(ws),
+    )
+
+
+async def today(client, ws):
+    return (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+
+
+async def three_in_the_week(client, sm, ws):
+    ids = [
+        await add_candidate(sm, ws, title)
+        for title in ("Invoices nobody opens", "Receptionist at night", "Funnel leaks")
+    ]
+    for cid in ids:
+        assert (await decide(client, ws, cid, "this_week")).status_code == 200
+    return ids
+
+
+async def test_undoing_a_remove_from_the_week_puts_the_topic_back_in_its_place(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    ids = await three_in_the_week(client, editorial_sessionmaker, ws)
+    before = await week_ids(client, ws)
+
+    removed = await change(
+        client, ws, ids[1], "week", [{"op": "move_topic", "after": {"action": "remove"}}]
+    )
+    assert removed.status_code == 200, removed.text
+    assert await week_ids(client, ws) == [str(ids[0]), str(ids[2])]
+
+    undone = await undo(client, ws, removed.json()["change_set_id"])
+    assert undone.status_code == 200, undone.text
+    assert await week_ids(client, ws) == before, "Undone must mean the topic is back"
+
+
+async def test_an_undo_that_cannot_put_the_topic_back_says_so_and_writes_nothing(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    ids = await three_in_the_week(client, editorial_sessionmaker, ws)
+    removed = await change(
+        client, ws, ids[1], "week", [{"op": "move_topic", "after": {"action": "remove"}}]
+    )
+    assert removed.status_code == 200, removed.text
+    # Put away in the meantime: it may not quietly come back into the week.
+    assert (await decide(client, ws, ids[1], "away")).status_code == 200
+
+    undone = await undo(client, ws, removed.json()["change_set_id"])
+    assert undone.status_code == 409, undone.text
+    assert undone.json()["detail"]["code"] == "not_restored"
+    assert await week_ids(client, ws) == [str(ids[0]), str(ids[2])]
+    items = (await client.get("/api/v1/editorial/voice/activity", headers=headers(ws))).json()
+    entry = next(i for i in items["items"] if i["id"] == removed.json()["change_set_id"])
+    assert entry["undone"] is False and entry["can_undo"] is True
+
+
+async def test_a_week_move_that_fails_leaves_no_change_waiting_for_review(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    in_week = await add_candidate(editorial_sessionmaker, ws, "Invoices nobody opens")
+    outside = await add_candidate(editorial_sessionmaker, ws, "Receptionist at night")
+    assert (await decide(client, ws, in_week, "this_week")).status_code == 200
+
+    moved = await change(
+        client, ws, outside, "week", [{"op": "move_topic", "after": {"action": "first"}}]
+    )
+    assert moved.status_code == 404, moved.text
+    assert moved.json()["detail"]["code"] == "not_in_week"
+
+    async with editorial_sessionmaker() as s:
+        states = (
+            (
+                await s.execute(
+                    select(EditorialChangeSet.state).where(EditorialChangeSet.workspace_id == ws)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert "proposed" not in states
+    body = await today(client, ws)
+    assert body["attention"]["pending_reviews"] == 0
+    assert body["next_action"]["key"] != "review_changes"
+
+
+async def test_a_repeated_decision_reports_the_decision_it_replaced_not_an_older_one(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Invoices nobody opens")
+    await decide(client, ws, cid, "discuss")
+    await decide(client, ws, cid, "later")
+
+    again = await decide(client, ws, cid, "later", by="voice")
+    assert again.status_code == 200, again.text
+    assert again.json()["previous_decision"] == "later"
+    assert again.json()["changed"] is False
+
+    # tce_undo sends the previous decision back; nobody asked for "discuss".
+    back = await decide(client, ws, cid, again.json()["previous_decision"], by="voice")
+    assert back.json()["decision"] == "later"
+
+
+async def test_putting_away_by_voice_an_idea_already_put_away_is_refused(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Invoices nobody opens")
+    await decide(client, ws, cid, "later")
+    await decide(client, ws, cid, "away")
+    again = await decide(client, ws, cid, "away", by="voice")
+    assert again.status_code == 409, again.text
+    assert again.json()["detail"]["code"] == "already"
+    async with editorial_sessionmaker() as s:
+        row = (
+            await s.execute(select(TopicDecision).where(TopicDecision.candidate_id == cid))
+        ).scalar_one()
+        assert row.decision == "away" and row.previous_decision == "later"
+
+
+async def test_undoing_a_first_approval_takes_it_out_of_the_week_and_back_to_undecided(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Invoices nobody opens")
+    assert (await today(client, ws))["attention"]["waiting"] == 1
+
+    approved = await decide(client, ws, cid, "this_week", by="voice")
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["previous_decision"] == "undecided"
+    assert approved.json()["added_to_week"] is True
+    assert await week_ids(client, ws) == [str(cid)]
+
+    # What tce_undo sends: the decision it replaced.
+    undone = await decide(client, ws, cid, approved.json()["previous_decision"], by="voice")
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["decision"] is None
+    assert await week_ids(client, ws) == []
+    assert (await topic(client, ws, str(cid)[:8]))["topic"]["decision"] is None
+    assert (await today(client, ws))["attention"]["waiting"] == 1
+
+
+async def test_undoing_an_approval_puts_it_back_where_it_was_and_out_of_the_week(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Invoices nobody opens")
+    await decide(client, ws, cid, "later")
+    approved = await decide(client, ws, cid, "this_week", by="voice")
+    assert approved.json()["previous_decision"] == "later"
+    assert await week_ids(client, ws) == [str(cid)]
+
+    undone = await decide(client, ws, cid, approved.json()["previous_decision"], by="voice")
+    assert undone.json()["decision"] == "later"
+    assert await week_ids(client, ws) == [], "saved for later must not stay on the list"
+
+
+async def test_putting_away_a_topic_in_the_week_takes_it_off_and_restore_puts_it_back(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    ids = await three_in_the_week(client, editorial_sessionmaker, ws)
+
+    away = await decide(client, ws, ids[1], "away", by="voice")
+    assert away.status_code == 200, away.text
+    assert away.json()["removed_from_week"] == {"slot": "primary", "rank": 2}
+    primary = [row["candidate_id"] for row in (await today(client, ws))["week"]["primary"]]
+    assert primary == [str(ids[0]), str(ids[2])]
+    assert (await topic(client, ws, str(ids[1])[:8]))["topic"]["in_this_week"] is False
+
+    restored = await client.post(
+        f"/api/v1/editorial/topics/{ids[1]}/restore", json={"by": "voice"}, headers=headers(ws)
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["decision"] == "this_week"
+    assert await week_ids(client, ws) == [str(i) for i in ids], "back at its old place"
+
+
+async def test_restoring_an_idea_put_away_with_a_note_keeps_the_note(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Invoices nobody opens")
+    await decide(client, ws, cid, "away", note="Not before the launch")
+
+    restored = await client.post(
+        f"/api/v1/editorial/topics/{cid}/restore", json={"by": "voice"}, headers=headers(ws)
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["decision"] is None
+
+    async with editorial_sessionmaker() as s:
+        row = (
+            await s.execute(select(TopicDecision).where(TopicDecision.candidate_id == cid))
+        ).scalar_one_or_none()
+    assert row is not None, "restoring must not delete the decision row and its note"
+    assert row.decision is None and row.note == "Not before the launch"
+    assert (await today(client, ws))["attention"]["waiting"] == 1
+
+
+# ------------------------------------------------------------ read-back guard
+
+
+async def test_an_edit_to_text_that_was_not_read_back_writes_nothing(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea")
+    await add_packet(editorial_sessionmaker, ws, cid)
+    response = await change(client, ws, cid, "script", [{"field": "bullets.0", "after": "New."}])
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "expect_required"
+    assert detail["current"] == "First point."
+    assert (await topic(client, ws, "scripted"))["topic"]["script"]["version"] == 1
+
+
+async def regenerate(sm, ws, cid, hooks):
+    """A newer script version with different openings, as the packet writer makes one."""
+    async with sm() as s:
+        old = (
+            await s.execute(select(RecordingPacket).where(RecordingPacket.candidate_id == cid))
+        ).scalar_one()
+        old.status = "superseded"
+        s.add(
+            RecordingPacket(
+                workspace_id=ws,
+                candidate_id=cid,
+                version=2,
+                bullets=["New first.", "New second."],
+                script_phrases=[hooks[0]["text"], "New line two."],
+                hook_options=hooks,
+                selected_hook_id="h1",
+                status="ready",
+                citations_private=[],
+                public_safety={},
+            )
+        )
+        await s.commit()
+
+
+async def test_choosing_an_opening_he_never_heard_writes_nothing(client, editorial_sessionmaker):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea")
+    await add_packet(editorial_sessionmaker, ws, cid)
+    heard = HOOKS[1]["text"]  # option 2 as it was read to him from version 1
+    newer = [
+        {**HOOKS[0], "text": "A brand new first opening."},
+        {**HOOKS[1], "text": "A brand new second opening."},
+    ]
+    await regenerate(editorial_sessionmaker, ws, cid, newer)
+
+    response = await change(
+        client, ws, cid, "script", [{"op": "choose_hook", "after": "2", "expect": heard}]
+    )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "changed"
+    assert [o["text"] for o in detail["current"]] == [h["text"] for h in newer]
+    script = (await topic(client, ws, "scripted"))["topic"]["script"]
+    assert script["version"] == 2 and script["opening"] == "A brand new first opening."
+
+    agreed = await change(
+        client,
+        ws,
+        cid,
+        "script",
+        [{"op": "choose_hook", "after": "2", "expect": "A brand new second opening."}],
+    )
+    assert agreed.status_code == 200, agreed.text
+    script = (await topic(client, ws, "scripted"))["topic"]["script"]
+    assert script["opening"] == "A brand new second opening."
 
 
 # ------------------------------------------------------------------ research

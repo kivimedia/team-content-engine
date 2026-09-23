@@ -27,7 +27,7 @@ from tce.api.private_access import require_private_workspace
 from tce.api.routers.editorial import get_editorial_sessionmaker
 from tce.editorial import briefs as brief_service
 from tce.editorial import changes as change_service
-from tce.editorial import conversation, notify
+from tce.editorial import conversation, notify, voice_agent
 from tce.editorial import inbox as inbox_service
 from tce.editorial import library as library_service
 from tce.editorial import lineup as lineup_service
@@ -224,36 +224,50 @@ async def decide_topic(
     """The four first decisions. None of them asks the engine for anything.
 
     `this_week` also puts the topic in the week, because choosing it and listing
-    it are the same act from his side. Asking for the script stays separate.
+    it are the same act from his side, and every other decision takes it off the
+    list again (remembering its place). Asking for the script stays separate.
+
+    `undecided` takes a decision back, keeping the note. `previous_decision` is
+    the decision THIS call replaced ("undecided" when there was none), so undoing
+    any decision is one more call with that value.
     """
     cid = _uuid(candidate_id, "topic")
     if body.by not in ACTORS:
         raise HTTPException(status_code=400, detail=f"unknown actor {body.by}")
     async with open_session(sm) as db:
         try:
-            decision = await inbox_service.decide(
-                db, ws, cid, decision=body.decision, note=body.note, decided_by=body.by
-            )
-            placed: dict[str, Any] | None = None
-            if body.decision == "this_week":
-                candidate = await inbox_service.get_candidate(db, ws, cid)
-                week = await lineup_service.ensure_lineup(
-                    db, ws, lineup_service.week_start_for(None)
+            candidate = await inbox_service.get_candidate(db, ws, cid)
+            existing = await inbox_service.get_decision(db, ws, cid)
+            before = existing.decision if existing is not None else None
+            if body.decision == voice_agent.UNDECIDED:
+                decision = await voice_agent.clear_decision(db, ws, cid, by=body.by)
+            else:
+                if body.by == "voice" and body.decision == "away" and before == "away":
+                    # Undoing it would bring back an idea that was away before
+                    # the call, so a put-away that changes nothing is not a write.
+                    raise inbox_service.InboxError(
+                        "already",
+                        f'"{candidate.title}" is already put away. Nothing was changed.',
+                        status=409,
+                    )
+                decision = await inbox_service.decide(
+                    db, ws, cid, decision=body.decision, note=body.note, decided_by=body.by
                 )
-                item = await lineup_service.add_topic(
-                    db, ws, week, candidate, added_by=body.by
-                )
-                placed = {"slot": item.slot, "rank": item.rank, "revision": week.revision}
+            week = await lineup_service.follow_decision(db, ws, candidate, decision, by=body.by)
             await db.commit()
-        except ServiceError as error:
+        except (*ServiceError, voice_agent.VoiceError) as error:
             raise _http(error) from error
 
+    after = decision.decision if decision is not None else None
     return {
         "candidate_id": candidate_id,
-        "decision": decision.decision,
-        "previous_decision": decision.previous_decision,
-        "note": decision.note,
-        "placed": placed,
+        "decision": after,
+        "previous_decision": before or voice_agent.UNDECIDED,
+        "changed": before != after,
+        "note": decision.note if decision is not None else None,
+        "placed": week["placed"],
+        "added_to_week": week["added"],
+        "removed_from_week": week["removed"],
     }
 
 

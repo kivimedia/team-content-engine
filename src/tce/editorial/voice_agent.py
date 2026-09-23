@@ -9,9 +9,10 @@ safe because three things hold, and this module is where they hold:
   2. Every write is undoable by id. `undo_change_set` builds the inverse of an
      applied change set as a NEW change set, never an edit in place, and refuses
      (with the text as it is now) when something changed after it.
-  3. A stale read is caught. The brain may pass the text it read back; if the
-     script says something else by the time it applies, nothing is written and
-     the fresh text comes back so it can read that instead.
+  3. A stale read is caught. The brain passes the text it read back, and must
+     when it replaces text that exists; if the script says something else by
+     the time it applies, nothing is written and the fresh text comes back so it
+     can read that instead.
 
 The research job lives here too, because it is the agent's one long errand that
 is not a script: it gathers what TCE already holds about an idea, adds a web
@@ -400,8 +401,15 @@ async def apply_change(
     """Propose and apply at once, attributed to the caller.
 
     `target` is what he talks about: "brief", "script" or "week". Each operation
-    is {op, field, after, expect?}. `expect` is the text the agent read back as
+    is {op, field, after, expect}. `expect` is the text the agent read back as
     the current one; if the stored text is different by now, nothing is written.
+
+    The read-back is not optional. Replacing text that exists without saying
+    what was read is refused with the text as it is now, because the version the
+    brain read may be minutes old (a script rewritten in the background, a tap on
+    the phone). For choose_hook, `expect` is the opening he heard: the options
+    are renumbered when a script is rewritten, so "option 2" alone can name a
+    text he never heard.
     """
     actor = check_actor(by)
     candidate = await inbox_service.get_candidate(db, ws, candidate_id)
@@ -442,6 +450,19 @@ async def apply_change(
             if target_type != "packet":
                 raise VoiceError("bad_target", "an opening belongs to the script", status=400)
             hook = _resolve_hook(packet, raw.get("after"))
+            heard = raw.get("expect")
+            if heard is not None and not _same(hook.get("text"), heard):
+                raise VoiceError(
+                    "changed",
+                    "The opening options changed since you read them. Nothing was written. "
+                    "Read him the options as they are now.",
+                    status=409,
+                    current=[
+                        {"n": n, "text": o.get("text")}
+                        for n, o in enumerate(packet.hook_options or [], start=1)
+                    ],
+                    version=packet.version,
+                )
             ops_in.append(change_service.OperationInput(op="choose_hook", after=str(hook["id"])))
             phrases = list(packet.script_phrases or [])
             hook_text = str(hook.get("text") or "").strip()
@@ -459,12 +480,24 @@ async def apply_change(
             continue
         field = str(raw.get("field") or "")
         ops_in.append(change_service.OperationInput(op=op, field=field, after=raw.get("after")))
-        if raw.get("expect") is not None:
+        if raw.get("expect") is not None or op in ("set_field", "replace_text"):
             expectations.append((field, raw.get("expect")))
 
     state = await change_service.load_target(db, ws, target_type, target_id)
     for field, expected in expectations:
         exists, value = change_service._resolve_path(state.values, field)
+        if expected is None:
+            if exists and str(value or "").strip():
+                raise VoiceError(
+                    "expect_required",
+                    f"{field_label(target_type, field)} already says something, and the "
+                    "change did not say what you read him. Nothing was written.",
+                    status=409,
+                    field=field,
+                    current=value,
+                    version=state.version,
+                )
+            continue
         if exists and not _same(value, expected):
             raise VoiceError(
                 "changed",
@@ -496,7 +529,13 @@ async def apply_change(
 
     try:
         result = await change_service.apply(db, ws, change_set.id, decided_by=actor)
-    except change_service.ChangeError as error:
+    except (change_service.ChangeError, lineup_service.LineupError) as error:
+        if change_set.state == "proposed":
+            # It failed while applying (a topic not in the week, a recorded one),
+            # not on a version conflict, which already marked it superseded. Close
+            # it, or it waits forever as a change "for a yes or no" that nobody
+            # asked for. reject() also resets the operations apply() had marked.
+            await change_service.reject(db, ws, change_set.id, decided_by=actor)
         fresh = await _fresh(db, ws, target_type, target_id, [o.field for o in ops_in if o.field])
         raise VoiceError(error.code, error.message, status=error.status, current=fresh) from error
 
@@ -569,6 +608,51 @@ async def _packet_for_change(
     if row is None:
         raise VoiceError("not_found", "that script is no longer here", status=404)
     return row
+
+
+async def _check_week_is_back(
+    db: AsyncSession, ws: uuid.UUID, lineup_id: uuid.UUID, before_order: list[Any]
+) -> None:
+    """Say "Undone" only when every topic of the earlier order is in the week again.
+
+    A topic taken out and then put away or rejected is not brought back into the
+    week behind his back; the undo is refused instead, and the caller rolls back.
+    """
+    now = await change_service.load_target(db, ws, "lineup", lineup_id)
+    present = {str(e.get("candidate_id")) for e in now.values.get("order") or []}
+    missing = [
+        str(e.get("candidate_id"))
+        for e in before_order
+        if isinstance(e, dict) and str(e.get("candidate_id")) not in present
+    ]
+    if not missing:
+        return
+    ids: list[uuid.UUID] = []
+    for value in missing:
+        try:
+            ids.append(uuid.UUID(value))
+        except ValueError:
+            continue
+    titles = {
+        str(c.id): c.title
+        for c in (
+            await db.execute(
+                select(TopicCandidate).where(
+                    TopicCandidate.workspace_id == ws, TopicCandidate.id.in_(ids)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+    named = ", ".join(f'"{titles.get(m, "a topic")}"' for m in missing)
+    raise VoiceError(
+        "not_restored",
+        f"{named} cannot go back in the week, because it was put away or dropped since. "
+        "Nothing was written.",
+        status=409,
+        missing=missing,
+    )
 
 
 async def undo_change_set(
@@ -716,6 +800,8 @@ async def undo_change_set(
             "invalid", issues[0]["message"] if issues else "that cannot be undone", status=409
         )
     result = await change_service.apply(db, ws, undo_set.id, decided_by=actor)
+    if target_type == "lineup":
+        await _check_week_is_back(db, ws, target_id, inverse[0].after)
     return {
         "change_set_id": str(undo_set.id),
         "undid": str(original.id),
@@ -730,23 +816,60 @@ async def undo_change_set(
 # ---------------------------------------------------------------------------
 
 
+# The word the decide route takes, and answers with as `previous_decision`, for
+# "no decision". Undoing a first decision is then one more decide call, like
+# undoing any other: decide the previous one.
+UNDECIDED = "undecided"
+
+
+async def clear_decision(
+    db: AsyncSession, ws: uuid.UUID, candidate_id: uuid.UUID, *, by: str = "voice"
+) -> TopicDecision | None:
+    """Take a decision back to undecided. The row, and the note on it, stay.
+
+    Deleting the row was how "undecided" used to be written, and it took the
+    note he wrote while deciding with it. `previous_decision` keeps what it was.
+    """
+    actor = check_actor(by)
+    candidate = await inbox_service.get_candidate(db, ws, candidate_id)
+    row = await inbox_service.get_decision(db, ws, candidate_id)
+    if row is not None and row.decision is not None:
+        row.previous_decision = row.decision
+        row.decision = None
+        row.decided_by = actor
+        row.decided_at = _now()
+    if candidate.status == "withdrawn":
+        candidate.status = "proposed"
+    await db.flush()
+    return row
+
+
 async def restore_topic(
     db: AsyncSession, ws: uuid.UUID, candidate_id: uuid.UUID, *, by: str = "voice"
 ) -> dict[str, Any]:
-    """Bring a put-away idea back to where it was before it was put away."""
+    """Bring a put-away idea back to where it was before it was put away.
+
+    Where it was includes its place in this week's list, when putting it away
+    took it off that list.
+    """
     actor = check_actor(by)
     candidate = await inbox_service.get_candidate(db, ws, candidate_id)
     decision = await inbox_service.get_decision(db, ws, candidate_id)
     back_to: str | None = None
+    placed: dict[str, Any] | None = None
     if decision is not None and decision.decision == "away":
         previous = decision.previous_decision
         if previous and previous != "away":
-            await inbox_service.decide(db, ws, candidate_id, decision=previous, decided_by=actor)
+            decision = await inbox_service.decide(
+                db, ws, candidate_id, decision=previous, decided_by=actor
+            )
             back_to = previous
         else:
-            # It was never decided before it went away: back to undecided.
-            await db.delete(decision)
-            await db.flush()
+            # It was never decided before it went away: back to undecided,
+            # keeping the row and the note on it.
+            decision = await clear_decision(db, ws, candidate_id, by=actor)
+        week = await lineup_service.follow_decision(db, ws, candidate, decision, by=actor)
+        placed = week["placed"]
     elif candidate.status != "withdrawn":
         return {
             "candidate_id": str(candidate.id),
@@ -757,8 +880,11 @@ async def restore_topic(
     if candidate.status == "withdrawn":
         candidate.status = "proposed"
     await db.flush()
+    in_week = "back in this week's list"
+    if placed is not None:
+        in_week += ", in reserve" if placed["slot"] == "reserve" else f", place {placed['rank']}"
     where = {
-        "this_week": "back in this week's list",
+        "this_week": in_week,
         "discuss": "back, marked to think about",
         "later": "back in saved for later",
     }.get(back_to or "", "back with the ideas waiting for a decision")
@@ -767,6 +893,7 @@ async def restore_topic(
         "title": candidate.title,
         "restored": True,
         "decision": back_to,
+        "placed": placed,
         "said": f'"{candidate.title}" is {where}.',
     }
 
@@ -883,6 +1010,7 @@ async def activity(db: AsyncSession, ws: uuid.UUID, *, hours: int = 24) -> dict[
             "discuss": f'Marked "{title}" to think about.',
             "later": f'Saved "{title}" for later.',
             "away": f'Put "{title}" away.',
+            None: f'Put "{title}" back with the ideas waiting for a decision.',
         }.get(d.decision, f'Decided "{title}": {d.decision}.')
         items.append(
             {

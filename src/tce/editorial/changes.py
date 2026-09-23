@@ -714,7 +714,16 @@ async def _write_lineup_revision(
 
     order = values.get("order")
     if isinstance(order, list):
-        await lineup_service.apply_order(db, ws, row, order)
+        # An undo puts back an order recorded before a topic was taken out, so it
+        # has to put that topic back too. Every other order only rearranges.
+        await lineup_service.apply_order(
+            db,
+            ws,
+            row,
+            order,
+            create_missing=change_set.origin == "undo",
+            added_by=decided_by,
+        )
     for move in values.get("moves") or []:
         await lineup_service.apply_move(db, ws, row, move)
 

@@ -138,8 +138,13 @@ async def voice_change(
             await db.commit()
             return result
         except ServiceError as error:
-            # A version conflict marks the proposal superseded; keep that record.
-            await db.commit()
+            if getattr(error, "code", None) == "conflict":
+                # A version conflict marks the proposal superseded; keep that record.
+                await db.commit()
+            else:
+                # Anything else writes nothing: a move that failed halfway must not
+                # leave the moves before it, or a proposal waiting for a yes or no.
+                await db.rollback()
             raise _http(error) from error
 
 

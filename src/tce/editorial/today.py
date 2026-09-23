@@ -36,7 +36,10 @@ IN_FLIGHT_UPLOADS = ("uploaded", "transcribing", "planned")
 
 async def _waiting_count(db: AsyncSession, ws: uuid.UUID) -> int:
     """Topics with no decision yet. The number he is actually being asked about."""
-    decided = select(TopicDecision.candidate_id).where(TopicDecision.workspace_id == ws)
+    # A row whose decision was taken back (NULL) keeps its note but is undecided.
+    decided = select(TopicDecision.candidate_id).where(
+        TopicDecision.workspace_id == ws, TopicDecision.decision.is_not(None)
+    )
     result = await db.execute(
         select(func.count(TopicCandidate.id)).where(
             TopicCandidate.workspace_id == ws,
