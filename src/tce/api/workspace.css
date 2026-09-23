@@ -309,12 +309,12 @@ main { width: min(100%, 860px); margin: 0 auto; }
 .action-bar {
   position: fixed; left: 0; right: 0; z-index: 25;
   bottom: calc(var(--nav-h) + env(safe-area-inset-bottom));
-  display: grid; grid-template-columns: 1fr; gap: 0;
+  display: flex; gap: 0;
   border-top: 2px solid var(--ink);
   box-shadow: 0 -4px 14px rgba(16, 33, 59, .18);
 }
-.action-bar.is-split { grid-template-columns: 1fr 1fr; }
 .bar-btn {
+  flex: 1 1 0; min-width: 0;
   display: flex; align-items: center; justify-content: center;
   min-height: 56px; padding: 0 12px; border: 0;
   font-weight: 800; font-size: 1rem; text-align: center;
@@ -325,6 +325,27 @@ main { width: min(100%, 860px); margin: 0 auto; }
 .bar-btn.is-talk { background: var(--lake); color: #fff; }
 .bar-btn.is-talk:active { background: #0f4d7d; }
 .action-bar.is-split .bar-btn.is-talk { border-left: 2px solid var(--ink); }
+/* Typed chat, beside the call. Narrow, but a full 56px tall and 76px wide. */
+.bar-btn.is-type {
+  flex: 0 0 76px; background: var(--white); color: var(--ink);
+  border-left: 2px solid var(--ink); cursor: pointer;
+}
+.bar-btn.is-type:active { background: #ece5d3; }
+
+/* Changes by voice. Each row: what changed, in words, and its one button. */
+.voice-panel { margin: 18px 0 8px; }
+.voice-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 10px; }
+.voice-item {
+  display: flex; align-items: flex-start; gap: 10px;
+  border: 2px solid var(--lake); border-radius: 14px; background: var(--white);
+  padding: 12px;
+}
+.voice-item.is-undone { border-color: var(--line); }
+.voice-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.voice-text p { margin: 4px 0 0; color: var(--body); line-height: 1.4; }
+.voice-meta { display: block; color: var(--helper); font-size: .84rem; font-weight: 700; }
+.voice-state { font-weight: 700; color: var(--helper); }
+.voice-btn { flex: 0 0 auto; min-height: 44px; min-width: 76px; }
 body.has-talk { padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 74px); }
 
 /* The conversation is a full-height sheet with one obvious close. It never

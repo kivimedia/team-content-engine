@@ -44,6 +44,38 @@ private key never leaves the server's `.env`.
 | `tce_schedule` | Turn a schedule on or off, move its time |
 | `tce_evidence` | What was collected for a window, and read |
 
+## The voice agent (on the VPS)
+
+The `voice` family is the hands of the Opus brain on a TCE voice call. It runs
+on the VPS next to the API, so it skips nginx and sends the private key itself:
+
+```
+TCE_API_BASE=http://127.0.0.1:8200 \
+TCE_PRIVATE_KEY=<TCE_PRIVATE_ACCESS_KEY from the server .env> \
+TCE_WORKSPACE_ID=<TCE_EDITOR_DEFAULT_WORKSPACE_ID from the server .env> \
+TCE_MCP_FAMILIES=voice \
+node /home/ziv/team-content-engine/mcp-server/index.mjs
+```
+
+`TCE_PRIVATE_KEY` wins over basic auth when both are set. `TCE_WORKSPACE_ID` is
+optional (the API falls back to its editor workspace). `TCE_MCP_FAMILIES=voice`
+keeps the call's tool list to the 13 it needs.
+
+| Tool | What it does |
+|---|---|
+| `tce_week` | This week's list with script states, and what needs a decision |
+| `tce_topic` | One topic: brief, opening, numbered points, lines and opening options |
+| `tce_edit` | Change "point 3", "the opening", a brief block - applied at once, undoable |
+| `tce_decide` | this_week (approve) / discuss / later / away |
+| `tce_put_away` / `tce_restore_idea` | Put an idea away, bring it back |
+| `tce_choose_hook` | Use opening option N |
+| `tce_reorder_week` | first / up / down / last / reserve / remove / position N |
+| `tce_undo` | The last change in this call, or one by id |
+| `tce_write_script` / `tce_more_hooks` / `tce_research` | Start a background job |
+| `tce_jobs` | Which of those finished, so the call can say so |
+
+Every write is recorded as `voice` and listed on Today under "Changes by voice".
+
 ## Check it
 
 ```

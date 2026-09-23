@@ -173,6 +173,7 @@
     view.innerHTML = '<div class="page">' + working("Reading your week") + "</div>";
     var data = await api("/editorial/today");
     state.today = data;
+    var voiceItems = await voiceActivity();
     // Best effort. Today must still paint if the push config cannot be read.
     try { state.notifyConfig = await api("/editorial/notifications/config"); }
     catch (e) { state.notifyConfig = null; }
@@ -209,6 +210,9 @@
     // minutes and today it finishes on a page he is not looking at.
     html += notifyRow(state.notifyConfig);
 
+    // What the voice agent changed, right where he lands after a call.
+    html += voicePanel(voiceItems);
+
     html += "<h2>This week's recording list</h2>";
     if (!primary.length) {
       html += '<div class="empty"><strong>Nothing chosen yet</strong>'
@@ -237,6 +241,95 @@
     var n = value || 0;
     return '<button class="count' + (n ? "" : " is-zero") + '" type="button" data-go="' + esc(href) + '">'
          + "<b>" + n + "</b><span>" + esc(label) + "</span></button>";
+  }
+
+  // ------------------------------------------------------ Changes by voice
+
+  /* Everything the voice agent wrote in the last day, newest first, in plain
+   * words, each with the one button that takes it back. It applies what he
+   * agreed to at once, so this list is the review: nothing it did is hidden. */
+  async function voiceActivity() {
+    try {
+      var data = await api("/editorial/voice/activity?hours=24");
+      return (data && data.items) || [];
+    } catch (e) {
+      return [];  // The page must paint even if this cannot be read.
+    }
+  }
+
+  function voiceTime(iso) {
+    if (!iso) return "";
+    // The server's timestamps are UTC without a zone mark.
+    var d = new Date(/Z$|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + "Z");
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function voicePanel(items) {
+    if (!items || !items.length) return "";
+    var html = '<section class="voice-panel" id="voicePanel" aria-labelledby="voicePanelTitle">';
+    html += '<h2 id="voicePanelTitle">Changes by voice</h2>';
+    html += '<p class="section-hint">What the voice agent changed in the last 24 hours, newest first. '
+         + "Undo takes one back and keeps both versions in the history.</p>";
+    html += '<ul class="voice-list">';
+    items.forEach(function (item) {
+      var done = item.kind === "change" && item.undone;
+      html += '<li class="voice-item' + (done ? " is-undone" : "") + '">';
+      html += '<div class="voice-text">';
+      html += '<span class="voice-meta">' + esc(voiceTime(item.at))
+           + (item.title ? " - " + esc(item.title) : "") + "</span>";
+      (item.lines || []).forEach(function (line) {
+        html += "<p>" + esc(line) + "</p>";
+      });
+      if (done) html += '<p class="voice-state">Undone.</p>';
+      if (item.is_undo) html += '<p class="voice-state">This put an earlier change back.</p>';
+      html += "</div>";
+      if (item.kind === "change" && item.can_undo && !item.is_undo) {
+        html += '<button class="btn quiet voice-btn" type="button" data-voice-undo="'
+             + esc(item.id) + '">Undo</button>';
+      } else if (item.kind === "decision" && item.can_restore) {
+        html += '<button class="btn quiet voice-btn" type="button" data-voice-restore="'
+             + esc(item.candidate_id) + '">Restore</button>';
+      }
+      html += "</li>";
+    });
+    html += "</ul></section>";
+    return html;
+  }
+
+  async function undoVoiceChange(button, changeSetId) {
+    button.disabled = true;
+    button.textContent = "Undoing";
+    try {
+      var result = await api("/editorial/change-sets/" + encodeURIComponent(changeSetId) + "/undo", {
+        method: "POST", body: { by: "ziv" }
+      });
+      toast(result.said || "Undone.");
+      await render();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Undo";
+      // A refusal carries the text as it is now; say it rather than a code.
+      var current = error.detail && typeof error.detail.current === "string"
+        ? ' It now says: "' + error.detail.current + '".' : "";
+      toast(error.message + current, true);
+    }
+  }
+
+  async function restoreVoiceIdea(button, candidateId) {
+    button.disabled = true;
+    button.textContent = "Restoring";
+    try {
+      var result = await api("/editorial/topics/" + encodeURIComponent(candidateId) + "/restore", {
+        method: "POST", body: { by: "ziv" }
+      });
+      toast(result.said || "Brought back.");
+      await render();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Restore";
+      toast(error.message, true);
+    }
   }
 
   // ----------------------------------------------------------------- Topics
@@ -424,6 +517,9 @@
     view.innerHTML = '<div class="page">' + working("Opening the topic") + "</div>";
     var data = await api("/editorial/topics/" + encodeURIComponent(candidateId) + "/room");
     state.room = data;
+    var voiceItems = (await voiceActivity()).filter(function (item) {
+      return item.candidate_id === data.candidate_id;
+    });
 
     var brief = data.brief || {};
     var blocks = brief.blocks || [];
@@ -435,6 +531,7 @@
     html += "</div>";
 
     html += pairTabs("topic", data.candidate_id, data.script ? data.script.packet_id : null);
+    html += voicePanel(voiceItems);
 
     if (data.timely) html += '<span class="tag is-timely">Timely</span>';
     if (data.lane_label) html += '<span class="tag is-lane">' + esc(data.lane_label) + "</span>";
@@ -670,7 +767,6 @@
     foot.innerHTML = chips
       + '<textarea id="talkInput" rows="2" placeholder="Or say exactly what you want changed..."></textarea>'
       + '<div class="talk-controls">'
-      + '<button class="btn" id="voiceBtn" type="button" aria-pressed="false">Speak</button>'
       + '<button class="btn quiet" id="speakBtn" type="button" aria-pressed="false">Read aloud</button>'
       + '<button class="btn primary" id="talkSend" type="button">Ask for it</button>'
       + '</div>';
@@ -683,7 +779,6 @@
     $("talkSend").addEventListener("click", function () {
       var custom = $("talkInput").value.trim();
       if (!custom) { toast("Pick one, or say what you want changed."); return; }
-      if (voice.listening) stopVoice();
       sendRewrite(field, label, custom);
     });
     bindVoiceControls(foot);
@@ -806,7 +901,6 @@
 
   function closeSheet() {
     var sheet = $("talkSheet");
-    if (voice.listening) stopVoice();
     if (window.speechSynthesis) { try { window.speechSynthesis.cancel(); } catch (e) { /**/ } }
     sheet.hidden = true;
     state.pending = null;
@@ -838,18 +932,9 @@
   }
 
   /* The footer markup is rebuilt whenever the sheet changes purpose, so the
-     voice controls are bound from one place rather than once at boot. */
+     read-aloud control is bound from one place rather than once at boot.
+     Dictation is gone: talking is the voice call now (voiceCallUrl). */
   function bindVoiceControls(foot) {
-    var mic = foot.querySelector("#voiceBtn");
-    if (mic) {
-      if (!speechSupported() || cameraBusy()) {
-        mic.disabled = true;
-        mic.title = cameraBusy()
-          ? "The studio is recording. Voice waits until the take is finished."
-          : "This browser cannot listen.";
-      }
-      mic.addEventListener("click", startVoice);
-    }
     var speaker = foot.querySelector("#speakBtn");
     if (speaker) {
       var on = false;
@@ -857,7 +942,6 @@
       speaker.setAttribute("aria-pressed", on ? "true" : "false");
       speaker.addEventListener("click", toggleSpeakReplies);
     }
-    paintVoiceButton();
   }
 
   async function openTalk() {
@@ -964,7 +1048,6 @@
         method: "POST", body: { text: text, mode: state.talkMode }
       });
       input.value = "";
-      if (voice.listening) stopVoice();
       state.thread.messages = (state.thread.messages || []).concat(result.messages);
       renderTalk();
       startTalkPoll();
@@ -977,125 +1060,10 @@
 
   // ------------------------------------------------------------------ voice
 
-  /* Voice is an input method over the conversation contract, not a second
-   * assistant. That is the plan's own decision and it is also the only honest
-   * design here: every model call in TCE is a job leased by the desktop worker
-   * at about one a minute, so there is no sub-second back-and-forth to be had.
-   * What voice removes is the typing, which is the part that is actually hard
-   * while walking with a phone at arm's length.
-   *
-   * So: speak, watch the words appear, FIX them if the recogniser misheard, and
-   * send. Everything after that is the path already proven by typing - discuss
-   * changes nothing, propose produces a diff you accept.
-   *
-   * Recognition runs in the browser. No audio leaves the page to us, nothing is
-   * stored, and it costs nothing.
-   */
-
-  var CAMERA_FLAG = "tce-camera-active";
-
-  function cameraBusy() {
-    try {
-      var stamp = parseInt(localStorage.getItem(CAMERA_FLAG) || "0", 10);
-      // A stale flag from a tab that died without firing pagehide must not lock
-      // voice out permanently. Anything older than an hour is not a live take.
-      return stamp > 0 && (Date.now() - stamp) < 3600000;
-    } catch (e) { return false; }
-  }
-
-  function speechSupported() {
-    return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-  }
-
-  var voice = { rec: null, listening: false, base: "", heard: "" };
-
-  function stopVoice(reason) {
-    if (voice.rec) {
-      try { voice.rec.onend = null; voice.rec.stop(); } catch (e) { /* already dead */ }
-    }
-    voice.rec = null;
-    voice.listening = false;
-    paintVoiceButton();
-    if (reason) toast(reason);
-  }
-
-  function paintVoiceButton() {
-    var btn = $("voiceBtn");
-    if (!btn) return;
-    btn.setAttribute("aria-pressed", voice.listening ? "true" : "false");
-    btn.textContent = voice.listening ? "Stop listening" : "Speak";
-  }
-
-  function startVoice() {
-    if (voice.listening) { stopVoice(); return; }
-    if (!speechSupported()) {
-      toast("This browser cannot listen. Type it instead.", true);
-      return;
-    }
-    if (cameraBusy()) {
-      toast("The studio is recording. Voice waits until the take is finished.", true);
-      return;
-    }
-    var input = $("talkInput");
-    var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    var rec = new Recognition();
-    rec.lang = "en-GB";
-    rec.continuous = true;
-    // Interim results are the point: he has to see it getting him right or
-    // wrong while he is still talking, not after.
-    rec.interimResults = true;
-
-    // Keep whatever he had already typed; voice appends to it.
-    voice.base = (input.value || "").trim();
-    voice.heard = "";
-
-    rec.onresult = function (event) {
-      var settled = "";
-      var pending = "";
-      for (var i = event.resultIndex; i < event.results.length; i++) {
-        var chunk = event.results[i][0].transcript;
-        if (event.results[i].isFinal) settled += chunk;
-        else pending += chunk;
-      }
-      if (settled) voice.heard = (voice.heard + " " + settled).trim();
-      var joined = (voice.base + " " + voice.heard + " " + pending).trim();
-      input.value = joined;
-      // The transcript is an ordinary textarea, so correcting it is just
-      // editing. The acceptance test asks for visible AND correctable.
-      input.scrollTop = input.scrollHeight;
-    };
-
-    rec.onerror = function (event) {
-      if (event.error === "no-speech" || event.error === "aborted") return;
-      if (event.error === "not-allowed") {
-        stopVoice("The microphone is blocked in your browser settings.");
-        return;
-      }
-      // Network loss is the interesting one: what he already said stays in the
-      // box and he can finish by typing.
-      stopVoice("Lost the microphone. What you said is still in the box.");
-    };
-
-    rec.onend = function () {
-      // Some browsers end the session on a pause; restart while he still wants
-      // to talk, unless the camera claimed the mic in the meantime.
-      if (voice.listening && !cameraBusy()) {
-        try { rec.start(); return; } catch (e) { /* fall through to stopped */ }
-      }
-      voice.listening = false;
-      paintVoiceButton();
-    };
-
-    try {
-      rec.start();
-    } catch (e) {
-      toast("Could not start listening: " + e.message, true);
-      return;
-    }
-    voice.rec = rec;
-    voice.listening = true;
-    paintVoiceButton();
-  }
+  /* Talking used to be dictation into the typed box. That path is gone: the
+   * Talk button opens a real voice call (voiceCallUrl), where an agent hears
+   * him, applies what he agrees to and says what it did. Typed chat stays, and
+   * replies can still be read out loud. */
 
   /* Say the reply out loud. Browser speech, so it costs nothing and needs no
    * key. Off unless he turned it on, because a phone that starts talking in a
@@ -1540,7 +1508,7 @@
     "go", "filter", "libfilter", "decide", "open-room", "open-script", "move",
     "slot", "remove", "ask-script", "change", "edit", "restore", "wtab",
     "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
-    "watch", "watch-close"
+    "watch", "watch-close", "voice-undo", "voice-restore"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -1572,6 +1540,8 @@
     if (d.chooseHook !== undefined) { chooseHook(d.chooseHook); return; }
     if (d.moreHooks !== undefined) { askMoreHooks(); return; }
     if (d.rewrite !== undefined) { openRewrite(d.rewrite); return; }
+    if (d.voiceUndo !== undefined) { undoVoiceChange(target, d.voiceUndo); return; }
+    if (d.voiceRestore !== undefined) { restoreVoiceIdea(target, d.voiceRestore); return; }
     if (d.notify !== undefined) {
       if (d.notify === "on") enableNotifications(); else disableNotifications();
       return;
@@ -1640,6 +1610,17 @@
 
   // ------------------------------------------------------------------ boot
 
+  /* The voice call. It belongs to KM BOT, on the same host as /tce, so the path
+   * is absolute and never takes this page's /tce prefix (the same reason the
+   * nav's Record link is handled apart). `context` is "week" or "topic:<id>".
+   * `return` is where the call page's "Back to TCE" should land. Change the
+   * call's address here and nowhere else. */
+  function voiceCallUrl(context) {
+    var here = window.location.pathname + window.location.search;
+    return "/voice?seat=tce&context=" + (context || "week")
+      + "&return=" + encodeURIComponent(here);
+  }
+
   /* The button appears only where there is a specific thing to discuss, and its
    * label names that thing. A conversation that does not know what is on screen
    * is a general chat window, which is the thing this deliberately is not. */
@@ -1647,18 +1628,20 @@
     if (route.name === "room" && state.room) {
       state.talkContext = {
         type: "topic", id: route.id, label: state.room.title,
-        action: "Talk about this topic"
+        action: "Talk about this topic", voice: "topic:" + route.id
       };
     } else if (route.name === "workshop" && state.workshop) {
       state.talkContext = {
         type: "packet", id: route.id,
         label: "Script version " + state.workshop.version,
-        action: "Talk about this script"
+        action: "Talk about this script",
+        // The call is about the idea; the agent opens its current script.
+        voice: state.workshop.candidate_id ? "topic:" + state.workshop.candidate_id : "week"
       };
     } else if (route.name === "week") {
       state.talkContext = {
         type: "week", id: null, label: "This week's list",
-        action: "Talk about this week"
+        action: "Talk about this week", voice: "week"
       };
     } else if (route.name === "topics" || route.name === "today") {
       /* The editorial room: the whole week and everything still waiting, before
@@ -1668,7 +1651,7 @@
          this" and he could not tell it was the cross-topic one. */
       state.talkContext = {
         type: "room", id: null, label: "All your ideas and this week",
-        action: "Talk about the whole week"
+        action: "Talk about the whole week", voice: "week"
       };
     } else {
       state.talkContext = null;
@@ -1685,10 +1668,16 @@
         + esc(record.label) + "</a>");
     }
     if (state.talkContext) {
+      /* Talk is a real call now: a link to the voice page, same tab, so the
+         browser's Back and the call page's own way back both land here. Typed
+         chat stays one tap away beside it for when talking out loud is wrong. */
       bar.insertAdjacentHTML("beforeend",
-        '<button class="bar-btn is-talk" type="button" id="talkFab">'
-        + esc(state.talkContext.action) + "</button>");
-      $("talkFab").addEventListener("click", openTalk);
+        '<a class="bar-btn is-talk" id="talkFab" href="'
+        + esc(voiceCallUrl(state.talkContext.voice)) + '">'
+        + esc(state.talkContext.action) + "</a>"
+        + '<button class="bar-btn is-type" type="button" id="typeFab"'
+        + ' aria-label="Type instead of talking">Type</button>');
+      $("typeFab").addEventListener("click", openTalk);
     }
     var show = !!(record || state.talkContext);
     bar.hidden = !show;
