@@ -235,6 +235,12 @@ async def decide_topic(
     changed nothing answers `change_id` null, so there is nothing to undo that
     does nothing. The topic is named by its id; a missing or unknown one is
     refused in words the voice agent can say.
+
+    A decision on an idea the engine withdrew (a re-run of the week's selection,
+    or news discovery marking it stale) brings it back: that status change is on
+    the write's row too, so undo withdraws it again, and a write whose only
+    change was bringing it back ("later" on an idea already saved for later) is
+    a change with its own id, `brought_back` true.
     """
     if body.by not in ACTORS:
         raise HTTPException(status_code=400, detail=f"unknown actor {body.by}")
@@ -242,14 +248,21 @@ async def decide_topic(
         try:
             candidate = await voice_agent.topic_by_id(db, ws, candidate_id)
             cid = candidate.id
+            status_before = candidate.status
             existing = await inbox_service.get_decision(db, ws, cid)
             before = existing.decision if existing is not None else None
             if body.decision == voice_agent.UNDECIDED:
                 decision = await voice_agent.clear_decision(db, ws, cid, by=body.by)
             else:
-                if body.by == "voice" and body.decision == "away" and before == "away":
+                if (
+                    body.by == "voice"
+                    and body.decision == "away"
+                    and (before == "away" or status_before == voice_agent.WITHDRAWN)
+                ):
                     # Undoing it would bring back an idea that was away before
-                    # the call, so a put-away that changes nothing is not a write.
+                    # the call, so a put-away that changes nothing is not a
+                    # write. An idea the engine withdrew is away already too,
+                    # whatever decision it still carries.
                     raise inbox_service.InboxError(
                         "already",
                         f'"{candidate.title}" is already put away. Nothing was changed.',
@@ -260,8 +273,27 @@ async def decide_topic(
                 )
             week = await lineup_service.follow_decision(db, ws, candidate, decision, by=body.by)
             after = decision.decision if decision is not None else None
+            status = (
+                {"before": status_before, "after": candidate.status}
+                if candidate.status != status_before
+                else None
+            )
+            brought_back = status is not None and status_before == voice_agent.WITHDRAWN
+            only_brought_back = (
+                brought_back and before == after and not week["added"] and not week["removed"]
+            )
             change = await voice_agent.record_decision_change(
-                db, ws, cid, before=before, after=after, by=body.by, week=week
+                db,
+                ws,
+                cid,
+                # Bringing it back was all this write did: the same row a restore
+                # of a withdrawn idea writes, whose undo withdraws it again and
+                # leaves the decision (his, from before the call) as it is.
+                before=voice_agent.WITHDRAWN if only_brought_back else before,
+                after=after,
+                by=body.by,
+                week=week,
+                status=status,
             )
             await db.commit()
         except (*ServiceError, voice_agent.VoiceError) as error:
@@ -276,6 +308,9 @@ async def decide_topic(
         "decision": after,
         "previous_decision": before or voice_agent.UNDECIDED,
         "changed": before != after,
+        # The idea had been withdrawn by the engine and this write brought it
+        # back (a change even when the decision stayed the same).
+        "brought_back": brought_back,
         "note": decision.note if decision is not None else None,
         "placed": week["placed"],
         "added_to_week": week["added"],

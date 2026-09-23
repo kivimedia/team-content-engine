@@ -1812,6 +1812,88 @@ async def test_live_later_approve_undo_undo_keeps_the_place_in_the_week(live):
     assert "place 2" in said
 
 
+async def live_stale_later(world, title):
+    """Saved for later on his phone, then withdrawn by a re-run of the week's selection."""
+    from tce.models.editorial import TopicCandidate
+
+    cid = await live_topic(world, title)
+    r = await world.http.post(
+        f"/api/v1/editorial/topics/{cid}/decide", json={"decision": "later", "by": "ziv"}
+    )
+    assert r.status_code == 200, r.text
+    async with world.sm() as s:
+        (await s.get(TopicCandidate, uuid.UUID(cid))).status = "withdrawn"
+        await s.commit()
+    return cid
+
+
+async def test_live_later_on_a_stale_later_idea_says_it_came_back_and_plain_undo_takes_that_back(
+    live,
+):
+    """D1: an earlier approval in the call stands; the plain undo takes back the D1 change."""
+    approved = await live_topic(live, "Receptionist at night")
+    await live.tool("tce_decide", topic=approved[:8], decision="approve")
+    assert approved in await live_week(live)
+    cid = await live_stale_later(live, "Invoices nobody opens")
+
+    said, data = await live.tool("tce_decide", topic=cid[:8], decision="later")
+    assert data.get("change_id"), said
+    assert "Nothing was changed" not in said
+    assert "back" in said and "saved for later" in said
+    assert f"(change {data['change_id'][:8]})" in said
+    assert await live_status(live, cid) == "proposed"
+
+    undone, _ = await live.tool("tce_undo")
+    assert await live_status(live, cid) == "withdrawn", undone
+    assert await live_decision(live, cid) == "later"
+    assert "Invoices nobody opens" in undone
+    assert approved in await live_week(live), "the approval stands"
+    assert await live_decision(live, approved) == "this_week"
+
+
+async def test_live_discuss_on_a_stale_later_idea_then_plain_undo_is_later_and_withdrawn(live):
+    """D5."""
+    cid = await live_stale_later(live, "Invoices nobody opens")
+    said, data = await live.tool("tce_decide", topic=cid[:8], decision="discuss")
+    assert data.get("change_id"), said
+    assert await live_status(live, cid) == "proposed"
+
+    undone, _ = await live.tool("tce_undo")
+    assert await live_status(live, cid) == "withdrawn", undone
+    assert await live_decision(live, cid) == "later"
+
+
+async def test_live_approve_on_a_superseded_idea_then_plain_undo_withdraws_it(live):
+    """D3 (and D2 with later) through the real voice call."""
+    for decision in ("approve", "later"):
+        cid = await live_superseded(live, f"Invoices nobody opens {decision}")
+        said, data = await live.tool("tce_decide", topic=cid[:8], decision=decision)
+        assert data.get("change_id"), said
+        assert await live_status(live, cid) == "proposed"
+
+        undone, _ = await live.tool("tce_undo")
+        assert await live_status(live, cid) == "withdrawn", undone
+        assert await live_decision(live, cid) is None
+        assert cid not in await live_week(live)
+
+
+async def test_live_away_on_a_superseded_idea_is_already_put_away(live):
+    """D4: nothing written, so the plain undo after it has nothing of this idea to undo."""
+    approved = await live_topic(live, "Receptionist at night")
+    await live.tool("tce_decide", topic=approved[:8], decision="approve")
+    cid = await live_superseded(live, "Invoices nobody opens")
+
+    said, data = await live.tool("tce_decide", topic=cid[:8], decision="away")
+    assert "already put away" in said
+    assert not data.get("change_id")
+    assert await live_status(live, cid) == "withdrawn"
+    assert await live_decision(live, cid) is None
+
+    undone, _ = await live.tool("tce_undo")
+    assert await live_status(live, cid) == "withdrawn", undone
+    assert approved not in await live_week(live), "the plain undo reached the approval"
+
+
 async def test_live_words_find_candidates_to_read_back_and_only_an_id_writes(live):
     first = await live_topic(live, "Your first client is the hardest")
     talked = await live_topic(live, "מה שדיברנו עליו בפגישה")

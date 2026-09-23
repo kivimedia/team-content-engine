@@ -1802,11 +1802,12 @@ async def undo_decision(
 
     status = entry.candidate_status or {}
     if status and candidate.status != status.get("after"):
-        # Brought back, then moved on without a decision (recorded, scripted, or
-        # withdrawn again by the engine): withdrawing it now would lose that.
+        # Moved on since without a decision (recorded, scripted, or withdrawn
+        # again by the engine): setting its status back now would lose that.
+        since = "it was brought back" if status.get("before") == WITHDRAWN else "that decision"
         raise VoiceError(
             "changed",
-            f'"{title}" has moved on since it was brought back (its status is now '
+            f'"{title}" has moved on since {since} (its status is now '
             f"{candidate.status}), so taking that back would lose what happened since. "
             "Nothing was changed.",
             status=409,
@@ -1881,6 +1882,13 @@ async def undo_decision(
         placed = moved["placed"]
         if moved["removed"]:
             off = {"week_start": moved["week_start"], **moved["removed"]}
+    # The write moved the topic's own status too (a decision on an idea the
+    # engine withdrew brought it back; a put-away withdrew a selected idea):
+    # the status it had comes back with the decision, not the one decide() infers.
+    withdrawn_again = False
+    if status.get("before"):
+        withdrawn_again = status["before"] == WITHDRAWN and candidate.status != WITHDRAWN
+        candidate.status = status["before"]
     entry.undone_at = _now()
     entry.undone_by = actor
     await db.flush()
@@ -1899,10 +1907,13 @@ async def undo_decision(
         said = f'"{title}" is {_decision_words(back)} again' + (
             f", and off {_list_words(off['week_start'])}." if off else "."
         )
+    if withdrawn_again:
+        said += " It is put away again (withdrawn, as it was before it was brought back)."
     return {
         **base,
         "already": False,
         "decision": row.decision if row is not None else None,
+        "status": candidate.status,
         "removed_from_week": off,
         "placed": placed,
         "said": said,

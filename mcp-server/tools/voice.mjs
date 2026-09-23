@@ -524,20 +524,27 @@ export function register(server, call, { reply, failure, shortId }) {
       const result = await call('POST', `/editorial/topics/${t.candidate_id}/decide`, { decision: wanted, note, by: 'voice' });
       if (!result.ok) return spokenError(result, 'decide that topic');
       const d = result.data;
-      if (d.changed === false && !d.added_to_week && !d.removed_from_week) {
+      const sameOnWeek = d.changed === false && !d.added_to_week && !d.removed_from_week;
+      if (sameOnWeek && !d.brought_back) {
         return reply(
           `"${t.title}" is already ${ALREADY[wanted] || wanted}. Nothing was changed, so there is nothing new to undo.`,
           d,
         );
       }
       const change = rememberDecision(t, wanted, d);
+      if (sameOnWeek) {
+        // The engine had withdrawn it; the decision stays, and bringing it back
+        // is the change (undo withdraws it again).
+        return reply(`"${t.title}" is back from the withdrawn ideas, still ${ALREADY[wanted] || wanted}.${change}`, d);
+      }
       const said = {
         this_week: `"${t.title}" is in this week's list${result.data.placed ? `, place ${result.data.placed.rank}` : ''}.`,
         discuss: `"${t.title}" is marked to think about.`,
         later: `"${t.title}" is saved for later.`,
         away: `"${t.title}" is put away. It can be brought back.`,
       }[wanted];
-      return reply(`${said}${change}`, d);
+      const back = d.brought_back ? ' It is back from the withdrawn ideas.' : '';
+      return reply(`${said}${back}${change}`, d);
     },
   );
 

@@ -1267,6 +1267,144 @@ async def test_undoing_a_restore_he_decided_on_himself_since_writes_nothing(
     assert await week_ids(client, ws) == [str(cid)]
 
 
+# ------------- a voice decision on an idea the engine withdrew brings it back, undoably
+
+
+async def set_status(sm, cid, status):
+    async with sm() as s:
+        (await s.get(TopicCandidate, cid)).status = status
+        await s.commit()
+
+
+async def stale_later(client, sm, ws, title="Invoices nobody opens"):
+    """Saved for later on his phone, then withdrawn by a re-run of the week's selection."""
+    cid = await add_candidate(sm, ws, title)
+    assert (await decide(client, ws, cid, "later")).status_code == 200
+    await set_status(sm, cid, "withdrawn")
+    return cid
+
+
+async def test_voice_later_on_a_withdrawn_later_idea_is_a_change_that_brings_it_back(
+    client, editorial_sessionmaker
+):
+    """D1: the decision is the same, but the idea came back; that is a write with its own id."""
+    ws = uuid.uuid4()
+    cid = await stale_later(client, editorial_sessionmaker, ws)
+
+    decided = await decide(client, ws, cid, "later", by="voice")
+    assert decided.status_code == 200, decided.text
+    body = decided.json()
+    assert body["change_id"], "it was brought back, so the call can take that back"
+    assert body["brought_back"] is True
+    assert body["decision"] == "later"
+    assert await status_of(editorial_sessionmaker, cid) == "proposed"
+
+    items = (await client.get("/api/v1/editorial/voice/activity", headers=headers(ws))).json()[
+        "items"
+    ]
+    entry = next(i for i in items if i["id"] == body["change_id"])
+    assert "back" in entry["lines"][0] and "Invoices nobody opens" in entry["lines"][0]
+
+    undone = await undo_decision(client, ws, cid, body["change_id"])
+    assert undone.status_code == 200, undone.text
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+    assert await decision_of(editorial_sessionmaker, cid) == "later"
+
+
+async def test_voice_later_on_a_withdrawn_undecided_idea_is_undone_back_to_withdrawn(
+    client, editorial_sessionmaker
+):
+    """D2."""
+    ws = uuid.uuid4()
+    cid = await superseded(editorial_sessionmaker, ws)
+
+    decided = await decide(client, ws, cid, "later", by="voice")
+    assert decided.status_code == 200, decided.text
+    assert decided.json()["brought_back"] is True
+    assert await status_of(editorial_sessionmaker, cid) == "proposed"
+
+    undone = await undo_decision(client, ws, cid, decided.json()["change_id"])
+    assert undone.status_code == 200, undone.text
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+    assert await decision_of(editorial_sessionmaker, cid) is None
+    assert "put away again" in undone.json()["said"]
+
+
+async def test_voice_approval_of_a_withdrawn_undecided_idea_is_undone_back_to_withdrawn(
+    client, editorial_sessionmaker
+):
+    """D3: off the week, undecided and withdrawn again."""
+    ws = uuid.uuid4()
+    cid = await superseded(editorial_sessionmaker, ws)
+
+    decided = await decide(client, ws, cid, "this_week", by="voice")
+    assert decided.status_code == 200, decided.text
+    assert await week_ids(client, ws) == [str(cid)]
+
+    undone = await undo_decision(client, ws, cid, decided.json()["change_id"])
+    assert undone.status_code == 200, undone.text
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+    assert await decision_of(editorial_sessionmaker, cid) is None
+    assert await week_ids(client, ws) == []
+
+
+async def test_voice_away_on_an_idea_already_withdrawn_is_already_put_away(
+    client, editorial_sessionmaker
+):
+    """D4: putting away an idea that is already away writes nothing, so nothing to undo."""
+    ws = uuid.uuid4()
+    undecided = await superseded(editorial_sessionmaker, ws)
+    later = await stale_later(client, editorial_sessionmaker, ws, "Receptionist at night")
+
+    for cid, was in ((undecided, None), (later, "later")):
+        away = await decide(client, ws, cid, "away", by="voice")
+        assert away.status_code == 409, away.text
+        assert away.json()["detail"]["code"] == "already"
+        assert "already put away" in away.json()["detail"]["message"]
+        assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+        assert await decision_of(editorial_sessionmaker, cid) == was
+
+    items = (await client.get("/api/v1/editorial/voice/activity", headers=headers(ws))).json()[
+        "items"
+    ]
+    assert [i for i in items if i["kind"] == "decision"] == []
+
+
+async def test_voice_discuss_on_a_withdrawn_later_idea_is_undone_to_later_and_withdrawn(
+    client, editorial_sessionmaker
+):
+    """D5."""
+    ws = uuid.uuid4()
+    cid = await stale_later(client, editorial_sessionmaker, ws)
+
+    decided = await decide(client, ws, cid, "discuss", by="voice")
+    assert decided.status_code == 200, decided.text
+    assert await status_of(editorial_sessionmaker, cid) == "proposed"
+
+    undone = await undo_decision(client, ws, cid, decided.json()["change_id"])
+    assert undone.status_code == 200, undone.text
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+    assert await decision_of(editorial_sessionmaker, cid) == "later"
+
+
+async def test_undoing_a_voice_put_away_gives_back_the_status_it_had(
+    client, editorial_sessionmaker
+):
+    """Every decision write that moved the status puts that status back when undone."""
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Invoices nobody opens")
+    await set_status(editorial_sessionmaker, cid, "selected")
+
+    away = await decide(client, ws, cid, "away", by="voice")
+    assert away.status_code == 200, away.text
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+
+    undone = await undo_decision(client, ws, cid, away.json()["change_id"])
+    assert undone.status_code == 200, undone.text
+    assert await status_of(editorial_sessionmaker, cid) == "selected"
+    assert await decision_of(editorial_sessionmaker, cid) is None
+
+
 # ------------------------- a round trip through undo keeps the place in the week
 
 
