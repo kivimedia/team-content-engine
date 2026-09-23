@@ -127,11 +127,32 @@ export function reply(text, data) {
   };
 }
 
+/**
+ * A short, speakable excerpt of an answer that was not JSON (an nginx error page,
+ * a proxy's text): markup and entities out, anything shaped like a key or token
+ * hidden, clipped. Enough to say why, never the page itself.
+ */
+export function excerpt(raw, limit = 160) {
+  const text = String(raw ?? '')
+    .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&[a-z0-9#]+;/gi, ' ')
+    .replace(/\b(bearer|basic|token|key|password|secret)\b\s*[:=]?\s*\S+/gi, '$1 [hidden]')
+    .replace(/[A-Za-z0-9_\-+/=]{32,}/g, '[hidden]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > limit ? `${text.slice(0, limit - 3).trimEnd()}...` : text;
+}
+
 /** A failed call, said plainly rather than as a stack trace. */
 export function failure(result, what) {
-  const detail = result.data?.detail || result.data?.error || `HTTP ${result.status}`;
+  let detail = result.data?.detail || result.data?.error || `HTTP ${result.status}`;
+  if (typeof detail !== 'string') detail = excerpt(JSON.stringify(detail));
+  // Not JSON: say what came back, so "why" has an answer.
+  const body = result.data?.body ? excerpt(result.data.body) : '';
+  const came = body ? ` (HTTP ${result.status}: ${body})` : '';
   const hint = result.data?.hint ? `\n${result.data.hint}` : '';
-  return reply(`Could not ${what}: ${detail}${hint}`, { ok: false, status: result.status });
+  return reply(`Could not ${what}: ${detail}${came}${hint}`, { ok: false, status: result.status });
 }
 
 export function shortId(value) {

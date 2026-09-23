@@ -77,16 +77,18 @@ class VoiceChangeRequest(BaseModel):
 @router.get("/voice/topic")
 async def find_topic(
     q: str = Query(..., min_length=1, max_length=300),
+    strict: bool = Query(False),
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
     """One topic in full (brief, script, openings), found by id, short id or title words.
 
     Ambiguous words return the candidates instead, so the agent can ask which.
+    `strict` (the tools that write) finds a topic only when it is the clear winner.
     """
     async with open_session(sm) as db:
         try:
-            found = await voice_agent.find_topics(db, ws, q)
+            found = await voice_agent.find_topics(db, ws, q, strict=strict)
             if found["status"] != "found":
                 return {
                     "status": found["status"],
@@ -186,9 +188,72 @@ async def restore_topic(
             raise _http(error) from error
 
 
+class UndoDecisionRequest(BaseModel):
+    # What the decision replaced ("undecided" when there was none), what it set,
+    # and whether it put the topic on this week's list or took it off.
+    previous: str | None = None
+    decision: str | None = None
+    added_to_week: bool = False
+    removed_from_week: bool = False
+    by: str = "voice"
+
+
+@router.post("/topics/{candidate_id}/undo-decision")
+async def undo_decision(
+    candidate_id: str,
+    body: UndoDecisionRequest,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Take a decision back, and the week with it, in one transaction."""
+    cid = _uuid(candidate_id, "topic")
+    async with open_session(sm) as db:
+        try:
+            result = await voice_agent.undo_decision(
+                db,
+                ws,
+                cid,
+                previous=body.previous,
+                decision=body.decision,
+                added_to_week=body.added_to_week,
+                removed_from_week=body.removed_from_week,
+                by=body.by,
+            )
+            await db.commit()
+            return result
+        except ServiceError as error:
+            await db.rollback()
+            raise _http(error) from error
+
+
 class RestoreScriptRequest(BaseModel):
     version: int = Field(ge=1)
     by: str = "voice"
+
+
+class UndoRewriteRequest(BaseModel):
+    rewrite_id: str
+    by: str = "voice"
+
+
+@router.post("/candidates/{candidate_id}/script/undo-rewrite")
+async def undo_rewrite(
+    candidate_id: str,
+    body: UndoRewriteRequest,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Put back the script a rewrite replaced when it was saved, edits included."""
+    cid = _uuid(candidate_id, "topic")
+    rid = _uuid(body.rewrite_id, "rewrite")
+    async with open_session(sm) as db:
+        try:
+            result = await voice_agent.undo_rewrite(db, ws, cid, rid, by=body.by)
+            await db.commit()
+            return result
+        except ServiceError as error:
+            await db.rollback()
+            raise _http(error) from error
 
 
 @router.post("/candidates/{candidate_id}/script/restore")

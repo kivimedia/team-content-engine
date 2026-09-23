@@ -428,16 +428,47 @@ async def feedback_summary(
 
 
 async def _run_packet(
-    sm: Any, ws: uuid.UUID, candidate_id: uuid.UUID, resume_job_id: uuid.UUID | None = None
+    sm: Any,
+    ws: uuid.UUID,
+    candidate_id: uuid.UUID,
+    resume_job_id: uuid.UUID | None = None,
+    *,
+    rewrite_id: uuid.UUID | None = None,
+    by: str | None = None,
 ) -> None:
     key = str(candidate_id)
 
     def on_activity(msg: str, **kw: Any) -> None:
         job_status.update(ws, "packet", key, current_activity=msg, job_id=kw.get("job_id"))
 
+    on_saved = None
+    if rewrite_id is not None:
+        from tce.editorial import voice_agent
+
+        async def on_saved(
+            session: Any, cand: Any, replaced: Any, packet: Any, job_id: Any
+        ) -> None:
+            # Written down in the transaction that saves the new script, with the
+            # script it really replaced (edits made while it was written included).
+            await voice_agent.record_rewrite(
+                session,
+                ws,
+                rewrite_id=rewrite_id,
+                by=by or "voice",
+                candidate=cand,
+                replaced=replaced,
+                packet=packet,
+                job_id=job_id,
+            )
+
     try:
         outcome = await build_packet(
-            sm, ws, candidate_id, on_activity=on_activity, resume_job_id=resume_job_id
+            sm,
+            ws,
+            candidate_id,
+            on_activity=on_activity,
+            resume_job_id=resume_job_id,
+            on_saved=on_saved,
         )
     except Exception as exc:
         logger.exception("editorial.packet_failed", workspace_id=str(ws), candidate_id=key)
@@ -466,6 +497,9 @@ async def _run_packet(
             "packet_id": outcome.packet["id"] if outcome.packet else None,
             "errors": outcome.errors,
             "retry_at": outcome.retry_at.isoformat() if outcome.retry_at else None,
+            # The version it replaced when it was saved, which is not always the
+            # one that was current when it was asked for.
+            "replaced_version": outcome.replaced_version,
         },
     )
 
@@ -505,6 +539,9 @@ async def start_packet(
                 },
             )
         replaces_version = existing.version if existing is not None else None
+        # A rewrite asked for by someone (the voice agent says who) is recorded
+        # when it is saved, under this id, so it is listed and can be undone.
+        rewrite_id = uuid.uuid4() if existing is not None and body is not None and body.by else None
         previous = await job_status.latest_packet_job(db, ws, cid)
     # An interrupted packet job (restart, timeout, capacity wait, written but unsaved) is
     # resumed; a finished or failed one is regenerated with a fresh job as before.
@@ -519,13 +556,19 @@ async def start_packet(
         candidate_id=str(cid),
         resumed_job_id=str(resume_job_id) if resume_job_id else None,
     )
-    background.add_task(_run_packet, sm, ws, cid, resume_job_id)
+    if rewrite_id is not None:
+        background.add_task(
+            _run_packet, sm, ws, cid, resume_job_id, rewrite_id=rewrite_id, by=body.by
+        )
+    else:
+        background.add_task(_run_packet, sm, ws, cid, resume_job_id)
     return {
         "status": "running",
         "resumed": resume_job_id is not None,
-        # The version this one replaces when it is saved; it stays readable, and
-        # POST /editorial/candidates/{id}/script/restore puts it back.
+        # The version current now. The one it really replaces is the one current
+        # when it is saved; it stays readable, and undo-rewrite puts it back.
         "replaces_version": replaces_version,
+        "rewrite_id": str(rewrite_id) if rewrite_id else None,
         "candidate_id": str(cid),
         "status_url": f"/api/v1/editorial/candidates/{cid}/packet-status",
     }

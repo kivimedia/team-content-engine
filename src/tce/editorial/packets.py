@@ -179,6 +179,8 @@ class PacketOutcome:
     detail: str | None = None
     retry_at: datetime | None = None
     errors: list[str] = field(default_factory=list)
+    # The version the saved packet replaced, when there was one.
+    replaced_version: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -188,6 +190,7 @@ class PacketOutcome:
             "detail": self.detail,
             "retry_at": self.retry_at.isoformat() if self.retry_at else None,
             "errors": self.errors,
+            "replaced_version": self.replaced_version,
         }
 
 
@@ -510,9 +513,15 @@ async def build_packet(
     *,
     on_activity: Any = None,
     resume_job_id: uuid.UUID | str | None = None,
+    on_saved: Any = None,
 ) -> PacketOutcome:
     """Write one packet. `resume_job_id` re-attaches to an earlier request's job (after a
-    restart) by replaying its stored request, so no second job is enqueued."""
+    restart) by replaying its stored request, so no second job is enqueued.
+
+    `on_saved(session, candidate, replaced, packet, job_id)` is awaited inside the
+    transaction that saves a packet over an earlier one, with the version it
+    replaced at that moment, so what it records commits (or not) with the packet.
+    """
     ws = coerce_uuid(workspace_id)
 
     def activity(msg: str, **kw: Any) -> None:
@@ -681,6 +690,9 @@ async def build_packet(
             .scalars()
             .all()
         )
+        # What this packet replaces is decided now, at save time: an edit made while
+        # it was written is part of the script it replaces.
+        replaced = max(older, key=lambda p: p.version) if older else None
         for old in older:
             old.status = "superseded"
 
@@ -708,12 +720,16 @@ async def build_packet(
             format=news_format,
         )
         session.add(packet)
+        if on_saved is not None and replaced is not None:
+            await session.flush()
+            await on_saved(session, cand, replaced, packet, llm.job_id)
         await session.commit()
         activity(f"Packet v{packet.version} saved ({safety['status']})")
         return PacketOutcome(
             status="ready" if safety["status"] == "clean" else "issues",
             packet=packet_to_json(packet),
             job_id=llm.job_id,
+            replaced_version=replaced.version if replaced is not None else None,
         )
 
 

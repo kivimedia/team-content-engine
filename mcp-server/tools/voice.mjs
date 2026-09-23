@@ -152,11 +152,19 @@ export function register(server, call, { reply, failure, shortId }) {
   const ledgerFile = ledgerPath();
   const ledger = loadLedger(ledgerFile);
   const save = () => saveLedger(ledgerFile, ledger);
+  // The tools that write apply at once, so they take only a topic his words
+  // clearly name (see resolve).
+  const WRITE = { write: true };
 
-  /** One topic by id or words; a reply to return instead when it is not exactly one. */
-  async function resolve(topic) {
+  /**
+   * One topic by id or words; a reply to return instead when it is not exactly one.
+   * `write`: the tool applies at once, so only a clear winner counts as found; the
+   * only close title is read back as a question instead.
+   */
+  async function resolve(topic, { write = false } = {}) {
     if (!topic) return { stop: reply('Which topic? Say part of its title.', { status: 'none' }) };
-    const result = await call('GET', `/editorial/voice/topic?q=${encodeURIComponent(topic)}`);
+    const strict = write ? '&strict=1' : '';
+    const result = await call('GET', `/editorial/voice/topic?q=${encodeURIComponent(topic)}${strict}`);
     if (!result.ok) return { stop: failure(result, 'find that topic') };
     const d = result.data;
     if (d.status === 'found') return { topic: d.topic };
@@ -183,27 +191,54 @@ export function register(server, call, { reply, failure, shortId }) {
     return { stop: reply(`No topic matches "${topic}". Ask him for other words from its title.`, d) };
   }
 
-  function spokenError(result, what) {
+  /** A refusal said plainly; `more` is added to what he hears. */
+  function spokenError(result, what, more = '') {
     const detail = result.data?.detail;
+    const tail = more ? ` ${more}` : '';
     if (result.status === 409 && detail && typeof detail === 'object') {
       const now = detail.current;
       if (typeof now === 'string') {
         return reply(
-          `${detail.message} It now says: "${now}". Read him the current text and ask again.`,
+          `${detail.message} It now says: "${now}". Read him the current text and ask again.${tail}`,
           { ok: false, code: detail.code, current: now },
         );
       }
-      return reply(`${detail.message}`, { ok: false, code: detail.code, current: now ?? null });
+      // The opening options as they are now, numbered: what to read him instead.
+      const options = Array.isArray(now) && now.every((o) => o && typeof o.text === 'string')
+        ? ` The options now are: ${now.map((o, n) => `${o.n ?? n + 1}. "${o.text}"`).join(' ')}`
+        : '';
+      return reply(`${detail.message}${options}${tail}`, { ok: false, code: detail.code, current: now ?? null });
     }
     if (detail && typeof detail === 'object' && detail.message) {
-      return reply(`Could not ${what}: ${detail.message}`, { ok: false, code: detail.code, status: result.status });
+      return reply(`Could not ${what}: ${detail.message}${tail}`, { ok: false, code: detail.code, status: result.status });
     }
-    return failure(result, what);
+    if (!tail) return failure(result, what);
+    const failed = failure(result, what);
+    return reply(`${failed.content[0].text}${tail}`, failed.structuredContent.data);
   }
 
   function remember(entry) {
     ledger.writes.push({ ...entry, at: new Date().toISOString(), undone: false });
     save();
+  }
+
+  /*
+   * A decision as the call's undo needs it: what it replaced, and whether it put
+   * the topic on this week's list. That second part is what re-deciding cannot
+   * know: a topic chosen for this week but off the list answers previous
+   * "this_week", and deciding "this_week" again left it on the list.
+   */
+  function decisionEntry(t, decision, data) {
+    return {
+      kind: 'decision',
+      id: data?.decision_id ?? null,
+      candidate_id: t.candidate_id,
+      title: t.title,
+      decision,
+      previous: data?.previous_decision ?? null,
+      added_to_week: Boolean(data?.added_to_week),
+      removed_from_week: Boolean(data?.removed_from_week),
+    };
   }
 
   function track(job) {
@@ -311,6 +346,7 @@ export function register(server, call, { reply, failure, shortId }) {
       required: ['topic'],
     },
     async ({ topic }) => {
+      // Reading: the only close title may be read back; he hears which one it is.
       const found = await resolve(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
@@ -376,7 +412,7 @@ export function register(server, call, { reply, failure, shortId }) {
           { ok: false, code: 'unknown_part' },
         );
       }
-      const found = await resolve(topic);
+      const found = await resolve(topic, WRITE);
       if (found.stop) return found.stop;
       const t = found.topic;
       const op = { op: 'set_field', field: where.field, after: text };
@@ -412,12 +448,12 @@ export function register(server, call, { reply, failure, shortId }) {
     async ({ topic, decision, note }) => {
       const wanted = DECISIONS[clean(decision)] || DECISIONS[decision];
       if (!wanted) return reply(`"${decision}" is not a decision. Use this_week, discuss, later or away.`, { ok: false });
-      const found = await resolve(topic);
+      const found = await resolve(topic, WRITE);
       if (found.stop) return found.stop;
       const t = found.topic;
       const result = await call('POST', `/editorial/topics/${t.candidate_id}/decide`, { decision: wanted, note, by: 'voice' });
       if (!result.ok) return spokenError(result, 'decide that topic');
-      remember({ kind: 'decision', candidate_id: t.candidate_id, title: t.title, decision: wanted, previous: result.data.previous_decision });
+      remember(decisionEntry(t, wanted, result.data));
       const said = {
         this_week: `"${t.title}" is in this week's list${result.data.placed ? `, place ${result.data.placed.rank}` : ''}.`,
         discuss: `"${t.title}" is marked to think about.`,
@@ -438,13 +474,13 @@ export function register(server, call, { reply, failure, shortId }) {
       required: ['topic'],
     },
     async ({ topic }) => {
-      const found = await resolve(topic);
+      const found = await resolve(topic, WRITE);
       if (found.stop) return found.stop;
       const t = found.topic;
       if (t.put_away) return reply(`"${t.title}" is already put away.`, { candidate_id: t.candidate_id });
       const result = await call('POST', `/editorial/topics/${t.candidate_id}/decide`, { decision: 'away', by: 'voice' });
       if (!result.ok) return spokenError(result, 'put that idea away');
-      remember({ kind: 'decision', candidate_id: t.candidate_id, title: t.title, decision: 'away', previous: result.data.previous_decision });
+      remember(decisionEntry(t, 'away', result.data));
       return reply(`Put away: "${t.title}". It can be brought back.`, result.data);
     },
   );
@@ -458,7 +494,7 @@ export function register(server, call, { reply, failure, shortId }) {
       required: ['topic'],
     },
     async ({ topic }) => {
-      const found = await resolve(topic);
+      const found = await resolve(topic, WRITE);
       if (found.stop) return found.stop;
       const result = await call('POST', `/editorial/topics/${found.topic.candidate_id}/restore`, { by: 'voice' });
       if (!result.ok) return spokenError(result, 'bring that idea back');
@@ -469,23 +505,27 @@ export function register(server, call, { reply, failure, shortId }) {
   server.tool(
     'tce_choose_hook',
     'Use a different opening for a script: option is the number from tce_topic\'s opening options '
-      + '(1, 2, 3). The script\'s opening line becomes that option. Undoable.',
+      + '(1, 2, 3), and expect is the text of that opening exactly as you read it to him. The '
+      + 'script\'s opening line becomes that option. If the options changed since you read them '
+      + '(a new script, more openings), nothing is written and the options as they are now come '
+      + 'back to read him instead. Undoable.',
     {
       type: 'object',
       properties: {
         topic: { type: 'string', description: 'Id, short id, or words from the title.' },
         option: { type: 'string', description: 'The option number (1, 2, 3) or its id.' },
+        expect: { type: 'string', description: 'The text of the opening he chose, as you read it to him.' },
       },
-      required: ['topic', 'option'],
+      required: ['topic', 'option', 'expect'],
     },
-    async ({ topic, option }) => {
-      const found = await resolve(topic);
+    async ({ topic, option, expect }) => {
+      const found = await resolve(topic, WRITE);
       if (found.stop) return found.stop;
       const t = found.topic;
       const result = await call('POST', '/editorial/voice/change', {
         candidate_id: t.candidate_id,
         target: 'script',
-        operations: [{ op: 'choose_hook', after: String(option) }],
+        operations: [{ op: 'choose_hook', after: String(option), expect: expect ?? null }],
         summary: `Opening ${option} for "${t.title}"`,
         by: 'voice',
       });
@@ -516,7 +556,7 @@ export function register(server, call, { reply, failure, shortId }) {
       const key = clean(move);
       let spec = MOVES[key] || (/^\d+$/.test(key) ? { action: 'rank', rank: Number(key) } : null);
       if (!spec) return reply(`"${move}" is not a move. Use first, up, down, last, reserve, remove or a number.`, { ok: false });
-      const found = await resolve(topic);
+      const found = await resolve(topic, WRITE);
       if (found.stop) return found.stop;
       const t = found.topic;
       /*
@@ -557,9 +597,10 @@ export function register(server, call, { reply, failure, shortId }) {
 
   server.tool(
     'tce_undo',
-    'Take back a change. With no id it takes back the last thing changed in THIS call. With an id '
-      + '(the change id a tool returned) it takes back that one. Refuses, with the current text, if '
-      + 'the same part was changed again since.',
+    'Take back a change. With no id it takes back the last thing changed in THIS call that can '
+      + 'still be taken back. With an id (the change id a tool returned: an edit, a decision, a new '
+      + 'script) it takes back that one. Refuses, with the current text, if the same part was '
+      + 'changed again since; the next undo without an id then goes to the change before it.',
     {
       type: 'object',
       properties: { change_id: { type: 'string', description: 'Optional. The change id (or its first 8 characters).' } },
@@ -567,7 +608,8 @@ export function register(server, call, { reply, failure, shortId }) {
     async ({ change_id }) => {
       let entry;
       if (change_id) {
-        entry = [...ledger.writes].reverse().find((w) => w.kind === 'change' && String(w.id).startsWith(change_id));
+        // Any change of this call by its id: an edit, a decision, a rewrite.
+        entry = [...ledger.writes].reverse().find((w) => w.id && String(w.id).startsWith(change_id));
         if (!entry) {
           if (/^[0-9a-f-]{36}$/i.test(change_id)) {
             entry = { kind: 'change', id: change_id };
@@ -580,46 +622,84 @@ export function register(server, call, { reply, failure, shortId }) {
         }
       } else {
         if (!ledger.writes.length) return lastVoiceChange();
-        entry = [...ledger.writes].reverse().find((w) => !w.undone);
-        if (!entry) return reply('Nothing has been changed in this call, so there is nothing to undo.', { ok: false });
+        // A change whose undo was refused for good is passed over, so "undo"
+        // again means the change before it rather than the same refusal.
+        entry = [...ledger.writes].reverse().find((w) => !w.undone && !w.refused);
+        if (!entry) {
+          const refused = ledger.writes.filter((w) => w.refused && !w.undone);
+          if (!refused.length) return reply('Nothing has been changed in this call, so there is nothing to undo.', { ok: false });
+          const names = refused.map((w) => `${w.summary || w.title || 'a change'}${w.id ? ` (change ${shortId(w.id)})` : ''}`);
+          return reply(
+            `Everything else changed in this call is undone. These could not be undone when asked: ${names.join('; ')}. `
+              + 'If he asks again, use the change id.',
+            { ok: false, code: 'only_refused', refused: refused.map((w) => w.id ?? null) },
+          );
+        }
       }
 
-      if (entry.kind === 'decision') {
-        let result;
-        if (entry.decision === 'away') {
-          result = await call('POST', `/editorial/topics/${entry.candidate_id}/restore`, { by: 'voice' });
-        } else if (entry.previous) {
-          result = await call('POST', `/editorial/topics/${entry.candidate_id}/decide`, { decision: entry.previous, by: 'voice' });
-        } else {
-          return reply(`"${entry.title}" had no decision before, so there is nothing to go back to. Decide it again instead.`, { ok: false });
+      /*
+       * A refusal is an answer. One that holds for good (it was changed again, it
+       * was never saved) marks the entry, so the next plain undo moves on; one
+       * that is only "not yet" (still being written, a take being recorded)
+       * leaves it next in line. Either way it stays reachable by its id.
+       */
+      const NOT_YET = new Set(['still_writing', 'recording']);
+      const refusedWith = (result, what) => {
+        const code = result.data?.detail?.code;
+        if (result.status >= 400 && result.status < 500 && !NOT_YET.has(code)) {
+          entry.refused = true;
+          save();
+          const id = entry.id ? ` by its id (change ${shortId(entry.id)})` : '';
+          return spokenError(result, what, `The next undo goes to the change before this one; this one can still be undone later${id}.`);
         }
-        if (!result.ok) return spokenError(result, 'undo that decision');
+        if (NOT_YET.has(code)) {
+          // Skipping it would quietly undo an older change he did not mean.
+          return spokenError(result, what, 'It stays the next thing undo takes back once that is finished; '
+            + 'to take back an earlier change now, use that change\'s id.');
+        }
+        return spokenError(result, what);
+      };
+      const done = (result, said) => {
         entry.undone = true;
+        entry.refused = false;
         save();
-        return reply(`Undone. "${entry.title}" is back where it was.`, result.data);
+        return reply(said, result.data);
+      };
+
+      if (entry.kind === 'decision') {
+        if (entry.decision === 'away') {
+          const result = await call('POST', `/editorial/topics/${entry.candidate_id}/restore`, { by: 'voice' });
+          if (!result.ok) return refusedWith(result, 'undo that decision');
+          return done(result, `Undone. "${entry.title}" is back where it was.`);
+        }
+        // One route takes the decision back and, when this decision put it
+        // there, takes it off this week's list, in one transaction.
+        const result = await call('POST', `/editorial/topics/${entry.candidate_id}/undo-decision`, {
+          previous: entry.previous || 'undecided',
+          decision: entry.decision,
+          added_to_week: Boolean(entry.added_to_week),
+          removed_from_week: Boolean(entry.removed_from_week),
+          by: 'voice',
+        });
+        if (!result.ok) return refusedWith(result, 'undo that decision');
+        return done(result, result.data?.said ? `Undone. ${result.data.said}` : `Undone. "${entry.title}" is back where it was.`);
       }
 
       if (entry.kind === 'script') {
-        // A rewrite he agreed to: the version it replaced is kept, and comes back
-        // as a new version (itself undoable by the change id this returns).
-        const result = await call('POST', `/editorial/candidates/${entry.candidate_id}/script/restore`, {
-          version: entry.replaced_version,
-          by: 'voice',
-        });
-        if (!result.ok) return spokenError(result, 'put the earlier script back');
-        entry.undone = true;
-        if (result.data?.change_set_id) {
-          remember({ kind: 'change', id: result.data.change_set_id, title: entry.title, summary: result.data.said });
-        }
-        save();
-        return reply(result.data.said, result.data);
+        // A rewrite he agreed to. What comes back is the script it replaced when
+        // it was saved, edits made meanwhile included. That undo is not a new
+        // step of this call: a second "undo" goes further back, it does not bring
+        // the rewrite back.
+        const result = entry.id
+          ? await call('POST', `/editorial/candidates/${entry.candidate_id}/script/undo-rewrite`, { rewrite_id: entry.id, by: 'voice' })
+          : await call('POST', `/editorial/candidates/${entry.candidate_id}/script/restore`, { version: entry.replaced_version, by: 'voice' });
+        if (!result.ok) return refusedWith(result, 'put the earlier script back');
+        return done(result, result.data.said);
       }
 
       const result = await call('POST', `/editorial/change-sets/${entry.id}/undo`, { by: 'voice' });
-      if (!result.ok) return spokenError(result, 'undo that change');
-      entry.undone = true;
-      save();
-      return reply(result.data.said, result.data);
+      if (!result.ok) return refusedWith(result, 'undo that change');
+      return done(result, result.data.said);
     },
   );
 
@@ -632,8 +712,9 @@ export function register(server, call, { reply, failure, shortId }) {
       + 'script (tce_topic says "Script version N"), writing a new one replaces the current script '
       + 'when it finishes, together with any edits made to it meanwhile. So this refuses and reads '
       + 'that back unless replace is true: tell him ("X already has a script, version N; a new one '
-      + 'replaces it") and call again with replace true only after he says yes. tce_undo puts the '
-      + 'replaced version back once the new one is ready.',
+      + 'replaces it") and call again with replace true only after he says yes. While it is being '
+      + 'written the script itself cannot be changed. tce_undo (or its change id) puts back the '
+      + 'script it replaced once the new one is ready.',
     {
       type: 'object',
       properties: {
@@ -646,7 +727,7 @@ export function register(server, call, { reply, failure, shortId }) {
       required: ['topic'],
     },
     async ({ topic, replace }) => {
-      const found = await resolve(topic);
+      const found = await resolve(topic, WRITE);
       if (found.stop) return found.stop;
       const t = found.topic;
       const hasScript = (version, status) => reply(
@@ -665,19 +746,31 @@ export function register(server, call, { reply, failure, shortId }) {
       const already = result.status === 409 && /already being written/.test(String(detail || ''));
       if (!result.ok && !already) return spokenError(result, 'start the script');
       const replaces = already ? null : result.data?.replaces_version ?? null;
+      const rewriteId = already ? null : result.data?.rewrite_id ?? null;
       track({
         kind: 'script', title: t.title, candidate_id: t.candidate_id, replaces_version: replaces,
       });
       if (Number.isInteger(replaces)) {
-        // Undoable like any other change of this call: tce_undo puts it back.
-        remember({ kind: 'script', title: t.title, candidate_id: t.candidate_id, replaced_version: replaces });
+        // Undoable like any other change of this call, by the rewrite's id: the
+        // server records it when the new script is saved, under that id.
+        remember({
+          kind: 'script',
+          id: rewriteId,
+          title: t.title,
+          candidate_id: t.candidate_id,
+          replaced_version: replaces,
+          summary: `the new script for "${t.title}"`,
+        });
       }
       const when = Number.isInteger(replaces) ? ` When it is ready it replaces version ${replaces}.` : '';
+      const change = rewriteId ? ` (change ${shortId(rewriteId)}: once it is ready, undo puts back the script it replaced.)` : '';
       return reply(
         already
           ? `The script for "${t.title}" is already being written. I will say when it is ready.`
-          : `Started ${replaces ? 'a new script' : 'the script'} for "${t.title}". It takes a few minutes; I will say when it is ready.${when}`,
-        { started: !already, candidate_id: t.candidate_id, replaces_version: replaces },
+          : `Started ${replaces ? 'a new script' : 'the script'} for "${t.title}". It takes a few minutes; I will say when it is ready.${when}${change}`,
+        {
+          started: !already, candidate_id: t.candidate_id, replaces_version: replaces, change_id: rewriteId,
+        },
       );
     },
   );
@@ -692,7 +785,7 @@ export function register(server, call, { reply, failure, shortId }) {
       required: ['topic'],
     },
     async ({ topic }) => {
-      const found = await resolve(topic);
+      const found = await resolve(topic, WRITE);
       if (found.stop) return found.stop;
       const t = found.topic;
       if (!t.script) return reply(`"${t.title}" has no script yet, so there are no openings to add to.`, { ok: false });
@@ -714,7 +807,7 @@ export function register(server, call, { reply, failure, shortId }) {
       required: ['topic'],
     },
     async ({ topic }) => {
-      const found = await resolve(topic);
+      const found = await resolve(topic, WRITE);
       if (found.stop) return found.stop;
       const t = found.topic;
       const result = await call('POST', `/editorial/candidates/${t.candidate_id}/research`, { by: 'voice' });
@@ -737,7 +830,8 @@ export function register(server, call, { reply, failure, shortId }) {
       const r = await call('GET', `/editorial/candidates/${job.candidate_id}/packet-status`);
       if (!r.ok) return { state: 'unknown', said: 'could not be checked' };
       const j = r.data.job || {};
-      if (j.state === 'done') return { state: 'done', said: 'is ready' };
+      // The version it really replaced is the one current when it was saved.
+      if (j.state === 'done') return { state: 'done', said: 'is ready', replaced: j.result?.replaced_version ?? null };
       if (j.state === 'failed') return { state: 'failed', said: `stopped: ${j.detail || j.current_activity || 'an error'}` };
       // Written but never saved, or left queued by a restart: it waits for
       // someone to ask again, so "still going" would be waited on forever.
@@ -791,8 +885,9 @@ export function register(server, call, { reply, failure, shortId }) {
       if (!shown.length) return reply('Nothing new has finished yet.', { jobs });
       const lines = shown.map((r) => {
         const base = `${JOB_WORDS[r.job.kind]} for "${r.job.title}" ${r.said}.`;
-        const replaced = r.state === 'done' && Number.isInteger(r.job.replaces_version)
-          ? ` It replaced version ${r.job.replaces_version}; tce_undo puts that one back.`
+        const version = Number.isInteger(r.replaced) ? r.replaced : r.job.replaces_version;
+        const replaced = r.state === 'done' && Number.isInteger(r.job.replaces_version) && Number.isInteger(version)
+          ? ` It replaced version ${version}; tce_undo puts that one back.`
           : '';
         return r.summary ? `${base}${replaced} ${r.summary}` : `${base}${replaced}`;
       });

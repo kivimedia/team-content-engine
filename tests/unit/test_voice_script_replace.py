@@ -16,9 +16,12 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+import tce.llm
 from tce.api.routers import editorial as editorial_router
 from tce.editorial import status as job_status
+from tce.llm import LLMResult
 from tce.models.editorial import RecordingPacket
+from tests.unit.test_editorial_packets import good_output
 from tests.unit.test_editorial_voice_agent import (
     add_candidate,
     add_packet,
@@ -36,7 +39,7 @@ def no_writer(monkeypatch):
     """The packet writer is a PC worker job; here it only records that it was asked."""
     asked = []
 
-    async def record(sm, ws, cid, resume_job_id=None):
+    async def record(sm, ws, cid, resume_job_id=None, **kwargs):
         asked.append(cid)
         job_status.update(ws, "packet", str(cid), state="done")
 
@@ -196,6 +199,100 @@ async def test_putting_back_a_script_while_the_new_one_is_written_is_refused(
         job_status.update(ws, "packet", str(cid), state="done")
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "still_writing"
+
+
+MOMENT = "11111111-1111-1111-1111-111111111111"
+
+
+async def undo_rewrite(client, ws, cid, rewrite_id):
+    return await client.post(
+        f"/api/v1/editorial/candidates/{cid}/script/undo-rewrite",
+        json={"rewrite_id": rewrite_id, "by": "voice"},
+        headers=headers(ws),
+    )
+
+
+async def test_a_rewrite_keeps_the_script_it_replaced_when_it_is_saved_edits_included(
+    client, editorial_sessionmaker, monkeypatch
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea", moment_ids=[MOMENT])
+    pid = await add_packet(editorial_sessionmaker, ws, cid)
+    during = {}
+
+    async def slow_writer(request, *, wait_timeout_s=None):
+        # While the new script is written he asks for an edit by voice, and types
+        # one on the phone.
+        during["voice"] = await change(
+            client,
+            ws,
+            cid,
+            "script",
+            [{"field": "bullets.0", "after": "VOICE EDIT", "expect": "First point."}],
+        )
+        typed = await client.post(
+            "/api/v1/editorial/change-sets",
+            json={
+                "target_type": "packet",
+                "target_id": str(pid),
+                "operations": [{"op": "set_field", "field": "bullets.0", "after": "PHONE EDIT"}],
+                "summary": "Typed on the phone",
+                "origin": "quick_action",
+            },
+            headers=headers(ws),
+        )
+        assert typed.status_code == 200, typed.text
+        applied = await client.post(
+            f"/api/v1/editorial/change-sets/{typed.json()['id']}/apply", headers=headers(ws)
+        )
+        assert applied.status_code == 200, applied.text
+        during["typed"] = typed.json()["id"]
+        return LLMResult(job_id=uuid.uuid4(), text="", structured=good_output(), model="m")
+
+    monkeypatch.setattr(tce.llm, "complete", slow_writer)
+    started = await client.post(
+        f"/api/v1/editorial/candidates/{cid}/packet",
+        json={"replace": True, "by": "voice"},
+        headers=headers(ws),
+    )
+    assert started.status_code == 200, started.text
+    rewrite_id = started.json()["rewrite_id"]
+
+    # The voice edit was refused, with the reason, rather than written and lost.
+    assert during["voice"].status_code == 409, during["voice"].text
+    assert during["voice"].json()["detail"]["code"] == "still_writing"
+
+    script = (await topic(client, ws, "scripted"))["topic"]["script"]
+    assert script["points"][0] == good_output()["bullets"][0]
+
+    # Listed with the voice changes, under the id the start answered with.
+    items = (await client.get("/api/v1/editorial/voice/activity", headers=headers(ws))).json()[
+        "items"
+    ]
+    entry = next(i for i in items if i["id"] == rewrite_id)
+    assert entry["is_undo"] is False and entry["can_undo"] is True
+    assert "new script" in " ".join(entry["lines"]).lower()
+
+    back = await undo_rewrite(client, ws, cid, rewrite_id)
+    assert back.status_code == 200, back.text
+    script = (await topic(client, ws, "scripted"))["topic"]["script"]
+    assert script["points"][0] == "PHONE EDIT", "the script it really replaced, edit included"
+
+    # The text from before that edit is one more undo away.
+    typed_back = await undo(client, ws, during["typed"])
+    assert typed_back.status_code == 200, typed_back.text
+    script = (await topic(client, ws, "scripted"))["topic"]["script"]
+    assert script["points"][0] == "First point."
+
+
+async def test_undoing_a_rewrite_that_was_never_saved_says_so(client, editorial_sessionmaker):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea")
+    await add_packet(editorial_sessionmaker, ws, cid)
+    response = await undo_rewrite(client, ws, cid, str(uuid.uuid4()))
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "not_saved"
+    assert (await topic(client, ws, "scripted"))["topic"]["script"]["version"] == 1
 
 
 async def test_putting_back_the_current_script_changes_nothing(client, editorial_sessionmaker):

@@ -335,9 +335,27 @@ def test_a_close_but_unsure_match_asks_before_any_write():
     text = out["texts"][0]
     assert "More than one" not in text
     assert '"How I set my pricing" (id cccc3333)' in text and "Ask him if that is the one" in text
-    assert [s["key"] for s in out["sent"]] == ["GET /editorial/voice/topic?q=pricing%20fennel"], (
-        "nothing is written to a topic he did not confirm"
+    assert [s["key"] for s in out["sent"]] == [
+        "GET /editorial/voice/topic?q=pricing%20fennel&strict=1"
+    ], "nothing is written to a topic he did not confirm"
+
+
+def test_a_write_asks_for_a_sure_match_and_a_read_does_not():
+    out = run(
+        {
+            "steps": [
+                step("tce_topic", topic="report"),
+                step("tce_decide", topic="report", decision="later"),
+                step("tce_put_away", topic="report"),
+                step("tce_write_script", topic="report"),
+                step("tce_research", topic="report"),
+            ],
+            "responses": {"GET /editorial/voice/topic": FOUND},
+        }
     )
+    finds = [s["key"] for s in out["sent"] if s["key"].startswith("GET /editorial/voice/topic")]
+    assert finds[0] == "GET /editorial/voice/topic?q=report"
+    assert finds[1:] == ["GET /editorial/voice/topic?q=report&strict=1"] * 4
 
 
 def test_no_match_says_so():
@@ -487,10 +505,10 @@ def test_restore_idea_says_where_it_went():
     assert out["texts"][0] == '"Nobody opens the report" is back in saved for later.'
 
 
-def test_choose_hook_sends_the_option_number_to_the_script():
+def test_choose_hook_sends_the_option_number_and_the_opening_he_heard():
     out = run(
         {
-            "steps": [step("tce_choose_hook", topic="report", option="2")],
+            "steps": [step("tce_choose_hook", topic="report", option="2", expect="Nobody checks.")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/voice/change": change_ok(
@@ -503,8 +521,34 @@ def test_choose_hook_sends_the_option_number_to_the_script():
     assert out["texts"][0].startswith('Done. The opening is now option 2: "Nobody checks."')
     body = out["sent"][1]["body"]
     assert body["target"] == "script" and body["operations"] == [
-        {"op": "choose_hook", "after": "2"}
+        {"op": "choose_hook", "after": "2", "expect": "Nobody checks."}
     ]
+    assert "expect" in out["descs"]["tce_choose_hook"]
+
+
+def test_an_opening_he_did_not_hear_reads_the_options_as_they_are_now():
+    out = run(
+        {
+            "steps": [step("tce_choose_hook", topic="report", option="2", expect="Old two.")],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                "POST /editorial/voice/change": {
+                    "ok": False,
+                    "status": 409,
+                    "data": {
+                        "detail": {
+                            "code": "changed",
+                            "message": "The opening options changed since you read them.",
+                            "current": [{"n": 1, "text": "New one."}, {"n": 2, "text": "New two."}],
+                        }
+                    },
+                },
+            },
+        }
+    )
+    text = out["texts"][0]
+    assert "changed since you read them" in text
+    assert '1. "New one."' in text and '2. "New two."' in text
 
 
 def test_reorder_week_turns_words_into_a_move():
@@ -579,6 +623,118 @@ def test_undo_by_short_id_finds_a_change_from_earlier_today():
     )
     assert out["texts"][0] == "Undone: x."
     assert out["sent"][-1]["key"] == f"POST /editorial/change-sets/{CS}/undo"
+
+
+DECIDE = f"POST /editorial/topics/{CID}/decide"
+UNDO_DECISION = f"POST /editorial/topics/{CID}/undo-decision"
+DECISION_ID = "dddddddd-0000-0000-0000-000000000000"
+
+
+def approved(previous, added=True):
+    return {
+        "ok": True,
+        "status": 200,
+        "data": {
+            "decision": "this_week",
+            "previous_decision": previous,
+            "added_to_week": added,
+            "decision_id": DECISION_ID,
+            "placed": {"slot": "primary", "rank": 1},
+        },
+    }
+
+
+def test_undoing_an_approval_says_what_it_added_to_the_week():
+    out = run(
+        {
+            "steps": [step("tce_decide", topic="report", decision="approve"), step("tce_undo")],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                DECIDE: approved("this_week"),
+                UNDO_DECISION: {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"said": '"Nobody opens the report" is off this week\'s list again.'},
+                },
+            },
+        }
+    )
+    sent = [s for s in out["sent"] if s["key"] == UNDO_DECISION]
+    assert sent and sent[0]["body"] == {
+        "previous": "this_week",
+        "decision": "this_week",
+        "added_to_week": True,
+        "removed_from_week": False,
+        "by": "voice",
+    }
+    assert not [s for s in out["sent"][2:] if s["key"] == DECIDE], "one route does both"
+    assert "off this week's list" in out["texts"][1]
+
+
+def test_undoing_a_later_says_the_week_lost_it_so_it_goes_back():
+    out = run(
+        {
+            "steps": [step("tce_decide", topic="report", decision="later"), step("tce_undo")],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                DECIDE: {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "decision": "later",
+                        "previous_decision": "this_week",
+                        "added_to_week": False,
+                        "removed_from_week": {"slot": "primary", "rank": 2},
+                    },
+                },
+                UNDO_DECISION: {"ok": True, "status": 200, "data": {"said": "back"}},
+            },
+        }
+    )
+    sent = [s for s in out["sent"] if s["key"] == UNDO_DECISION]
+    assert sent[0]["body"]["removed_from_week"] is True
+    assert sent[0]["body"]["previous"] == "this_week"
+
+
+def test_a_refused_undo_lets_the_next_undo_move_on():
+    out = run(
+        {
+            "steps": [
+                step("tce_edit", topic="report", part="takeaway", text="Open the result."),
+                step("tce_decide", topic="report", decision="approve"),
+                step("tce_undo"),
+                step("tce_undo"),
+                step("tce_undo", change_id=DECISION_ID[:8]),
+            ],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                "POST /editorial/voice/change": change_ok(["The takeaway now says ..."]),
+                DECIDE: approved("undecided"),
+                UNDO_DECISION: {
+                    "ok": False,
+                    "status": 409,
+                    "data": {
+                        "detail": {
+                            "code": "changed",
+                            "message": "It was decided again since. Nothing was changed.",
+                        }
+                    },
+                },
+                "POST /editorial/change-sets/": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"said": 'Undone: "Takeaway".'},
+                },
+            },
+        }
+    )
+    assert "Nothing was changed." in out["texts"][2]
+    assert "next undo" in out["texts"][2]
+    # The second plain undo goes to the edit before it, not the refused one again.
+    assert out["texts"][3] == 'Undone: "Takeaway".'
+    assert out["sent"][-2]["key"] == f"POST /editorial/change-sets/{CS}/undo"
+    # The refused one is still reachable by its id.
+    assert out["sent"][-1]["key"] == UNDO_DECISION
 
 
 def test_undo_refused_because_it_changed_again_reads_the_current_text():
@@ -993,6 +1149,13 @@ def test_write_script_tells_the_brain_a_rewrite_replaces_the_current_script():
 
 PACKET = f"POST /editorial/candidates/{CID}/packet"
 RESTORE = f"POST /editorial/candidates/{CID}/script/restore"
+UNDO_REWRITE = f"POST /editorial/candidates/{CID}/script/undo-rewrite"
+RW = "eeeeeeee-1111-2222-3333-444444444444"
+REWRITE_STARTED = {
+    "ok": True,
+    "status": 200,
+    "data": {"status": "running", "replaces_version": 3, "rewrite_id": RW},
+}
 
 
 def test_a_script_over_an_existing_one_is_read_back_and_nothing_starts():
@@ -1053,45 +1216,72 @@ def test_a_rewrite_he_agreed_to_names_what_it_replaces_and_undo_puts_it_back():
             ],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
-                PACKET: {
+                PACKET: REWRITE_STARTED,
+                UNDO_REWRITE: {
                     "ok": True,
                     "status": 200,
-                    "data": {"status": "running", "replaces_version": 3},
-                },
-                RESTORE: {
-                    "ok": True,
-                    "status": 200,
-                    "data": {
-                        "restored": True,
-                        "said": 'Script version 3 of "Nobody opens the report" is back.',
-                    },
+                    "data": {"said": 'The script of "Nobody opens the report" is back.'},
                 },
             },
         }
     )
     started = [s for s in out["sent"] if s["key"] == PACKET]
     assert started[0]["body"] == {"replace": True, "by": "voice"}
-    assert "replaces version 3" in out["texts"][0]
-    restored = [s for s in out["sent"] if s["key"] == RESTORE]
-    assert restored and restored[0]["body"] == {"version": 3, "by": "voice"}
-    assert out["texts"][1] == 'Script version 3 of "Nobody opens the report" is back.'
+    assert "replaces version 3" in out["texts"][0] and f"change {RW[:8]}" in out["texts"][0]
+    undone = [s for s in out["sent"] if s["key"] == UNDO_REWRITE]
+    assert undone and undone[0]["body"] == {"rewrite_id": RW, "by": "voice"}
+    assert out["texts"][1] == 'The script of "Nobody opens the report" is back.'
 
 
-def test_undoing_a_rewrite_that_is_still_being_written_says_so():
+def test_a_rewrite_is_undone_by_its_id_and_the_next_undo_goes_further_back():
+    out = run(
+        {
+            "steps": [
+                step("tce_edit", topic="report", part="takeaway", text="Open the result."),
+                step("tce_write_script", topic="report", replace=True),
+                step("tce_undo", change_id=RW[:8]),
+                step("tce_undo"),
+            ],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                "POST /editorial/voice/change": change_ok(["The takeaway now says ..."]),
+                PACKET: REWRITE_STARTED,
+                UNDO_REWRITE: {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "said": "The earlier script is back.",
+                        "change_set_id": "ffffffff-0000-0000-0000-000000000000",
+                    },
+                },
+                "POST /editorial/change-sets/": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"said": 'Undone: "Takeaway".'},
+                },
+            },
+        }
+    )
+    assert out["texts"][2] == "The earlier script is back."
+    assert [s["key"] for s in out["sent"] if s["key"] == UNDO_REWRITE] == [UNDO_REWRITE]
+    # The second undo steps back to the edit; it does not take back the undo and
+    # bring the new script back.
+    assert out["sent"][-1]["key"] == f"POST /editorial/change-sets/{CS}/undo"
+    assert out["texts"][3] == 'Undone: "Takeaway".'
+
+
+def test_undoing_a_rewrite_that_is_still_being_written_says_so_and_stays_next():
     out = run(
         {
             "steps": [
                 step("tce_write_script", topic="report", replace=True),
                 step("tce_undo"),
+                step("tce_undo"),
             ],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
-                PACKET: {
-                    "ok": True,
-                    "status": 200,
-                    "data": {"status": "running", "replaces_version": 3},
-                },
-                RESTORE: {
+                PACKET: REWRITE_STARTED,
+                UNDO_REWRITE: {
                     "ok": False,
                     "status": 409,
                     "data": {
@@ -1106,3 +1296,27 @@ def test_undoing_a_rewrite_that_is_still_being_written_says_so():
     )
     assert "still being written" in out["texts"][1]
     assert json.loads(out["seen"][1])["data"]["ok"] is False
+    # "Not yet" is not "never": the rewrite is still the next thing undo takes.
+    assert [s["key"] for s in out["sent"] if s["key"] == UNDO_REWRITE] == [UNDO_REWRITE] * 2
+
+
+def test_a_failed_request_that_is_not_json_says_what_came_back():
+    out = run(
+        {
+            "steps": [step("tce_week")],
+            "responses": {
+                "GET /editorial/today": {
+                    "ok": False,
+                    "status": 502,
+                    "data": {
+                        "error": "TCE did not answer with JSON",
+                        "body": "<html><head><title>502 Bad Gateway</title></head>"
+                        "<body><h1>502 Bad Gateway</h1><p>nginx</p></body></html>",
+                    },
+                }
+            },
+        }
+    )
+    text = out["texts"][0]
+    assert "did not answer with JSON" in text
+    assert "502 Bad Gateway" in text and "<" not in text

@@ -261,6 +261,8 @@ async def decide_topic(
     after = decision.decision if decision is not None else None
     return {
         "candidate_id": candidate_id,
+        # The decision row: what the voice call's undo refers to by id.
+        "decision_id": str(decision.id) if decision is not None else None,
         "decision": after,
         "previous_decision": before or voice_agent.UNDECIDED,
         "changed": before != after,

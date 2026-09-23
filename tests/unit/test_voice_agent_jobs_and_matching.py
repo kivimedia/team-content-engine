@@ -107,7 +107,87 @@ async def test_a_half_match_is_offered_back_not_picked(client, editorial_session
 
 def test_a_phrase_is_matched_on_whole_words():
     assert voice_agent._score("the fun", "The funnel is dead") == 0.0
-    assert voice_agent._score("one thing", "The one thing I would never automate") >= 1.0
+    assert voice_agent._score("would never automate", "The one thing I would never automate") >= 1.0
+
+
+async def four_titles(sm, ws):
+    return {
+        **await three_titles(sm, ws),
+        "nobody": await add_candidate(sm, ws, "What nobody tells you about pricing"),
+    }
+
+
+async def test_title_pattern_words_do_not_pick_the_topic(client, editorial_sessionmaker):
+    ws = uuid.uuid4()
+    ids = await four_titles(editorial_sessionmaker, ws)
+
+    # "thing", "would" and "never" are how he talks, not what the topic is.
+    body = await topic(client, ws, "that thing I would never do with the funnel")
+    assert body["status"] == "found", body
+    assert body["topic"]["candidate_id"] == str(ids["funnel"])
+
+    body = await topic(client, ws, "what nobody tells you about the funnel")
+    assert body["status"] == "found", body
+    assert body["topic"]["candidate_id"] == str(ids["funnel"])
+
+    # Named by its pattern words alone, it is offered back, never picked.
+    body = await topic(client, ws, "what nobody tells you")
+    assert body["status"] == "ambiguous", body
+    assert [c["candidate_id"] for c in body["candidates"]] == [str(ids["nobody"])]
+
+
+async def test_hebrew_one_names_no_topic_and_a_prefix_letter_does_not_hide_a_word(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    await add_candidate(editorial_sessionmaker, ws, "הדבר האחד שלעולם לא הייתי עושה אוטומטית")
+    funnel = await add_candidate(editorial_sessionmaker, ws, "משפך המכירות שלך דולף")
+
+    assert (await topic(client, ws, "האחד"))["status"] == "none"
+    body = await topic(client, ws, "האחד על המשפך")
+    assert body["status"] == "found", body
+    assert body["topic"]["candidate_id"] == str(funnel)
+
+
+async def test_every_title_that_shares_a_word_competes(client, editorial_sessionmaker):
+    ws = uuid.uuid4()
+    pages = await add_candidate(editorial_sessionmaker, ws, "Funnel pages are dead")
+    rebuild = await add_candidate(editorial_sessionmaker, ws, "How I rebuild my offer")
+    # Two of his three words are in one title and the third is in another: the
+    # one below half used to be dropped before the choice was made.
+    body = await topic(client, ws, "funnel pages rebuild")
+    assert body["status"] == "ambiguous", body
+    assert {c["candidate_id"] for c in body["candidates"]} == {str(pages), str(rebuild)}
+
+
+async def test_a_write_needs_a_clear_winner_where_a_read_may_take_the_only_close_one(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Why invoices go unpaid")
+    await add_candidate(editorial_sessionmaker, ws, "The receptionist at night")
+
+    read = await topic(client, ws, "unpaid invoices december")
+    assert read["status"] == "found" and read["topic"]["candidate_id"] == str(cid)
+
+    write = (
+        await client.get(
+            "/api/v1/editorial/voice/topic",
+            params={"q": "unpaid invoices december", "strict": "1"},
+            headers=headers(ws),
+        )
+    ).json()
+    assert write["status"] == "ambiguous", write
+    assert [c["candidate_id"] for c in write["candidates"]] == [str(cid)]
+
+    sure = (
+        await client.get(
+            "/api/v1/editorial/voice/topic",
+            params={"q": "the unpaid invoices one", "strict": "1"},
+            headers=headers(ws),
+        )
+    ).json()
+    assert sure["status"] == "found" and sure["topic"]["candidate_id"] == str(cid)
 
 
 # ------------------------------------------ an edit made while openings are written
@@ -272,6 +352,34 @@ async def test_research_that_cannot_even_open_its_session_is_marked_failed(
         row = await s.get(IdeaResearch, rid)
     assert row.state == "failed", "a research row must never be left running by a crash"
     assert row.finished_at is not None
+
+
+async def test_research_retired_while_it_hung_is_not_marked_done_later(
+    editorial_sessionmaker, monkeypatch
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "An idea")
+    rid = await running_row(editorial_sessionmaker, ws, cid, age=timedelta(seconds=1))
+
+    class Hung:
+        api_key = "configured"
+
+        async def search(self, query, count=10, **kwargs):
+            # While this search hangs, a new request retires the row as dead.
+            async with editorial_sessionmaker() as s:
+                row = await s.get(IdeaResearch, rid)
+                voice_agent._mark_interrupted(row, "retired", voice_agent.STALE_SUMMARY)
+                await s.commit()
+            return [{"title": "late", "url": "https://example.org/late", "description": ""}]
+
+    monkeypatch.setattr(voice_agent, "make_searcher", lambda: Hung())
+    await voice_agent.run_research(editorial_sessionmaker, ws, rid)
+
+    async with editorial_sessionmaker() as s:
+        row = await s.get(IdeaResearch, rid)
+    assert row.state == "failed", "a retired row must stay retired"
+    assert row.summary == voice_agent.STALE_SUMMARY
+    assert row.web == []
 
 
 def brave_answers(monkeypatch, handler):

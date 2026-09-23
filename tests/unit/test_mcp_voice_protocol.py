@@ -236,6 +236,8 @@ def test_every_family_loads_on_the_real_sdk(sdk_installed, tmp_path):
     schema = edit["inputSchema"]
     assert sorted(schema["required"]) == ["part", "text", "topic"]
     assert "point 3" in schema["properties"]["part"]["description"]
+    choose = next(t for t in out["tools"] if t["name"] == "tce_choose_hook")
+    assert sorted(choose["inputSchema"]["required"]) == ["expect", "option", "topic"]
     approve = next(t for t in out["tools"] if t["name"] == "tce_approve")
     assert approve["inputSchema"]["properties"]["decision"]["enum"] == ["approve", "reject"]
 
