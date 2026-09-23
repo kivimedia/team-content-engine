@@ -902,7 +902,8 @@ function packetToIdea(idea, packet) {
       $("finishSessionButton").disabled = false;
       $("pauseButton").textContent = "Pause";
       setRecordingChrome(true);
-      showNotice("Recording started. Tabs and point jumps stay available.");
+      // No "Recording started" toast: it sat over the red flag and the timer for
+      // four seconds, and the red flag already says it.
     } catch (error) {
       showNotice(`Recording did not start: ${error.message}`, 7000);
     }
