@@ -122,6 +122,24 @@ async def _mark_stale_editorial_work_interrupted() -> None:
         pass  # never block startup; worst case the stale row remains
 
 
+async def _mark_stale_idea_research_interrupted() -> None:
+    """Voice research runs as an in-process BackgroundTask and dies with the process.
+
+    A row it left "running" answered "already running" to every later request for
+    that idea. start_research also retires a row that is too old to be alive, but
+    that needs a request; this says it plainly as soon as the API is back.
+    """
+    try:
+        from tce.editorial.voice_agent import mark_interrupted_research
+
+        await mark_interrupted_research(async_session)
+    except Exception:
+        import structlog
+
+        # Never block startup; start_research retires the row when it is asked again.
+        structlog.get_logger().warning("mark_stale_idea_research.failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Seed database, sweep stale runs, and start background scheduler on startup."""
@@ -136,6 +154,7 @@ async def lifespan(app: FastAPI):
     # 'running' is a ghost (its async task died with the previous process).
     await _mark_stale_weekly_plans_interrupted()
     await _mark_stale_editorial_work_interrupted()
+    await _mark_stale_idea_research_interrupted()
 
     # Recordings left transcribing/rendering by the previous process become a visible,
     # retryable 'interrupted' state once their step lease is provably dead.

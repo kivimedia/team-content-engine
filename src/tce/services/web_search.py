@@ -25,6 +25,8 @@ class WebSearchService:
         query: str,
         count: int = 10,
         freshness: str | None = None,
+        *,
+        raise_errors: bool = False,
     ) -> list[dict[str, Any]]:
         """Search the web and return structured results.
 
@@ -32,6 +34,10 @@ class WebSearchService:
             query: Search query string.
             count: Number of results (max 20).
             freshness: Optional filter - "pd" (past day), "pw" (past week), "pm" (past month).
+            raise_errors: Re-raise a refused key, a quota, a timeout or an outage
+                instead of returning []. Trend Scout and the Research Agent take []
+                as "nothing today"; a caller that tells a person what the web said
+                must be able to tell "found nothing" from "could not search".
 
         Returns:
             List of dicts with title, url, description, age fields.
@@ -72,9 +78,13 @@ class WebSearchService:
 
         except httpx.HTTPStatusError as e:
             logger.error("web_search.http_error", status=e.response.status_code, query=query)
+            if raise_errors:
+                raise
             return []
         except Exception:
             logger.exception("web_search.failed", query=query)
+            if raise_errors:
+                raise
             return []
 
     async def search_news(self, query: str, count: int = 10) -> list[dict[str, Any]]:

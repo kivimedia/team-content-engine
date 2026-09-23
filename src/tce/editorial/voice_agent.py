@@ -169,22 +169,69 @@ def describe_operation(target_type: str, op: dict[str, Any], titles: dict[str, s
 _ID_LIKE = re.compile(r"^[0-9a-f-]{4,36}$")
 
 
+# Words that name no topic. "The one about the funnel" is one word of content;
+# counted in, "the", "one" and "about" out-voted it and sent the edit to "The one
+# thing I would never automate". A misheard content word then left only filler,
+# which matched every title with a "the" in it.
+FILLER = frozenset(
+    (
+        # English
+        "the a an one ones about of to and or on in for with that this these those it its "
+        "is are was be my your our his her their me we you he she they i im from at by as "
+        "so do does did can could would should will just like"
+    ).split()
+    + (
+        # Hebrew
+        "של על את זה זו זאת לא מה עם גם או כמו אני אתה הוא היא אנחנו הם הן יש אין הזה הזאת הזו"
+    ).split()
+)
+# Words about the thing rather than its name ("the topic about pricing"). They
+# count only when they are all he said, so "the topic" can still find "A topic".
+META = frozenset(
+    "topic topics idea ideas video videos script scripts post called named titled "
+    "רעיון נושא סרטון תסריט".split()
+)
+
+
 def _tokens(text: str) -> list[str]:
     # \w is Unicode-aware, so a Hebrew title is matched on its own words rather
     # than normalised away to nothing.
     return [t for t in re.findall(r"\w+", (text or "").casefold()) if len(t) >= 2]
 
 
+def _content(words: list[str]) -> list[str]:
+    """The words that can name a topic, each once, in the order he said them."""
+    out: list[str] = []
+    for w in words:
+        if w not in FILLER and w not in META and w not in out:
+            out.append(w)
+    if not out:
+        out = [w for w in dict.fromkeys(words) if w not in FILLER]
+    return out
+
+
 def _score(needle: str, title: str) -> float:
+    """How well his words name this title. 0.0 when no word that means anything matches.
+
+    1.0 means every content word he said is in the title; above 1.0 means he said
+    a run of the title's words in order. Filler never counts for or against.
+    """
     words = _tokens(needle)
-    if not words:
+    content = _content(words)
+    if not content:
         return 0.0
-    haystack = " ".join(_tokens(title))
+    title_words = _tokens(title)
+    have = set(title_words)
+    matched = sum(1 for w in content if w in have)
+    if not matched:
+        return 0.0
+    # A run of his words in the title, on whole-word boundaries ("the fun" is not
+    # in "the funnel"), is the strongest sign. Filler may be part of the run.
+    haystack = f" {' '.join(title_words)} "
     phrase = " ".join(words)
-    if phrase and phrase in haystack:
-        return 1.0 + min(len(phrase) / max(len(haystack), 1), 1.0) * 0.5
-    have = set(_tokens(title))
-    return sum(1 for w in words if w in have) / len(words)
+    if f" {phrase} " in haystack:
+        return 1.0 + min(len(phrase) / max(len(haystack.strip()), 1), 1.0) * 0.5
+    return matched / len(content)
 
 
 async def _week_ids(db: AsyncSession, ws: uuid.UUID) -> set[str]:
@@ -218,30 +265,37 @@ async def find_topics(db: AsyncSession, ws: uuid.UUID, query: str) -> dict[str, 
             return {"status": "found", "candidate": hits[0], "candidates": []}
 
     in_week = await _week_ids(db, ws)
-    scored: list[tuple[float, TopicCandidate]] = []
+    # (match, rank, candidate): `match` is how well the words name it and decides
+    # whether it is named at all; `rank` only breaks ties, towards what he is
+    # working on and then towards what is still live.
+    scored: list[tuple[float, float, TopicCandidate]] = []
     for c in rows:
-        score = _score(q, c.title)
-        if score < 0.5:
+        match = _score(q, c.title)
+        if match < 0.5:
             continue
-        # Ties go to what he is working on, then to what is still live.
-        if str(c.id) in in_week:
-            score += 0.02
-        if c.status != "withdrawn":
-            score += 0.01
-        scored.append((score, c))
-    scored.sort(key=lambda pair: pair[0], reverse=True)
+        rank = match + (0.02 if str(c.id) in in_week else 0.0)
+        rank += 0.01 if c.status != "withdrawn" else 0.0
+        scored.append((match, rank, c))
+    scored.sort(key=lambda row: row[1], reverse=True)
 
     if not scored:
         return {"status": "none", "candidate": None, "candidates": []}
-    top = scored[0][0]
+    top, _, best = scored[0]
     second = scored[1][0] if len(scored) > 1 else 0.0
-    clear = len(scored) == 1 or (top >= 1.0 and second < 1.0) or (top - second) >= 0.34
-    if clear:
-        return {"status": "found", "candidate": scored[0][1], "candidates": []}
+    # Every write tool resolves through here and applies at once, so a topic is
+    # "found" only when his words name it and nothing else comes close:
+    # - all of his content words are in the title (or a run of them), and no
+    #   other title does as well; or
+    # - it is the only title that matches, and it matches more than half.
+    # Anything weaker comes back as candidates, and the agent asks which.
+    strong = top >= 1.0 and (second < 1.0 or top - second >= 0.34)
+    only = len(scored) == 1 and top > 0.5
+    if strong or only:
+        return {"status": "found", "candidate": best, "candidates": []}
     return {
         "status": "ambiguous",
         "candidate": None,
-        "candidates": [c for _, c in scored[:5]],
+        "candidates": [c for _, _, c in scored[:5]],
     }
 
 
@@ -1058,6 +1112,45 @@ def research_to_json(row: IdeaResearch) -> dict[str, Any]:
     }
 
 
+# Research is one evidence query and one web search with a 15 second timeout, so
+# a row still "running" after this long belongs to a process that died (a deploy
+# restart, a crash) and will never finish. Left alone, it answered "already
+# running" to every later request for that idea, for good.
+RESEARCH_STALE_AFTER = timedelta(minutes=5)
+
+INTERRUPTED_SUMMARY = (
+    "The research stopped before it finished, because TCE restarted. Ask again to run it."
+)
+STALE_SUMMARY = (
+    "The research stopped before it finished and never reported back, so it was started again."
+)
+
+
+def _mark_interrupted(row: IdeaResearch, detail: str, summary: str = INTERRUPTED_SUMMARY) -> None:
+    row.state = "failed"
+    row.detail = detail
+    row.summary = summary
+    row.finished_at = _now()
+
+
+async def mark_interrupted_research(sm: Any) -> int:
+    """At startup: research left running by the previous process is dead. Say so.
+
+    The job runs as an in-process BackgroundTask, so nothing survives a restart to
+    finish it. Returns how many rows were marked.
+    """
+    async with open_session(sm) as db:
+        rows = (
+            (await db.execute(select(IdeaResearch).where(IdeaResearch.state == "running")))
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            _mark_interrupted(row, "interrupted by server restart")
+        await db.commit()
+        return len(rows)
+
+
 async def start_research(
     db: AsyncSession, ws: uuid.UUID, candidate_id: uuid.UUID, *, by: str = "voice"
 ) -> tuple[IdeaResearch, bool]:
@@ -1075,10 +1168,22 @@ async def start_research(
             )
         )
         .scalars()
-        .first()
+        .all()
     )
-    if running is not None:
-        return running, False
+    now = _now()
+    for row in running:
+        started = row.created_at
+        if started is not None and started.tzinfo is not None:
+            started = started.astimezone(UTC).replace(tzinfo=None)
+        if started is not None and now - started < RESEARCH_STALE_AFTER:
+            return row, False
+        # Started too long ago to still be alive: close it and start a new one.
+        _mark_interrupted(
+            row,
+            f"no result after {int(RESEARCH_STALE_AFTER.total_seconds() // 60)} minutes; "
+            "started again",
+            STALE_SUMMARY,
+        )
     row = IdeaResearch(
         workspace_id=ws,
         candidate_id=candidate.id,
@@ -1088,6 +1193,9 @@ async def start_research(
         evidence=[],
         web=[],
         web_status="skipped",
+        # On the same clock the staleness check reads (naive UTC), rather than the
+        # database's own now(), which follows the server's time zone.
+        created_at=now,
     )
     db.add(row)
     await db.flush()
@@ -1144,8 +1252,41 @@ async def gather_evidence(
     return found[:limit]
 
 
+def web_failure(error: BaseException) -> tuple[str, str]:
+    """(what he hears, what is kept for whoever fixes it) for a web search that failed.
+
+    A refused key and a spent quota cost money and need someone to act, so they
+    are named as such rather than folded into "the search failed".
+    """
+    import httpx
+
+    if isinstance(error, httpx.HTTPStatusError):
+        code = error.response.status_code
+        if code in (401, 403):
+            words = "the search key was refused"
+        elif code in (402, 429):
+            words = "the search is over its quota or rate limit"
+        elif code >= 500:
+            words = "the search service had an error"
+        else:
+            words = "the search answered with an error"
+        return f"{words}, HTTP {code}", f"web search HTTP {code}"
+    if isinstance(error, httpx.TimeoutException):
+        return "the search did not answer in time", f"web search timeout: {type(error).__name__}"
+    if isinstance(error, httpx.TransportError):
+        return (
+            "the search service could not be reached",
+            f"web search unreachable: {type(error).__name__}",
+        )
+    return "", f"web search error: {type(error).__name__}: {_clip(error, 200)}"
+
+
 def _summary(
-    title: str, evidence: list[dict[str, Any]], web: list[dict[str, Any]], web_status: str
+    title: str,
+    evidence: list[dict[str, Any]],
+    web: list[dict[str, Any]],
+    web_status: str,
+    web_failed_because: str = "",
 ) -> str:
     calls = sum(
         1
@@ -1175,15 +1316,46 @@ def _summary(
         "searched": f"{len(web)} web results",
         "no_key": "no web search, because web search is not set up on TCE (no search key), "
         "so this is your own evidence only",
-        "failed": "no web search, because the search failed this time, so this is your own "
-        "evidence only",
+        "failed": "no web results, because the web search failed this time"
+        + (f" ({web_failed_because})" if web_failed_because else "")
+        + ", so this is your own evidence only",
         "skipped": "no web search",
     }[web_status]
     return f'Research on "{title}" is ready: {own}, and {web_words}.'
 
 
 async def run_research(sm: Any, ws: uuid.UUID, research_id: uuid.UUID) -> None:
-    """The background half. Never raises: a failure is written onto the row."""
+    """The background half. Never raises, and never leaves the row running.
+
+    A failure inside the work is written onto the row with the result. A failure
+    around it (the session will not open, the final commit fails) is written by
+    a second, fresh session, because a row left "running" answers "already
+    running" to the next request for this idea.
+    """
+    try:
+        await _run_research(sm, ws, research_id)
+    except Exception as error:
+        logger.exception("voice.research_crashed", research_id=str(research_id))
+        try:
+            async with open_session(sm) as db:
+                row = (
+                    await db.execute(
+                        select(IdeaResearch).where(
+                            IdeaResearch.workspace_id == ws, IdeaResearch.id == research_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if row is not None and row.state == "running":
+                    row.state = "failed"
+                    row.detail = f"{type(error).__name__}: {_clip(error, 300)}"
+                    row.summary = "The research stopped with an error. Nothing else was changed."
+                    row.finished_at = _now()
+                    await db.commit()
+        except Exception:
+            logger.exception("voice.research_not_closed", research_id=str(research_id))
+
+
+async def _run_research(sm: Any, ws: uuid.UUID, research_id: uuid.UUID) -> None:
     async with open_session(sm) as db:
         row = (
             await db.execute(
@@ -1198,12 +1370,17 @@ async def run_research(sm: Any, ws: uuid.UUID, research_id: uuid.UUID) -> None:
             candidate = await inbox_service.get_candidate(db, ws, row.candidate_id)
             evidence = await gather_evidence(db, ws, candidate)
             web: list[dict[str, Any]] = []
+            failed_because = ""
             searcher = make_searcher()
             if searcher is None or not getattr(searcher, "api_key", None):
                 web_status = "no_key"
             else:
                 try:
-                    hits = await searcher.search(row.query or candidate.title, count=5)
+                    # raise_errors: a refused key or a spent quota must read as a
+                    # failed search, not as a search that found nothing.
+                    hits = await searcher.search(
+                        row.query or candidate.title, count=5, raise_errors=True
+                    )
                     web = [
                         {
                             "title": h.get("title"),
@@ -1217,10 +1394,11 @@ async def run_research(sm: Any, ws: uuid.UUID, research_id: uuid.UUID) -> None:
                 except Exception as error:  # the web half must not sink the evidence half
                     logger.warning("voice.research_web_failed", error=type(error).__name__)
                     web_status = "failed"
+                    failed_because, row.detail = web_failure(error)
             row.evidence = evidence
             row.web = web
             row.web_status = web_status
-            row.summary = _summary(candidate.title, evidence, web, web_status)
+            row.summary = _summary(candidate.title, evidence, web, web_status, failed_because)
             row.state = "done"
         except Exception as error:
             logger.exception("voice.research_failed", research_id=str(research_id))

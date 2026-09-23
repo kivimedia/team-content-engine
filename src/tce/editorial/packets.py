@@ -1101,7 +1101,56 @@ async def _apply_more_hooks(
     payload: Any,
     job_id: uuid.UUID | None,
 ) -> PacketOutcome:
-    """Turn one finished job's answer into the next packet version."""
+    """Turn one finished job's answer into the next packet version.
+
+    The version is built on what is current NOW, not on `packet`, which was read
+    before the minutes-long wait for the worker. An edit made in that wait (a
+    point changed on the voice call, a line fixed in the workspace) wrote a newer
+    version; cloning the stale one silently put the old text back as current, and
+    the edit's undo then refused because the text had "changed again".
+    """
+    current = (
+        (
+            await session.execute(
+                select(RecordingPacket)
+                .where(
+                    RecordingPacket.workspace_id == ws,
+                    RecordingPacket.candidate_id == packet.candidate_id,
+                    RecordingPacket.status != "superseded",
+                )
+                .order_by(RecordingPacket.version.desc())
+                .limit(1)
+                # The session may still hold the rows it read before the wait;
+                # take what the database says now.
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if current is None:
+        return PacketOutcome(
+            status="invalid", job_id=job_id, detail="this script is no longer here"
+        )
+    taking = (
+        await session.execute(
+            select(RecordingSession.packet_version).where(
+                RecordingSession.workspace_id == ws,
+                RecordingSession.candidate_id == packet.candidate_id,
+                RecordingSession.status.in_(RECORDING_IN_PROGRESS_STATUSES),
+            )
+        )
+    ).first()
+    if taking is not None:
+        return PacketOutcome(
+            status="invalid",
+            job_id=job_id,
+            detail=(
+                f"a take set started on packet version {taking[0]} while the openings were "
+                "being written; finish that session and ask for more openings again"
+            ),
+        )
+    packet = current
     data = payload if isinstance(payload, dict) else None
     if data is None:
         try:
@@ -1167,6 +1216,8 @@ async def _apply_more_hooks(
         updated_at=now,
     )
     session.add(clone)
+    # The version it was built on stays readable; it is simply no longer current.
+    packet.status = "superseded"
     await session.commit()
     return PacketOutcome(
         status="ok",

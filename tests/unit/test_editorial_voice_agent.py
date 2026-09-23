@@ -878,7 +878,7 @@ class FakeSearch:
     def __init__(self):
         self.queries = []
 
-    async def search(self, query, count=10, freshness=None):
+    async def search(self, query, count=10, freshness=None, **kwargs):
         self.queries.append(query)
         return [
             {"title": "A study", "url": "https://example.org/a", "description": "d", "age": "2d"}
@@ -956,7 +956,7 @@ async def test_a_failing_search_keeps_the_evidence_half(
     cid = await add_candidate(editorial_sessionmaker, ws, "An idea")
 
     class Broken(FakeSearch):
-        async def search(self, query, count=10, freshness=None):
+        async def search(self, query, count=10, freshness=None, **kwargs):
             raise RuntimeError("down")
 
     monkeypatch.setattr(voice_agent, "make_searcher", lambda: Broken())
