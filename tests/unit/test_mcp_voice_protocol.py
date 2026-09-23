@@ -238,6 +238,10 @@ def test_every_family_loads_on_the_real_sdk(sdk_installed, tmp_path):
     assert "point 3" in schema["properties"]["part"]["description"]
     choose = next(t for t in out["tools"] if t["name"] == "tce_choose_hook")
     assert sorted(choose["inputSchema"]["required"]) == ["expect", "option", "topic"]
+    # A write names its topic by id; words are for tce_topic, which reads it back.
+    decide = next(t for t in out["tools"] if t["name"] == "tce_decide")
+    assert "id" in decide["inputSchema"]["properties"]["topic"]["description"]
+    assert "then pass its id" in decide["description"]
     approve = next(t for t in out["tools"] if t["name"] == "tce_approve")
     assert approve["inputSchema"]["properties"]["decision"]["enum"] == ["approve", "reject"]
 
@@ -267,7 +271,7 @@ def test_the_model_hears_why_a_call_went_nowhere(sdk_installed, tmp_path):
             "unreachable": True,
             "steps": [
                 step("tce_week"),
-                step("tce_decide", topic="report", decision="sideways"),
+                step("tce_decide", topic=CID[:8], decision="sideways"),
                 step("tce_undo"),
                 step("tce_jobs"),
             ],
@@ -286,7 +290,7 @@ def test_the_model_hears_the_research_summary(sdk_installed, tmp_path):
     out = run(
         {
             "families": "voice",
-            "steps": [step("tce_research", topic="report"), step("tce_jobs")],
+            "steps": [step("tce_research", topic=CID[:8]), step("tce_jobs")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/candidates/": {
@@ -318,8 +322,8 @@ def test_a_restart_mid_call_keeps_the_last_change_and_the_jobs(sdk_installed, tm
             "call_id": "call-restart-1",
             "state_dir": str(tmp_path / "calls"),
             "steps": [
-                step("tce_edit", topic="report", part="takeaway", text="Open the result."),
-                step("tce_research", topic="report"),
+                step("tce_edit", topic=CID[:8], part="takeaway", text="Open the result."),
+                step("tce_research", topic=CID[:8]),
                 {"restart": True},
                 step("tce_jobs"),
                 step("tce_undo"),

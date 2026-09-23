@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.editorial import briefs
@@ -47,6 +47,8 @@ from tce.models.editorial_workspace import (
     EditorialChangeSet,
     IdeaResearch,
     TopicDecision,
+    TopicDecisionChange,
+    WeeklyLineup,
 )
 from tce.models.recording_session import RecordingSession
 
@@ -224,13 +226,27 @@ FILLER = frozenset(
         "anyone anybody someone somebody nobody what whats why how when where who which "
         "tell tells telling told say says said talk talked talking mention mentioned "
         "know knows need needs want wants get gets got make makes made way ways "
-        "stop truth secret secrets mistake mistakes lesson lessons reason reasons"
+        "stop truth secret secrets mistake mistakes lesson lessons reason reasons "
+        "them us him discuss discussed started just "
+        # English: where it sits and when it was ("the first one", "the one from
+        # last week"). They point at a place in a list, never at a title.
+        "first second third fourth fifth last next previous before after earlier "
+        "latest newest oldest recent other another same current top bottom new old good great "
+        "week weeks today yesterday tomorrow ago two three four five"
     ).split()
     + (
         # Hebrew: function words, and "one", "thing", "never", "why", "how"
         "של על את זה זו זאת לא מה עם גם או כמו אני אתה את הוא היא אנחנו הם הן יש אין "
         "הזה הזאת הזו אחד אחת דבר דברים אף אף פעם פעם לעולם כל רק הכי למה איך מתי איפה "
-        "מי אם כי אבל שלי שלך שלו שלה שלנו לי לך לו לה לנו לכם אומר אומרים אמר"
+        "מי אם כי אבל שלי שלך שלו שלה שלנו לי לך לו לה לנו לכם אומר אומרים אמר "
+        # Hebrew: how he talks about it, as the English above ("the one we talked
+        # about", "what I would never do", "what nobody tells you")
+        "הייתי היית היה הייתה היו עושה עושים עשיתי עשינו לעשות דיברנו דיברתי דיברת "
+        "מדבר מדברים אמרתי אמרנו אמרת עליו עליה עליהם עליהן עלינו עליך מספר מספרים "
+        "סיפרתי רוצה צריך יודע תמיד כבר עוד "
+        # Hebrew: where it sits and when it was
+        "ראשון ראשונה שני שנייה שלישי אחרון אחרונה בא באה קודם קודמת לפני אחרי אחר "
+        "אחרת עבר שעבר שעברה שבוע שבועות היום אתמול מחר עכשיו חדש חדשה ישן טוב"
     ).split()
 )
 # Words about the thing rather than its name ("the topic about pricing"). They
@@ -265,14 +281,32 @@ def _content(words: list[str]) -> list[str]:
     return out
 
 
+def _exact(word: str) -> set[str]:
+    """The word as said, and without "the" (ה) in front: the same word, exactly."""
+    forms = {word}
+    if len(word) >= 3 and word[0] == "ה" and _HEBREW.match(word):
+        forms.add(word[1:])
+    return forms
+
+
+# What a word counts for when it matches only once a prefix letter or a plural
+# ending is stripped. Stripping turns real words into other words ("הספר", the
+# book, is "מספר", tells, without its first letter; "מחשבות", thoughts, is
+# "מחשב", computer, without its ending), so such a match is a hint to offer
+# back, never enough on its own to pick a title.
+STRIPPED = 0.5
+
+
 def _match(needle: str, title: str) -> tuple[float, int]:
     """(how well his words name this title, how many of his content words are in it).
 
     The score is 0.0 when no word that means anything matches, 1.0 when every
-    content word he said is in the title, and above 1.0 when he said a run of the
-    title's words in order. Filler never counts for or against. A run made only of
-    filler (three words or more, "what nobody tells you") may point at a title,
-    with 0 content words, so it is offered back and never picked.
+    content word he said is in the title as he said it (or with "the" in front),
+    and above 1.0 when he said a run of the title's words in order. A word found
+    only once a letter is stripped counts STRIPPED, so it cannot reach 1.0 alone.
+    Filler never counts for or against. A run made only of filler (three words
+    or more, "what nobody tells you") may point at a title, with 0 content words,
+    so it is offered back and never picked.
     """
     words = _tokens(needle)
     content = _content(words)
@@ -285,15 +319,20 @@ def _match(needle: str, title: str) -> tuple[float, int]:
     run_score = 1.0 + min(len(phrase) / max(len(haystack.strip()), 1), 1.0) * 0.5
     if not content:
         return (run_score, 0) if run and len(words) >= 3 else (0.0, 0)
+    exact: set[str] = set()
     have: set[str] = set()
     for w in title_words:
+        exact |= _exact(w)
         have |= _variants(w)
-    matched = sum(1 for w in content if _variants(w) & have)
+    weights = [
+        1.0 if _exact(w) & exact else STRIPPED if _variants(w) & have else 0.0 for w in content
+    ]
+    matched = sum(1 for weight in weights if weight > 0)
     if not matched:
         return 0.0, 0
     if run:
         return run_score, matched
-    return matched / len(content), matched
+    return sum(weights) / len(content), matched
 
 
 def _score(needle: str, title: str) -> float:
@@ -383,6 +422,87 @@ def candidate_brief_json(c: TopicCandidate) -> dict[str, Any]:
         "title": c.title,
         "status": c.status,
     }
+
+
+# ---------------------------------------------------------------------------
+# A write names its topic by id
+# ---------------------------------------------------------------------------
+
+# What the brain is told to do instead of naming a topic in words for a write.
+FIND_FIRST = "Find the topic with tce_topic, read its title back to him, then pass its id."
+
+# A whole id, or the short id the tools read out (its first 8 characters) or more.
+_TOPIC_ID = re.compile(r"^[0-9a-f]{8}[0-9a-f-]{0,28}$")
+
+
+def _id_text(raw: Any) -> str:
+    """ "id 1a2b3c4d", "(1a2b3c4d)" -> "1a2b3c4d": the id as the brain may pass it."""
+    text = str(raw or "").strip().lower()
+    text = re.sub(r"^(?:short\s+)?id[\s:]+", "", text)
+    return text.strip(" ()[]\"'.")
+
+
+async def topic_by_id(db: AsyncSession, ws: uuid.UUID, raw: Any) -> TopicCandidate:
+    """The one topic an id or a short id names. Words are refused, never matched.
+
+    Every voice write applies at once, so it may only land on a topic whose title
+    was read back to him: the brain finds it with words through tce_topic (which
+    offers candidates when the words are not a clear winner), reads the title,
+    and then writes by the id that came with it. A filler or position word ("the
+    first one") can therefore at worst make a read offer candidates; it can never
+    steer a write.
+    """
+    text = _id_text(raw)
+    if not text:
+        raise VoiceError(
+            "id_required", f"No topic id was given. {FIND_FIRST} Nothing was changed.", status=400
+        )
+    if not _TOPIC_ID.match(text):
+        raise VoiceError(
+            "id_required",
+            f'"{_clip(raw, 60)}" is not a topic id: a change names its topic by id, never by '
+            f"words. {FIND_FIRST} Nothing was changed.",
+            status=400,
+        )
+    try:
+        whole: uuid.UUID | None = uuid.UUID(text)
+    except ValueError:
+        whole = None
+    if whole is not None:
+        row = (
+            await db.execute(
+                select(TopicCandidate).where(
+                    TopicCandidate.workspace_id == ws, TopicCandidate.id == whole
+                )
+            )
+        ).scalar_one_or_none()
+        hits = [row] if row is not None else []
+    else:
+        rows = (
+            await db.execute(
+                select(TopicCandidate).where(
+                    TopicCandidate.workspace_id == ws,
+                    TopicCandidate.origin.notin_(inbox_service.HIDDEN_ORIGINS),
+                    TopicCandidate.status != "rejected",
+                )
+            )
+        ).scalars()
+        hits = [c for c in rows if str(c.id).startswith(text)]
+    if not hits:
+        raise VoiceError(
+            "unknown_topic",
+            f'No topic has the id "{text}". {FIND_FIRST} Nothing was changed.',
+            status=404,
+        )
+    if len(hits) > 1:
+        raise VoiceError(
+            "ambiguous_id",
+            f'More than one topic has an id starting "{text}". Use its whole id. '
+            "Nothing was changed.",
+            status=409,
+            candidates=[candidate_brief_json(c) for c in hits[:5]],
+        )
+    return hits[0]
 
 
 # ---------------------------------------------------------------------------
@@ -923,10 +1043,24 @@ async def undo_change_set(
                 if before:
                     inverse.append(change_service.OperationInput(op="choose_hook", after=before))
             elif op.op == "restore_version":
-                # A script put back (restore_script_version): undoing it puts back
-                # the version it replaced, if nothing was changed on top since.
-                if not isinstance(after, dict) or not _same_script(state.values, after):
+                # A script put back (restore_script_version) or a rewrite: undoing
+                # it puts back the script it replaced, if nothing was changed on
+                # top since. The openings count: they are part of what comes back,
+                # and more openings asked for after it would be dropped.
+                now_script = _script_values(packet)
+                if not isinstance(after, dict) or not _same_text(now_script, after):
                     raise changed_since("The script", state.values.get("bullets"))
+                if not _same_hooks(now_script, after):
+                    raise VoiceError(
+                        "changed",
+                        "Opening options were added or changed after that, so putting the "
+                        "earlier script back would drop them. Nothing was written.",
+                        status=409,
+                        current=[
+                            {"n": n, "text": h.get("text")}
+                            for n, h in enumerate(now_script["hook_options"], start=1)
+                        ],
+                    )
                 if not isinstance(before, dict):
                     raise VoiceError(
                         "no_before",
@@ -1034,8 +1168,25 @@ def _script_values(packet: RecordingPacket) -> dict[str, Any]:
     }
 
 
-def _same_script(a: dict[str, Any], b: dict[str, Any]) -> bool:
+def _same_text(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """The same script text. The openings are compared apart (see _same_hooks)."""
     return all((a.get(f) or None) == (b.get(f) or None) for f in SCRIPT_FIELDS)
+
+
+def _hooks_key(hooks: Any) -> list[tuple[str, str]]:
+    return [
+        (str(h.get("id")), " ".join(str(h.get("text") or "").split()))
+        for h in hooks or []
+        if isinstance(h, dict)
+    ]
+
+
+def _same_hooks(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """The same opening options, ids and text. A record written before openings
+    were kept with the script (no `hook_options` key) says nothing about them."""
+    if "hook_options" not in a or "hook_options" not in b:
+        return True
+    return _hooks_key(a["hook_options"]) == _hooks_key(b["hook_options"])
 
 
 async def _record_script_before(
@@ -1224,15 +1375,37 @@ async def record_rewrite(
     return change_set
 
 
+async def rewrite_record(
+    db: AsyncSession, ws: uuid.UUID, rewrite_id: uuid.UUID
+) -> EditorialChangeSet | None:
+    """The change set a rewrite was recorded as when it was saved, or None."""
+    return (
+        await db.execute(
+            select(EditorialChangeSet).where(
+                EditorialChangeSet.workspace_id == ws,
+                EditorialChangeSet.id == rewrite_id,
+                EditorialChangeSet.idempotency_key == f"{REWRITE_KEY}{rewrite_id}",
+            )
+        )
+    ).scalar_one_or_none()
+
+
 async def undo_rewrite(
     db: AsyncSession,
     ws: uuid.UUID,
     candidate_id: uuid.UUID,
     rewrite_id: uuid.UUID,
     *,
+    replaced_version: int | None = None,
     by: str = "voice",
 ) -> dict[str, Any]:
-    """Put back the script a rewrite replaced, by the id its start answered with."""
+    """Put back the script a rewrite replaced, by the id its start answered with.
+
+    `replaced_version` is the version the call was told the rewrite replaces. With
+    no record of the rewrite, that is what says whether "the script he had is still
+    the current one" is true: a rewrite left waiting and finished after a restart
+    is saved without its record, and the script has moved on.
+    """
     actor = check_actor(by)
     candidate = await inbox_service.get_candidate(db, ws, candidate_id)
     if _script_being_written(ws, candidate.id):
@@ -1242,16 +1415,38 @@ async def undo_rewrite(
             "ready it replaces the current one; undo it after that.",
             status=409,
         )
-    record = (
-        await db.execute(
-            select(EditorialChangeSet).where(
-                EditorialChangeSet.workspace_id == ws,
-                EditorialChangeSet.id == rewrite_id,
-                EditorialChangeSet.idempotency_key == f"{REWRITE_KEY}{rewrite_id}",
-            )
-        )
-    ).scalar_one_or_none()
+    record = await rewrite_record(db, ws, rewrite_id)
     if record is None:
+        current = await current_packet(db, ws, candidate.id)
+        if (
+            current is not None
+            and replaced_version is not None
+            and (current.version != replaced_version)
+        ):
+            earlier = (
+                await db.execute(
+                    select(RecordingPacket.version).where(
+                        RecordingPacket.workspace_id == ws,
+                        RecordingPacket.candidate_id == candidate.id,
+                        RecordingPacket.version < current.version,
+                    )
+                )
+            ).scalars()
+            previous = max(earlier, default=None)
+            raise VoiceError(
+                "replaced_since",
+                f'The new script for "{candidate.title}" was not recorded under this change, '
+                f"and the script is not the one it was asked over: it is now version "
+                f"{current.version}, not version {replaced_version}. It may have been "
+                "finished after a restart, or changed since. Nothing was undone. Earlier "
+                f"versions are kept: version {previous} is the one just before the current "
+                f"script, and version {replaced_version} is the one he had when he asked. "
+                "Either can be put back by its number.",
+                status=409,
+                current_version=current.version,
+                previous_version=previous,
+                asked_version=replaced_version,
+            )
         raise VoiceError(
             "not_saved",
             f'The new script for "{candidate.title}" was never saved (it stopped before it '
@@ -1296,19 +1491,78 @@ async def clear_decision(
     return row
 
 
+def _no_decision(value: str | None) -> str | None:
+    return None if value in (None, "", UNDECIDED) else value
+
+
+async def record_decision_change(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    candidate_id: uuid.UUID,
+    *,
+    before: str | None,
+    after: str | None,
+    by: str | None,
+    week: dict[str, Any] | None = None,
+) -> TopicDecisionChange | None:
+    """Write one decision write down under its own id, or nothing when it changed nothing.
+
+    `week` is what lineup.follow_decision answered (or the same shape): whether the
+    write put the topic on a week's list or took it off, and which list. "Approve
+    it" twice changes nothing the second time, so it leaves no row, and "undo"
+    then reaches the approval that did it.
+    """
+    week = week or {}
+    before, after = _no_decision(before), _no_decision(after)
+    added = bool(week.get("added"))
+    removed = week.get("removed")
+    if before == after and not added and not removed:
+        return None
+    last = (
+        await db.execute(
+            select(func.max(TopicDecisionChange.seq)).where(
+                TopicDecisionChange.workspace_id == ws,
+                TopicDecisionChange.candidate_id == candidate_id,
+            )
+        )
+    ).scalar()
+    where = {"week_start": week.get("week_start"), "lineup_id": week.get("lineup_id")}
+    placed = week.get("placed") or {}
+    row = TopicDecisionChange(
+        workspace_id=ws,
+        candidate_id=candidate_id,
+        seq=int(last or 0) + 1,
+        before=before,
+        after=after,
+        decided_by=by,
+        decided_at=_now(),
+        week={
+            "added": {**where, "slot": placed.get("slot"), "rank": placed.get("rank")}
+            if added
+            else None,
+            "removed": {**where, **removed} if removed else None,
+        },
+    )
+    db.add(row)
+    await db.flush()
+    return row
+
+
 async def restore_topic(
     db: AsyncSession, ws: uuid.UUID, candidate_id: uuid.UUID, *, by: str = "voice"
 ) -> dict[str, Any]:
     """Bring a put-away idea back to where it was before it was put away.
 
     Where it was includes its place in this week's list, when putting it away
-    took it off that list.
+    took it off that list. Bringing it back is a decision write of its own, with
+    its own change id, so the call can take it back like any other.
     """
     actor = check_actor(by)
     candidate = await inbox_service.get_candidate(db, ws, candidate_id)
     decision = await inbox_service.get_decision(db, ws, candidate_id)
     back_to: str | None = None
     placed: dict[str, Any] | None = None
+    change: TopicDecisionChange | None = None
     if decision is not None and decision.decision == "away":
         previous = decision.previous_decision
         if previous and previous != "away":
@@ -1322,11 +1576,21 @@ async def restore_topic(
             decision = await clear_decision(db, ws, candidate_id, by=actor)
         week = await lineup_service.follow_decision(db, ws, candidate, decision, by=actor)
         placed = week["placed"]
+        change = await record_decision_change(
+            db,
+            ws,
+            candidate.id,
+            before="away",
+            after=decision.decision if decision is not None else None,
+            by=actor,
+            week=week,
+        )
     elif candidate.status != "withdrawn":
         return {
             "candidate_id": str(candidate.id),
             "title": candidate.title,
             "restored": False,
+            "change_id": None,
             "said": f'"{candidate.title}" is not put away.',
         }
     if candidate.status == "withdrawn":
@@ -1346,6 +1610,7 @@ async def restore_topic(
         "restored": True,
         "decision": back_to,
         "placed": placed,
+        "change_id": str(change.id) if change is not None else None,
         "said": f'"{candidate.title}" is {where}.',
     }
 
@@ -1359,86 +1624,199 @@ _DECISION_WORDS = {
 }
 
 
+def _decision_words(value: str | None) -> str:
+    return _DECISION_WORDS.get(value or UNDECIDED, value or UNDECIDED)
+
+
+def _list_words(week_start: str | None) -> str:
+    """ "this week's list", or the list of the week it was, named."""
+    current = lineup_service.week_start_for(None).date().isoformat()
+    if not week_start or week_start[:10] == current:
+        return "this week's list"
+    day = datetime.fromisoformat(week_start[:10])
+    return f"the list for the week of {day.day} {day:%B}"
+
+
+async def _lineup_of(db: AsyncSession, ws: uuid.UUID, where: dict[str, Any]) -> WeeklyLineup | None:
+    """The week's list a decision write touched: by its id, else by its week."""
+    try:
+        lineup_id = uuid.UUID(str(where.get("lineup_id")))
+    except ValueError:
+        lineup_id = None
+    if lineup_id is not None:
+        row = (
+            await db.execute(
+                select(WeeklyLineup).where(
+                    WeeklyLineup.workspace_id == ws, WeeklyLineup.id == lineup_id
+                )
+            )
+        ).scalar_one_or_none()
+        if row is not None:
+            return row
+    if where.get("week_start"):
+        return await lineup_service.get_lineup(
+            db, ws, lineup_service.week_start_for(str(where["week_start"])[:10])
+        )
+    return None
+
+
 async def undo_decision(
     db: AsyncSession,
     ws: uuid.UUID,
     candidate_id: uuid.UUID,
     *,
-    previous: str | None,
-    decision: str | None,
-    added_to_week: bool,
-    removed_from_week: bool = False,
+    change_id: Any,
     by: str = "voice",
 ) -> dict[str, Any]:
-    """Take one decision back, and the week with it, in one transaction.
+    """Take one decision write back, by its own change id, and the week with it.
 
-    `previous` is what the decision replaced, `decision` what it set, and
-    `added_to_week` / `removed_from_week` whether it put the topic on this week's
-    list or took it off. Those are what re-deciding cannot know: a topic chosen
-    for this week but off the list (the week's Remove button keeps the decision),
-    or chosen in an earlier week, answers previous "this_week", so deciding
-    "this_week" again changed nothing and the topic stayed on the list while the
-    call said it was back where it was; and going back to "this_week" must put a
-    topic on the list only if it was on it before.
+    What the write replaced and what it did to a week's list are on its row, so
+    the undo needs nothing else: an approval that put the topic on a list comes
+    off THAT list, in whichever week it was (an approval on Sunday night, undone
+    after the Monday rollover, is still on the old week's list).
 
-    Refused, with nothing changed, when the decision was changed again since.
+    Refused, with nothing changed, when anyone decided again after it and that
+    decision still stands: it compares the history, not only the value, so a
+    voice approval that he later changed on the phone and then chose again
+    himself is his decision now, and the reply says so.
     """
     actor = check_actor(by)
-    candidate = await inbox_service.get_candidate(db, ws, candidate_id)
+    if change_id in (None, ""):
+        raise VoiceError(
+            "change_id_required",
+            "The undo did not say which decision to take back (its change id). "
+            "Nothing was changed.",
+            status=400,
+        )
+    try:
+        wanted = uuid.UUID(str(change_id))
+    except ValueError:
+        wanted = None
+    entry = None
+    if wanted is not None:
+        entry = (
+            await db.execute(
+                select(TopicDecisionChange).where(
+                    TopicDecisionChange.workspace_id == ws,
+                    TopicDecisionChange.id == wanted,
+                    TopicDecisionChange.candidate_id == candidate_id,
+                )
+            )
+        ).scalar_one_or_none()
+    if entry is None:
+        raise VoiceError(
+            "unknown_change",
+            f"There is no decision change {str(change_id)[:8]} on that topic, so there is "
+            "nothing to take back. Nothing was changed.",
+            status=404,
+        )
+    candidate = await inbox_service.get_candidate(db, ws, entry.candidate_id)
+    title = candidate.title
+    base = {"candidate_id": str(candidate.id), "title": title, "change_id": str(entry.id)}
+    if entry.undone_at is not None:
+        return {
+            **base,
+            "already": True,
+            "said": f'That decision on "{title}" was already taken back. Nothing more to undo.',
+        }
+
+    later = list(
+        (
+            await db.execute(
+                select(TopicDecisionChange)
+                .where(
+                    TopicDecisionChange.workspace_id == ws,
+                    TopicDecisionChange.candidate_id == candidate.id,
+                    TopicDecisionChange.seq > entry.seq,
+                    TopicDecisionChange.undone_at.is_(None),
+                )
+                .order_by(TopicDecisionChange.seq)
+            )
+        ).scalars()
+    )
     row = await inbox_service.get_decision(db, ws, candidate.id)
-    now = (row.decision if row is not None else None) or UNDECIDED
-    if decision and now != decision:
+    now = row.decision if row is not None else None
+    if later or now != entry.after:
+        his = [c for c in later if c.decided_by != "voice"]
+        newest = later[-1] if later else None
+        if his:
+            message = (
+                f'"{title}" was changed after that by Ziv himself (it is now '
+                f"{_decision_words(now)}), so taking the call's decision back would undo "
+                "his. Nothing was changed."
+            )
+        elif newest is not None:
+            message = (
+                f'"{title}" was decided again after that in the call (it is now '
+                f"{_decision_words(now)}; change {str(newest.id)[:8]}). Undo that one first "
+                "to go further back. Nothing was changed."
+            )
+        else:
+            message = (
+                f'"{title}" was changed since (it is now {_decision_words(now)}), so taking '
+                "that decision back would lose the newer one. Nothing was changed."
+            )
         raise VoiceError(
             "changed",
-            f'"{candidate.title}" was decided again after that (it is now '
-            f"{_DECISION_WORDS.get(now, now)}), so undoing it would lose the newer decision. "
-            "Nothing was changed.",
+            message,
             status=409,
-            current=now,
+            decision_now=now or UNDECIDED,
+            later_change_id=str(newest.id) if newest is not None else None,
+            changed_by=(his[-1] if his else newest).decided_by if later else None,
         )
-    back = None if previous in (None, "", UNDECIDED) else previous
+
+    back = entry.before
     if back is None:
         row = await clear_decision(db, ws, candidate.id, by=actor)
     else:
         row = await inbox_service.decide(db, ws, candidate.id, decision=back, decided_by=actor)
 
-    removed: dict[str, Any] | None = None
+    week = entry.week or {}
+    off: dict[str, Any] | None = None
     placed: dict[str, Any] | None = None
-    if added_to_week:
-        # Only the place this decision gave it; the place it may have had before
-        # stays whatever it was.
-        lineup = await lineup_service.get_lineup(db, ws, lineup_service.week_start_for(None))
+    if week.get("added"):
+        # Only the place this write gave it, in the week it gave it; a place it
+        # had anywhere before stays whatever it was.
+        lineup = await _lineup_of(db, ws, week["added"])
         items = await lineup_service.list_items(db, ws, lineup.id) if lineup else []
         item = next((i for i in items if i.candidate_id == candidate.id), None)
-        if item is not None:
-            removed = {"slot": item.slot, "rank": item.rank}
+        if lineup is not None and item is not None:
+            off = {
+                "week_start": lineup.week_start.date().isoformat(),
+                "slot": item.slot,
+                "rank": item.rank,
+            }
             await lineup_service.remove_topic(db, ws, lineup, candidate.id, removed_by=actor)
-    elif back != "this_week" or removed_from_week:
-        # Back to this week puts it back at the place the decision took it from;
+    elif back != "this_week" or week.get("removed"):
+        # Back to this week puts it back at the place the write took it from;
         # anything else takes it off the list if it is somehow on it.
-        week = await lineup_service.follow_decision(db, ws, candidate, row, by=actor)
-        removed, placed = week["removed"], week["placed"]
+        moved = await lineup_service.follow_decision(db, ws, candidate, row, by=actor)
+        placed = moved["placed"]
+        if moved["removed"]:
+            off = {"week_start": moved["week_start"], **moved["removed"]}
+    entry.undone_at = _now()
+    entry.undone_by = actor
     await db.flush()
 
     if back == "this_week":
-        if removed:
+        if off:
             said = (
-                f'"{candidate.title}" is off this week\'s list again, as it was before '
+                f'"{title}" is off {_list_words(off["week_start"])} again, as it was before '
                 "(still chosen for this week)."
             )
         elif placed:
-            said = f'"{candidate.title}" is back in this week\'s list, place {placed["rank"]}.'
+            said = f'"{title}" is back in this week\'s list, place {placed["rank"]}.'
         else:
-            said = f'"{candidate.title}" is back where it was.'
+            said = f'"{title}" is back where it was (chosen for this week).'
     else:
-        said = f'"{candidate.title}" is {_DECISION_WORDS.get(back or UNDECIDED)} again' + (
-            ", and off this week's list." if removed else "."
+        said = f'"{title}" is {_decision_words(back)} again' + (
+            f", and off {_list_words(off['week_start'])}." if off else "."
         )
     return {
-        "candidate_id": str(candidate.id),
-        "title": candidate.title,
+        **base,
+        "already": False,
         "decision": row.decision if row is not None else None,
-        "removed_from_week": removed,
+        "removed_from_week": off,
         "placed": placed,
         "said": said,
     }
@@ -1466,13 +1844,15 @@ async def activity(db: AsyncSession, ws: uuid.UUID, *, hours: int = 24) -> dict[
     ]
     undone = await _undone_by(db, ws, [cs.id for cs in sets])
 
+    # Each decision write by voice, under its own change id (not the topic's one
+    # decision row, which every write to it shares).
     decisions = list(
         (
             await db.execute(
-                select(TopicDecision).where(
-                    TopicDecision.workspace_id == ws,
-                    TopicDecision.decided_by == "voice",
-                    TopicDecision.decided_at >= since,
+                select(TopicDecisionChange).where(
+                    TopicDecisionChange.workspace_id == ws,
+                    TopicDecisionChange.decided_by == "voice",
+                    TopicDecisionChange.decided_at >= since,
                 )
             )
         )
@@ -1563,17 +1943,23 @@ async def activity(db: AsyncSession, ws: uuid.UUID, *, hours: int = 24) -> dict[
             "later": f'Saved "{title}" for later.',
             "away": f'Put "{title}" away.',
             None: f'Put "{title}" back with the ideas waiting for a decision.',
-        }.get(d.decision, f'Decided "{title}": {d.decision}.')
+        }.get(d.after, f'Decided "{title}": {d.after}.')
+        undone = d.undone_at is not None
         items.append(
             {
                 "kind": "decision",
                 "id": str(d.id),
+                "short_id": str(d.id)[:8],
                 "at": d.decided_at.isoformat() if d.decided_at else None,
                 "candidate_id": cid,
                 "title": title,
-                "decision": d.decision,
+                "decision": d.after,
                 "lines": [words],
-                "can_restore": d.decision == "away" and statuses.get(cid) == "withdrawn",
+                "undone": undone,
+                "can_undo": not undone,
+                "can_restore": (
+                    d.after == "away" and not undone and statuses.get(cid) == "withdrawn"
+                ),
             }
         )
     items.sort(key=lambda i: i["at"] or "", reverse=True)

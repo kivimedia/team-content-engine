@@ -8,6 +8,7 @@ tools sent (attribution included), not only what they said.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -101,6 +102,7 @@ def run(scenario, env=None):
 
 
 CID = "11111111-2222-3333-4444-555555555555"
+SID = CID[:8]
 CS = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 TOPIC = {
@@ -312,12 +314,10 @@ def test_ambiguous_words_ask_which_one():
     assert "More than one topic matches" in text and "2. Follow up after (id bbbb2222)" in text
 
 
-def test_a_close_but_unsure_match_asks_before_any_write():
+def test_a_close_but_unsure_match_is_read_back_as_a_question_with_its_id():
     out = run(
         {
-            "steps": [
-                step("tce_edit", topic="pricing fennel", part="takeaway", text="Charge more.")
-            ],
+            "steps": [step("tce_topic", topic="pricing fennel")],
             "responses": {
                 "GET /editorial/voice/topic": {
                     "ok": True,
@@ -328,34 +328,110 @@ def test_a_close_but_unsure_match_asks_before_any_write():
                         "candidates": [{"title": "How I set my pricing", "short_id": "cccc3333"}],
                     },
                 },
-                "POST /editorial/voice/change": change_ok(["The takeaway now says ..."]),
             },
         }
     )
     text = out["texts"][0]
     assert "More than one" not in text
     assert '"How I set my pricing" (id cccc3333)' in text and "Ask him if that is the one" in text
-    assert [s["key"] for s in out["sent"]] == [
-        "GET /editorial/voice/topic?q=pricing%20fennel&strict=1"
-    ], "nothing is written to a topic he did not confirm"
 
 
-def test_a_write_asks_for_a_sure_match_and_a_read_does_not():
+WRITES = {
+    "tce_edit": {"part": "takeaway", "text": "Charge more."},
+    "tce_decide": {"decision": "approve"},
+    "tce_put_away": {},
+    "tce_restore_idea": {},
+    "tce_choose_hook": {"option": "2", "expect": "Nobody checks."},
+    "tce_reorder_week": {"move": "first"},
+    "tce_write_script": {"replace": True},
+    "tce_more_hooks": {},
+    "tce_research": {},
+}
+
+# What the verifier heard steer a write to the wrong title, and a few more.
+NOT_AN_ID = ["the first one", "זה שדיברנו עליו", "הראשון", "the one about the book", "report"]
+
+
+@pytest.mark.parametrize("tool", sorted(WRITES))
+def test_every_write_tool_takes_an_id_and_never_words(tool):
+    out = run(
+        {
+            "steps": [step(tool, topic=words, **WRITES[tool]) for words in NOT_AN_ID],
+            "responses": {"GET /editorial/voice/topic": FOUND},
+        }
+    )
+    assert out["sent"] == [], "words never reach a lookup, let alone a write"
+    for text in out["texts"]:
+        assert "tce_topic" in text and "read its title back to him" in text, text
+        assert "Nothing was changed" in text
+    desc = out["descs"][tool]
+    assert "Find the topic with tce_topic, read its title back to him, then pass its id." in desc
+
+
+def test_a_write_looks_its_topic_up_by_id_alone():
     out = run(
         {
             "steps": [
                 step("tce_topic", topic="report"),
-                step("tce_decide", topic="report", decision="later"),
-                step("tce_put_away", topic="report"),
-                step("tce_write_script", topic="report"),
-                step("tce_research", topic="report"),
+                step("tce_decide", topic=SID, decision="later"),
+                step("tce_put_away", topic=f"id {SID}"),
+                step("tce_write_script", topic=CID),
+                step("tce_research", topic=f"({SID})"),
             ],
             "responses": {"GET /editorial/voice/topic": FOUND},
         }
     )
     finds = [s["key"] for s in out["sent"] if s["key"].startswith("GET /editorial/voice/topic")]
     assert finds[0] == "GET /editorial/voice/topic?q=report"
-    assert finds[1:] == ["GET /editorial/voice/topic?q=report&strict=1"] * 4
+    assert finds[1:] == [
+        f"GET /editorial/voice/topic?id={SID}",
+        f"GET /editorial/voice/topic?id={SID}",
+        f"GET /editorial/voice/topic?id={CID}",
+        f"GET /editorial/voice/topic?id={SID}",
+    ]
+
+
+def test_an_id_that_names_no_topic_says_so_and_writes_nothing():
+    out = run(
+        {
+            "steps": [step("tce_decide", topic="deadbeef", decision="approve")],
+            "responses": {
+                "GET /editorial/voice/topic": {
+                    "ok": False,
+                    "status": 404,
+                    "data": {
+                        "detail": {
+                            "code": "unknown_topic",
+                            "message": 'No topic has the id "deadbeef". Nothing was changed.',
+                        }
+                    },
+                }
+            },
+        }
+    )
+    assert 'No topic has the id "deadbeef"' in out["texts"][0]
+    assert "tce_topic" in out["texts"][0]
+    assert [s["key"] for s in out["sent"]] == ["GET /editorial/voice/topic?id=deadbeef"]
+
+
+def test_every_write_reply_names_the_topic_it_changed():
+    out = run(
+        {
+            "steps": [
+                step("tce_edit", topic=SID, part="point 3", text="Sharper.", expect="Three."),
+                step("tce_choose_hook", topic=SID, option="2", expect="Nobody checks."),
+            ],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                "POST /editorial/voice/change": change_ok(
+                    ['Point 3 now says "Sharper." (it said "Three.").'],
+                    changes=[{"field": "script_phrases.0", "after": "Nobody checks."}],
+                ),
+            },
+        }
+    )
+    for text in out["texts"]:
+        assert '"Nobody opens the report"' in text, text
 
 
 def test_no_match_says_so():
@@ -381,7 +457,7 @@ def test_an_edit_applies_at_once_as_voice_and_names_the_change():
     out = run(
         {
             "steps": [
-                step("tce_edit", topic="report", part="point 3", text="Sharper.", expect="Three.")
+                step("tce_edit", topic=SID, part="point 3", text="Sharper.", expect="Three.")
             ],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
@@ -392,7 +468,7 @@ def test_an_edit_applies_at_once_as_voice_and_names_the_change():
         }
     )
     text = out["texts"][0]
-    assert text.startswith('Done. Point 3 now says "Sharper."')
+    assert text.startswith('Done on "Nobody opens the report": Point 3 now says "Sharper."')
     assert "change aaaaaaaa" in text
     body = out["sent"][1]["body"]
     assert body["target"] == "script" and body["by"] == "voice"
@@ -404,9 +480,7 @@ def test_an_edit_applies_at_once_as_voice_and_names_the_change():
 def test_an_edit_that_lost_a_race_reads_back_the_new_text():
     out = run(
         {
-            "steps": [
-                step("tce_edit", topic="report", part="the opening", text="New.", expect="Old.")
-            ],
+            "steps": [step("tce_edit", topic=SID, part="the opening", text="New.", expect="Old.")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/voice/change": {
@@ -432,9 +506,7 @@ def test_an_edit_that_lost_a_race_reads_back_the_new_text():
 
 
 def test_an_unknown_part_lists_what_can_be_changed_and_calls_nothing():
-    out = run(
-        {"steps": [step("tce_edit", topic="report", part="the moon", text="x")], "responses": {}}
-    )
+    out = run({"steps": [step("tce_edit", topic=SID, part="the moon", text="x")], "responses": {}})
     assert "I do not know which part" in out["texts"][0]
     assert out["sent"] == []
 
@@ -442,7 +514,7 @@ def test_an_unknown_part_lists_what_can_be_changed_and_calls_nothing():
 def test_decide_approve_means_this_week_and_is_attributed():
     out = run(
         {
-            "steps": [step("tce_decide", topic="report", decision="approve")],
+            "steps": [step("tce_decide", topic=SID, decision="approve")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/topics/": {
@@ -461,34 +533,43 @@ def test_decide_approve_means_this_week_and_is_attributed():
     assert out["sent"][1]["body"] == {"decision": "this_week", "by": "voice"}
 
 
-def test_put_away_then_undo_brings_it_back():
+def test_put_away_then_undo_brings_it_back_by_its_change_id():
+    away = "cccccccc-0000-0000-0000-000000000000"
     out = run(
         {
-            "steps": [step("tce_put_away", topic="report"), step("tce_undo")],
+            "steps": [step("tce_put_away", topic=SID), step("tce_undo")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/topics/" + CID + "/decide": {
                     "ok": True,
                     "status": 200,
-                    "data": {"decision": "away", "previous_decision": "this_week"},
+                    "data": {
+                        "decision": "away",
+                        "previous_decision": "this_week",
+                        "changed": True,
+                        "change_id": away,
+                    },
                 },
-                "POST /editorial/topics/" + CID + "/restore": {
+                "POST /editorial/topics/" + CID + "/undo-decision": {
                     "ok": True,
                     "status": 200,
-                    "data": {"restored": True, "said": "back"},
+                    "data": {"said": '"Nobody opens the report" is back in this week\'s list.'},
                 },
             },
         }
     )
-    assert out["texts"][0] == 'Put away: "Nobody opens the report". It can be brought back.'
-    assert out["texts"][1] == 'Undone. "Nobody opens the report" is back where it was.'
-    assert out["sent"][-1]["key"] == f"POST /editorial/topics/{CID}/restore"
+    assert out["texts"][0].startswith(
+        'Put away: "Nobody opens the report". It can be brought back.'
+    )
+    assert out["texts"][1] == 'Undone. "Nobody opens the report" is back in this week\'s list.'
+    assert out["sent"][-1]["key"] == f"POST /editorial/topics/{CID}/undo-decision"
+    assert out["sent"][-1]["body"] == {"change_id": away, "by": "voice"}
 
 
 def test_restore_idea_says_where_it_went():
     out = run(
         {
-            "steps": [step("tce_restore_idea", topic="report")],
+            "steps": [step("tce_restore_idea", topic=SID)],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/topics/": {
@@ -508,7 +589,7 @@ def test_restore_idea_says_where_it_went():
 def test_choose_hook_sends_the_option_number_and_the_opening_he_heard():
     out = run(
         {
-            "steps": [step("tce_choose_hook", topic="report", option="2", expect="Nobody checks.")],
+            "steps": [step("tce_choose_hook", topic=SID, option="2", expect="Nobody checks.")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/voice/change": change_ok(
@@ -518,7 +599,9 @@ def test_choose_hook_sends_the_option_number_and_the_opening_he_heard():
             },
         }
     )
-    assert out["texts"][0].startswith('Done. The opening is now option 2: "Nobody checks."')
+    assert out["texts"][0].startswith(
+        'Done. The opening of "Nobody opens the report" is now option 2: "Nobody checks."'
+    )
     body = out["sent"][1]["body"]
     assert body["target"] == "script" and body["operations"] == [
         {"op": "choose_hook", "after": "2", "expect": "Nobody checks."}
@@ -529,7 +612,7 @@ def test_choose_hook_sends_the_option_number_and_the_opening_he_heard():
 def test_an_opening_he_did_not_hear_reads_the_options_as_they_are_now():
     out = run(
         {
-            "steps": [step("tce_choose_hook", topic="report", option="2", expect="Old two.")],
+            "steps": [step("tce_choose_hook", topic=SID, option="2", expect="Old two.")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/voice/change": {
@@ -554,7 +637,7 @@ def test_an_opening_he_did_not_hear_reads_the_options_as_they_are_now():
 def test_reorder_week_turns_words_into_a_move():
     out = run(
         {
-            "steps": [step("tce_reorder_week", topic="report", move="First")],
+            "steps": [step("tce_reorder_week", topic=SID, move="First")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/voice/change": change_ok(
@@ -569,9 +652,7 @@ def test_reorder_week_turns_words_into_a_move():
 
 
 def test_a_bad_move_is_refused_without_calling_anything():
-    out = run(
-        {"steps": [step("tce_reorder_week", topic="report", move="sideways")], "responses": {}}
-    )
+    out = run({"steps": [step("tce_reorder_week", topic=SID, move="sideways")], "responses": {}})
     assert '"sideways" is not a move' in out["texts"][0] and out["sent"] == []
 
 
@@ -582,7 +663,7 @@ def test_undo_with_no_id_takes_back_the_last_change_of_this_call():
     out = run(
         {
             "steps": [
-                step("tce_edit", topic="report", part="takeaway", text="Open the result."),
+                step("tce_edit", topic=SID, part="takeaway", text="Open the result."),
                 step("tce_undo"),
                 step("tce_undo"),
             ],
@@ -627,27 +708,37 @@ def test_undo_by_short_id_finds_a_change_from_earlier_today():
 
 DECIDE = f"POST /editorial/topics/{CID}/decide"
 UNDO_DECISION = f"POST /editorial/topics/{CID}/undo-decision"
-DECISION_ID = "dddddddd-0000-0000-0000-000000000000"
+CHANGE = "dddddddd-0000-0000-0000-000000000000"
+LATER = "12121212-1111-0000-0000-000000000000"
 
 
-def approved(previous, added=True):
+def decided(decision, previous, change_id=CHANGE, *, added=False, removed=None, changed=True):
     return {
         "ok": True,
         "status": 200,
         "data": {
-            "decision": "this_week",
+            "decision": decision,
             "previous_decision": previous,
+            "changed": changed,
             "added_to_week": added,
-            "decision_id": DECISION_ID,
-            "placed": {"slot": "primary", "rank": 1},
+            "removed_from_week": removed,
+            "change_id": change_id,
+            "placed": {"slot": "primary", "rank": 1} if decision == "this_week" else None,
         },
     }
 
 
-def test_undoing_an_approval_says_what_it_added_to_the_week():
+def approved(previous, added=True, change_id=CHANGE):
+    return decided("this_week", previous, change_id, added=added)
+
+
+UNDONE = {"ok": True, "status": 200, "data": {"said": '"Nobody opens the report" is back.'}}
+
+
+def test_undoing_a_decision_sends_its_own_change_id():
     out = run(
         {
-            "steps": [step("tce_decide", topic="report", decision="approve"), step("tce_undo")],
+            "steps": [step("tce_decide", topic=SID, decision="approve"), step("tce_undo")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 DECIDE: approved("this_week"),
@@ -659,52 +750,97 @@ def test_undoing_an_approval_says_what_it_added_to_the_week():
             },
         }
     )
+    assert f"change {CHANGE[:8]}" in out["texts"][0]
     sent = [s for s in out["sent"] if s["key"] == UNDO_DECISION]
-    assert sent and sent[0]["body"] == {
-        "previous": "this_week",
-        "decision": "this_week",
-        "added_to_week": True,
-        "removed_from_week": False,
-        "by": "voice",
-    }
+    # The server holds what the decision did (the week included); the call sends
+    # only which write it means.
+    assert sent and sent[0]["body"] == {"change_id": CHANGE, "by": "voice"}
     assert not [s for s in out["sent"][2:] if s["key"] == DECIDE], "one route does both"
     assert "off this week's list" in out["texts"][1]
 
 
-def test_undoing_a_later_says_the_week_lost_it_so_it_goes_back():
+def test_approving_twice_then_undo_takes_back_the_approval_that_did_it():
     out = run(
         {
-            "steps": [step("tce_decide", topic="report", decision="later"), step("tce_undo")],
+            "steps": [
+                step("tce_decide", topic=SID, decision="approve"),
+                step("tce_decide", topic=SID, decision="this_week"),
+                step("tce_undo"),
+                step("tce_undo"),
+            ],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
-                DECIDE: {
-                    "ok": True,
-                    "status": 200,
-                    "data": {
-                        "decision": "later",
-                        "previous_decision": "this_week",
-                        "added_to_week": False,
-                        "removed_from_week": {"slot": "primary", "rank": 2},
-                    },
-                },
-                UNDO_DECISION: {"ok": True, "status": 200, "data": {"said": "back"}},
+                DECIDE: [
+                    approved("undecided"),
+                    decided("this_week", "this_week", None, changed=False),
+                ],
+                UNDO_DECISION: UNDONE,
             },
         }
     )
-    sent = [s for s in out["sent"] if s["key"] == UNDO_DECISION]
-    assert sent[0]["body"]["removed_from_week"] is True
-    assert sent[0]["body"]["previous"] == "this_week"
+    assert "already" in out["texts"][1] and "nothing" in out["texts"][1].lower()
+    assert "change" not in out["texts"][1].replace("changed", "")
+    undos = [s for s in out["sent"] if s["key"] == UNDO_DECISION]
+    assert [u["body"]["change_id"] for u in undos] == [CHANGE], "the no-op left nothing to undo"
+    assert out["texts"][3].startswith("Nothing has been changed in this call")
+
+
+def test_undo_by_id_reaches_that_decision_and_not_a_later_one_on_the_same_topic():
+    out = run(
+        {
+            "steps": [
+                step("tce_decide", topic=SID, decision="approve"),
+                step("tce_decide", topic=SID, decision="later"),
+                step("tce_undo", change_id=CHANGE[:8]),
+            ],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                DECIDE: [approved("undecided"), decided("later", "this_week", LATER)],
+                UNDO_DECISION: UNDONE,
+            },
+        }
+    )
+    undos = [s for s in out["sent"] if s["key"] == UNDO_DECISION]
+    assert [u["body"]["change_id"] for u in undos] == [CHANGE]
+
+
+def test_undo_by_the_id_of_a_decision_from_an_earlier_call_finds_it_in_the_log():
+    out = run(
+        {
+            "steps": [step("tce_undo", change_id=CHANGE[:8])],
+            "responses": {
+                "GET /editorial/voice/activity": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "items": [
+                            {
+                                "kind": "decision",
+                                "id": CHANGE,
+                                "candidate_id": CID,
+                                "title": "Nobody opens the report",
+                                "decision": "this_week",
+                            }
+                        ]
+                    },
+                },
+                UNDO_DECISION: UNDONE,
+            },
+        }
+    )
+    assert out["sent"][-1] == {"key": UNDO_DECISION, "body": {"change_id": CHANGE, "by": "voice"}}
+    assert out["texts"][0] == 'Undone. "Nobody opens the report" is back.'
 
 
 def test_a_refused_undo_lets_the_next_undo_move_on():
     out = run(
         {
             "steps": [
-                step("tce_edit", topic="report", part="takeaway", text="Open the result."),
-                step("tce_decide", topic="report", decision="approve"),
+                step("tce_edit", topic=SID, part="takeaway", text="Open the result."),
+                step("tce_decide", topic=SID, decision="approve"),
                 step("tce_undo"),
                 step("tce_undo"),
-                step("tce_undo", change_id=DECISION_ID[:8]),
+                step("tce_undo", change_id=CHANGE[:8]),
             ],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
@@ -772,7 +908,7 @@ def test_a_script_starts_and_jobs_announces_it_once_when_ready():
     out = run(
         {
             "steps": [
-                step("tce_write_script", topic="report", replace=True),
+                step("tce_write_script", topic=SID, replace=True),
                 step("tce_jobs"),
                 step("tce_jobs", new_only=True),
                 step("tce_jobs", new_only=True),
@@ -797,7 +933,7 @@ def test_a_script_starts_and_jobs_announces_it_once_when_ready():
 def test_a_script_already_being_written_is_still_tracked():
     out = run(
         {
-            "steps": [step("tce_write_script", topic="report", replace=True), step("tce_jobs")],
+            "steps": [step("tce_write_script", topic=SID, replace=True), step("tce_jobs")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/candidates/": {
@@ -820,7 +956,7 @@ def test_a_script_already_being_written_is_still_tracked():
 def test_more_hooks_uses_the_current_script():
     out = run(
         {
-            "steps": [step("tce_more_hooks", topic="report"), step("tce_jobs")],
+            "steps": [step("tce_more_hooks", topic=SID), step("tce_jobs")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/packets/": {
@@ -843,7 +979,7 @@ def test_research_starts_and_its_summary_is_read_when_done():
     rid = "77777777-0000-0000-0000-000000000000"
     out = run(
         {
-            "steps": [step("tce_research", topic="report"), step("tce_jobs")],
+            "steps": [step("tce_research", topic=SID), step("tce_jobs")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/candidates/": {
@@ -883,11 +1019,11 @@ def test_every_reply_the_model_sees_carries_the_spoken_words():
     out = run(
         {
             "steps": [
-                step("tce_decide", topic="report", decision="sideways"),
-                step("tce_reorder_week", topic="report", move="sideways"),
-                step("tce_put_away", topic="report"),
-                step("tce_more_hooks", topic="report"),
-                step("tce_research", topic="report"),
+                step("tce_decide", topic=SID, decision="sideways"),
+                step("tce_reorder_week", topic=SID, move="sideways"),
+                step("tce_put_away", topic=SID),
+                step("tce_more_hooks", topic=SID),
+                step("tce_research", topic=SID),
                 step("tce_jobs"),
             ],
             "responses": {
@@ -1015,14 +1151,14 @@ def test_the_call_ledger_survives_a_new_process(tmp_path):
     first = run(
         {
             "steps": [
-                step("tce_edit", topic="report", part="takeaway", text="Open the result."),
-                step("tce_write_script", topic="report", replace=True),
+                step("tce_edit", topic=SID, part="takeaway", text="Open the result."),
+                step("tce_write_script", topic=SID, replace=True),
             ],
             "responses": responses,
         },
         env=env,
     )
-    assert first["texts"][0].startswith("Done.")
+    assert first["texts"][0].startswith('Done on "Nobody opens the report"')
     second = run(
         {"steps": [step("tce_jobs", new_only=True), step("tce_undo")], "responses": responses},
         env=env,
@@ -1062,8 +1198,8 @@ def test_move_to_last_names_the_real_last_place_not_99():
     out = run(
         {
             "steps": [
-                step("tce_reorder_week", topic="report", move="last"),
-                step("tce_reorder_week", topic="report", move="7"),
+                step("tce_reorder_week", topic=SID, move="last"),
+                step("tce_reorder_week", topic=SID, move="7"),
             ],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
@@ -1091,7 +1227,7 @@ def test_an_interrupted_script_says_ask_again_not_still_going():
     out = run(
         {
             "steps": [
-                step("tce_write_script", topic="report", replace=True),
+                step("tce_write_script", topic=SID, replace=True),
                 step("tce_jobs", new_only=True),
                 step("tce_jobs"),
             ],
@@ -1121,7 +1257,7 @@ def test_an_interrupted_script_says_ask_again_not_still_going():
 def test_more_openings_lost_to_a_restart_say_ask_again():
     out = run(
         {
-            "steps": [step("tce_more_hooks", topic="report"), step("tce_jobs", new_only=True)],
+            "steps": [step("tce_more_hooks", topic=SID), step("tce_jobs", new_only=True)],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/packets/": {"ok": True, "status": 202, "data": {}},
@@ -1161,7 +1297,7 @@ REWRITE_STARTED = {
 def test_a_script_over_an_existing_one_is_read_back_and_nothing_starts():
     out = run(
         {
-            "steps": [step("tce_write_script", topic="report")],
+            "steps": [step("tce_write_script", topic=SID)],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 PACKET: {"ok": True, "status": 200, "data": {"status": "running"}},
@@ -1182,7 +1318,7 @@ def test_a_script_the_server_says_exists_is_read_back_too():
     fresh["data"]["topic"]["script"] = None
     out = run(
         {
-            "steps": [step("tce_write_script", topic="report")],
+            "steps": [step("tce_write_script", topic=SID)],
             "responses": {
                 "GET /editorial/voice/topic": fresh,
                 PACKET: {
@@ -1211,7 +1347,7 @@ def test_a_rewrite_he_agreed_to_names_what_it_replaces_and_undo_puts_it_back():
     out = run(
         {
             "steps": [
-                step("tce_write_script", topic="report", replace=True),
+                step("tce_write_script", topic=SID, replace=True),
                 step("tce_undo"),
             ],
             "responses": {
@@ -1229,7 +1365,9 @@ def test_a_rewrite_he_agreed_to_names_what_it_replaces_and_undo_puts_it_back():
     assert started[0]["body"] == {"replace": True, "by": "voice"}
     assert "replaces version 3" in out["texts"][0] and f"change {RW[:8]}" in out["texts"][0]
     undone = [s for s in out["sent"] if s["key"] == UNDO_REWRITE]
-    assert undone and undone[0]["body"] == {"rewrite_id": RW, "by": "voice"}
+    # With the version the call was told it replaces, so the server can say
+    # whether that is still what a missing record means.
+    assert undone and undone[0]["body"] == {"rewrite_id": RW, "replaced_version": 3, "by": "voice"}
     assert out["texts"][1] == 'The script of "Nobody opens the report" is back.'
 
 
@@ -1237,8 +1375,8 @@ def test_a_rewrite_is_undone_by_its_id_and_the_next_undo_goes_further_back():
     out = run(
         {
             "steps": [
-                step("tce_edit", topic="report", part="takeaway", text="Open the result."),
-                step("tce_write_script", topic="report", replace=True),
+                step("tce_edit", topic=SID, part="takeaway", text="Open the result."),
+                step("tce_write_script", topic=SID, replace=True),
                 step("tce_undo", change_id=RW[:8]),
                 step("tce_undo"),
             ],
@@ -1274,7 +1412,7 @@ def test_undoing_a_rewrite_that_is_still_being_written_says_so_and_stays_next():
     out = run(
         {
             "steps": [
-                step("tce_write_script", topic="report", replace=True),
+                step("tce_write_script", topic=SID, replace=True),
                 step("tce_undo"),
                 step("tce_undo"),
             ],
@@ -1298,6 +1436,319 @@ def test_undoing_a_rewrite_that_is_still_being_written_says_so_and_stays_next():
     assert json.loads(out["seen"][1])["data"]["ok"] is False
     # "Not yet" is not "never": the rewrite is still the next thing undo takes.
     assert [s["key"] for s in out["sent"] if s["key"] == UNDO_REWRITE] == [UNDO_REWRITE] * 2
+
+
+def test_a_rewrite_the_script_moved_on_from_offers_the_version_and_puts_it_back():
+    out = run(
+        {
+            "steps": [
+                step("tce_write_script", topic=SID, replace=True),
+                step("tce_undo"),
+                step("tce_undo", change_id=RW[:8], restore_version=4),
+                step("tce_undo"),
+            ],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                PACKET: REWRITE_STARTED,
+                UNDO_REWRITE: {
+                    "ok": False,
+                    "status": 409,
+                    "data": {
+                        "detail": {
+                            "code": "replaced_since",
+                            "message": (
+                                'The script of "Nobody opens the report" is now version 5. '
+                                "Nothing was undone."
+                            ),
+                            "current_version": 5,
+                            "previous_version": 4,
+                            "asked_version": 3,
+                        }
+                    },
+                },
+                RESTORE: {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "restored": True,
+                        "change_set_id": CS,
+                        "short_id": CS[:8],
+                        "said": 'Script version 4 of "Nobody opens the report" is back.',
+                    },
+                },
+                "POST /editorial/change-sets/": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"said": "Undone: the put-back."},
+                },
+            },
+        }
+    )
+    assert "now version 5" in out["texts"][1]
+    assert "restore_version 4" in out["texts"][1] and RW[:8] in out["texts"][1]
+    restores = [s for s in out["sent"] if s["key"] == RESTORE]
+    assert restores and restores[0]["body"] == {"version": 4, "by": "voice"}
+    assert out["texts"][2] == 'Script version 4 of "Nobody opens the report" is back.'
+    # Putting it back is a change of this call like any other: undo takes it back.
+    assert out["sent"][-1]["key"] == f"POST /editorial/change-sets/{CS}/undo"
+
+
+def test_more_openings_while_a_script_is_written_are_refused_in_words():
+    out = run(
+        {
+            "steps": [step("tce_more_hooks", topic=SID), step("tce_jobs")],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                "POST /editorial/packets/": {
+                    "ok": False,
+                    "status": 409,
+                    "data": {
+                        "detail": {
+                            "code": "still_writing",
+                            "message": (
+                                'A new script for "Nobody opens the report" is being written. '
+                                "Nothing was asked for."
+                            ),
+                        }
+                    },
+                },
+            },
+        }
+    )
+    assert "is being written" in out["texts"][0] and "Nothing was asked for" in out["texts"][0]
+    assert out["texts"][1] == "Nothing was started in this call.", "a refusal is not a job"
+
+
+# ------------------------------------------------------------------ the real API behind it
+
+BRIDGE = r"""
+import { createInterface } from 'node:readline';
+import { register } from './tools/voice.mjs';
+import { reply, failure, shortId } from './tools.mjs';
+
+const rl = createInterface({ input: process.stdin });
+const lines = [];
+let waiter = null;
+rl.on('line', (l) => {
+  if (waiter) { const w = waiter; waiter = null; w(l); } else lines.push(l);
+});
+const next = () => (lines.length
+  ? Promise.resolve(lines.shift())
+  : new Promise((r) => { waiter = r; }));
+const send = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
+const tools = {};
+register(
+  { tool: (name, d, s, fn) => { tools[name] = fn; } },
+  async (method, path, body) => {
+    send({ type: 'req', method, path, body: body ?? null });
+    return JSON.parse(await next());
+  },
+  { reply, failure, shortId },
+);
+send({ type: 'ready' });
+for (;;) {
+  const cmd = JSON.parse(await next());
+  if (cmd.type === 'quit') break;
+  const out = await tools[cmd.tool](cmd.args || {});
+  send({ type: 'result', text: out.content[0].text, data: out.structuredContent ?? null });
+}
+process.exit(0);
+"""
+
+
+class Live:
+    """The real voice tools in Node, every request answered by the real API."""
+
+    def __init__(self, http, proc):
+        self.http = http
+        self.proc = proc
+
+    async def tool(self, name, **args):
+        self.proc.stdin.write(
+            (json.dumps({"type": "step", "tool": name, "args": args}) + "\n").encode()
+        )
+        await self.proc.stdin.drain()
+        while True:
+            line = await asyncio.wait_for(self.proc.stdout.readline(), 60)
+            if not line:
+                raise RuntimeError((await self.proc.stderr.read()).decode(errors="replace"))
+            msg = json.loads(line)
+            if msg["type"] == "result":
+                return msg["text"], (msg["data"] or {}).get("data") or {}
+            r = await self.http.request(msg["method"], "/api/v1" + msg["path"], json=msg["body"])
+            try:
+                data = r.json() if r.content else {}
+            except ValueError:
+                data = {"error": "not json", "body": r.text[:400]}
+            answer = {"ok": r.is_success, "status": r.status_code, "data": data}
+            self.proc.stdin.write((json.dumps(answer) + "\n").encode())
+            await self.proc.stdin.drain()
+
+
+@pytest.fixture
+async def live(editorial_sessionmaker, monkeypatch):
+    if shutil.which("node") is None:  # pragma: no cover
+        pytest.skip("node is not installed")
+    import httpx
+    from fastapi import FastAPI
+    from pydantic import SecretStr
+
+    from tce.api.routers import editorial as editorial_router
+    from tce.api.routers import editorial_voice as voice_router
+    from tce.api.routers import editorial_workspace as workspace_router
+    from tce.editorial import voice_agent
+    from tce.settings import settings
+
+    key = "synthetic-test-key"
+    ws = uuid.uuid4()
+    monkeypatch.setattr(settings, "private_access_key", SecretStr(key))
+    monkeypatch.setattr(settings, "editor_default_workspace_id", "")
+    monkeypatch.setattr(voice_agent, "make_searcher", lambda: None)
+    app = FastAPI()
+    app.include_router(workspace_router.router, prefix="/api/v1")
+    app.include_router(voice_router.router, prefix="/api/v1")
+    app.dependency_overrides[editorial_router.get_editorial_sessionmaker] = lambda: (
+        editorial_sessionmaker
+    )
+    script = ROOT / f"_voice_bridge_{uuid.uuid4().hex[:8]}.mjs"
+    script.write_text(BRIDGE, encoding="utf-8")
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("TCE_VOICE_CALL_ID", "KMBOT_VOICE_SESSION", "TCE_VOICE_STATE_DIR")
+    }
+    proc = await asyncio.create_subprocess_exec(
+        "node",
+        str(script),
+        cwd=str(ROOT),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+        limit=2**24,
+    )
+    try:
+        ready = json.loads(await asyncio.wait_for(proc.stdout.readline(), 60))
+        assert ready["type"] == "ready", ready
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {key}", "X-Workspace-Id": str(ws)},
+        ) as http:
+            world = Live(http, proc)
+            world.ws = ws
+            world.sm = editorial_sessionmaker
+            yield world
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        script.unlink(missing_ok=True)
+
+
+async def live_topic(world, title):
+    from tests.unit.test_editorial_voice_agent import add_candidate
+
+    return str(await add_candidate(world.sm, world.ws, title))
+
+
+async def live_week(world):
+    body = (await world.http.get("/api/v1/editorial/weeks/current/lineup")).json()
+    return [row["candidate_id"] for row in body["primary"] + body["reserve"]]
+
+
+async def live_decision(world, cid):
+    from sqlalchemy import select
+
+    from tce.models.editorial_workspace import TopicDecision
+
+    async with world.sm() as s:
+        row = (
+            await s.execute(
+                select(TopicDecision).where(TopicDecision.candidate_id == uuid.UUID(cid))
+            )
+        ).scalar_one_or_none()
+    return row.decision if row is not None else None
+
+
+async def test_live_approving_twice_then_one_undo_takes_it_out_of_the_week(live):
+    cid = await live_topic(live, "Invoices nobody opens")
+    await live.tool("tce_decide", topic=cid[:8], decision="approve")
+    again, _ = await live.tool("tce_decide", topic=cid[:8], decision="approve")
+    assert "already" in again
+    undone, _ = await live.tool("tce_undo")
+    assert cid not in await live_week(live), undone
+    assert await live_decision(live, cid) is None
+    assert "Invoices nobody opens" in undone
+
+
+async def test_live_undo_by_the_approvals_id_reaches_the_approval(live):
+    cid = await live_topic(live, "Invoices nobody opens")
+    _, approve = await live.tool("tce_decide", topic=cid[:8], decision="approve")
+    await live.tool("tce_decide", topic=cid[:8], decision="later")
+
+    # The approval by its id while the later stands: refused, nothing goes INTO the week.
+    early, _ = await live.tool("tce_undo", change_id=approve["change_id"][:8])
+    assert "Nothing was changed" in early
+    assert cid not in await live_week(live) and await live_decision(live, cid) == "later"
+
+    await live.tool("tce_undo")  # the later: back in the week
+    assert cid in await live_week(live) and await live_decision(live, cid) == "this_week"
+    back, _ = await live.tool("tce_undo", change_id=approve["change_id"][:8])
+    assert cid not in await live_week(live), back
+    assert await live_decision(live, cid) is None
+
+
+async def test_live_a_voice_approval_he_changed_himself_is_not_undone(live):
+    cid = await live_topic(live, "Invoices nobody opens")
+    await live.tool("tce_decide", topic=cid[:8], decision="approve")
+    for decision in ("later", "this_week"):  # on his phone
+        r = await live.http.post(
+            f"/api/v1/editorial/topics/{cid}/decide", json={"decision": decision, "by": "ziv"}
+        )
+        assert r.status_code == 200, r.text
+    said, _ = await live.tool("tce_undo")
+    assert "himself" in said
+    assert cid in await live_week(live) and await live_decision(live, cid) == "this_week"
+
+
+async def test_live_undo_after_the_week_rolled_over_takes_it_off_the_week_it_was_added_to(
+    live, monkeypatch
+):
+    from datetime import timedelta
+
+    from tce.editorial import common as common_service
+    from tce.editorial import lineup as lineup_service
+
+    cid = await live_topic(live, "Invoices nobody opens")
+    first = common_service.current_week_start()
+    monkeypatch.setattr(lineup_service, "current_week_start", lambda today=None: first)
+    await live.tool("tce_decide", topic=cid[:8], decision="approve")
+    assert cid in await live_week(live)
+    monkeypatch.setattr(
+        lineup_service, "current_week_start", lambda today=None: first + timedelta(days=7)
+    )
+    said, _ = await live.tool("tce_undo")
+    monkeypatch.setattr(lineup_service, "current_week_start", lambda today=None: first)
+    assert cid not in await live_week(live), said
+    assert "week of" in said
+
+
+async def test_live_words_find_candidates_to_read_back_and_only_an_id_writes(live):
+    first = await live_topic(live, "Your first client is the hardest")
+    talked = await live_topic(live, "מה שדיברנו עליו בפגישה")
+    for words in ("the first one", "זה שדיברנו עליו", "הראשון"):
+        said, _ = await live.tool("tce_decide", topic=words, decision="approve")
+        assert "tce_topic" in said and "Nothing was changed" in said
+        read, data = await live.tool("tce_topic", topic=words)
+        assert data.get("status") in ("none", "ambiguous"), (words, read)
+    assert await live_decision(live, first) is None and await live_decision(live, talked) is None
+
+    read, data = await live.tool("tce_topic", topic="first client")
+    assert data["candidate_id"] == first and f"(id {first[:8]})" in read
+    said, _ = await live.tool("tce_decide", topic=first[:8], decision="approve")
+    assert '"Your first client is the hardest"' in said
+    assert await live_decision(live, first) == "this_week"
 
 
 def test_a_failed_request_that_is_not_json_says_what_came_back():

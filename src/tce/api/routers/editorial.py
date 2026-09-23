@@ -542,12 +542,34 @@ async def start_packet(
         # A rewrite asked for by someone (the voice agent says who) is recorded
         # when it is saved, under this id, so it is listed and can be undone.
         rewrite_id = uuid.uuid4() if existing is not None and body is not None and body.by else None
+        rewrite_by = body.by if rewrite_id is not None and body is not None else None
         previous = await job_status.latest_packet_job(db, ws, cid)
-    # An interrupted packet job (restart, timeout, capacity wait, written but unsaved) is
-    # resumed; a finished or failed one is regenerated with a fresh job as before.
-    resume_job_id = (
-        uuid.UUID(previous["job_ids"][0]) if previous and previous["resumable"] else None
-    )
+        # An interrupted packet job (restart, timeout, capacity wait, written but
+        # unsaved) is resumed; a finished or failed one is regenerated with a fresh
+        # job as before.
+        resume_job_id = (
+            uuid.UUID(previous["job_ids"][0]) if previous and previous["resumable"] else None
+        )
+        # The rewrite a resume finishes is still the one that was asked for. Its id
+        # and who asked ride on the job, so a resume that says nothing (the
+        # workspace's button) still records it under the id the voice call holds,
+        # and the call's undo reaches it. That holds for a job resumed from where
+        # it stopped and for one left waiting for the PC worker, which the button
+        # starts again. A restart forgets the job; then the undo says the script
+        # moved on and offers the version instead.
+        carried = job_status.get(ws, "packet", str(cid))
+        if (
+            carried
+            and carried.get("rewrite_id")
+            and existing is not None
+            and (resume_job_id is not None or carried.get("state") == "waiting")
+        ):
+            earlier = uuid.UUID(carried["rewrite_id"])
+            from tce.editorial import voice_agent
+
+            if await voice_agent.rewrite_record(db, ws, earlier) is None:
+                rewrite_id = earlier
+                rewrite_by = rewrite_by or carried.get("rewrite_by") or "voice"
     job_status.start(
         ws,
         "packet",
@@ -555,10 +577,12 @@ async def start_packet(
         "Resuming interrupted packet" if resume_job_id else "Queued packet",
         candidate_id=str(cid),
         resumed_job_id=str(resume_job_id) if resume_job_id else None,
+        rewrite_id=str(rewrite_id) if rewrite_id else None,
+        rewrite_by=rewrite_by,
     )
     if rewrite_id is not None:
         background.add_task(
-            _run_packet, sm, ws, cid, resume_job_id, rewrite_id=rewrite_id, by=body.by
+            _run_packet, sm, ws, cid, resume_job_id, rewrite_id=rewrite_id, by=rewrite_by
         )
     else:
         background.add_task(_run_packet, sm, ws, cid, resume_job_id)
@@ -689,6 +713,38 @@ async def more_packet_hooks(
     more-hooks-status rather than holding an HTTP connection open through nginx.
     """
     pid = _parse_uuid(packet_id, "packet")
+    async with open_session(sm) as db:
+        packet = (
+            await db.execute(
+                select(RecordingPacket).where(
+                    RecordingPacket.id == pid, RecordingPacket.workspace_id == ws
+                )
+            )
+        ).scalar_one_or_none()
+        cand = await db.get(TopicCandidate, packet.candidate_id) if packet is not None else None
+    if packet is not None:
+        # A new script being written, or waiting to be finished, replaces this
+        # one when it is saved. Openings asked for now would land on the new
+        # script unasked, or be dropped with it, so none are asked for.
+        writing = job_status.get(ws, "packet", str(packet.candidate_id))
+        if writing is not None and writing.get("state") in ("running", "waiting"):
+            title = cand.title if cand is not None else "this topic"
+            if writing["state"] == "running":
+                why = f'A new script for "{title}" is being written right now.'
+                then = "Ask for more openings once it is ready (tce_jobs says when)."
+            else:
+                why = f'A new script for "{title}" is waiting to be finished on the PC worker.'
+                then = "Finish that script first (ask for it again), then ask for more openings."
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "still_writing",
+                    "message": (
+                        f"{why} When it is saved it replaces the current script, so openings "
+                        f"asked for now would not stay with it. Nothing was asked for. {then}"
+                    ),
+                },
+            )
     if job_status.is_running(ws, "more_hooks", str(pid)):
         return {
             "status": "running",

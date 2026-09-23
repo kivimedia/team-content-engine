@@ -228,15 +228,20 @@ async def decide_topic(
     list again (remembering its place). Asking for the script stays separate.
 
     `undecided` takes a decision back, keeping the note. `previous_decision` is
-    the decision THIS call replaced ("undecided" when there was none), so undoing
-    any decision is one more call with that value.
+    the decision THIS call replaced ("undecided" when there was none).
+
+    A write that changed something (the decision, or the week with it) is written
+    down under its own `change_id`, which the voice call undoes by; a write that
+    changed nothing answers `change_id` null, so there is nothing to undo that
+    does nothing. The topic is named by its id; a missing or unknown one is
+    refused in words the voice agent can say.
     """
-    cid = _uuid(candidate_id, "topic")
     if body.by not in ACTORS:
         raise HTTPException(status_code=400, detail=f"unknown actor {body.by}")
     async with open_session(sm) as db:
         try:
-            candidate = await inbox_service.get_candidate(db, ws, cid)
+            candidate = await voice_agent.topic_by_id(db, ws, candidate_id)
+            cid = candidate.id
             existing = await inbox_service.get_decision(db, ws, cid)
             before = existing.decision if existing is not None else None
             if body.decision == voice_agent.UNDECIDED:
@@ -254,15 +259,20 @@ async def decide_topic(
                     db, ws, cid, decision=body.decision, note=body.note, decided_by=body.by
                 )
             week = await lineup_service.follow_decision(db, ws, candidate, decision, by=body.by)
+            after = decision.decision if decision is not None else None
+            change = await voice_agent.record_decision_change(
+                db, ws, cid, before=before, after=after, by=body.by, week=week
+            )
             await db.commit()
         except (*ServiceError, voice_agent.VoiceError) as error:
             raise _http(error) from error
 
-    after = decision.decision if decision is not None else None
     return {
-        "candidate_id": candidate_id,
-        # The decision row: what the voice call's undo refers to by id.
-        "decision_id": str(decision.id) if decision is not None else None,
+        "candidate_id": str(cid),
+        # This write's own id, what the voice call's undo takes back; None when
+        # the write changed nothing.
+        "change_id": str(change.id) if change is not None else None,
+        "short_id": str(change.id)[:8] if change is not None else None,
         "decision": after,
         "previous_decision": before or voice_agent.UNDECIDED,
         "changed": before != after,
@@ -305,12 +315,30 @@ async def add_to_lineup(
         try:
             candidate = await inbox_service.get_candidate(db, ws, cid)
             row = await lineup_service.ensure_lineup(db, ws, start)
+            listed = {i.candidate_id for i in await lineup_service.list_items(db, ws, row.id)}
+            existing = await inbox_service.get_decision(db, ws, cid)
             item = await lineup_service.add_topic(
                 db, ws, row, candidate, slot=body.slot, added_by="ziv"
             )
-            # Adding to the week is itself a decision; keep the two in step.
+            # Adding to the week is itself a decision; keep the two in step, and
+            # in the decision history, so a voice undo of an earlier decision
+            # knows he chose it himself since.
             await inbox_service.decide(
                 db, ws, cid, decision="this_week", decided_by="ziv"
+            )
+            await voice_agent.record_decision_change(
+                db,
+                ws,
+                cid,
+                before=existing.decision if existing is not None else None,
+                after="this_week",
+                by="ziv",
+                week={
+                    "added": cid not in listed,
+                    "placed": {"slot": item.slot, "rank": item.rank},
+                    "week_start": row.week_start.date().isoformat(),
+                    "lineup_id": str(row.id),
+                },
             )
             payload = await lineup_service.lineup_to_json(db, ws, row)
             await db.commit()

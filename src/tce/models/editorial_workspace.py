@@ -185,6 +185,44 @@ class TopicDecision(_PrivateWorkspaceMixin, Base):
     week_place: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
 
 
+class TopicDecisionChange(_PrivateWorkspaceMixin, Base):
+    """One write to a topic's decision that changed something, with its own id.
+
+    `TopicDecision` holds only where a topic stands now, one row per topic, so every
+    decision on a topic shared one id and "undo that approval" reached whichever
+    write came last. Each write gets a row here instead: its id is the change id
+    the voice call undoes by, and the rows after it (by `seq`) say whether anyone
+    decided again since, and who. A write that changed nothing gets no row, so
+    there is nothing to undo that does nothing.
+    """
+
+    __tablename__ = "topic_decision_changes"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "candidate_id", "seq", name="uq_topic_decision_change_seq"
+        ),
+    )
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("topic_candidates.id", ondelete="CASCADE"), index=True
+    )
+    # 1, 2, 3... per topic, in the order the writes happened.
+    seq: Mapped[int] = mapped_column(Integer)
+    # The decision before and after the write; NULL is undecided.
+    before: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    after: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    # What the write did to a week's list:
+    # {"added": {"week_start", "lineup_id", "slot", "rank"} | None,
+    #  "removed": {"week_start", "lineup_id", "slot", "rank"} | None}
+    week: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    # Set when it was taken back. It is not a new write: the rows after it still
+    # decide whether an earlier one can be taken back.
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    undone_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # The weekly lineup
 # ---------------------------------------------------------------------------

@@ -190,6 +190,79 @@ async def test_a_write_needs_a_clear_winner_where_a_read_may_take_the_only_close
     assert sure["status"] == "found" and sure["topic"]["candidate_id"] == str(cid)
 
 
+A_WEEK_OF_TITLES = [
+    "Your first client is the hardest",
+    "The last email you will ever need",
+    "Why the other coach gets the client",
+    "What changed last week in my business",
+    "The second sale is easier",
+    "Start before you are ready",
+    "מה שדיברנו עליו בפגישה",
+    "הדבר האחד שלעולם לא הייתי עושה אוטומטית",
+    "מה שאף אחד לא מספר לך על תמחור",
+    "מה השתנה בשבוע שעבר בעסק",
+    "הלקוח הראשון הוא הכי קשה",
+    "המייל האחרון שתצטרך",
+    "למה המאמן השני מקבל את הלקוח",
+    "הבא בתור הוא הלקוח שלך",
+    "תתחיל לפני שאתה מוכן",
+    "מחשבות על תמחור",
+    "מה עושים אחרי השיחה",
+]
+
+# What he says to point at a topic without naming one: how he talks about it, where
+# it sits in a list, when it was. None of these names a title, so reading one back
+# may at worst offer candidates; it never picks a title as the one he meant.
+NAMES_NO_TOPIC = [
+    "זה שדיברנו עליו",
+    "the one we talked about",
+    "מה שלא הייתי עושה",
+    "הייתי עושה",
+    "that thing I would never do",
+    "the first one",
+    "first",
+    "the second one",
+    "the other one",
+    "the one before",
+    "the one from last week",
+    "הראשון",
+    "השני",
+    "האחרון",
+    "הבא",
+    "לפני",
+    "זה שלפני",
+    "זה שעבר",
+    "זה של השבוע",
+    # One letter or a plural ending off a different word is not the same word.
+    "זה על הספר",
+    "the one about the book",
+    "המחשב",
+    "האחריות",
+]
+
+
+@pytest.mark.parametrize("words", NAMES_NO_TOPIC)
+async def test_words_that_name_no_topic_at_worst_offer_candidates(
+    client, editorial_sessionmaker, words
+):
+    ws = uuid.uuid4()
+    for title in A_WEEK_OF_TITLES:
+        await add_candidate(editorial_sessionmaker, ws, title)
+    body = await topic(client, ws, words)
+    assert body["status"] in ("none", "ambiguous"), (words, body.get("topic", {}).get("title"))
+
+
+def test_a_word_that_matches_only_once_a_letter_is_stripped_scores_below_the_word_itself():
+    # "the book" is not "tells" once its first letter is gone, nor "thoughts" "computer".
+    assert voice_agent._score("הספר", "מה שאף אחד לא מספר לך על תמחור") <= 0.5
+    assert voice_agent._score("המחשב", "מחשבות על תמחור") <= 0.5
+    assert voice_agent._score("funnels", "Funnel pages are dead") <= 0.5
+    # As said, or with "the" (ה) in front, it is the word itself.
+    assert voice_agent._score("מחשבות", "מחשבות על תמחור") >= 1.0
+    assert voice_agent._score("המשפך", "משפך המכירות שלך דולף") >= 1.0
+    assert voice_agent._score("funnel", "Funnel pages are dead") >= 1.0
+
+
 # ------------------------------------------ an edit made while openings are written
 
 

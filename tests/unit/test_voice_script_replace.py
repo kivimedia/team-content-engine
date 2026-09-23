@@ -18,8 +18,9 @@ from sqlalchemy import select
 
 import tce.llm
 from tce.api.routers import editorial as editorial_router
+from tce.editorial import packets as packet_service
 from tce.editorial import status as job_status
-from tce.llm import LLMResult
+from tce.llm import LLMResult, LLMUnavailable
 from tce.models.editorial import RecordingPacket
 from tests.unit.test_editorial_packets import good_output
 from tests.unit.test_editorial_voice_agent import (
@@ -308,3 +309,182 @@ async def test_putting_back_the_current_script_changes_nothing(client, editorial
     assert response.status_code == 200, response.text
     assert response.json()["restored"] is False
     assert (await topic(client, ws, "scripted"))["topic"]["script"]["version"] == 2
+
+
+# ------------------------------------------------------------ the rewrite's edges
+
+
+def more_openings(text):
+    return {
+        "hook_options": [
+            {
+                "id": "x",
+                "text": text,
+                "question": "q?",
+                "payoff_phrase_id": "p002",
+                "moment_ids": [MOMENT],
+                "rationale": "r",
+            }
+        ]
+    }
+
+
+def busy_then_writes():
+    """The PC worker is busy the first time (the job waits), then writes the script."""
+    calls = []
+
+    async def complete(request, *, wait_timeout_s=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise LLMUnavailable("waiting_capacity", "the PC worker is busy")
+        return LLMResult(job_id=uuid.uuid4(), text="", structured=good_output(), model="m")
+
+    return complete
+
+
+async def test_undoing_a_rewrite_refuses_when_openings_were_added_since_and_keeps_them(
+    client, editorial_sessionmaker, monkeypatch
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea", moment_ids=[MOMENT])
+    await add_packet(editorial_sessionmaker, ws, cid)
+
+    async def writer(request, *, wait_timeout_s=None):
+        if request.job_type == packet_service.MORE_HOOKS_JOB_TYPE:
+            return LLMResult(
+                job_id=uuid.uuid4(),
+                text="",
+                structured=more_openings("AN OPENING ADDED ON THE NEW SCRIPT."),
+                model="m",
+            )
+        return LLMResult(job_id=uuid.uuid4(), text="", structured=good_output(), model="m")
+
+    monkeypatch.setattr(tce.llm, "complete", writer)
+    started = await client.post(
+        f"/api/v1/editorial/candidates/{cid}/packet",
+        json={"replace": True, "by": "voice"},
+        headers=headers(ws),
+    )
+    rewrite_id = started.json()["rewrite_id"]
+    new_packet = (await topic(client, ws, "scripted"))["topic"]["script"]["packet_id"]
+    asked = await client.post(
+        f"/api/v1/editorial/packets/{new_packet}/more-hooks", headers=headers(ws)
+    )
+    assert asked.status_code == 202, asked.text
+    texts = [h["text"] for h in (await topic(client, ws, "scripted"))["topic"]["script"]["hooks"]]
+    assert "AN OPENING ADDED ON THE NEW SCRIPT." in texts
+
+    back = await undo_rewrite(client, ws, cid, rewrite_id)
+    assert back.status_code == 409, back.text
+    assert back.json()["detail"]["code"] == "changed"
+    assert "opening" in back.json()["detail"]["message"].lower()
+    after = [h["text"] for h in (await topic(client, ws, "scripted"))["topic"]["script"]["hooks"]]
+    assert after == texts, "the openings he asked for after the rewrite are kept"
+
+
+async def test_more_openings_are_refused_while_a_new_script_is_written_or_waits(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea")
+    pid = await add_packet(editorial_sessionmaker, ws, cid)
+    more = f"/api/v1/editorial/packets/{pid}/more-hooks"
+    job_status.start(ws, "packet", str(cid), "Queued packet")
+    try:
+        running = await client.post(more, headers=headers(ws))
+        job_status.update(ws, "packet", str(cid), state="waiting")
+        waiting = await client.post(more, headers=headers(ws))
+    finally:
+        job_status.update(ws, "packet", str(cid), state="done")
+    for response in (running, waiting):
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["code"] == "still_writing"
+        assert "Scripted idea" in response.json()["detail"]["message"]
+    assert job_status.get(ws, "more_hooks", str(pid)) is None, "nothing was asked for"
+
+
+async def test_a_voice_rewrite_that_waited_and_was_finished_by_a_resume_is_still_his_rewrite(
+    client, editorial_sessionmaker, monkeypatch
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea", moment_ids=[MOMENT])
+    await add_packet(editorial_sessionmaker, ws, cid)
+    monkeypatch.setattr(tce.llm, "complete", busy_then_writes())
+    started = await client.post(
+        f"/api/v1/editorial/candidates/{cid}/packet",
+        json={"replace": True, "by": "voice"},
+        headers=headers(ws),
+    )
+    rewrite_id = started.json()["rewrite_id"]
+    assert job_status.get(ws, "packet", str(cid))["state"] == "waiting"
+    edited = await change(
+        client,
+        ws,
+        cid,
+        "script",
+        [{"field": "bullets.0", "after": "VOICE EDIT", "expect": "First point."}],
+    )
+    assert edited.status_code == 200, edited.text
+
+    # The workspace's button finishes it, and says nothing about who asked.
+    resumed = await client.post(f"/api/v1/editorial/candidates/{cid}/packet", headers=headers(ws))
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["rewrite_id"] == rewrite_id, "the rewrite keeps its id on the job"
+    assert (await topic(client, ws, "scripted"))["topic"]["script"]["points"][0] == (
+        good_output()["bullets"][0]
+    )
+
+    back = await undo_rewrite(client, ws, cid, rewrite_id)
+    assert back.status_code == 200, back.text
+    assert (await topic(client, ws, "scripted"))["topic"]["script"]["points"][0] == "VOICE EDIT"
+    assert (await undo(client, ws, edited.json()["change_set_id"])).status_code == 200
+    assert (await topic(client, ws, "scripted"))["topic"]["script"]["points"][0] == "First point."
+
+
+async def test_an_unrecorded_rewrite_whose_script_moved_on_says_so_and_offers_the_version(
+    client, editorial_sessionmaker, monkeypatch
+):
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea", moment_ids=[MOMENT])
+    await add_packet(editorial_sessionmaker, ws, cid)
+    monkeypatch.setattr(tce.llm, "complete", busy_then_writes())
+    started = await client.post(
+        f"/api/v1/editorial/candidates/{cid}/packet",
+        json={"replace": True, "by": "voice"},
+        headers=headers(ws),
+    )
+    rewrite_id = started.json()["rewrite_id"]
+    edited = await change(
+        client,
+        ws,
+        cid,
+        "script",
+        [{"field": "bullets.0", "after": "VOICE EDIT", "expect": "First point."}],
+    )
+    assert edited.status_code == 200, edited.text
+    # A restart forgets the job; the resume after it cannot know who asked.
+    job_status.clear()
+    resumed = await client.post(f"/api/v1/editorial/candidates/{cid}/packet", headers=headers(ws))
+    assert resumed.status_code == 200, resumed.text
+    current = (await topic(client, ws, "scripted"))["topic"]["script"]["version"]
+
+    response = await client.post(
+        f"/api/v1/editorial/candidates/{cid}/script/undo-rewrite",
+        json={"rewrite_id": rewrite_id, "replaced_version": 1, "by": "voice"},
+        headers=headers(ws),
+    )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "replaced_since"
+    assert "still the current one" not in detail["message"]
+    assert f"version {current}" in detail["message"]
+    assert detail["current_version"] == current and detail["previous_version"] == current - 1
+
+    # The version it offers really brings the edited script back.
+    restored = await client.post(
+        f"/api/v1/editorial/candidates/{cid}/script/restore",
+        json={"version": detail["previous_version"], "by": "voice"},
+        headers=headers(ws),
+    )
+    assert restored.status_code == 200, restored.text
+    assert (await topic(client, ws, "scripted"))["topic"]["script"]["points"][0] == "VOICE EDIT"

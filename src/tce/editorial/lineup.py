@@ -521,7 +521,9 @@ async def follow_decision(
     refused with it, so nothing is half done.
 
     Returns {"placed": {slot, rank, revision} | None, "added": bool,
-    "removed": {slot, rank} | None}.
+    "removed": {slot, rank} | None, "week_start": the week's date as text,
+    "lineup_id": the list it changed or None}, so a caller that records the write
+    can say later which week's list it touched.
     """
     week_start = week_start_for(None)
     week_label = week_start.date().isoformat()
@@ -543,23 +545,32 @@ async def follow_decision(
             "placed": {"slot": item.slot, "rank": item.rank, "revision": lineup.revision},
             "added": added,
             "removed": None,
+            "week_start": week_label,
+            "lineup_id": str(lineup.id),
         }
 
+    untouched = {
+        "placed": None,
+        "added": False,
+        "removed": None,
+        "week_start": week_label,
+        "lineup_id": None,
+    }
     lineup = await get_lineup(db, ws, week_start)
     if lineup is None:
-        return {"placed": None, "added": False, "removed": None}
+        return untouched
     item = next(
         (i for i in await list_items(db, ws, lineup.id) if i.candidate_id == candidate.id),
         None,
     )
     if item is None:
-        return {"placed": None, "added": False, "removed": None}
+        return untouched
     removed = {"slot": item.slot, "rank": item.rank}
     await remove_topic(db, ws, lineup, candidate.id, removed_by=by)
     if decision is not None:
         decision.week_place = {"week_start": week_label, **removed}
         await db.flush()
-    return {"placed": None, "added": False, "removed": removed}
+    return {**untouched, "removed": removed, "lineup_id": str(lineup.id)}
 
 
 # ---------------------------------------------------------------------------

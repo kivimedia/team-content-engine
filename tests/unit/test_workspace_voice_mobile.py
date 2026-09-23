@@ -120,6 +120,10 @@ async def _seed(sessionmaker) -> dict:
             summary="Write the takeaway",
         )
         await inbox_service.decide(s, WS, away.id, decision="away", decided_by="voice")
+        # As the decide route does: each decision write is listed by its own change id.
+        await voice_agent.record_decision_change(
+            s, WS, away.id, before=None, after="away", by="voice"
+        )
         await s.commit()
     return {"kept": str(kept.id), "away": str(away.id)}
 

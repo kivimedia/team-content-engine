@@ -64,7 +64,9 @@ class VoiceOperation(BaseModel):
 
 
 class VoiceChangeRequest(BaseModel):
-    candidate_id: str
+    # The topic's id or short id. Optional here only so that a missing one is
+    # refused in words the voice agent can say, not as a validation list.
+    candidate_id: str | None = None
     target: str  # brief | script | week
     operations: list[VoiceOperation] = Field(min_length=1)
     summary: str = "Changed by voice"
@@ -76,18 +78,29 @@ class VoiceChangeRequest(BaseModel):
 
 @router.get("/voice/topic")
 async def find_topic(
-    q: str = Query(..., min_length=1, max_length=300),
+    q: str | None = Query(None, min_length=1, max_length=300),
+    topic_id: str | None = Query(None, alias="id", min_length=1, max_length=64),
     strict: bool = Query(False),
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
     """One topic in full (brief, script, openings), found by id, short id or title words.
 
-    Ambiguous words return the candidates instead, so the agent can ask which.
-    `strict` (the tools that write) finds a topic only when it is the clear winner.
+    `q` (reading) takes words: ambiguous ones return the candidates, each with its
+    title and short id, so the agent can read them back and ask which. `id` (the
+    tools that write) takes an id or a short id only, and refuses words.
     """
     async with open_session(sm) as db:
         try:
+            if topic_id is not None:
+                candidate = await voice_agent.topic_by_id(db, ws, topic_id)
+                detail = await voice_agent.topic_detail(db, ws, candidate)
+                await db.commit()
+                return {"status": "found", "topic": detail, "candidates": []}
+            if q is None:
+                raise voice_agent.VoiceError(
+                    "empty", "say which topic: words to find it, or its id", status=400
+                )
             found = await voice_agent.find_topics(db, ws, q, strict=strict)
             if found["status"] != "found":
                 return {
@@ -124,14 +137,17 @@ async def voice_change(
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
-    """Propose and apply in one call. Undo it with /change-sets/{id}/undo."""
-    cid = _uuid(body.candidate_id, "topic")
+    """Propose and apply in one call. Undo it with /change-sets/{id}/undo.
+
+    The topic is named by its id only; a missing or unknown one is refused in words.
+    """
     async with open_session(sm) as db:
         try:
+            candidate = await voice_agent.topic_by_id(db, ws, body.candidate_id)
             result = await voice_agent.apply_change(
                 db,
                 ws,
-                candidate_id=cid,
+                candidate_id=candidate.id,
                 target=body.target,
                 operations=[op.model_dump() for op in body.operations],
                 summary=body.summary,
@@ -189,12 +205,10 @@ async def restore_topic(
 
 
 class UndoDecisionRequest(BaseModel):
-    # What the decision replaced ("undecided" when there was none), what it set,
-    # and whether it put the topic on this week's list or took it off.
-    previous: str | None = None
-    decision: str | None = None
-    added_to_week: bool = False
-    removed_from_week: bool = False
+    # The change id the decide answered with. What that write replaced and what it
+    # did to a week's list are on its row. Optional only so that a missing one is
+    # refused in words.
+    change_id: str | None = None
     by: str = "voice"
 
 
@@ -205,19 +219,12 @@ async def undo_decision(
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
-    """Take a decision back, and the week with it, in one transaction."""
+    """Take one decision write back, by its change id, and the week with it."""
     cid = _uuid(candidate_id, "topic")
     async with open_session(sm) as db:
         try:
             result = await voice_agent.undo_decision(
-                db,
-                ws,
-                cid,
-                previous=body.previous,
-                decision=body.decision,
-                added_to_week=body.added_to_week,
-                removed_from_week=body.removed_from_week,
-                by=body.by,
+                db, ws, cid, change_id=body.change_id, by=body.by
             )
             await db.commit()
             return result
@@ -233,6 +240,9 @@ class RestoreScriptRequest(BaseModel):
 
 class UndoRewriteRequest(BaseModel):
     rewrite_id: str
+    # The version the call was told the rewrite replaces, so a missing record can
+    # be told apart from a script that has moved on.
+    replaced_version: int | None = None
     by: str = "voice"
 
 
@@ -248,7 +258,9 @@ async def undo_rewrite(
     rid = _uuid(body.rewrite_id, "rewrite")
     async with open_session(sm) as db:
         try:
-            result = await voice_agent.undo_rewrite(db, ws, cid, rid, by=body.by)
+            result = await voice_agent.undo_rewrite(
+                db, ws, cid, rid, replaced_version=body.replaced_version, by=body.by
+            )
             await db.commit()
             return result
         except ServiceError as error:

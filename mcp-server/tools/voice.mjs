@@ -117,6 +117,14 @@ const DECISIONS = {
   'put away': 'away',
 };
 
+// "X is already ..." for a decision that changed nothing.
+const ALREADY = {
+  this_week: 'in this week\'s list',
+  discuss: 'marked to think about',
+  later: 'saved for later',
+  away: 'put away',
+};
+
 const MOVES = {
   first: { action: 'first' },
   top: { action: 'first' },
@@ -148,28 +156,80 @@ export function parsePart(part) {
   return null;
 }
 
+/*
+ * A write names its topic by id, never by words (23-Sep, round 3). Every write
+ * applies at once, and word matching kept finding new ways to land on the wrong
+ * title: "the first one", "הראשון", "זה שדיברנו עליו" each named a title that
+ * happened to hold the word. So words go only to the read tools (tce_topic,
+ * tce_week), which answer with the title and its id, or with candidates when
+ * the words are not a clear winner; the brain reads the title back to him, and
+ * the write takes the id. At worst a stray word makes a read offer candidates.
+ */
+export const FIND_FIRST = 'Find the topic with tce_topic, read its title back to him, then pass its id.';
+const TOPIC_ID = {
+  type: 'string',
+  description: 'The topic\'s id or short id, as tce_topic or tce_week gave it. Never words from the title.',
+};
+// A whole id, or the short id (its first 8 characters) or more of it.
+const ID_TEXT = /^[0-9a-f]{8}[0-9a-f-]{0,28}$/;
+
+/** "id 1a2b3c4d", "(1a2b3c4d)" -> "1a2b3c4d": the id as the brain may pass it. */
+export function idText(raw) {
+  return String(raw ?? '').trim().toLowerCase()
+    .replace(/^(?:short\s+)?id[\s:]+/, '')
+    .replace(/^[\s()[\]"'.]+|[\s()[\]"'.]+$/g, '');
+}
+
 export function register(server, call, { reply, failure, shortId }) {
   const ledgerFile = ledgerPath();
   const ledger = loadLedger(ledgerFile);
   const save = () => saveLedger(ledgerFile, ledger);
-  // The tools that write apply at once, so they take only a topic his words
-  // clearly name (see resolve).
-  const WRITE = { write: true };
 
   /**
-   * One topic by id or words; a reply to return instead when it is not exactly one.
-   * `write`: the tool applies at once, so only a clear winner counts as found; the
-   * only close title is read back as a question instead.
+   * The one topic an id names, for a tool that writes; a reply to return instead
+   * when it is not an id, or names no topic. Words are refused before any request.
    */
-  async function resolve(topic, { write = false } = {}) {
+  async function byId(topic) {
+    const id = idText(topic);
+    if (!ID_TEXT.test(id)) {
+      return {
+        stop: reply(
+          `A change names its topic by id, not by words ("${String(topic ?? '')}" is not an id). `
+            + `${FIND_FIRST} Nothing was changed.`,
+          { ok: false, code: 'id_required' },
+        ),
+      };
+    }
+    const result = await call('GET', `/editorial/voice/topic?id=${encodeURIComponent(id)}`);
+    if (!result.ok) {
+      const detail = result.data?.detail;
+      if (detail && typeof detail === 'object' && detail.message) {
+        const tail = detail.message.includes('tce_topic') ? '' : ` ${FIND_FIRST}`;
+        return { stop: reply(`${detail.message}${tail}`, { ok: false, code: detail.code, status: result.status }) };
+      }
+      return { stop: failure(result, 'find that topic') };
+    }
+    if (result.data?.status !== 'found' || !result.data.topic) {
+      return {
+        stop: reply(`No topic has the id "${id}". ${FIND_FIRST} Nothing was changed.`, { ok: false, code: 'unknown_topic' }),
+      };
+    }
+    return { topic: result.data.topic };
+  }
+
+  /**
+   * One topic by id or words, for reading; a reply to return instead when it is
+   * not exactly one. Candidates come back with their titles and ids, so the
+   * brain can read them to him and ask which.
+   */
+  async function resolve(topic) {
     if (!topic) return { stop: reply('Which topic? Say part of its title.', { status: 'none' }) };
-    const strict = write ? '&strict=1' : '';
-    const result = await call('GET', `/editorial/voice/topic?q=${encodeURIComponent(topic)}${strict}`);
+    const result = await call('GET', `/editorial/voice/topic?q=${encodeURIComponent(topic)}`);
     if (!result.ok) return { stop: failure(result, 'find that topic') };
     const d = result.data;
     if (d.status === 'found') return { topic: d.topic };
     if (d.status === 'ambiguous' && d.candidates.length === 1) {
-      // A close match that is not a sure one: a write goes nowhere until he says so.
+      // A close match that is not a sure one: he says whether it is the one.
       const [c] = d.candidates;
       return {
         stop: reply(
@@ -193,7 +253,12 @@ export function register(server, call, { reply, failure, shortId }) {
 
   /** A refusal said plainly; `more` is added to what he hears. */
   function spokenError(result, what, more = '') {
-    const detail = result.data?.detail;
+    const raw = result.data?.detail;
+    // A sentence ends before the next one starts, or they run together aloud.
+    const detail = raw && typeof raw === 'object' && typeof raw.message === 'string'
+      && !/[.!?]["')]?$/.test(raw.message.trim())
+      ? { ...raw, message: `${raw.message.trim()}.` }
+      : raw;
     const tail = more ? ` ${more}` : '';
     if (result.status === 409 && detail && typeof detail === 'object') {
       const now = detail.current;
@@ -223,22 +288,23 @@ export function register(server, call, { reply, failure, shortId }) {
   }
 
   /*
-   * A decision as the call's undo needs it: what it replaced, and whether it put
-   * the topic on this week's list. That second part is what re-deciding cannot
-   * know: a topic chosen for this week but off the list answers previous
-   * "this_week", and deciding "this_week" again left it on the list.
+   * A decision write as the call's undo needs it: its own change id. What it
+   * replaced and what it did to a week's list are kept on the server with that
+   * id, so the undo takes back exactly this write and no other. A write that
+   * changed nothing has no id and is not remembered: "approve it" twice, then
+   * "undo", takes back the approval that did it.
    */
-  function decisionEntry(t, decision, data) {
-    return {
+  function rememberDecision(t, decision, data) {
+    if (!data?.change_id) return '';
+    remember({
       kind: 'decision',
-      id: data?.decision_id ?? null,
+      id: data.change_id,
       candidate_id: t.candidate_id,
       title: t.title,
       decision,
-      previous: data?.previous_decision ?? null,
-      added_to_week: Boolean(data?.added_to_week),
-      removed_from_week: Boolean(data?.removed_from_week),
-    };
+      summary: `the decision on "${t.title}"`,
+    });
+    return ` (change ${shortId(data.change_id)})`;
   }
 
   function track(job) {
@@ -263,28 +329,26 @@ export function register(server, call, { reply, failure, shortId }) {
       );
     }
     const items = recent.data.items || [];
-    const last = items.find((i) => (i.kind === 'change' && !i.is_undo && !i.undone && i.can_undo !== false)
-      || i.kind === 'decision');
+    // Edits and decisions alike: each has its own change id now.
+    const last = items.find((i) => (i.kind === 'change' || i.kind === 'decision')
+      && !i.is_undo && !i.undone && i.can_undo !== false);
     if (!last) {
       return reply('Nothing has been changed by voice in the last hour, so there is nothing to undo.', { ok: false, code: 'nothing' });
     }
     const what = (last.lines || []).join(' ') || last.summary || 'a change';
-    const on = last.title ? ` on "${last.title}"` : '';
-    if (last.kind === 'change') {
-      const short = last.short_id || shortId(last.id);
-      return reply(
-        `I have no record of a change in this call, so nothing was undone yet. The last voice change I can see is: `
-          + `${what}${on} (change ${short}). Is that the one? If he says yes, call tce_undo with change_id ${short}.`,
-        { ok: false, code: 'confirm_needed', change_id: last.id, short_id: short, title: last.title ?? null },
-      );
-    }
-    const back = last.decision === 'away'
-      ? `If he wants it back, tce_restore_idea brings "${last.title}" back.`
-      : `To change it, decide "${last.title}" again with tce_decide.`;
+    const on = last.title && last.kind === 'change' ? ` on "${last.title}"` : '';
+    const short = last.short_id || shortId(last.id);
     return reply(
-      `I have no record of a change in this call, so nothing was undone. The last thing done by voice is: ${what} ${back}`,
+      `I have no record of a change in this call, so nothing was undone yet. The last voice change I can see is: `
+        + `${what}${on} (change ${short}). Is that the one? If he says yes, call tce_undo with change_id ${short}.`,
       {
-        ok: false, code: 'confirm_needed', decision_id: last.id, candidate_id: last.candidate_id, title: last.title, decision: last.decision,
+        ok: false,
+        code: 'confirm_needed',
+        kind: last.kind,
+        change_id: last.id,
+        short_id: short,
+        candidate_id: last.candidate_id ?? null,
+        title: last.title ?? null,
       },
     );
   }
@@ -294,7 +358,8 @@ export function register(server, call, { reply, failure, shortId }) {
   server.tool(
     'tce_week',
     'This week at a glance: the recording list in order with each script\'s state, and the ideas '
-      + 'still waiting for a decision. Read-only. Start here when he says "the week".',
+      + 'still waiting for a decision, each with its id. Read-only. Start here when he says "the week"; '
+      + 'a change to one of them takes the id listed here.',
     { type: 'object', properties: {} },
     async () => {
       const today = await call('GET', '/editorial/today');
@@ -312,7 +377,10 @@ export function register(server, call, { reply, failure, shortId }) {
         lines.push('Nothing is in this week yet.');
       }
       const reserve = week.reserve || [];
-      if (reserve.length) lines.push(`${reserve.length} more in reserve.`);
+      if (reserve.length) {
+        lines.push(`${reserve.length} more in reserve:`);
+        reserve.forEach((t) => lines.push(`- ${t.title} (id ${shortId(t.candidate_id)})`));
+      }
       const topics = (waiting.ok ? waiting.data.topics : []) || [];
       const undecided = topics.filter((t) => !t.decision);
       const count = today.data.attention?.waiting ?? undecided.length;
@@ -337,9 +405,11 @@ export function register(server, call, { reply, failure, shortId }) {
   server.tool(
     'tce_topic',
     'One topic in full: its brief, and its script (the opening, the numbered points, the numbered '
-      + 'script lines and the numbered opening options). Give an id or a few words of the title. '
-      + 'If the words match more than one, it lists them so you can ask which. The text is for you; '
-      + 'read aloud only the part he asked about.',
+      + 'script lines and the numbered opening options). Give an id or a few words of the title: this '
+      + 'is where words go. If the words are not a clear match it lists the candidates, each with its '
+      + 'title and id, so you can ask which. Read the title back to him before any change; the tools '
+      + 'that change something take the id this returns, never words. The text is for you; read '
+      + 'aloud only the part he asked about.',
     {
       type: 'object',
       properties: { topic: { type: 'string', description: 'Id, short id, or words from the title.' } },
@@ -391,11 +461,11 @@ export function register(server, call, { reply, failure, shortId }) {
       + '"the opening", "facebook post", or a brief block ("big idea", "takeaway", "your angle", '
       + '"why now", "audience", "call to action", "claims to avoid", "evidence"). Pass expect with '
       + 'the text you read him as the current one: if it changed since, nothing is written and the '
-      + 'new text comes back. Returns a change id; tce_undo takes it back.',
+      + `new text comes back. Returns a change id; tce_undo takes it back. ${FIND_FIRST}`,
     {
       type: 'object',
       properties: {
-        topic: { type: 'string', description: 'Id, short id, or words from the title.' },
+        topic: TOPIC_ID,
         part: { type: 'string', description: 'Which part: "point 3", "line 2", "the opening", "takeaway"...' },
         text: { type: 'string', description: 'The new wording, exactly as agreed.' },
         expect: { type: 'string', description: 'The current wording you read him, to catch a change made meanwhile.' },
@@ -412,7 +482,7 @@ export function register(server, call, { reply, failure, shortId }) {
           { ok: false, code: 'unknown_part' },
         );
       }
-      const found = await resolve(topic, WRITE);
+      const found = await byId(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
       const op = { op: 'set_field', field: where.field, after: text };
@@ -428,18 +498,18 @@ export function register(server, call, { reply, failure, shortId }) {
       const d = result.data;
       remember({ kind: 'change', id: d.change_set_id, title: t.title, summary: d.said.join(' ') });
       const warn = d.warnings?.length ? ` Note: ${d.warnings.join('; ')}.` : '';
-      return reply(`Done. ${d.said.join(' ')}${warn} (change ${d.short_id}; undo takes it back.)`, d);
+      return reply(`Done on "${t.title}": ${d.said.join(' ')}${warn} (change ${d.short_id}; undo takes it back.)`, d);
     },
   );
 
   server.tool(
     'tce_decide',
     'Decide a topic: this_week (approve it into this week\'s list), discuss, later, or away. '
-      + 'For away, prefer tce_put_away, and confirm the title by name first.',
+      + `For away, prefer tce_put_away. Returns a change id; tce_undo takes it back. ${FIND_FIRST}`,
     {
       type: 'object',
       properties: {
-        topic: { type: 'string', description: 'Id, short id, or words from the title.' },
+        topic: TOPIC_ID,
         decision: { type: 'string', description: 'this_week, discuss, later or away. "approve" means this_week.' },
         note: { type: 'string', description: 'Why, in his words, if he said.' },
       },
@@ -448,57 +518,67 @@ export function register(server, call, { reply, failure, shortId }) {
     async ({ topic, decision, note }) => {
       const wanted = DECISIONS[clean(decision)] || DECISIONS[decision];
       if (!wanted) return reply(`"${decision}" is not a decision. Use this_week, discuss, later or away.`, { ok: false });
-      const found = await resolve(topic, WRITE);
+      const found = await byId(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
       const result = await call('POST', `/editorial/topics/${t.candidate_id}/decide`, { decision: wanted, note, by: 'voice' });
       if (!result.ok) return spokenError(result, 'decide that topic');
-      remember(decisionEntry(t, wanted, result.data));
+      const d = result.data;
+      if (d.changed === false && !d.added_to_week && !d.removed_from_week) {
+        return reply(
+          `"${t.title}" is already ${ALREADY[wanted] || wanted}. Nothing was changed, so there is nothing new to undo.`,
+          d,
+        );
+      }
+      const change = rememberDecision(t, wanted, d);
       const said = {
         this_week: `"${t.title}" is in this week's list${result.data.placed ? `, place ${result.data.placed.rank}` : ''}.`,
         discuss: `"${t.title}" is marked to think about.`,
         later: `"${t.title}" is saved for later.`,
         away: `"${t.title}" is put away. It can be brought back.`,
       }[wanted];
-      return reply(said, result.data);
+      return reply(`${said}${change}`, d);
     },
   );
 
   server.tool(
     'tce_put_away',
     'Put an idea away (it stops being offered). Restorable with tce_restore_idea. Say the title back '
-      + 'to him and get a yes before calling this.',
+      + `to him and get a yes before calling this. ${FIND_FIRST}`,
     {
       type: 'object',
-      properties: { topic: { type: 'string', description: 'Id, short id, or words from the title.' } },
+      properties: { topic: TOPIC_ID },
       required: ['topic'],
     },
     async ({ topic }) => {
-      const found = await resolve(topic, WRITE);
+      const found = await byId(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
       if (t.put_away) return reply(`"${t.title}" is already put away.`, { candidate_id: t.candidate_id });
       const result = await call('POST', `/editorial/topics/${t.candidate_id}/decide`, { decision: 'away', by: 'voice' });
       if (!result.ok) return spokenError(result, 'put that idea away');
-      remember(decisionEntry(t, 'away', result.data));
-      return reply(`Put away: "${t.title}". It can be brought back.`, result.data);
+      const change = rememberDecision(t, 'away', result.data);
+      return reply(`Put away: "${t.title}". It can be brought back.${change}`, result.data);
     },
   );
 
   server.tool(
     'tce_restore_idea',
-    'Bring a put-away idea back to where it was before it was put away.',
+    'Bring a put-away idea back to where it was before it was put away. tce_topic finds put-away '
+      + `ideas too. Undoable. ${FIND_FIRST}`,
     {
       type: 'object',
-      properties: { topic: { type: 'string', description: 'Id, short id, or words from the title.' } },
+      properties: { topic: TOPIC_ID },
       required: ['topic'],
     },
     async ({ topic }) => {
-      const found = await resolve(topic, WRITE);
+      const found = await byId(topic);
       if (found.stop) return found.stop;
-      const result = await call('POST', `/editorial/topics/${found.topic.candidate_id}/restore`, { by: 'voice' });
+      const t = found.topic;
+      const result = await call('POST', `/editorial/topics/${t.candidate_id}/restore`, { by: 'voice' });
       if (!result.ok) return spokenError(result, 'bring that idea back');
-      return reply(result.data.said, result.data);
+      const change = rememberDecision(t, result.data.decision ?? 'undecided', result.data);
+      return reply(`${result.data.said}${change}`, result.data);
     },
   );
 
@@ -508,18 +588,18 @@ export function register(server, call, { reply, failure, shortId }) {
       + '(1, 2, 3), and expect is the text of that opening exactly as you read it to him. The '
       + 'script\'s opening line becomes that option. If the options changed since you read them '
       + '(a new script, more openings), nothing is written and the options as they are now come '
-      + 'back to read him instead. Undoable.',
+      + `back to read him instead. Undoable. ${FIND_FIRST}`,
     {
       type: 'object',
       properties: {
-        topic: { type: 'string', description: 'Id, short id, or words from the title.' },
+        topic: TOPIC_ID,
         option: { type: 'string', description: 'The option number (1, 2, 3) or its id.' },
         expect: { type: 'string', description: 'The text of the opening he chose, as you read it to him.' },
       },
       required: ['topic', 'option', 'expect'],
     },
     async ({ topic, option, expect }) => {
-      const found = await resolve(topic, WRITE);
+      const found = await byId(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
       const result = await call('POST', '/editorial/voice/change', {
@@ -534,7 +614,7 @@ export function register(server, call, { reply, failure, shortId }) {
       remember({ kind: 'change', id: d.change_set_id, title: t.title, summary: `opening ${option}` });
       const line = d.changes.find((c) => c.field === 'script_phrases.0');
       return reply(
-        `Done. The opening is now option ${option}${line ? `: "${line.after}"` : ''}. (change ${d.short_id})`,
+        `Done. The opening of "${t.title}" is now option ${option}${line ? `: "${line.after}"` : ''}. (change ${d.short_id})`,
         d,
       );
     },
@@ -543,11 +623,11 @@ export function register(server, call, { reply, failure, shortId }) {
   server.tool(
     'tce_reorder_week',
     'Move a topic in this week\'s list: first, up, down, last, reserve, primary, remove, or a '
-      + 'position number. Undoable.',
+      + `position number. Undoable. ${FIND_FIRST}`,
     {
       type: 'object',
       properties: {
-        topic: { type: 'string', description: 'Id, short id, or words from the title.' },
+        topic: TOPIC_ID,
         move: { type: 'string', description: 'first, up, down, last, reserve, primary, remove, or a number like "2".' },
       },
       required: ['topic', 'move'],
@@ -556,7 +636,7 @@ export function register(server, call, { reply, failure, shortId }) {
       const key = clean(move);
       let spec = MOVES[key] || (/^\d+$/.test(key) ? { action: 'rank', rank: Number(key) } : null);
       if (!spec) return reply(`"${move}" is not a move. Use first, up, down, last, reserve, remove or a number.`, { ok: false });
-      const found = await resolve(topic, WRITE);
+      const found = await byId(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
       /*
@@ -599,28 +679,45 @@ export function register(server, call, { reply, failure, shortId }) {
     'tce_undo',
     'Take back a change. With no id it takes back the last thing changed in THIS call that can '
       + 'still be taken back. With an id (the change id a tool returned: an edit, a decision, a new '
-      + 'script) it takes back that one. Refuses, with the current text, if the same part was '
-      + 'changed again since; the next undo without an id then goes to the change before it.',
+      + 'script) it takes back exactly that one. Refuses, with the current text, if the same part was '
+      + 'changed again since; the next undo without an id then goes to the change before it. When '
+      + 'an undo of a new script says the script moved on and offers a version, restore_version '
+      + '(with that change id) puts that version back.',
     {
       type: 'object',
-      properties: { change_id: { type: 'string', description: 'Optional. The change id (or its first 8 characters).' } },
+      properties: {
+        change_id: { type: 'string', description: 'Optional. The change id (or its first 8 characters).' },
+        restore_version: {
+          type: 'integer',
+          description: 'Only when an undo offered it: the script version to put back, with change_id.',
+        },
+      },
     },
-    async ({ change_id }) => {
+    async ({ change_id, restore_version }) => {
       let entry;
       if (change_id) {
         // Any change of this call by its id: an edit, a decision, a rewrite.
         entry = [...ledger.writes].reverse().find((w) => w.id && String(w.id).startsWith(change_id));
         if (!entry) {
-          if (/^[0-9a-f-]{36}$/i.test(change_id)) {
+          // One from earlier today, an edit or a decision, by its id in the voice log.
+          const recent = await call('GET', '/editorial/voice/activity?hours=24');
+          const hit = recent.ok && (recent.data.items || []).find((i) => String(i.id).startsWith(change_id));
+          if (hit && hit.kind === 'decision') {
+            entry = {
+              kind: 'decision', id: hit.id, candidate_id: hit.candidate_id, title: hit.title,
+            };
+          } else if (hit) {
+            entry = { kind: 'change', id: hit.id, title: hit.title };
+          } else if (/^[0-9a-f-]{36}$/i.test(change_id)) {
             entry = { kind: 'change', id: change_id };
           } else {
-            const recent = await call('GET', '/editorial/voice/activity?hours=24');
-            const hit = recent.ok && (recent.data.items || []).find((i) => i.kind === 'change' && String(i.id).startsWith(change_id));
-            if (!hit) return reply(`I have no change ${change_id} from the last day.`, { ok: false });
-            entry = { kind: 'change', id: hit.id, title: hit.title };
+            return reply(`I have no change ${change_id} from the last day.`, { ok: false });
           }
         }
       } else {
+        if (restore_version !== undefined && restore_version !== null) {
+          return reply('restore_version goes with the change id whose undo offered it. Nothing was changed.', { ok: false });
+        }
         if (!ledger.writes.length) return lastVoiceChange();
         // A change whose undo was refused for good is passed over, so "undo"
         // again means the change before it rather than the same refusal.
@@ -637,6 +734,26 @@ export function register(server, call, { reply, failure, shortId }) {
         }
       }
 
+      if (restore_version !== undefined && restore_version !== null) {
+        // A version an undo offered after saying the script moved on: put back as
+        // a change of this call, attributed and undoable like any other.
+        const version = Number(restore_version);
+        if (!entry.candidate_id || !Number.isInteger(version)) {
+          return reply('That change is not on a script, so there is no version to put back. Nothing was changed.', { ok: false });
+        }
+        const result = await call('POST', `/editorial/candidates/${entry.candidate_id}/script/restore`, { version, by: 'voice' });
+        if (!result.ok) return spokenError(result, `put back script version ${version}`);
+        const d = result.data;
+        entry.undone = true;
+        entry.refused = false;
+        if (d.change_set_id) {
+          remember({ kind: 'change', id: d.change_set_id, title: entry.title, summary: d.said });
+        } else {
+          save();
+        }
+        return reply(d.said, d);
+      }
+
       /*
        * A refusal is an answer. One that holds for good (it was changed again, it
        * was never saved) marks the entry, so the next plain undo moves on; one
@@ -645,12 +762,22 @@ export function register(server, call, { reply, failure, shortId }) {
        */
       const NOT_YET = new Set(['still_writing', 'recording']);
       const refusedWith = (result, what) => {
-        const code = result.data?.detail?.code;
+        const detail = result.data?.detail;
+        const code = detail?.code;
         if (result.status >= 400 && result.status < 500 && !NOT_YET.has(code)) {
           entry.refused = true;
           save();
           const id = entry.id ? ` by its id (change ${shortId(entry.id)})` : '';
-          return spokenError(result, what, `The next undo goes to the change before this one; this one can still be undone later${id}.`);
+          let more = `The next undo goes to the change before this one; this one can still be undone later${id}.`;
+          if (code === 'replaced_since' && Number.isInteger(detail.previous_version)) {
+            more = `To put a version back, call tce_undo with change_id ${shortId(entry.id)} and `
+              + `restore_version ${detail.previous_version} (the one just before the current script)`
+              + (Number.isInteger(detail.asked_version) && detail.asked_version !== detail.previous_version
+                ? ` or restore_version ${detail.asked_version} (the one he had when he asked).`
+                : '.')
+              + ' The next undo without an id goes to the change before this one.';
+          }
+          return spokenError(result, what, more);
         }
         if (NOT_YET.has(code)) {
           // Skipping it would quietly undo an older change he did not mean.
@@ -667,22 +794,17 @@ export function register(server, call, { reply, failure, shortId }) {
       };
 
       if (entry.kind === 'decision') {
-        if (entry.decision === 'away') {
-          const result = await call('POST', `/editorial/topics/${entry.candidate_id}/restore`, { by: 'voice' });
-          if (!result.ok) return refusedWith(result, 'undo that decision');
-          return done(result, `Undone. "${entry.title}" is back where it was.`);
-        }
-        // One route takes the decision back and, when this decision put it
-        // there, takes it off this week's list, in one transaction.
+        // The server holds what this write replaced and what it did to a week's
+        // list, under its change id: the undo takes back exactly this write, from
+        // whichever week's list it touched, in one transaction.
         const result = await call('POST', `/editorial/topics/${entry.candidate_id}/undo-decision`, {
-          previous: entry.previous || 'undecided',
-          decision: entry.decision,
-          added_to_week: Boolean(entry.added_to_week),
-          removed_from_week: Boolean(entry.removed_from_week),
+          change_id: entry.id,
           by: 'voice',
         });
         if (!result.ok) return refusedWith(result, 'undo that decision');
-        return done(result, result.data?.said ? `Undone. ${result.data.said}` : `Undone. "${entry.title}" is back where it was.`);
+        const d = result.data || {};
+        if (d.already) return done(result, d.said);
+        return done(result, d.said ? `Undone. ${d.said}` : `Undone. "${entry.title}" is back where it was.`);
       }
 
       if (entry.kind === 'script') {
@@ -691,7 +813,9 @@ export function register(server, call, { reply, failure, shortId }) {
         // step of this call: a second "undo" goes further back, it does not bring
         // the rewrite back.
         const result = entry.id
-          ? await call('POST', `/editorial/candidates/${entry.candidate_id}/script/undo-rewrite`, { rewrite_id: entry.id, by: 'voice' })
+          ? await call('POST', `/editorial/candidates/${entry.candidate_id}/script/undo-rewrite`, {
+            rewrite_id: entry.id, replaced_version: entry.replaced_version ?? null, by: 'voice',
+          })
           : await call('POST', `/editorial/candidates/${entry.candidate_id}/script/restore`, { version: entry.replaced_version, by: 'voice' });
         if (!result.ok) return refusedWith(result, 'put the earlier script back');
         return done(result, result.data.said);
@@ -714,11 +838,11 @@ export function register(server, call, { reply, failure, shortId }) {
       + 'that back unless replace is true: tell him ("X already has a script, version N; a new one '
       + 'replaces it") and call again with replace true only after he says yes. While it is being '
       + 'written the script itself cannot be changed. tce_undo (or its change id) puts back the '
-      + 'script it replaced once the new one is ready.',
+      + `script it replaced once the new one is ready. ${FIND_FIRST}`,
     {
       type: 'object',
       properties: {
-        topic: { type: 'string', description: 'Id, short id, or words from the title.' },
+        topic: TOPIC_ID,
         replace: {
           type: 'boolean',
           description: 'Only after he agreed to replace the script the topic already has.',
@@ -727,7 +851,7 @@ export function register(server, call, { reply, failure, shortId }) {
       required: ['topic'],
     },
     async ({ topic, replace }) => {
-      const found = await resolve(topic, WRITE);
+      const found = await byId(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
       const hasScript = (version, status) => reply(
@@ -778,14 +902,15 @@ export function register(server, call, { reply, failure, shortId }) {
   server.tool(
     'tce_more_hooks',
     'Ask for more opening options for a topic\'s script. Returns at once; tce_jobs says when they '
-      + 'are ready. The script itself does not change.',
+      + 'are ready. The script itself does not change. Refused while a new script for the topic is '
+      + `being written or waits to be finished. ${FIND_FIRST}`,
     {
       type: 'object',
-      properties: { topic: { type: 'string', description: 'Id, short id, or words from the title.' } },
+      properties: { topic: TOPIC_ID },
       required: ['topic'],
     },
     async ({ topic }) => {
-      const found = await resolve(topic, WRITE);
+      const found = await byId(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
       if (!t.script) return reply(`"${t.title}" has no script yet, so there are no openings to add to.`, { ok: false });
@@ -800,14 +925,14 @@ export function register(server, call, { reply, failure, shortId }) {
     'tce_research',
     'Research one idea in the background: what TCE already holds from his calls and commits, plus a '
       + 'web search when one is set up (the result says plainly when it is not). Returns at once; '
-      + 'tce_jobs reports it.',
+      + `tce_jobs reports it. ${FIND_FIRST}`,
     {
       type: 'object',
-      properties: { topic: { type: 'string', description: 'Id, short id, or words from the title.' } },
+      properties: { topic: TOPIC_ID },
       required: ['topic'],
     },
     async ({ topic }) => {
-      const found = await resolve(topic, WRITE);
+      const found = await byId(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
       const result = await call('POST', `/editorial/candidates/${t.candidate_id}/research`, { by: 'voice' });
