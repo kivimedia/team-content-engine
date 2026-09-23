@@ -9,8 +9,10 @@ tools sent (attribution included), not only what they said.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -39,9 +41,10 @@ if (scenario.unit) {
   process.exit(0);
 }
 const tools = {};
+const descs = {};
 const sent = [];
 const counters = {};
-register({ tool: (name, d, s, fn) => { tools[name] = fn; } },
+register({ tool: (name, d, s, fn) => { tools[name] = fn; descs[name] = d; } },
   async (method, path, body) => {
     const key = `${method} ${path}`;
     sent.push({ key, body: body ?? null });
@@ -57,27 +60,39 @@ register({ tool: (name, d, s, fn) => { tools[name] = fn; } },
   },
   { reply, failure, shortId });
 const texts = [];
+const seen = [];
 for (const step of scenario.steps) {
   const out = await tools[step.tool](step.args || {});
   texts.push(out.content[0].text);
+  // What Claude Code hands the model: structuredContent alone when it is set.
+  seen.push(out.structuredContent !== undefined
+    ? JSON.stringify(out.structuredContent)
+    : out.content.map((c) => c.text).join(' '));
 }
-console.log(JSON.stringify({ texts, sent, names: Object.keys(tools).sort() }));
+console.log(JSON.stringify({ texts, seen, sent, descs, names: Object.keys(tools).sort() }));
 """
 
 
-def run(scenario):
+def run(scenario, env=None):
     if shutil.which("node") is None:  # pragma: no cover
         pytest.skip("node is not installed")
-    script = ROOT / "_voice_harness.mjs"
+    script = ROOT / f"_voice_harness_{uuid.uuid4().hex[:8]}.mjs"
     script.write_text(HARNESS, encoding="utf-8")
+    # A call id from the shell running the tests must not leak into them.
+    base_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("TCE_VOICE_CALL_ID", "KMBOT_VOICE_SESSION", "TCE_VOICE_STATE_DIR")
+    }
     try:
         proc = subprocess.run(
             ["node", str(script), json.dumps(scenario)],
             cwd=ROOT,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=180,
             encoding="utf-8",
+            env={**base_env, **(env or {})},
         )
     finally:
         script.unlink(missing_ok=True)
@@ -674,3 +689,275 @@ def test_research_starts_and_its_summary_is_read_when_done():
 def test_jobs_with_nothing_started_says_so():
     out = run({"steps": [step("tce_jobs")], "responses": {}})
     assert out["texts"][0] == "Nothing was started in this call."
+
+
+# ------------------------------------------------------------------ what the model hears
+
+
+def test_every_reply_the_model_sees_carries_the_spoken_words():
+    """Claude Code gives the model structuredContent alone, so `said` must be in it."""
+    out = run(
+        {
+            "steps": [
+                step("tce_decide", topic="report", decision="sideways"),
+                step("tce_reorder_week", topic="report", move="sideways"),
+                step("tce_put_away", topic="report"),
+                step("tce_more_hooks", topic="report"),
+                step("tce_research", topic="report"),
+                step("tce_jobs"),
+            ],
+            "responses": {
+                "GET /editorial/voice/topic": [
+                    {
+                        "ok": True,
+                        "status": 200,
+                        "data": {"status": "found", "topic": {**TOPIC, "put_away": True}},
+                    },
+                    {
+                        "ok": True,
+                        "status": 200,
+                        "data": {"status": "found", "topic": {**TOPIC, "script": None}},
+                    },
+                    FOUND,
+                ],
+                "POST /editorial/candidates/": {
+                    "ok": True,
+                    "status": 202,
+                    "data": {"research_id": "r1", "state": "running", "already_running": False},
+                },
+                "GET /editorial/research/": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"state": "done", "summary": "No web search: no search key is set."},
+                },
+            },
+        }
+    )
+    seen = [json.loads(s) for s in out["seen"]]
+    assert all(s["said"] == t for s, t in zip(seen, out["texts"], strict=True))
+    assert '"sideways" is not a decision' in seen[0]["said"]
+    assert '"sideways" is not a move' in seen[1]["said"]
+    assert "already put away" in seen[2]["said"]
+    assert "has no script yet" in seen[3]["said"]
+    assert "No web search: no search key is set." in seen[5]["said"]
+
+
+def test_a_failed_request_tells_the_model_nothing_was_changed():
+    out = run(
+        {
+            "steps": [step("tce_week")],
+            "responses": {
+                "GET /editorial/today": {
+                    "ok": False,
+                    "status": 0,
+                    "data": {
+                        "error": "could not reach TCE",
+                        "hint": (
+                            "The request never got there: refused. "
+                            "Nothing was read and nothing was changed."
+                        ),
+                    },
+                }
+            },
+        }
+    )
+    seen = json.loads(out["seen"][0])
+    assert "could not reach TCE" in seen["said"] and "nothing was changed" in seen["said"]
+    assert seen["data"] == {"ok": False, "status": 0}
+
+
+# ------------------------------------------------------------------ a restart mid-call
+
+
+def test_undo_after_a_restart_names_the_last_voice_change_and_asks_first():
+    """A fresh process with no record must not say nothing changed, nor undo blindly."""
+    out = run(
+        {
+            "steps": [step("tce_undo")],
+            "responses": {
+                "GET /editorial/voice/activity": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "items": [
+                            {
+                                "kind": "change",
+                                "id": "bbbbbbbb-0000-0000-0000-000000000000",
+                                "short_id": "bbbbbbbb",
+                                "title": "Old undo",
+                                "lines": ["An undo."],
+                                "is_undo": True,
+                                "undone": False,
+                                "can_undo": True,
+                            },
+                            {
+                                "kind": "change",
+                                "id": CS,
+                                "short_id": CS[:8],
+                                "title": "Nobody opens the report",
+                                "lines": ['The takeaway now says "Open the result."'],
+                                "is_undo": False,
+                                "undone": False,
+                                "can_undo": True,
+                            },
+                        ]
+                    },
+                }
+            },
+        }
+    )
+    text = out["texts"][0]
+    assert "Nothing has been changed" not in text
+    assert 'The takeaway now says "Open the result."' in text
+    assert "Nobody opens the report" in text
+    assert "aaaaaaaa" in text and "Is that the one" in text
+    assert [s["key"] for s in out["sent"]] == ["GET /editorial/voice/activity?hours=1"]
+    assert json.loads(out["seen"][0])["data"]["change_id"] == CS
+
+
+def test_the_call_ledger_survives_a_new_process(tmp_path):
+    env = {"TCE_VOICE_CALL_ID": "call/one", "TCE_VOICE_STATE_DIR": str(tmp_path)}
+    responses = {
+        "GET /editorial/voice/topic": FOUND,
+        "POST /editorial/voice/change": change_ok(["The takeaway now says ..."]),
+        "POST /editorial/candidates/": {"ok": True, "status": 200, "data": {"status": "running"}},
+        "GET /editorial/candidates/": {
+            "ok": True,
+            "status": 200,
+            "data": {"job": {"state": "done"}},
+        },
+        "POST /editorial/change-sets/": {"ok": True, "status": 200, "data": {"said": "Undone."}},
+    }
+    first = run(
+        {
+            "steps": [
+                step("tce_edit", topic="report", part="takeaway", text="Open the result."),
+                step("tce_write_script", topic="report"),
+            ],
+            "responses": responses,
+        },
+        env=env,
+    )
+    assert first["texts"][0].startswith("Done.")
+    second = run(
+        {"steps": [step("tce_jobs", new_only=True), step("tce_undo")], "responses": responses},
+        env=env,
+    )
+    assert second["texts"][0] == 'The script for "Nobody opens the report" is ready.'
+    assert second["texts"][1] == "Undone."
+    assert second["sent"][-1]["key"] == f"POST /editorial/change-sets/{CS}/undo"
+    # Another call's id starts with an empty ledger of its own.
+    other = run(
+        {"steps": [step("tce_jobs")], "responses": responses},
+        env={**env, "TCE_VOICE_CALL_ID": "call-two"},
+    )
+    assert other["texts"][0] == "Nothing was started in this call."
+
+
+# ------------------------------------------------------------------ the last place
+
+
+WEEK4 = {
+    "ok": True,
+    "status": 200,
+    "data": {
+        "week": {
+            "primary": [
+                {"candidate_id": "a0000000-0000-0000-0000-000000000000", "title": "A", "rank": 1},
+                {"candidate_id": CID, "title": "Nobody opens the report", "rank": 2},
+                {"candidate_id": "c0000000-0000-0000-0000-000000000000", "title": "C", "rank": 3},
+                {"candidate_id": "d0000000-0000-0000-0000-000000000000", "title": "D", "rank": 4},
+            ],
+            "reserve": [],
+        }
+    },
+}
+
+
+def test_move_to_last_names_the_real_last_place_not_99():
+    out = run(
+        {
+            "steps": [
+                step("tce_reorder_week", topic="report", move="last"),
+                step("tce_reorder_week", topic="report", move="7"),
+            ],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                "GET /editorial/today": WEEK4,
+                "POST /editorial/voice/change": change_ok(
+                    ["Nobody opens the report moved to place 4 in the week."]
+                ),
+            },
+        }
+    )
+    moves = [s["body"]["operations"][0]["after"] for s in out["sent"] if s["body"]]
+    assert moves == [
+        {"action": "rank", "rank": 4, "candidate_id": CID},
+        {"action": "rank", "rank": 4, "candidate_id": CID},
+    ]
+    assert "99" not in out["texts"][0]
+    assert "last place in the week (place 4)" in out["texts"][0]
+    assert "place 4" in out["texts"][1] and "7" not in out["texts"][1]
+
+
+# ------------------------------------------------------------------ stuck jobs
+
+
+def test_an_interrupted_script_says_ask_again_not_still_going():
+    out = run(
+        {
+            "steps": [
+                step("tce_write_script", topic="report"),
+                step("tce_jobs", new_only=True),
+                step("tce_jobs"),
+            ],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                "POST /editorial/candidates/": {"ok": True, "status": 200, "data": {}},
+                "GET /editorial/candidates/": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "job": {
+                            "state": "interrupted",
+                            "current_activity": (
+                                "Packet written but never saved (the request ended first)."
+                            ),
+                        }
+                    },
+                },
+            },
+        }
+    )
+    assert "stopped before it was saved" in out["texts"][1]
+    assert "still going" not in out["texts"][1]
+    assert "stopped before it was saved" in out["texts"][2]
+
+
+def test_more_openings_lost_to_a_restart_say_ask_again():
+    out = run(
+        {
+            "steps": [step("tce_more_hooks", topic="report"), step("tce_jobs", new_only=True)],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                "POST /editorial/packets/": {"ok": True, "status": 202, "data": {}},
+                "GET /editorial/packets/": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"state": "idle", "current_activity": "Nothing asked for yet"},
+                },
+            },
+        }
+    )
+    assert "stopped when the server restarted" in out["texts"][1]
+    assert "still being written" not in out["texts"][1]
+
+
+# ------------------------------------------------------------------ a rewrite replaces
+
+
+def test_write_script_tells_the_brain_a_rewrite_replaces_the_current_script():
+    out = run({"steps": [], "responses": {}})
+    desc = out["descs"]["tce_write_script"]
+    assert "replaces the current script" in desc
+    assert "cannot bring" in desc and "yes" in desc

@@ -26,6 +26,9 @@
  *   TCE_WORKSPACE_ID  the workspace (optional; the API's editor workspace otherwise)
  *   TCE_API_BASE      http://127.0.0.1:8200, the API itself, not the nginx route
  *   TCE_MCP_FAMILIES  optional comma list to load only some families (e.g. "voice")
+ *   TCE_VOICE_CALL_ID the voice call's id, so a respawned server keeps the call's
+ *                     undo and job record (KMBOT_VOICE_SESSION is read otherwise)
+ *   TCE_VOICE_STATE_DIR where that record lives (default: <os temp>/tce-voice-calls)
  *
  * Both public TCE routes strip Authorization at nginx and inject the private
  * editor key themselves, so on the PC basic auth is the whole credential. The

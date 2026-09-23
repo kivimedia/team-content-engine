@@ -112,11 +112,18 @@ export function makeCaller(base, userOrAuth, password) {
   };
 }
 
-/** What every tool returns: text the assistant can read out, plus the raw data. */
+/**
+ * What every tool returns: text the assistant can read out, plus the raw data.
+ *
+ * `said` repeats the text inside structuredContent on purpose. Whenever
+ * structuredContent is set, Claude Code hands the model JSON.stringify of it
+ * alone and drops the text blocks, so without `said` the voice brain got
+ * {"data":{"ok":false}} and never heard why, nor what to ask him next.
+ */
 export function reply(text, data) {
   return {
     content: [{ type: 'text', text }],
-    structuredContent: data === undefined ? undefined : { data },
+    structuredContent: data === undefined ? undefined : { said: text, data },
   };
 }
 
@@ -179,11 +186,59 @@ export function familyFilter(env = process.env) {
   return raw ? raw.split(',').map((f) => f.trim()).filter(Boolean) : null;
 }
 
+const isZod = (value) => Boolean(value) && typeof value === 'object' && ('_def' in value || '_zod' in value);
+
+function zodField(prop, z) {
+  const p = prop || {};
+  if (Array.isArray(p.enum) && p.enum.length && p.enum.every((v) => typeof v === 'string')) return z.enum(p.enum);
+  switch (p.type) {
+    case 'string': return z.string();
+    case 'number': return z.number();
+    case 'integer': return z.number().int();
+    case 'boolean': return z.boolean();
+    case 'array': return z.array(p.items ? described(zodField(p.items, z), p.items) : z.any());
+    case 'object': return p.properties ? z.object(inputShape(p, z)) : z.record(z.any());
+    default: return z.any();
+  }
+}
+
+const described = (field, prop) => (prop?.description ? field.describe(prop.description) : field);
+
+/**
+ * A family's JSON-Schema literal as the Zod raw shape the SDK takes.
+ *
+ * The families declare plain JSON Schema ({ type: 'object', properties }), and
+ * the SDK (1.30, the locked version) accepts only Zod: it threw on every one,
+ * so every family with an argument failed to load and a voice call started with
+ * no tools at all. Converted here, in one place, so a family file stays plain.
+ * A schema that is already Zod (or a raw shape of Zod) passes through.
+ */
+export function inputShape(schema, z) {
+  if (schema == null) return {};
+  if (isZod(schema)) return schema;
+  const values = Object.values(schema);
+  if (!values.length) return {};
+  if (values.every(isZod)) return schema;
+  if (schema.type !== 'object' && !schema.properties) {
+    throw new Error('the input schema is neither JSON Schema for an object nor Zod');
+  }
+  const required = new Set(schema.required || []);
+  const shape = {};
+  for (const [key, prop] of Object.entries(schema.properties || {})) {
+    const field = zodField(prop, z);
+    shape[key] = described(required.has(key) ? field : field.optional(), prop);
+  }
+  return shape;
+}
+
 /**
  * Load every family in ./tools and register its tools.
  * One bad family must not cost the caller the others.
  */
 export async function registerTools(server, call, only = familyFilter()) {
+  // Imported here, not at the top, so the family tests can load this file
+  // without node_modules; the server itself cannot run without them anyway.
+  const { z } = await import('zod');
   const helpers = { reply, failure, shortId, ago, runLine, RUN_WORDS };
   const families = [];
   const tools = [];
@@ -192,8 +247,9 @@ export async function registerTools(server, call, only = familyFilter()) {
       if (tools.includes(name)) {
         throw new Error(`two families claim the tool name ${name}`);
       }
+      server.registerTool(name, { description, inputSchema: inputShape(schema, z) }, handler);
+      // Counted only once the SDK took it, so the startup line is true.
       tools.push(name);
-      server.registerTool(name, { description, inputSchema: schema }, handler);
     },
   };
   const dir = new URL('./tools/', here);

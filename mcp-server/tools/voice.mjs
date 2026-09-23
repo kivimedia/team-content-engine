@@ -11,11 +11,71 @@
  * long jobs (a script, more openings, research) never block a spoken turn: they
  * start and return, and tce_jobs says when each one is ready.
  */
+import {
+  mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+
 export const FAMILY = 'voice';
 
-// What this call has done, newest last. One process is one call, so "undo the
-// last thing I changed" means the last entry here, never someone else's edit.
-const ledger = { writes: [], jobs: [] };
+/*
+ * What this call has done, newest last, so "undo the last thing I changed"
+ * means the last entry of THIS call, never someone else's edit.
+ *
+ * One process is NOT one call: when the brain hits its cap mid-call, KM BOT's
+ * voice seat starts a new brain and kills the old one, and this server is
+ * respawned with it. Kept only in memory, the ledger came back empty and undo
+ * said "nothing has been changed" about an edit from two minutes earlier. So
+ * the ledger is a small file named by the call id, which survives a rotation.
+ * No call id (the PC terminal) keeps it in memory, as before.
+ */
+const STALE_MS = 2 * 24 * 3600 * 1000;
+
+/** The file this call's ledger lives in, or null to keep it in memory only. */
+export function ledgerPath(env = process.env) {
+  const id = String(env.TCE_VOICE_CALL_ID || env.KMBOT_VOICE_SESSION || '').trim();
+  if (!id) return null;
+  const dir = env.TCE_VOICE_STATE_DIR || join(tmpdir(), 'tce-voice-calls');
+  return join(dir, `${id.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 120)}.json`);
+}
+
+function loadLedger(file) {
+  const empty = { writes: [], jobs: [] };
+  if (!file) return empty;
+  try {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    // Calls from days ago are nobody's "last change" any more.
+    for (const name of readdirSync(dirname(file))) {
+      const old = join(dirname(file), name);
+      if (name.endsWith('.json') && old !== file && Date.now() - statSync(old).mtimeMs > STALE_MS) unlinkSync(old);
+    }
+  } catch {
+    // Housekeeping only; the read below says whether the ledger is usable.
+  }
+  try {
+    const saved = JSON.parse(readFileSync(file, 'utf8'));
+    return {
+      writes: Array.isArray(saved.writes) ? saved.writes : [],
+      jobs: Array.isArray(saved.jobs) ? saved.jobs : [],
+    };
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error(`tce-mcp: voice ledger ${file} unreadable, starting empty: ${error.message}`);
+    return empty;
+  }
+}
+
+function saveLedger(file, ledger) {
+  if (!file) return;
+  try {
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(ledger), { mode: 0o600 });
+    renameSync(tmp, file);
+  } catch (error) {
+    // stderr, never stdout: stdout is the MCP stream.
+    console.error(`tce-mcp: could not save the voice ledger to ${file}: ${error.message}`);
+  }
+}
 
 const BRIEF_ALIASES = {
   topic: 'topic',
@@ -89,6 +149,10 @@ export function parsePart(part) {
 }
 
 export function register(server, call, { reply, failure, shortId }) {
+  const ledgerFile = ledgerPath();
+  const ledger = loadLedger(ledgerFile);
+  const save = () => saveLedger(ledgerFile, ledger);
+
   /** One topic by id or words; a reply to return instead when it is not exactly one. */
   async function resolve(topic) {
     if (!topic) return { stop: reply('Which topic? Say part of its title.', { status: 'none' }) };
@@ -128,10 +192,55 @@ export function register(server, call, { reply, failure, shortId }) {
 
   function remember(entry) {
     ledger.writes.push({ ...entry, at: new Date().toISOString(), undone: false });
+    save();
   }
 
   function track(job) {
     ledger.jobs.push({ ...job, started: new Date().toISOString(), announced: false });
+    save();
+  }
+
+  /*
+   * Undo with nothing on record for this call. That can be a call with no
+   * change yet, or a server that restarted without a call id. Either way,
+   * "nothing has been changed" may be false, and undoing the newest voice
+   * change blindly may undo an earlier call's. So name it and ask.
+   */
+  async function lastVoiceChange() {
+    const recent = await call('GET', '/editorial/voice/activity?hours=1');
+    if (!recent.ok) {
+      const detail = recent.data?.error || recent.data?.detail || `HTTP ${recent.status}`;
+      return reply(
+        `I have no record of a change in this call, and I could not check the voice log (${detail}). `
+          + 'Nothing was undone.',
+        { ok: false, code: 'no_record', status: recent.status },
+      );
+    }
+    const items = recent.data.items || [];
+    const last = items.find((i) => (i.kind === 'change' && !i.is_undo && !i.undone && i.can_undo !== false)
+      || i.kind === 'decision');
+    if (!last) {
+      return reply('Nothing has been changed by voice in the last hour, so there is nothing to undo.', { ok: false, code: 'nothing' });
+    }
+    const what = (last.lines || []).join(' ') || last.summary || 'a change';
+    const on = last.title ? ` on "${last.title}"` : '';
+    if (last.kind === 'change') {
+      const short = last.short_id || shortId(last.id);
+      return reply(
+        `I have no record of a change in this call, so nothing was undone yet. The last voice change I can see is: `
+          + `${what}${on} (change ${short}). Is that the one? If he says yes, call tce_undo with change_id ${short}.`,
+        { ok: false, code: 'confirm_needed', change_id: last.id, short_id: short, title: last.title ?? null },
+      );
+    }
+    const back = last.decision === 'away'
+      ? `If he wants it back, tce_restore_idea brings "${last.title}" back.`
+      : `To change it, decide "${last.title}" again with tce_decide.`;
+    return reply(
+      `I have no record of a change in this call, so nothing was undone. The last thing done by voice is: ${what} ${back}`,
+      {
+        ok: false, code: 'confirm_needed', decision_id: last.id, candidate_id: last.candidate_id, title: last.title, decision: last.decision,
+      },
+    );
   }
 
   // ------------------------------------------------------------------ read
@@ -394,11 +503,32 @@ export function register(server, call, { reply, failure, shortId }) {
     },
     async ({ topic, move }) => {
       const key = clean(move);
-      const spec = MOVES[key] || (/^\d+$/.test(key) ? { action: 'rank', rank: Number(key) } : null);
+      let spec = MOVES[key] || (/^\d+$/.test(key) ? { action: 'rank', rank: Number(key) } : null);
       if (!spec) return reply(`"${move}" is not a move. Use first, up, down, last, reserve, remove or a number.`, { ok: false });
       const found = await resolve(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
+      /*
+       * The lineup clamps a place past the end, but the change is read back
+       * (and listed under "Changes by voice") with the number as asked: "last"
+       * came out as "moved to place 99". So send the place it will really get.
+       */
+      let lastPlace = null;
+      if (spec.action === 'rank') {
+        const today = await call('GET', '/editorial/today');
+        const week = (today.ok && today.data.week) || {};
+        const where = [['primary', 'in the week'], ['reserve', 'in reserve']]
+          .map(([slot, words]) => ({ list: week[slot] || [], words }))
+          .find(({ list }) => list.some((i) => i.candidate_id === t.candidate_id));
+        if (where) {
+          const size = where.list.length;
+          const rank = Math.max(1, Math.min(size, key === 'last' ? size : spec.rank));
+          spec = { action: 'rank', rank };
+          if (key === 'last' || Number(key) > size) lastPlace = `the last place ${where.words} (place ${rank})`;
+        } else if (key === 'last') {
+          lastPlace = 'the last place in the week';
+        }
+      }
       const result = await call('POST', '/editorial/voice/change', {
         candidate_id: t.candidate_id,
         target: 'week',
@@ -408,8 +538,9 @@ export function register(server, call, { reply, failure, shortId }) {
       });
       if (!result.ok) return spokenError(result, 'move that topic');
       const d = result.data;
-      remember({ kind: 'change', id: d.change_set_id, title: t.title, summary: d.said.join(' ') });
-      return reply(`Done. ${d.said.join(' ')} (change ${d.short_id})`, d);
+      const said = lastPlace ? `${t.title} moved to ${lastPlace}.` : d.said.join(' ');
+      remember({ kind: 'change', id: d.change_set_id, title: t.title, summary: said });
+      return reply(`Done. ${said} (change ${d.short_id})`, d);
     },
   );
 
@@ -437,6 +568,7 @@ export function register(server, call, { reply, failure, shortId }) {
           }
         }
       } else {
+        if (!ledger.writes.length) return lastVoiceChange();
         entry = [...ledger.writes].reverse().find((w) => !w.undone);
         if (!entry) return reply('Nothing has been changed in this call, so there is nothing to undo.', { ok: false });
       }
@@ -452,12 +584,14 @@ export function register(server, call, { reply, failure, shortId }) {
         }
         if (!result.ok) return spokenError(result, 'undo that decision');
         entry.undone = true;
+        save();
         return reply(`Undone. "${entry.title}" is back where it was.`, result.data);
       }
 
       const result = await call('POST', `/editorial/change-sets/${entry.id}/undo`, { by: 'voice' });
       if (!result.ok) return spokenError(result, 'undo that change');
       entry.undone = true;
+      save();
       return reply(result.data.said, result.data);
     },
   );
@@ -467,7 +601,11 @@ export function register(server, call, { reply, failure, shortId }) {
   server.tool(
     'tce_write_script',
     'Start writing the script for a topic. Takes a few minutes on his PC worker; this returns at '
-      + 'once. Tell him it has started; tce_jobs says when it is ready.',
+      + 'once. Tell him it has started; tce_jobs says when it is ready. If the topic already has a '
+      + 'script (tce_topic says "Script version N"), writing a new one replaces the current script '
+      + 'when it finishes, together with any edits made to it meanwhile, and tce_undo cannot bring '
+      + 'the old one back. So first read that to him ("X already has a script, version N; a new one '
+      + 'replaces it and cannot be undone") and call this only after he says yes.',
     {
       type: 'object',
       properties: { topic: { type: 'string', description: 'Id, short id, or words from the title.' } },
@@ -547,6 +685,11 @@ export function register(server, call, { reply, failure, shortId }) {
       const j = r.data.job || {};
       if (j.state === 'done') return { state: 'done', said: 'is ready' };
       if (j.state === 'failed') return { state: 'failed', said: `stopped: ${j.detail || j.current_activity || 'an error'}` };
+      // Written but never saved, or left queued by a restart: it waits for
+      // someone to ask again, so "still going" would be waited on forever.
+      if (j.state === 'interrupted') {
+        return { state: 'interrupted', said: 'stopped before it was saved. Ask for it again (tce_write_script) and it picks up where it left off' };
+      }
       return { state: j.state || 'running', said: `is still going (${j.current_activity || 'working'})` };
     }
     if (job.kind === 'more_hooks') {
@@ -554,6 +697,11 @@ export function register(server, call, { reply, failure, shortId }) {
       if (!r.ok) return { state: 'unknown', said: 'could not be checked' };
       if (r.data.state === 'done') return { state: 'done', said: 'are ready' };
       if (r.data.state === 'failed') return { state: 'failed', said: `stopped: ${r.data.detail || 'an error'}` };
+      // The API keeps this job in memory only: after it restarts, a job we
+      // started reads "idle, nothing asked for yet" and will never finish.
+      if (r.data.state === 'idle') {
+        return { state: 'interrupted', said: 'stopped when the server restarted. Ask for more openings again (tce_more_hooks)' };
+      }
       return { state: r.data.state || 'running', said: `are still being written (${r.data.current_activity || 'working'})` };
     }
     const r = await call('GET', `/editorial/research/${job.research_id}`);
@@ -584,14 +732,14 @@ export function register(server, call, { reply, failure, shortId }) {
       const fresh = finished.filter((r) => !r.job.announced);
       const shown = new_only ? fresh : [...finished, ...running];
       fresh.forEach((r) => { r.job.announced = true; });
-      if (!shown.length) return reply('Nothing new has finished yet.', { jobs: [] });
+      if (fresh.length) save();
+      const jobs = rows.map((r) => ({ kind: r.job.kind, title: r.job.title, candidate_id: r.job.candidate_id, state: r.state }));
+      if (!shown.length) return reply('Nothing new has finished yet.', { jobs });
       const lines = shown.map((r) => {
         const base = `${JOB_WORDS[r.job.kind]} for "${r.job.title}" ${r.said}.`;
         return r.summary ? `${base} ${r.summary}` : base;
       });
-      return reply(lines.join('\n'), {
-        jobs: rows.map((r) => ({ kind: r.job.kind, title: r.job.title, candidate_id: r.job.candidate_id, state: r.state })),
-      });
+      return reply(lines.join('\n'), { jobs });
     },
   );
 }

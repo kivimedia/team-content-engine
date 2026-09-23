@@ -54,12 +54,23 @@ TCE_API_BASE=http://127.0.0.1:8200 \
 TCE_PRIVATE_KEY=<TCE_PRIVATE_ACCESS_KEY from the server .env> \
 TCE_WORKSPACE_ID=<TCE_EDITOR_DEFAULT_WORKSPACE_ID from the server .env> \
 TCE_MCP_FAMILIES=voice \
+TCE_VOICE_CALL_ID=<the voice session id> \
 node /home/ziv/team-content-engine/mcp-server/index.mjs
 ```
 
 `TCE_PRIVATE_KEY` wins over basic auth when both are set. `TCE_WORKSPACE_ID` is
 optional (the API falls back to its editor workspace). `TCE_MCP_FAMILIES=voice`
 keeps the call's tool list to the 13 it needs.
+
+`TCE_VOICE_CALL_ID` names the call, and the voice seat must pass it: when the
+brain hits its cap mid-call it is replaced, and this server is respawned with
+it. What the call changed and started ("undo the last thing", "is the script
+ready") is kept in `<TCE_VOICE_STATE_DIR>/<call id>.json` (default: the OS temp
+folder, `tce-voice-calls`), so the new process carries on where the old one
+stopped. KM BOT's `KMBOT_VOICE_SESSION` is read when `TCE_VOICE_CALL_ID` is not
+set. With neither, the record lives in memory, and an undo with nothing on
+record names the newest voice change of the last hour and asks before undoing
+it.
 
 | Tool | What it does |
 |---|---|
@@ -91,3 +102,14 @@ TCE says so rather than reporting an empty engine.
 One file per family in `tools/`, exporting `FAMILY` and `register(server, call,
 helpers)`. Never build a `fetch` of your own: `call` carries the identity, and
 a family that throws on load is skipped rather than taking the others down.
+
+Declare each tool's input as plain JSON Schema (`{ type: 'object', properties,
+required }`). The locked SDK accepts only Zod and threw on every JSON-Schema
+tool, which once left every family with an argument unloaded;
+`registerTools` now converts them in one place (`inputShape` in `tools.mjs`).
+`tests/unit/test_mcp_voice_protocol.py` starts the real server over stdio and
+fails if any tool goes missing.
+
+Return with `reply(text, data)`. The text is repeated inside
+`structuredContent` as `said`, because Claude Code gives the model only the
+structured JSON when it is present and drops the text blocks.
