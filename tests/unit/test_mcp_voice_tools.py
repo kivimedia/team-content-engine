@@ -1734,6 +1734,84 @@ async def test_live_undo_after_the_week_rolled_over_takes_it_off_the_week_it_was
     assert "week of" in said
 
 
+async def live_superseded(world, title):
+    """An undecided idea the weekly selection run replaced: withdrawn, no 'away'."""
+    from tests.unit.test_editorial_voice_agent import add_candidate
+
+    return str(
+        await add_candidate(
+            world.sm,
+            world.ws,
+            title,
+            status="withdrawn",
+            editor_notes="superseded by selection run 1234",
+        )
+    )
+
+
+async def live_status(world, cid):
+    from tce.models.editorial import TopicCandidate
+
+    async with world.sm() as s:
+        return (await s.get(TopicCandidate, uuid.UUID(cid))).status
+
+
+async def test_live_restoring_a_superseded_idea_is_undone_by_its_id(live):
+    cid = await live_superseded(live, "Invoices nobody opens")
+    said, data = await live.tool("tce_restore_idea", topic=cid[:8])
+    assert data.get("change_id"), said
+    assert f"(change {data['change_id'][:8]})" in said
+    assert await live_status(live, cid) == "proposed"
+
+    undone, _ = await live.tool("tce_undo", change_id=data["change_id"][:8])
+    assert await live_status(live, cid) == "withdrawn", undone
+    assert "Invoices nobody opens" in undone and "put away again" in undone
+
+
+async def test_live_restoring_a_superseded_idea_then_plain_undo_withdraws_it(live):
+    cid = await live_superseded(live, "Invoices nobody opens")
+    await live.tool("tce_restore_idea", topic=cid[:8])
+    assert await live_status(live, cid) == "proposed"
+
+    undone, _ = await live.tool("tce_undo")
+    assert "Nothing has been changed" not in undone
+    assert await live_status(live, cid) == "withdrawn", undone
+    assert "put away again" in undone
+
+
+async def test_live_plain_undo_after_a_restore_takes_back_the_restore_not_an_earlier_approval(
+    live,
+):
+    approved = await live_topic(live, "Receptionist at night")
+    await live.tool("tce_decide", topic=approved[:8], decision="approve")
+    assert approved in await live_week(live)
+    cid = await live_superseded(live, "Invoices nobody opens")
+    await live.tool("tce_restore_idea", topic=cid[:8])
+
+    undone, _ = await live.tool("tce_undo")
+    assert await live_status(live, cid) == "withdrawn", undone
+    assert "Invoices nobody opens" in undone
+    assert approved in await live_week(live), "the approval stands"
+    assert await live_decision(live, approved) == "this_week"
+
+
+async def test_live_later_approve_undo_undo_keeps_the_place_in_the_week(live):
+    ids = [
+        await live_topic(live, title)
+        for title in ("Receptionist at night", "Invoices nobody opens", "Funnel leaks")
+    ]
+    for cid in ids:
+        await live.tool("tce_decide", topic=cid[:8], decision="approve")
+    assert await live_week(live) == ids
+    await live.tool("tce_decide", topic=ids[1][:8], decision="later")
+    await live.tool("tce_decide", topic=ids[1][:8], decision="approve")
+    await live.tool("tce_undo")
+    assert await live_week(live) == [ids[0], ids[2]]
+    said, _ = await live.tool("tce_undo")
+    assert await live_week(live) == ids, said
+    assert "place 2" in said
+
+
 async def test_live_words_find_candidates_to_read_back_and_only_an_id_writes(live):
     first = await live_topic(live, "Your first client is the hardest")
     talked = await live_topic(live, "מה שדיברנו עליו בפגישה")

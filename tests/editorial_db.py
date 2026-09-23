@@ -47,7 +47,8 @@ TABLE_NAMES = (
     # Editorial workspace (migration 043)
     "candidate_brief_versions",
     "topic_decisions",
-    # Each decision write, undoable by its own id (migration 049)
+    # Each decision write, undoable by its own id (migration 049; the status it
+    # changed, migration 050)
     "topic_decision_changes",
     "weekly_lineups",
     "weekly_lineup_items",

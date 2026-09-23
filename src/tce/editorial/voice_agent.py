@@ -1468,6 +1468,12 @@ async def undo_rewrite(
 # undoing any other: decide the previous one.
 UNDECIDED = "undecided"
 
+# The `before` of a decision change that brought back an idea the engine withdrew
+# without any 'away' decision (the weekly selection run superseded it, or news
+# discovery marked it stale). It is not a decision: undoing that write sets the
+# topic's status back and leaves the decision as it is.
+WITHDRAWN = "withdrawn"
+
 
 async def clear_decision(
     db: AsyncSession, ws: uuid.UUID, candidate_id: uuid.UUID, *, by: str = "voice"
@@ -1504,6 +1510,7 @@ async def record_decision_change(
     after: str | None,
     by: str | None,
     week: dict[str, Any] | None = None,
+    status: dict[str, str] | None = None,
 ) -> TopicDecisionChange | None:
     """Write one decision write down under its own id, or nothing when it changed nothing.
 
@@ -1511,12 +1518,17 @@ async def record_decision_change(
     write put the topic on a week's list or took it off, and which list. "Approve
     it" twice changes nothing the second time, so it leaves no row, and "undo"
     then reaches the approval that did it.
+
+    `status` is {"before", "after"} when the write changed the topic's own status
+    with no decision to take back (a restore of an idea the engine withdrew); it
+    is a change like any other, so it gets a row too.
     """
     week = week or {}
     before, after = _no_decision(before), _no_decision(after)
     added = bool(week.get("added"))
     removed = week.get("removed")
-    if before == after and not added and not removed:
+    status = dict(status) if status and status.get("before") != status.get("after") else None
+    if before == after and not added and not removed and not status:
         return None
     last = (
         await db.execute(
@@ -1542,6 +1554,7 @@ async def record_decision_change(
             else None,
             "removed": {**where, **removed} if removed else None,
         },
+        candidate_status=status,
     )
     db.add(row)
     await db.flush()
@@ -1555,7 +1568,9 @@ async def restore_topic(
 
     Where it was includes its place in this week's list, when putting it away
     took it off that list. Bringing it back is a decision write of its own, with
-    its own change id, so the call can take it back like any other.
+    its own change id, so the call can take it back like any other. That holds
+    for an idea the engine withdrew with no 'away' decision too: its row carries
+    the status change, and its undo withdraws it again.
     """
     actor = check_actor(by)
     candidate = await inbox_service.get_candidate(db, ws, candidate_id)
@@ -1593,12 +1608,32 @@ async def restore_topic(
             "change_id": None,
             "said": f'"{candidate.title}" is not put away.',
         }
+    else:
+        # Withdrawn with no 'away' decision: the weekly selection run superseded
+        # it, or news discovery marked it stale. Only its status comes back; the
+        # decision it has stays. That is a write of its own all the same, with a
+        # change id, or the call could not take it back and a plain "undo" would
+        # reach an earlier, unrelated change instead.
+        back_to = decision.decision if decision is not None else None
+        candidate.status = "proposed"
+        await db.flush()
+        change = await record_decision_change(
+            db,
+            ws,
+            candidate.id,
+            before=WITHDRAWN,
+            after=back_to,
+            by=actor,
+            status={"before": "withdrawn", "after": "proposed"},
+        )
     if candidate.status == "withdrawn":
         candidate.status = "proposed"
     await db.flush()
     in_week = "back in this week's list"
     if placed is not None:
         in_week += ", in reserve" if placed["slot"] == "reserve" else f", place {placed['rank']}"
+    else:
+        in_week = "back, chosen for this week"
     where = {
         "this_week": in_week,
         "discuss": "back, marked to think about",
@@ -1765,6 +1800,40 @@ async def undo_decision(
             changed_by=(his[-1] if his else newest).decided_by if later else None,
         )
 
+    status = entry.candidate_status or {}
+    if status and candidate.status != status.get("after"):
+        # Brought back, then moved on without a decision (recorded, scripted, or
+        # withdrawn again by the engine): withdrawing it now would lose that.
+        raise VoiceError(
+            "changed",
+            f'"{title}" has moved on since it was brought back (its status is now '
+            f"{candidate.status}), so taking that back would lose what happened since. "
+            "Nothing was changed.",
+            status=409,
+            decision_now=now or UNDECIDED,
+            later_change_id=None,
+            changed_by=None,
+        )
+
+    if entry.before == WITHDRAWN:
+        # Bringing back an idea the engine withdrew changed only its status; its
+        # decision, and any week's list, stay as they are.
+        candidate.status = status.get("before") or "withdrawn"
+        entry.undone_at = _now()
+        entry.undone_by = actor
+        await db.flush()
+        return {
+            **base,
+            "already": False,
+            "decision": now,
+            "status": candidate.status,
+            "removed_from_week": None,
+            "placed": None,
+            "said": (
+                f'"{title}" is put away again (withdrawn, as it was before it was brought back).'
+            ),
+        }
+
     back = entry.before
     if back is None:
         row = await clear_decision(db, ws, candidate.id, by=actor)
@@ -1787,9 +1856,27 @@ async def undo_decision(
                 "rank": item.rank,
             }
             await lineup_service.remove_topic(db, ws, lineup, candidate.id, removed_by=actor)
+            if row is not None:
+                # Kept like any decision that takes it off the list, so the undo
+                # before this one ("later, approve, undo, undo") puts it back at
+                # this place, not at the end.
+                row.week_place = dict(off)
     elif back != "this_week" or week.get("removed"):
         # Back to this week puts it back at the place the write took it from;
         # anything else takes it off the list if it is somehow on it.
+        took = week.get("removed") or {}
+        if (
+            back == "this_week"
+            and row is not None
+            and took.get("slot")
+            and isinstance(took.get("rank"), int)
+        ):
+            # The row says where this write took it from; that is where it goes.
+            row.week_place = {
+                "week_start": took.get("week_start"),
+                "slot": took["slot"],
+                "rank": took["rank"],
+            }
         moved = await lineup_service.follow_decision(db, ws, candidate, row, by=actor)
         placed = moved["placed"]
         if moved["removed"]:
@@ -1944,6 +2031,9 @@ async def activity(db: AsyncSession, ws: uuid.UUID, *, hours: int = 24) -> dict[
             "away": f'Put "{title}" away.',
             None: f'Put "{title}" back with the ideas waiting for a decision.',
         }.get(d.after, f'Decided "{title}": {d.after}.')
+        if d.before == WITHDRAWN:
+            # A restore of an idea the engine withdrew: only its status changed.
+            words = f'Brought "{title}" back from the withdrawn ideas.'
         undone = d.undone_at is not None
         items.append(
             {

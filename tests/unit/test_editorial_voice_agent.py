@@ -1146,6 +1146,173 @@ async def test_voice_decisions_are_listed_by_their_change_id(client, editorial_s
     assert decisions[0]["undone"] is True and decisions[0]["can_undo"] is False
 
 
+# --------------------- an idea the engine withdrew, with no 'put away' decision
+
+
+async def status_of(sm, cid):
+    async with sm() as s:
+        return (await s.get(TopicCandidate, cid)).status
+
+
+async def superseded(sm, ws, title="Invoices nobody opens", **over):
+    """What the weekly selection run leaves an undecided idea it replaced."""
+    return await add_candidate(
+        sm,
+        ws,
+        title,
+        status="withdrawn",
+        editor_notes="superseded by selection run 1234",
+        **over,
+    )
+
+
+async def restore(client, ws, cid):
+    return await client.post(
+        f"/api/v1/editorial/topics/{cid}/restore", json={"by": "voice"}, headers=headers(ws)
+    )
+
+
+async def test_restoring_an_idea_the_selection_run_superseded_is_a_change_with_its_own_id(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await superseded(editorial_sessionmaker, ws)
+
+    restored = await restore(client, ws, cid)
+    assert restored.status_code == 200, restored.text
+    body = restored.json()
+    assert body["restored"] is True
+    assert body["change_id"], "bringing it back changed something, so it can be taken back"
+    assert await status_of(editorial_sessionmaker, cid) == "proposed"
+
+    items = (await client.get("/api/v1/editorial/voice/activity", headers=headers(ws))).json()[
+        "items"
+    ]
+    entry = next(i for i in items if i["id"] == body["change_id"])
+    assert entry["kind"] == "decision" and entry["can_undo"] is True
+    assert "back" in entry["lines"][0] and "Invoices nobody opens" in entry["lines"][0]
+
+
+async def test_undoing_the_restore_of_a_superseded_idea_by_its_id_withdraws_it_again(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await superseded(editorial_sessionmaker, ws)
+    change_id = (await restore(client, ws, cid)).json()["change_id"]
+
+    undone = await undo_decision(client, ws, cid, change_id)
+    assert undone.status_code == 200, undone.text
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+    assert await decision_of(editorial_sessionmaker, cid) is None, "no decision was invented"
+    said = undone.json()["said"]
+    assert "Invoices nobody opens" in said and "put away again" in said
+    assert await week_ids(client, ws) == []
+
+    again = await undo_decision(client, ws, cid, change_id)
+    assert again.status_code == 200 and again.json()["already"] is True
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+
+
+async def test_undoing_the_restore_of_a_stale_idea_keeps_the_decision_it_had(
+    client, editorial_sessionmaker
+):
+    """News discovery withdraws a stale idea whatever it was decided; the decision stays."""
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "A news idea that went stale")
+    assert (await decide(client, ws, cid, "later")).status_code == 200
+    async with editorial_sessionmaker() as s:
+        (await s.get(TopicCandidate, cid)).status = "withdrawn"
+        await s.commit()
+
+    restored = await restore(client, ws, cid)
+    assert restored.json()["change_id"], restored.text
+    assert await status_of(editorial_sessionmaker, cid) == "proposed"
+
+    undone = await undo_decision(client, ws, cid, restored.json()["change_id"])
+    assert undone.status_code == 200, undone.text
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+    assert await decision_of(editorial_sessionmaker, cid) == "later"
+
+
+async def test_undoing_a_restore_after_the_idea_moved_on_writes_nothing(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await superseded(editorial_sessionmaker, ws)
+    change_id = (await restore(client, ws, cid)).json()["change_id"]
+    # Recorded since: withdrawing it now would hide a recorded idea.
+    async with editorial_sessionmaker() as s:
+        (await s.get(TopicCandidate, cid)).status = "recorded"
+        await s.commit()
+
+    undone = await undo_decision(client, ws, cid, change_id)
+    assert undone.status_code == 409, undone.text
+    assert undone.json()["detail"]["code"] == "changed"
+    assert "Nothing was changed" in undone.json()["detail"]["message"]
+    assert await status_of(editorial_sessionmaker, cid) == "recorded"
+
+
+async def test_undoing_a_restore_he_decided_on_himself_since_writes_nothing(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    cid = await superseded(editorial_sessionmaker, ws)
+    change_id = (await restore(client, ws, cid)).json()["change_id"]
+    assert (await decide(client, ws, cid, "this_week")).status_code == 200
+
+    undone = await undo_decision(client, ws, cid, change_id)
+    assert undone.status_code == 409, undone.text
+    assert "himself" in undone.json()["detail"]["message"]
+    assert await status_of(editorial_sessionmaker, cid) == "proposed"
+    assert await week_ids(client, ws) == [str(cid)]
+
+
+# ------------------------- a round trip through undo keeps the place in the week
+
+
+async def test_later_approve_undo_undo_puts_the_topic_back_at_its_original_place(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    ids = await three_in_the_week(client, editorial_sessionmaker, ws)
+    start = [str(i) for i in ids]
+
+    later = (await decide(client, ws, ids[1], "later", by="voice")).json()["change_id"]
+    approve = await decide(client, ws, ids[1], "this_week", by="voice")
+    assert approve.json()["placed"]["rank"] == 2
+    assert await week_ids(client, ws) == start
+
+    first = await undo_decision(client, ws, ids[1], approve.json()["change_id"])
+    assert first.status_code == 200, first.text
+    assert await week_ids(client, ws) == [str(ids[0]), str(ids[2])]
+    second = await undo_decision(client, ws, ids[1], later)
+    assert second.status_code == 200, second.text
+    assert await week_ids(client, ws) == start, "back at place 2, not the end"
+    assert "place 2" in second.json()["said"]
+
+
+async def test_away_restore_undo_undo_puts_the_topic_back_at_its_original_place(
+    client, editorial_sessionmaker
+):
+    ws = uuid.uuid4()
+    ids = await three_in_the_week(client, editorial_sessionmaker, ws)
+    start = [str(i) for i in ids]
+
+    away = (await decide(client, ws, ids[1], "away", by="voice")).json()["change_id"]
+    restored = await restore(client, ws, ids[1])
+    assert restored.json()["placed"]["rank"] == 2
+    assert await week_ids(client, ws) == start
+
+    first = await undo_decision(client, ws, ids[1], restored.json()["change_id"])
+    assert first.status_code == 200, first.text
+    assert await status_of(editorial_sessionmaker, ids[1]) == "withdrawn"
+    assert await week_ids(client, ws) == [str(ids[0]), str(ids[2])]
+    second = await undo_decision(client, ws, ids[1], away)
+    assert second.status_code == 200, second.text
+    assert await week_ids(client, ws) == start, "back at place 2, not the end"
+    assert await decision_of(editorial_sessionmaker, ids[1]) == "this_week"
+
+
 # ------------------------------------------- a topic is named by its id to write
 
 

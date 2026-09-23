@@ -217,6 +217,11 @@ class TopicDecisionChange(_PrivateWorkspaceMixin, Base):
     # {"added": {"week_start", "lineup_id", "slot", "rank"} | None,
     #  "removed": {"week_start", "lineup_id", "slot", "rank"} | None}
     week: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    # The topic's own status, when the write changed it without a decision to
+    # take back: {"before": "withdrawn", "after": "proposed"} for bringing back an
+    # idea the selection run superseded or news discovery marked stale. Its undo
+    # sets the status back (migration 050).
+    candidate_status: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     # Set when it was taken back. It is not a new write: the rows after it still
     # decide whether an earlier one can be taken back.
     undone_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
