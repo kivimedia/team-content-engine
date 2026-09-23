@@ -537,94 +537,6 @@ def test_the_camera_ladder_never_holds_two_cameras_open(studio, tmp_path):
         browser.close()
 
 
-def test_the_phone_camera_button_sends_a_native_video_for_editing(studio, tmp_path):
-    """The native selfie camera's file goes up through the real clip path - pieces,
-    checksum, the audio-and-video probe, the session finish - and ends as a take
-    sent for editing, with no browser recording at all."""
-    import shutil
-    import subprocess
-
-    from playwright.sync_api import Error as PlaywrightError
-    from playwright.sync_api import sync_playwright
-
-    if not shutil.which("ffmpeg"):  # pragma: no cover - environment dependent
-        pytest.skip("ffmpeg is needed to make a real phone video")
-    video = tmp_path / "VID_20260923_selfie.mp4"
-    subprocess.run(
-        ["ffmpeg", "-v", "error", "-y",
-         "-f", "lavfi", "-i", "testsrc=size=1080x1920:rate=30",
-         "-f", "lavfi", "-i", "sine=f=330", "-t", "2",
-         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(video)],
-        check=True, timeout=120,
-    )
-
-    with sync_playwright() as pw:
-        try:
-            browser = pw.chromium.launch(
-                headless=True,
-                args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
-            )
-        except PlaywrightError as exc:  # pragma: no cover - environment dependent
-            pytest.skip(f"Chromium is not installed for Playwright: {exc}")
-        context = browser.new_context(
-            viewport=PHONE, device_scale_factor=2, is_mobile=True, has_touch=True,
-            permissions=["camera", "microphone"],
-        )
-        page = context.new_page()
-        page.goto(f"{studio['base']}/record")
-        page.wait_for_selector(".idea-card")
-        page.click(".idea-card")
-        page.locator("#hookView .hook-option").first.locator(".hook-use").click()
-        page.wait_for_selector("#studioView:not([hidden])")
-
-        # Five buttons on a 390px phone: every one on screen, none overlapping,
-        # each a thumb-sized target, and the size rail's two buttons likewise.
-        boxes = page.evaluate(
-            """() => [...document.querySelectorAll('.controls .control, .size-rail button')]
-                 .filter((b) => getComputedStyle(b).display !== 'none')
-                 .map((b) => { const r = b.getBoundingClientRect();
-                   return {id: b.id, l: r.left, r: r.right, t: r.top, b: r.bottom}; })"""
-        )
-        assert len(boxes) == 7, boxes
-        for box in boxes:
-            assert box["l"] >= 0 and box["r"] <= PHONE["width"], f"off screen: {box}"
-            assert box["b"] - box["t"] >= 44, f"too small to hit walking: {box}"
-        for i, a in enumerate(boxes):
-            for b in boxes[i + 1 :]:
-                apart = a["r"] <= b["l"] or b["r"] <= a["l"] or a["b"] <= b["t"] or b["b"] <= a["t"]
-                assert apart, f"{a['id']} overlaps {b['id']}"
-        page.screenshot(path=str(tmp_path / "studio-controls-phone.png"))
-
-        # Two taps: the first floats the script (or says it cannot), the second
-        # opens the camera - a tap is permission for one of those, not both.
-        page.click("#nativeCameraButton")
-        page.wait_for_function(
-            "() => /Open camera/.test(document.getElementById('nativeCameraButton').textContent)",
-            timeout=15000,
-        )
-        # The words take the page once the browser camera is let go.
-        assert page.evaluate(
-            "() => getComputedStyle(document.querySelector('.camera-stage')).display"
-        ) == "none"
-        with page.expect_file_chooser() as chooser:
-            page.click("#nativeCameraButton")
-        chooser.value.set_files(str(video))
-
-        page.wait_for_function(
-            "() => /Session saved as one editable recording/.test("
-            "document.getElementById('notice').textContent)",
-            timeout=90000,
-        )
-        # And the page let go of its own camera before the native app opened.
-        held = page.evaluate(
-            "() => { const s = document.getElementById('camera').srcObject;"
-            " return s ? s.getVideoTracks().filter((t) => t.readyState === 'live').length : 0; }"
-        )
-        assert held == 0, "the page still held the camera the native app needed"
-        context.close()
-        browser.close()
-
-
 TAPPABLE_JS = """(ids) => ids.map((id) => {
   const b = document.getElementById(id);
   const r = b.getBoundingClientRect();
@@ -688,13 +600,39 @@ def test_split_screen_recording_can_always_be_stopped_and_the_layouts_switch(stu
             timeout=20000,
         )
 
-        # Swap: video on top, words below.
+        # Swap: video on top, words below - and the buttons follow to the seam:
+        # the Points bar above the words, the recording buttons at the foot of
+        # the video ("when script is bottom the buttons of it are on the top").
         page.click("#flipLayoutButton")
         swapped = page.evaluate(
-            "() => ({camera: document.querySelector('.camera-stage').getBoundingClientRect().top,"
-            " reader: document.querySelector('.reader-shell').getBoundingClientRect().top})"
+            """() => ({camera: document.querySelector('.camera-stage').getBoundingClientRect().top,
+                      reader: document.querySelector('.reader-shell').getBoundingClientRect().top,
+                      tabs: document.querySelector('.tabs').getBoundingClientRect().top,
+                      words: document.getElementById('reader').getBoundingClientRect().top})"""
         )
         assert swapped["camera"] < swapped["reader"], f"the swap did not put the video on top: {swapped}"
+        assert swapped["tabs"] < swapped["words"], f"swapped, the Points bar is not above the words: {swapped}"
+        page.click("#recordButton")
+        page.wait_for_function(
+            "() => document.getElementById('studioView').classList.contains('is-recording')",
+            timeout=20000,
+        )
+        seam = page.evaluate(
+            """() => ({cameraBottom: document.querySelector('.camera-stage').getBoundingClientRect().bottom,
+                      reader: document.querySelector('.reader-shell').getBoundingClientRect().top,
+                      finish: document.getElementById('finishSessionButton').getBoundingClientRect().bottom})"""
+        )
+        assert seam["finish"] <= seam["cameraBottom"] + 1 and seam["finish"] <= seam["reader"] + 1, (
+            f"swapped and recording, the buttons are not at the foot of the video: {seam}"
+        )
+        for b in page.evaluate(TAPPABLE_JS, ["pauseButton", "finishClipButton", "finishSessionButton"]):
+            assert b["tappable"], f"swapped, a recording button cannot be tapped: {b}"
+        page.screenshot(path=str(tmp_path / "split-swapped-recording.png"))
+        page.click("#finishClipButton")
+        page.wait_for_function(
+            "() => !document.getElementById('studioView').classList.contains('is-recording')",
+            timeout=20000,
+        )
         page.click("#flipLayoutButton")
 
         # Words over the video: the video fills the studio, the words float over it
@@ -716,6 +654,10 @@ def test_split_screen_recording_can_always_be_stopped_and_the_layouts_switch(stu
             f"the words are not over the video: {over}"
         )
         assert over["readerBg"] in ("rgba(0, 0, 0, 0)", "transparent"), over["readerBg"]
+        # The whole frame, not a fill-the-screen crop: "shows me zoomed in - BAD".
+        assert page.evaluate(
+            "() => getComputedStyle(document.getElementById('camera')).objectFit"
+        ) == "contain"
         assert over["text"] == "rgb(255, 255, 255)", over["text"]
         rail = page.evaluate(TAPPABLE_JS, ["overlayButton", "flipLayoutButton", "textBigger", "textSmaller"])
         for b in rail:

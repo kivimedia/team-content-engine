@@ -264,30 +264,15 @@ def test_the_right_rail_is_text_size_not_a_scroll_slider():
     assert 'localStorage.setItem("tce-reader-size"' in body
 
 
-def test_the_phone_camera_uploads_through_the_clip_path_and_frees_the_camera():
-    """Chrome on his phone never hands over a portrait frame, so the native selfie
-    camera is the route to a vertical video without a crop."""
+def test_the_phone_camera_mode_is_gone_and_the_browser_asks_for_full_resolution():
+    """23-Sep: "remove native camera mode its not usefull." And the browser camera
+    asks for the sensor's largest mode, so the vertical crop reaches 1080x1920."""
     html = (API / "recording.html").read_text(encoding="utf-8")
-    assert 'id="nativeCameraInput" type="file" accept="video/*" capture="user"' in html
     js = JS.read_text(encoding="utf-8")
-    body = js[js.index("async function uploadNativeVideo(") :][:3500]
-    # The same checked path as a browser take: pieces with a checksum, then the
-    # audio-and-video check, then sent for editing.
-    assert '"X-Chunk-Sha256": digest' in body
-    assert "/finish`" in body and "await finishSession();" in body
-    # Radical transparency: which piece of how many, in megabytes.
-    assert "piece ${index + 1} of ${pieces}" in body
-    # And the native app cannot open a camera this page is still holding.
-    opener = js[js.index("async function openNativeCamera(") :]
-    opener = opener[: opener.index("\n  }\n")]
-    assert opener.index("releaseBrowserCamera();") < opener.index('$("nativeCameraInput").click();')
-    # The camera chooser is never opened after an await: a tap is permission for
-    # one thing, and floating the script already spent it.
-    before_click = opener[: opener.index('$("nativeCameraInput").click();')]
-    assert "await" not in before_click, "an await before the camera click loses the tap"
-    # And the floating window is told where to go: the top, under the lens.
-    assert "TOP of the screen, right under the camera" in js
-
+    assert "nativeCamera" not in html and "nativeCamera" not in js
+    assert "requestPictureInPicture" not in js
+    assert "{ width: { ideal: 4096 }, height: { ideal: 3072 }, aspectRatio: { ideal: 4 / 3 } }" in js
+    assert "canvas.height = Math.min(1920, height);" in js
 
 def test_the_opening_and_a_first_point_that_repeat_it_are_one_line():
     """Choosing the recommended opening usually gives back the first bullet almost

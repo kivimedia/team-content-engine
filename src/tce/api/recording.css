@@ -167,7 +167,7 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .secondary-button { min-height: 52px; padding: 0 18px; border: 2px solid var(--ink); border-radius: 12px; background: var(--white); font-weight: 900; }
 .secondary-button:disabled { opacity: .5; }
 .hook-view-state { color: #34435a; font-size: .9rem; line-height: 1.35; }
-.controls { display: grid; grid-template-columns: repeat(5, 1fr); gap: 7px; padding: 9px 9px calc(9px + env(safe-area-inset-bottom)); background: #d7dfdf; border-top: 2px solid var(--ink); }
+.controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; padding: 9px 9px calc(9px + env(safe-area-inset-bottom)); background: #d7dfdf; border-top: 2px solid var(--ink); }
 .control { min-height: 56px; border: 2px solid var(--ink); border-radius: 12px; background: var(--white); font-size: .74rem; font-weight: 900; padding: 5px 3px; line-height: 1.1; }
 .control small { display: block; font-size: .62rem; font-weight: 700; opacity: .75; margin-top: 2px; }
 .control.record { background: var(--signal); color: #fff; }
@@ -273,19 +273,7 @@ body.rec-live .topbar { display: none; }
   .studio-view.is-recording .controls { top: auto; bottom: 12px; right: 58%; }
 }
 
-/* Phone camera: the native app records, so it is never offered mid-take. */
-.control.native { background: #e8eef6; }
-.studio-view.is-recording #nativeCameraButton { display: none; }
 
-/* Phone camera mode: the page's own camera box has nothing to show, so the
-   script takes the whole height - which is what a split screen half needs. */
-body.native-mode .camera-stage { display: none; }
-body.native-mode .studio-view { grid-template-rows: auto minmax(0, 1fr) auto auto; }
-@media (max-width: 759px) {
-  body.native-mode .studio-view { grid-template-rows: auto minmax(0, 1fr) auto auto; }
-}
-/* The canvas feeding the floating window must be in the page but never seen. */
-.prompter-source { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; left: 0; bottom: 0; }
 
 /* STUCK MID-TAKE (23-Sep). In a half-height window the video was painted over
    Pause and Finish: they showed, but every tap landed on the video. The
@@ -324,7 +312,9 @@ body.native-mode .studio-view { grid-template-rows: auto minmax(0, 1fr) auto aut
    white words with a shadow stay readable over any background. */
 body.overlay-mode .studio-view { position: relative; grid-template-rows: minmax(0, 1fr) auto auto; }
 body.overlay-mode .studio-view > .camera-stage { order: 1; grid-row: 1 / -1; grid-column: 1 / -1; min-height: 0; height: 100%; }
-body.overlay-mode .studio-view > .camera-stage video { object-fit: cover; }
+/* The whole frame, never cropped to fill: `cover` zoomed him in the moment the
+   see-through mode came on ("shows me zoomed in - BAD", 23-Sep). */
+body.overlay-mode .studio-view > .camera-stage video { object-fit: contain; }
 body.overlay-mode .studio-view > .script-heading { display: none; }
 body.overlay-mode .studio-view > .reader-shell {
   position: absolute; left: 0; right: 0; top: 0; height: 52%; z-index: 20;
@@ -346,3 +336,19 @@ body.overlay-mode .controls { position: relative; z-index: 25; }
    label is white like the words (dark text on a live picture was unreadable). */
 body.overlay-mode .recording-flag, body.overlay-mode .camera-timer { top: auto; bottom: 76px; z-index: 26; }
 body.overlay-mode .size-value { color: #fff; text-shadow: 0 1px 4px rgba(0, 0, 0, .9); }
+
+/* THE BUTTONS LIVE AT THE SEAM between the words and the video (23-Sep): with
+   the words on top, the Points bar sits under them and the recording buttons at
+   the foot of the video (the bottom of the screen); swapped, with the video on
+   top, both move up to the seam - the Points bar above the words, the recording
+   buttons at the foot of the video, and the idle bar between the two. */
+@media (max-width: 759px) {
+  body.layout-flipped .reader-main { grid-template-rows: auto minmax(0, 1fr); }
+  body.layout-flipped .reader-main > .tabs { order: 0; border-top: 0; border-bottom: 2px solid var(--ink); }
+  body.layout-flipped .studio-view > .controls { order: 2; border-top: 0; border-bottom: 2px solid var(--ink); }
+  body.layout-flipped .studio-view > .script-heading { order: 3; }
+  body.layout-flipped .studio-view > .reader-shell { order: 4; }
+  body.layout-flipped .studio-view > .session-strip { order: 5; }
+  body.layout-flipped .studio-view { grid-template-rows: minmax(150px, 40%) auto auto minmax(0, 1fr) auto; }
+  body.layout-flipped .studio-view.is-recording .controls { bottom: auto; top: calc(45% - 60px); }
+}

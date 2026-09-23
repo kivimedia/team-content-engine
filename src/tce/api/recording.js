@@ -78,7 +78,7 @@ function packetToIdea(idea, packet) {
     timerId: null, pendingWrites: [], pendingSync: new Map(), takeMarkers: [],
     wakeLock: null, pendingIdea: null, textSize: 1,
     sessionPending: null, sessionPendingFor: null,
-    rawStream: null, cameraReport: null, cameraEpoch: 0,
+    rawStream: null, cameraReport: null,
   };
   const supportedMime = [
     "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
@@ -681,15 +681,7 @@ function packetToIdea(idea, packet) {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !supportedMime) {
       throw new Error("This browser cannot record camera video with audio.");
     }
-    // The camera search takes seconds. If the phone camera was asked for in the
-    // meantime, whatever this finds is handed straight back: the native app
-    // cannot open a camera this page grabbed after it was told to let go.
-    const epoch = state.cameraEpoch;
     const camera = await openCamera();
-    if (epoch !== state.cameraEpoch) {
-      camera.stream.getTracks().forEach((track) => track.stop());
-      throw new Error("The phone camera is in use.");
-    }
     state.rawStream = camera.stream;
     if (!state.rawStream.getAudioTracks().some((track) => track.enabled)) throw new Error("The recording has no active microphone track.");
     state.stream = portraitStream(camera);
@@ -712,6 +704,10 @@ function packetToIdea(idea, packet) {
     { width: { exact: 720 }, height: { exact: 1280 } },
     { aspectRatio: { exact: 9 / 16 } },
     // No portrait mode: take the most vertical field of view there is, to crop.
+    // The sensor's largest 4:3 mode first (his reports 3056x2296): cropped to
+    // 9:16 at its full height that is more than 1080x1920, so the file comes out
+    // at full HD vertical instead of 810x1440 from the 1920x1440 mode.
+    { width: { ideal: 4096 }, height: { ideal: 3072 }, aspectRatio: { ideal: 4 / 3 } },
     { width: { ideal: 1440 }, height: { ideal: 1920 }, aspectRatio: { ideal: 3 / 4 } },
     { width: { ideal: 1080 }, height: { ideal: 1440 }, aspectRatio: { ideal: 3 / 4 } },
     { width: { ideal: 1080 }, height: { ideal: 1920 } },
@@ -851,7 +847,6 @@ function packetToIdea(idea, packet) {
   }
 
   async function startRecording() {
-    document.body.classList.remove("native-mode");
     try {
       // Pressing Record with the chooser open confirms the current opening; the
       // walking reader carries no editorial detail from here on.
@@ -1075,224 +1070,6 @@ function packetToIdea(idea, packet) {
     applyTextSize();
   }
 
-  /* THE PHONE'S OWN CAMERA. Chrome on his phone answers every portrait request
-     with a landscape frame (camera report, 22-Sep: asked 720x1280, got 1280x720;
-     largest mode 3056x2296 landscape), so a vertical video made in the browser is
-     always a crop, and a crop is a zoom. The native selfie camera records the
-     whole sensor in portrait with the phone's own stabilisation. Its file goes up
-     through the same clip path as a browser take - pieces with a checksum each,
-     then the same audio-and-video check - and is sent for editing. */
-  const NATIVE_PIECE = 16 * 1024 * 1024;
-  function releaseBrowserCamera() {
-    // The native app cannot open a camera this page is still holding - including
-    // one a search still in flight is about to open (cameraEpoch).
-    state.cameraEpoch += 1;
-    state.portraitStopped = true;
-    for (const stream of [state.stream, state.rawStream]) {
-      if (stream) stream.getTracks().forEach((track) => track.stop());
-    }
-    state.stream = null;
-    state.rawStream = null;
-    $("camera").srcObject = null;
-    $("cameraEmpty").hidden = false;
-  }
-  /* THE SCRIPT OVER THE PHONE'S CAMERA. The native camera takes the whole screen
-     and no page can draw on top of it ("it doesnt really show me the half screen
-     with script that I need", 23-Sep). What CAN sit on top of another app is a
-     picture-in-picture window, so the points are drawn onto a canvas, the canvas
-     is played as a video, and that video goes into picture-in-picture before the
-     camera opens. He can drag and resize it; its next/previous buttons step
-     through the points (Media Session). Where the phone will not float it, the
-     page drops its own camera box instead so the script fills the screen for
-     Android split screen. */
-  function prompterItems(idea) {
-    const hook = selectedHook(idea);
-    const points = idea.bullets || [];
-    const items = points.map((text, index) => ({ label: `Point ${index + 1} of ${points.length}`, text }));
-    if (hook && !(points.length && sameLine(hook.text, points[0]))) {
-      items.unshift({ label: "Opening", text: hook.text });
-    } else if (items.length) {
-      items[0].label = "Opening";
-    }
-    return items;
-  }
-
-  function drawPrompter() {
-    const p = state.prompter;
-    if (!p) return;
-    const { ctx, canvas } = p;
-    const item = p.items[p.index] || { label: "", text: "" };
-    ctx.fillStyle = "#10213b";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#9fb3cc";
-    ctx.font = "700 34px system-ui, sans-serif";
-    ctx.fillText(`${item.label}   (${p.index + 1}/${p.items.length})`, 36, 58);
-    // The biggest size at which the whole point fits: it is read at arm's length.
-    const width = canvas.width - 72;
-    let size = 84;
-    let lines = [];
-    for (; size >= 34; size -= 4) {
-      ctx.font = `800 ${size}px system-ui, sans-serif`;
-      lines = [];
-      let line = "";
-      for (const word of String(item.text).split(/\s+/)) {
-        const next = line ? `${line} ${word}` : word;
-        if (ctx.measureText(next).width > width && line) { lines.push(line); line = word; } else { line = next; }
-      }
-      if (line) lines.push(line);
-      if (lines.length * size * 1.18 <= canvas.height - 110) break;
-    }
-    ctx.fillStyle = "#ffffff";
-    lines.forEach((text, i) => ctx.fillText(text, 36, 110 + size + i * size * 1.18));
-  }
-
-  function stepPrompter(delta) {
-    const p = state.prompter;
-    if (!p) return;
-    p.index = Math.max(0, Math.min(p.items.length - 1, p.index + delta));
-    drawPrompter();
-  }
-
-  async function startPrompter() {
-    if (state.prompter && document.pictureInPictureElement) return true;
-    if (!document.pictureInPictureEnabled || !state.idea) return false;
-    const canvas = document.createElement("canvas");
-    canvas.width = 720;
-    canvas.height = 720;
-    state.prompter = { canvas, ctx: canvas.getContext("2d"), items: prompterItems(state.idea), index: 0 };
-    drawPrompter();
-    const video = document.createElement("video");
-    video.muted = true;
-    video.playsInline = true;
-    video.className = "prompter-source";
-    video.srcObject = canvas.captureStream(15);
-    document.body.appendChild(video);
-    // A canvas stream only sends a frame when something is drawn; repaint so the
-    // floating window never freezes on a blank.
-    state.prompter.timer = setInterval(drawPrompter, 500);
-    state.prompter.video = video;
-    try {
-      await video.play();
-      await video.requestPictureInPicture();
-    } catch {
-      stopPrompter();
-      return false;
-    }
-    if ("mediaSession" in navigator) {
-      const session = navigator.mediaSession;
-      try {
-        session.setActionHandler("nexttrack", () => stepPrompter(1));
-        session.setActionHandler("previoustrack", () => stepPrompter(-1));
-        // Pause would freeze the words; keep it playing and treat it as "next".
-        session.setActionHandler("pause", () => { stepPrompter(1); video.play().catch(() => {}); });
-        session.setActionHandler("play", () => video.play().catch(() => {}));
-      } catch { /* an action this phone does not know is simply not offered */ }
-    }
-    video.addEventListener("leavepictureinpicture", stopPrompter, { once: true });
-    return true;
-  }
-
-  function stopPrompter() {
-    const p = state.prompter;
-    if (!p) return;
-    clearInterval(p.timer);
-    if (p.video) { p.video.srcObject = null; p.video.remove(); }
-    state.prompter = null;
-  }
-
-  /* TWO TAPS, ON PURPOSE. A tap is permission for one thing that needs a tap:
-     floating the script used it up, and the camera chooser that followed never
-     opened (the end-to-end test caught it). So the first tap floats the script -
-     and gives him a moment to drag it to the TOP, under the lens - and the
-     button becomes "Open camera" for the second. A phone that cannot float the
-     script skips straight to the camera on the first tap. */
-  function setNativeButton(ready) {
-    const button = $("nativeCameraButton");
-    button.dataset.ready = ready ? "1" : "";
-    button.innerHTML = ready ? "Open camera<small>script is floating</small>" : "Phone camera<small>full quality</small>";
-  }
-
-  async function openNativeCamera() {
-    if (state.recorder && state.recorder.state !== "inactive") {
-      showNotice("Finish this take first. The phone camera records its own.");
-      return;
-    }
-    releaseBrowserCamera();
-    // Script-first page: without the browser camera there is nothing to show in
-    // the bottom half, so the words take the whole screen (split-screen friendly).
-    document.body.classList.add("native-mode");
-    const button = $("nativeCameraButton");
-    if (button.dataset.ready || !document.pictureInPictureEnabled) {
-      if (!document.pictureInPictureEnabled) {
-        showNotice("This phone will not float the script over its camera. Open the camera in split screen with this page, or read the points first.", 9000);
-      }
-      $("nativeCameraInput").click();
-      return;
-    }
-    const floating = await Promise.race([
-      startPrompter(),
-      new Promise((resolve) => setTimeout(() => resolve(false), 4000)),
-    ]);
-    setNativeButton(true);
-    showNotice(floating
-      ? "Your points are floating. Drag the window to the TOP of the screen, right under the camera, so your eyes stay near the lens. Then tap Open camera. Next and back step through the points."
-      : "This phone would not float the script. Open the camera in split screen with this page (script on top), or read the points first. Tap Open camera when ready.", 12000);
-  }
-  function videoDuration(file) {
-    return new Promise((resolve) => {
-      const probe = document.createElement("video");
-      probe.preload = "metadata";
-      probe.onloadedmetadata = () => { resolve(Number(probe.duration) || 0); URL.revokeObjectURL(probe.src); };
-      probe.onerror = () => resolve(0);
-      probe.src = URL.createObjectURL(file);
-    });
-  }
-  async function uploadNativeVideo(file) {
-    if (!file) return;
-    const mb = (bytes) => (bytes / 1e6).toFixed(0);
-    const name = String(file.name || "");
-    const dot = name.lastIndexOf(".");
-    const typed = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
-    const extension = ["mp4", "mov", "webm"].includes(typed) ? typed
-      : (file.type || "").includes("quicktime") ? "mov" : (file.type || "").includes("webm") ? "webm" : "mp4";
-    const mime = file.type || (extension === "mov" ? "video/quicktime" : `video/${extension}`);
-    const say = (text) => { $("syncState").textContent = text; showNotice(text, 60000); };
-    try {
-      say(`Saving your ${mb(file.size)} MB video to this idea`);
-      await ensureSession();
-      const created = await api(`/recording-sessions/${state.session.id}/clips`, {
-        method: "POST",
-        body: JSON.stringify({ local_clip_id: crypto.randomUUID(), mime_type: mime, extension }),
-      });
-      const clip = created.clip;
-      const pieces = Math.max(1, Math.ceil(file.size / NATIVE_PIECE));
-      for (let index = 0; index < pieces; index += 1) {
-        const blob = file.slice(index * NATIVE_PIECE, Math.min(file.size, (index + 1) * NATIVE_PIECE), mime);
-        say(`Uploading your video: piece ${index + 1} of ${pieces} (${mb(index * NATIVE_PIECE)} of ${mb(file.size)} MB)`);
-        const digest = await sha256(blob);
-        const put = () => api(`/recording-clips/${clip.id}/chunks/${index}`, {
-          method: "PUT", body: blob, headers: { "Content-Type": mime, "X-Chunk-Sha256": digest },
-        });
-        // One retry per piece: a phone on the move drops a request now and then.
-        try { await put(); } catch { await put(); }
-      }
-      say("Checking the video has sound and picture");
-      const finished = await api(`/recording-clips/${clip.id}/finish`, {
-        method: "POST", body: JSON.stringify({ active_duration_s: await videoDuration(file), take_markers: [] }),
-      });
-      state.session.clips = [...(state.session.clips || []).filter((item) => item.id !== finished.clip.id), finished.clip];
-      // Done with the phone's camera: put the floating script away.
-      if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
-      stopPrompter();
-      setNativeButton(false);
-      await finishSession();
-    } catch (error) {
-      say(`The video did not upload: ${error.message}. It is still on your phone - press Phone camera and pick it again.`);
-    } finally {
-      $("nativeCameraInput").value = "";
-    }
-  }
-
   /* The house means home, and home is Today - except inside the studio, where
      the only thing above it is the list you came from and there is no bottom nav
      to get back with. The label always says which, so it is never a guess. */
@@ -1344,8 +1121,6 @@ function packetToIdea(idea, packet) {
   $("textBigger").addEventListener("click", () => changeTextSize(.1));
   $("textSmaller").addEventListener("click", () => changeTextSize(-.1));
   restoreTextSize();
-  $("nativeCameraButton").addEventListener("click", openNativeCamera);
-  $("nativeCameraInput").addEventListener("change", (event) => uploadNativeVideo(event.target.files && event.target.files[0]));
   $("pointsTab").addEventListener("click", () => setMode("points"));
   $("scriptTab").addEventListener("click", () => setMode("script"));
   $("recordButton").addEventListener("click", startRecording);

@@ -1589,12 +1589,18 @@
   });
 
   var READER_SIZES = ["normal", "large", "largest"];
-  $("readerSize").addEventListener("click", function () {
-    var current = document.body.dataset.reader || "normal";
-    var next = READER_SIZES[(READER_SIZES.indexOf(current) + 1) % READER_SIZES.length];
-    document.body.dataset.reader = next;
-    try { localStorage.setItem("tce-workspace-reader", next); } catch (e) { /* private mode */ }
-  });
+  /* A step each way that stops at the ends: the old single button cycled, so
+     one tap past "largest" threw the page back to the smallest. */
+  function stepReader(delta) {
+    var current = READER_SIZES.indexOf(document.body.dataset.reader || "normal");
+    var next = Math.max(0, Math.min(READER_SIZES.length - 1, (current < 0 ? 0 : current) + delta));
+    document.body.dataset.reader = READER_SIZES[next];
+    $("readerSmaller").disabled = next === 0;
+    $("readerBigger").disabled = next === READER_SIZES.length - 1;
+    try { localStorage.setItem("tce-workspace-reader", READER_SIZES[next]); } catch (e) { /* private mode */ }
+  }
+  $("readerSmaller").addEventListener("click", function () { stepReader(-1); });
+  $("readerBigger").addEventListener("click", function () { stepReader(1); });
 
   window.addEventListener("popstate", function () { render(); });
 
@@ -1715,6 +1721,8 @@
     var saved = localStorage.getItem("tce-workspace-reader");
     if (saved) document.body.dataset.reader = saved;
   } catch (e) { /* private mode */ }
+  // After the restore, or the saved size would be overwritten with "normal".
+  stepReader(0);
 
   TALK_FOOTER = $("talkSheet").querySelector(".sheet-foot").innerHTML;
 
