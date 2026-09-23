@@ -19,6 +19,7 @@ from tce.api.routers import (
     dm_fulfillment,
     documents,
     editorial,
+    editorial_voice,
     editorial_workspace,
     evidence,
     experiments,
@@ -293,6 +294,8 @@ def create_app() -> FastAPI:
     # overlap; these are all new paths, so nothing is shadowed today.
     app.include_router(editorial_workspace.router, prefix=prefix)
     app.include_router(editorial_workspace.production_router, prefix=prefix)
+    # The voice agent's tools: find, change and undo, restore, research.
+    app.include_router(editorial_voice.router, prefix=prefix)
 
     # Dashboard - no API prefix, served at root /dashboard
     app.include_router(dashboard.router)

@@ -56,6 +56,8 @@ TABLE_NAMES = (
     "editing_requests",
     "notification_subscriptions",
     "notification_events",
+    # Voice agent research (migration 047)
+    "idea_research",
     # Third lane (migration 045)
     "news_feeds",
     "news_items",

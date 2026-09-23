@@ -278,7 +278,8 @@ def _validate_operation(
         if not isinstance(op_in.after, dict) or "candidate_id" not in op_in.after:
             issue("bad_value", "a topic and a destination are required")
             return None, issues
-        return {"value": None}, issues
+        # The whole order before the move, so the move can be undone exactly.
+        return {"value": state.values.get("order")}, issues
 
     if op_in.op == "restore_version":
         if not isinstance(op_in.after, dict):

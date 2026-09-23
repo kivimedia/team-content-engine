@@ -83,7 +83,18 @@ MESSAGE_STATUSES = ("complete", "queued", "failed")
 
 CHANGE_TARGETS = ("candidate_brief", "packet", "lineup")
 CHANGE_STATES = ("proposed", "applied", "rejected", "superseded", "invalid")
-CHANGE_ORIGINS = ("conversation", "quick_action", "undo")
+# `voice` is the voice agent: a spoken instruction it read back and then applied.
+CHANGE_ORIGINS = ("conversation", "quick_action", "undo", "voice")
+
+# Who a write is attributed to. The voice agent never writes as "ziv", so the
+# workspace can list exactly what it changed and offer an Undo for each.
+ACTORS = ("ziv", "voice")
+
+# Research on one idea, run in the background.
+RESEARCH_STATES = ("running", "done", "failed")
+# searched: web results are in. no_key: web search is not configured, so the
+# result is his own evidence only, and it says so. failed: the search errored.
+RESEARCH_WEB_STATES = ("searched", "no_key", "failed", "skipped")
 
 CHANGE_OPS = (
     "set_field",
@@ -471,3 +482,33 @@ class NotificationEvent(_PrivateWorkspaceMixin, Base):
     state: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class IdeaResearch(_PrivateWorkspaceMixin, Base):
+    """Research gathered for one idea, in the background.
+
+    Two halves, kept apart because they are not equally trustworthy: what TCE
+    already holds about the idea (his own calls and commits, cited), and what a
+    web search found. When web search is not configured the result says so in
+    `web_status` and in `summary`, rather than quietly looking thinner.
+    """
+
+    __tablename__ = "idea_research"
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("topic_candidates.id", ondelete="CASCADE"), index=True
+    )
+    # running | done | failed
+    state: Mapped[str] = mapped_column(String(20), default="running", index=True)
+    requested_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    query: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # [{"source_kind", "title", "occurred_at", "excerpt", "lesson"}]
+    evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSONType, default=list)
+    # [{"title", "url", "description", "age"}]
+    web: Mapped[list[dict[str, Any]]] = mapped_column(JSONType, default=list)
+    # searched | no_key | failed | skipped
+    web_status: Mapped[str] = mapped_column(String(20), default="skipped")
+    # The sentence the voice agent reads out when the job finishes.
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -34,6 +34,7 @@ from tce.editorial import lineup as lineup_service
 from tce.editorial import today as today_service
 from tce.editorial.common import open_session
 from tce.editorial.packets import list_packets
+from tce.models.editorial_workspace import ACTORS
 
 logger = structlog.get_logger()
 
@@ -77,6 +78,8 @@ def _uuid(value: str, what: str) -> uuid.UUID:
 class DecideRequest(BaseModel):
     decision: str
     note: str | None = None
+    # "voice" when the voice agent decided it, so the workspace can say so.
+    by: str = "ziv"
 
 
 class AddToWeekRequest(BaseModel):
@@ -224,10 +227,12 @@ async def decide_topic(
     it are the same act from his side. Asking for the script stays separate.
     """
     cid = _uuid(candidate_id, "topic")
+    if body.by not in ACTORS:
+        raise HTTPException(status_code=400, detail=f"unknown actor {body.by}")
     async with open_session(sm) as db:
         try:
             decision = await inbox_service.decide(
-                db, ws, cid, decision=body.decision, note=body.note, decided_by="ziv"
+                db, ws, cid, decision=body.decision, note=body.note, decided_by=body.by
             )
             placed: dict[str, Any] | None = None
             if body.decision == "this_week":
@@ -236,7 +241,7 @@ async def decide_topic(
                     db, ws, lineup_service.week_start_for(None)
                 )
                 item = await lineup_service.add_topic(
-                    db, ws, week, candidate, added_by="ziv"
+                    db, ws, week, candidate, added_by=body.by
                 )
                 placed = {"slot": item.slot, "rank": item.rank, "revision": week.revision}
             await db.commit()

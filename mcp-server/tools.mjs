@@ -14,20 +14,64 @@
 import { readdirSync } from 'node:fs';
 
 export const SERVER_NAME = 'tce';
-export const SERVER_VERSION = '1.0.0';
+export const SERVER_VERSION = '1.1.0';
 
 export const DEFAULT_BASE = process.env.TCE_API_BASE || 'https://bot.kivimedia.co/tce';
 
-/** Build a `call(method, path, body)` bound to one editor login. */
-export function makeCaller(base, user, password) {
-  const auth = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+/**
+ * The headers one identity sends. Two shapes:
+ *   - basic auth (the PC, through nginx, which injects the private key), or
+ *   - the private key itself as a bearer, for a process on the VPS that talks to
+ *     the API on 127.0.0.1 directly (the voice agent's brain). X-Workspace-Id
+ *     picks the workspace; without it the API uses its configured editor one.
+ */
+export function authHeaders({ user, password, key, workspaceId } = {}) {
+  const headers = {};
+  if (key) {
+    headers.Authorization = `Bearer ${key}`;
+    if (workspaceId) headers['X-Workspace-Id'] = workspaceId;
+  } else {
+    headers.Authorization = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+  }
+  return headers;
+}
+
+/**
+ * Which identity the environment gives this process, or why it gives none.
+ * TCE_PRIVATE_KEY wins when set: it only exists on the box the API runs on.
+ */
+export function identityFromEnv(env = process.env) {
+  if (env.TCE_PRIVATE_KEY) {
+    return {
+      ok: true,
+      mode: 'bearer',
+      auth: { key: env.TCE_PRIVATE_KEY, workspaceId: env.TCE_WORKSPACE_ID || '' },
+    };
+  }
+  if (env.TCE_BASIC_USER && env.TCE_BASIC_PASS) {
+    return { ok: true, mode: 'basic', auth: { user: env.TCE_BASIC_USER, password: env.TCE_BASIC_PASS } };
+  }
+  return { ok: false, mode: 'none', auth: {} };
+}
+
+/**
+ * Build a `call(method, path, body)` bound to one identity.
+ * makeCaller(base, user, password) is the PC shape and still works;
+ * makeCaller(base, { key, workspaceId }) is the VPS shape.
+ */
+export function makeCaller(base, userOrAuth, password) {
+  const identity = typeof userOrAuth === 'object' && userOrAuth !== null
+    ? userOrAuth
+    : { user: userOrAuth, password };
+  const auth = authHeaders(identity);
+  const bearer = Boolean(identity.key);
   return async function call(method, path, body) {
     let response;
     try {
       response = await fetch(`${base}/api/v1${path}`, {
         method,
         headers: {
-          Authorization: auth,
+          ...auth,
           'content-type': 'application/json',
         },
         body: body ? JSON.stringify(body) : undefined,
@@ -54,10 +98,15 @@ export function makeCaller(base, user, password) {
       data = { error: 'TCE did not answer with JSON', body: raw.slice(0, 400) };
     }
     if (response.status === 401) {
-      data = {
-        error: 'TCE refused the editor login',
-        hint: 'Check TCE_BASIC_USER and TCE_BASIC_PASS. The route needs basic auth; a bearer key alone is refused at nginx.',
-      };
+      data = bearer
+        ? {
+          error: 'TCE refused the private key',
+          hint: 'Check TCE_PRIVATE_KEY against the API private access key, and that TCE_API_BASE is the API itself (http://127.0.0.1:8200), not the nginx route.',
+        }
+        : {
+          error: 'TCE refused the editor login',
+          hint: 'Check TCE_BASIC_USER and TCE_BASIC_PASS. The route needs basic auth; a bearer key alone is refused at nginx.',
+        };
     }
     return { ok: response.ok, status: response.status, data };
   };
@@ -122,10 +171,19 @@ export function runLine(run) {
 const here = import.meta.url;
 
 /**
+ * TCE_MCP_FAMILIES="voice" loads only those families. A voice call's brain does
+ * better with the dozen tools it needs than with every tool the terminal has.
+ */
+export function familyFilter(env = process.env) {
+  const raw = (env.TCE_MCP_FAMILIES || '').trim();
+  return raw ? raw.split(',').map((f) => f.trim()).filter(Boolean) : null;
+}
+
+/**
  * Load every family in ./tools and register its tools.
  * One bad family must not cost the caller the others.
  */
-export async function registerTools(server, call) {
+export async function registerTools(server, call, only = familyFilter()) {
   const helpers = { reply, failure, shortId, ago, runLine, RUN_WORDS };
   const families = [];
   const tools = [];
@@ -143,6 +201,7 @@ export async function registerTools(server, call) {
     try {
       const family = await import(new URL(file, dir).href);
       if (!family || typeof family.register !== 'function' || !family.FAMILY) continue;
+      if (only && !only.includes(family.FAMILY)) continue;
       family.register(registrar, call, helpers);
       families.push(family.FAMILY);
     } catch (error) {
