@@ -810,6 +810,24 @@ async def undo_change_set(
                     raise changed_since("The chosen opening", state.values.get("selected_hook_id"))
                 if before:
                     inverse.append(change_service.OperationInput(op="choose_hook", after=before))
+            elif op.op == "restore_version":
+                # A script put back (restore_script_version): undoing it puts back
+                # the version it replaced, if nothing was changed on top since.
+                if not isinstance(after, dict) or not _same_script(state.values, after):
+                    raise changed_since("The script", state.values.get("bullets"))
+                if not isinstance(before, dict):
+                    raise VoiceError(
+                        "no_before",
+                        "the script before that was not recorded, so it cannot be undone",
+                        status=409,
+                    )
+                inverse.append(
+                    change_service.OperationInput(
+                        op="restore_version",
+                        after=before,
+                        rationale="Undo putting an earlier script back.",
+                    )
+                )
     elif target_type == "lineup":
         target_id = original.target_id
         state = await change_service.load_target(db, ws, target_type, target_id)
@@ -848,6 +866,8 @@ async def undo_change_set(
         origin="undo",
         idempotency_key=f"{_undo_key(original.id)}:{uuid.uuid4().hex[:8]}",
     )
+    if target_type == "packet" and any(o.op == "restore_version" for o in inverse):
+        await _record_script_before(db, ws, undo_set.id, packet)
     if undo_set.state == "invalid":
         issues = (undo_set.validation or {}).get("issues") or []
         raise VoiceError(
@@ -862,6 +882,150 @@ async def undo_change_set(
         "already": False,
         "version": result["version"],
         "said": f'Undone: "{original.summary}".',
+    }
+
+
+# ---------------------------------------------------------------------------
+# Putting back a script that a rewrite replaced
+# ---------------------------------------------------------------------------
+
+# What a script is, for putting one back: its text and its openings.
+SCRIPT_FIELDS = (
+    "bullets",
+    "script_phrases",
+    "facebook_post",
+    "linkedin_post",
+    "interviewer_prompt",
+    "selected_hook_id",
+    "beats",
+)
+
+
+def _script_values(packet: RecordingPacket) -> dict[str, Any]:
+    return {
+        "bullets": list(packet.bullets or []),
+        "script_phrases": list(packet.script_phrases or []),
+        "facebook_post": packet.facebook_post,
+        "linkedin_post": packet.linkedin_post,
+        "interviewer_prompt": packet.interviewer_prompt,
+        "selected_hook_id": packet.selected_hook_id,
+        "beats": list(packet.beats or []) if packet.beats else None,
+        # Openings too: the chosen one must exist in the list it is chosen from.
+        "hook_options": list(packet.hook_options or []),
+    }
+
+
+def _same_script(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    return all((a.get(f) or None) == (b.get(f) or None) for f in SCRIPT_FIELDS)
+
+
+async def _record_script_before(
+    db: AsyncSession, ws: uuid.UUID, change_set_id: uuid.UUID, packet: RecordingPacket
+) -> None:
+    """Keep the whole script a restore replaces on the operation, so it can be undone.
+
+    `propose` records no `before` for restore_version (a brief keeps its versions
+    and does not need one); a script put back over another does.
+    """
+    for op in await change_service.load_operations(db, ws, change_set_id):
+        if op.op == "restore_version":
+            op.before = {"value": _script_values(packet)}
+    await db.flush()
+
+
+async def restore_script_version(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    candidate_id: uuid.UUID,
+    version: int,
+    *,
+    by: str = "voice",
+) -> dict[str, Any]:
+    """Make an earlier script version current again, as an attributed, undoable change.
+
+    A rewrite (tce_write_script with replace) supersedes the script he had, edits
+    included. The old version stays in the database; this is how it comes back.
+    It is written as a new version, never by un-superseding the old row, so the
+    history stays append-only and the change can be undone by id like any other.
+    """
+    from tce.editorial import status as job_status
+
+    actor = check_actor(by)
+    candidate = await inbox_service.get_candidate(db, ws, candidate_id)
+    if job_status.is_running(ws, "packet", str(candidate.id)):
+        raise VoiceError(
+            "still_writing",
+            f'The new script for "{candidate.title}" is still being written. When it is '
+            "ready it replaces the current one; put the old one back after that.",
+            status=409,
+        )
+    wanted = (
+        await db.execute(
+            select(RecordingPacket).where(
+                RecordingPacket.workspace_id == ws,
+                RecordingPacket.candidate_id == candidate.id,
+                RecordingPacket.version == version,
+            )
+        )
+    ).scalar_one_or_none()
+    if wanted is None:
+        raise VoiceError(
+            "not_found", f'"{candidate.title}" has no script version {version}.', status=404
+        )
+    current = await current_packet(db, ws, candidate.id)
+    if current is None:
+        raise VoiceError("no_script", f'"{candidate.title}" has no script now.', status=404)
+    base = {
+        "candidate_id": str(candidate.id),
+        "title": candidate.title,
+        "from_version": version,
+    }
+    if current.version == wanted.version:
+        return {
+            **base,
+            "restored": False,
+            "version": current.version,
+            "said": f'Version {version} is already the current script of "{candidate.title}".',
+        }
+    if await take_in_progress(db, ws, candidate.id) is not None:
+        raise VoiceError(
+            "recording",
+            "A take is being recorded on this script right now, so it stays as it is "
+            "until that recording is finished.",
+            status=409,
+        )
+    try:
+        change_set = await change_service.propose(
+            db,
+            ws,
+            target_type="packet",
+            target_id=current.id,
+            base_version=current.version,
+            operations=[
+                change_service.OperationInput(
+                    op="restore_version",
+                    after=_script_values(wanted),
+                    rationale=f"Put back script version {version}.",
+                )
+            ],
+            summary=f'Put back script version {version} of "{candidate.title}"',
+            origin="voice" if actor == "voice" else "quick_action",
+        )
+        await _record_script_before(db, ws, change_set.id, current)
+        result = await change_service.apply(db, ws, change_set.id, decided_by=actor)
+    except change_service.ChangeError as error:
+        raise VoiceError(error.code, error.message, status=error.status) from error
+    return {
+        **base,
+        "restored": True,
+        "change_set_id": str(change_set.id),
+        "short_id": str(change_set.id)[:8],
+        "replaced_version": current.version,
+        "version": result["version"],
+        "said": (
+            f'Script version {version} of "{candidate.title}" is back as the current script '
+            f"(now version {result['version']}). Undo takes it back to version {current.version}."
+        ),
     }
 
 

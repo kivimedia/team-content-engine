@@ -312,6 +312,34 @@ def test_ambiguous_words_ask_which_one():
     assert "More than one topic matches" in text and "2. Follow up after (id bbbb2222)" in text
 
 
+def test_a_close_but_unsure_match_asks_before_any_write():
+    out = run(
+        {
+            "steps": [
+                step("tce_edit", topic="pricing fennel", part="takeaway", text="Charge more.")
+            ],
+            "responses": {
+                "GET /editorial/voice/topic": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "status": "ambiguous",
+                        "topic": None,
+                        "candidates": [{"title": "How I set my pricing", "short_id": "cccc3333"}],
+                    },
+                },
+                "POST /editorial/voice/change": change_ok(["The takeaway now says ..."]),
+            },
+        }
+    )
+    text = out["texts"][0]
+    assert "More than one" not in text
+    assert '"How I set my pricing" (id cccc3333)' in text and "Ask him if that is the one" in text
+    assert [s["key"] for s in out["sent"]] == ["GET /editorial/voice/topic?q=pricing%20fennel"], (
+        "nothing is written to a topic he did not confirm"
+    )
+
+
 def test_no_match_says_so():
     out = run(
         {
@@ -588,7 +616,7 @@ def test_a_script_starts_and_jobs_announces_it_once_when_ready():
     out = run(
         {
             "steps": [
-                step("tce_write_script", topic="report"),
+                step("tce_write_script", topic="report", replace=True),
                 step("tce_jobs"),
                 step("tce_jobs", new_only=True),
                 step("tce_jobs", new_only=True),
@@ -613,7 +641,7 @@ def test_a_script_starts_and_jobs_announces_it_once_when_ready():
 def test_a_script_already_being_written_is_still_tracked():
     out = run(
         {
-            "steps": [step("tce_write_script", topic="report"), step("tce_jobs")],
+            "steps": [step("tce_write_script", topic="report", replace=True), step("tce_jobs")],
             "responses": {
                 "GET /editorial/voice/topic": FOUND,
                 "POST /editorial/candidates/": {
@@ -832,7 +860,7 @@ def test_the_call_ledger_survives_a_new_process(tmp_path):
         {
             "steps": [
                 step("tce_edit", topic="report", part="takeaway", text="Open the result."),
-                step("tce_write_script", topic="report"),
+                step("tce_write_script", topic="report", replace=True),
             ],
             "responses": responses,
         },
@@ -907,7 +935,7 @@ def test_an_interrupted_script_says_ask_again_not_still_going():
     out = run(
         {
             "steps": [
-                step("tce_write_script", topic="report"),
+                step("tce_write_script", topic="report", replace=True),
                 step("tce_jobs", new_only=True),
                 step("tce_jobs"),
             ],
@@ -960,4 +988,121 @@ def test_write_script_tells_the_brain_a_rewrite_replaces_the_current_script():
     out = run({"steps": [], "responses": {}})
     desc = out["descs"]["tce_write_script"]
     assert "replaces the current script" in desc
-    assert "cannot bring" in desc and "yes" in desc
+    assert "replace" in out["descs"]["tce_write_script"] and "yes" in desc
+
+
+PACKET = f"POST /editorial/candidates/{CID}/packet"
+RESTORE = f"POST /editorial/candidates/{CID}/script/restore"
+
+
+def test_a_script_over_an_existing_one_is_read_back_and_nothing_starts():
+    out = run(
+        {
+            "steps": [step("tce_write_script", topic="report")],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                PACKET: {"ok": True, "status": 200, "data": {"status": "running"}},
+            },
+        }
+    )
+    text = out["texts"][0]
+    assert '"Nobody opens the report" already has a script (version 3, ready)' in text
+    assert "replace" in text
+    assert not [s for s in out["sent"] if s["key"] == PACKET], "nothing may start before a yes"
+    assert json.loads(out["seen"][0])["data"]["code"] == "has_script"
+
+
+def test_a_script_the_server_says_exists_is_read_back_too():
+    # He read the topic before the first script was saved: the tool thinks there is
+    # none, the server knows better and refuses.
+    fresh = json.loads(json.dumps(FOUND))
+    fresh["data"]["topic"]["script"] = None
+    out = run(
+        {
+            "steps": [step("tce_write_script", topic="report")],
+            "responses": {
+                "GET /editorial/voice/topic": fresh,
+                PACKET: {
+                    "ok": False,
+                    "status": 409,
+                    "data": {
+                        "detail": {
+                            "code": "has_script",
+                            "message": "It already has a script.",
+                            "version": 1,
+                            "status": "ready",
+                        }
+                    },
+                },
+            },
+        }
+    )
+    sent = [s for s in out["sent"] if s["key"] == PACKET]
+    assert sent[0]["body"] == {"replace": False, "by": "voice"}
+    assert "already has a script (version 1, ready)" in out["texts"][0]
+    assert "replace" in out["texts"][0]
+    assert "Started" not in out["texts"][0]
+
+
+def test_a_rewrite_he_agreed_to_names_what_it_replaces_and_undo_puts_it_back():
+    out = run(
+        {
+            "steps": [
+                step("tce_write_script", topic="report", replace=True),
+                step("tce_undo"),
+            ],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                PACKET: {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"status": "running", "replaces_version": 3},
+                },
+                RESTORE: {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "restored": True,
+                        "said": 'Script version 3 of "Nobody opens the report" is back.',
+                    },
+                },
+            },
+        }
+    )
+    started = [s for s in out["sent"] if s["key"] == PACKET]
+    assert started[0]["body"] == {"replace": True, "by": "voice"}
+    assert "replaces version 3" in out["texts"][0]
+    restored = [s for s in out["sent"] if s["key"] == RESTORE]
+    assert restored and restored[0]["body"] == {"version": 3, "by": "voice"}
+    assert out["texts"][1] == 'Script version 3 of "Nobody opens the report" is back.'
+
+
+def test_undoing_a_rewrite_that_is_still_being_written_says_so():
+    out = run(
+        {
+            "steps": [
+                step("tce_write_script", topic="report", replace=True),
+                step("tce_undo"),
+            ],
+            "responses": {
+                "GET /editorial/voice/topic": FOUND,
+                PACKET: {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"status": "running", "replaces_version": 3},
+                },
+                RESTORE: {
+                    "ok": False,
+                    "status": 409,
+                    "data": {
+                        "detail": {
+                            "code": "still_writing",
+                            "message": "The new script is still being written.",
+                        }
+                    },
+                },
+            },
+        }
+    )
+    assert "still being written" in out["texts"][1]
+    assert json.loads(out["seen"][1])["data"]["ok"] is False

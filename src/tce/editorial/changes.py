@@ -656,7 +656,9 @@ async def _write_packet_version(
         facebook_post=values.get("facebook_post"),
         linkedin_post=values.get("linkedin_post"),
         interviewer_prompt=values.get("interviewer_prompt"),
-        hook_options=packet.hook_options,
+        # Only a script put back (restore_version) carries its own openings; every
+        # other change keeps the list of the version it was made on.
+        hook_options=values["hook_options"] if "hook_options" in values else packet.hook_options,
         selected_hook_id=values.get("selected_hook_id"),
         beats=values.get("beats"),
         citations_private=packet.citations_private,

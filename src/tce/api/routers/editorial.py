@@ -87,6 +87,15 @@ class HookChoiceRequest(BaseModel):
     hook_id: str = Field(min_length=1, max_length=80)
 
 
+class StartPacketRequest(BaseModel):
+    # A new script replaces the current one, and every edit made to it, when it
+    # finishes. False (the voice agent) refuses when a script exists, so he hears
+    # what would be replaced first; None (the workspace button, which says
+    # "Regenerate") keeps the old behaviour.
+    replace: bool | None = None
+    by: str | None = None
+
+
 def _parse_uuid(value: str, what: str = "id") -> uuid.UUID:
     try:
         return uuid.UUID(value)
@@ -465,9 +474,12 @@ async def _run_packet(
 async def start_packet(
     candidate_id: str,
     background: BackgroundTasks,
+    body: StartPacketRequest | None = None,
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
+    from tce.editorial.voice_agent import current_packet
+
     async with open_session(sm) as db:
         cand = await _get_candidate(db, ws, candidate_id)
         if cand.status in ("rejected", "withdrawn"):
@@ -475,6 +487,24 @@ async def start_packet(
         cid = cand.id
         if job_status.is_running(ws, "packet", str(cid)):
             raise HTTPException(status_code=409, detail="packet already being written")
+        existing = await current_packet(db, ws, cid)
+        if existing is not None and body is not None and body.replace is False:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "has_script",
+                    "message": (
+                        f'"{cand.title}" already has a script (version {existing.version}, '
+                        f"{existing.status}). A new one replaces it when it is written, "
+                        "together with any edits made to it meanwhile. Nothing was started."
+                    ),
+                    "version": existing.version,
+                    "status": existing.status,
+                    "packet_id": str(existing.id),
+                    "title": cand.title,
+                },
+            )
+        replaces_version = existing.version if existing is not None else None
         previous = await job_status.latest_packet_job(db, ws, cid)
     # An interrupted packet job (restart, timeout, capacity wait, written but unsaved) is
     # resumed; a finished or failed one is regenerated with a fresh job as before.
@@ -493,6 +523,9 @@ async def start_packet(
     return {
         "status": "running",
         "resumed": resume_job_id is not None,
+        # The version this one replaces when it is saved; it stays readable, and
+        # POST /editorial/candidates/{id}/script/restore puts it back.
+        "replaces_version": replaces_version,
         "candidate_id": str(cid),
         "status_url": f"/api/v1/editorial/candidates/{cid}/packet-status",
     }

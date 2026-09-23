@@ -160,6 +160,17 @@ export function register(server, call, { reply, failure, shortId }) {
     if (!result.ok) return { stop: failure(result, 'find that topic') };
     const d = result.data;
     if (d.status === 'found') return { topic: d.topic };
+    if (d.status === 'ambiguous' && d.candidates.length === 1) {
+      // A close match that is not a sure one: a write goes nowhere until he says so.
+      const [c] = d.candidates;
+      return {
+        stop: reply(
+          `The closest topic to "${topic}" is "${c.title}" (id ${c.short_id}), but not all of his words are in it. `
+            + 'Ask him if that is the one, then use its id.',
+          d,
+        ),
+      };
+    }
     if (d.status === 'ambiguous') {
       const names = d.candidates.map((c, n) => `${n + 1}. ${c.title} (id ${c.short_id})`);
       return {
@@ -588,6 +599,22 @@ export function register(server, call, { reply, failure, shortId }) {
         return reply(`Undone. "${entry.title}" is back where it was.`, result.data);
       }
 
+      if (entry.kind === 'script') {
+        // A rewrite he agreed to: the version it replaced is kept, and comes back
+        // as a new version (itself undoable by the change id this returns).
+        const result = await call('POST', `/editorial/candidates/${entry.candidate_id}/script/restore`, {
+          version: entry.replaced_version,
+          by: 'voice',
+        });
+        if (!result.ok) return spokenError(result, 'put the earlier script back');
+        entry.undone = true;
+        if (result.data?.change_set_id) {
+          remember({ kind: 'change', id: result.data.change_set_id, title: entry.title, summary: result.data.said });
+        }
+        save();
+        return reply(result.data.said, result.data);
+      }
+
       const result = await call('POST', `/editorial/change-sets/${entry.id}/undo`, { by: 'voice' });
       if (!result.ok) return spokenError(result, 'undo that change');
       entry.undone = true;
@@ -603,27 +630,54 @@ export function register(server, call, { reply, failure, shortId }) {
     'Start writing the script for a topic. Takes a few minutes on his PC worker; this returns at '
       + 'once. Tell him it has started; tce_jobs says when it is ready. If the topic already has a '
       + 'script (tce_topic says "Script version N"), writing a new one replaces the current script '
-      + 'when it finishes, together with any edits made to it meanwhile, and tce_undo cannot bring '
-      + 'the old one back. So first read that to him ("X already has a script, version N; a new one '
-      + 'replaces it and cannot be undone") and call this only after he says yes.',
+      + 'when it finishes, together with any edits made to it meanwhile. So this refuses and reads '
+      + 'that back unless replace is true: tell him ("X already has a script, version N; a new one '
+      + 'replaces it") and call again with replace true only after he says yes. tce_undo puts the '
+      + 'replaced version back once the new one is ready.',
     {
       type: 'object',
-      properties: { topic: { type: 'string', description: 'Id, short id, or words from the title.' } },
+      properties: {
+        topic: { type: 'string', description: 'Id, short id, or words from the title.' },
+        replace: {
+          type: 'boolean',
+          description: 'Only after he agreed to replace the script the topic already has.',
+        },
+      },
       required: ['topic'],
     },
-    async ({ topic }) => {
+    async ({ topic, replace }) => {
       const found = await resolve(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
-      const result = await call('POST', `/editorial/candidates/${t.candidate_id}/packet`);
-      const already = result.status === 409 && /already being written/.test(String(result.data?.detail || ''));
+      const hasScript = (version, status) => reply(
+        `"${t.title}" already has a script (version ${version}, ${status}). A new one replaces it `
+          + 'when it is written, together with any edits made to it meanwhile. Nothing was started. '
+          + 'Ask him if he wants it rewritten; if he says yes, call tce_write_script again with replace true.',
+        { ok: false, code: 'has_script', version, candidate_id: t.candidate_id },
+      );
+      if (t.script && !replace) return hasScript(t.script.version, t.script.status);
+      const result = await call('POST', `/editorial/candidates/${t.candidate_id}/packet`, {
+        replace: Boolean(replace),
+        by: 'voice',
+      });
+      const detail = result.data?.detail;
+      if (result.status === 409 && detail?.code === 'has_script') return hasScript(detail.version, detail.status);
+      const already = result.status === 409 && /already being written/.test(String(detail || ''));
       if (!result.ok && !already) return spokenError(result, 'start the script');
-      track({ kind: 'script', title: t.title, candidate_id: t.candidate_id });
+      const replaces = already ? null : result.data?.replaces_version ?? null;
+      track({
+        kind: 'script', title: t.title, candidate_id: t.candidate_id, replaces_version: replaces,
+      });
+      if (Number.isInteger(replaces)) {
+        // Undoable like any other change of this call: tce_undo puts it back.
+        remember({ kind: 'script', title: t.title, candidate_id: t.candidate_id, replaced_version: replaces });
+      }
+      const when = Number.isInteger(replaces) ? ` When it is ready it replaces version ${replaces}.` : '';
       return reply(
         already
           ? `The script for "${t.title}" is already being written. I will say when it is ready.`
-          : `Started the script for "${t.title}". It takes a few minutes; I will say when it is ready.`,
-        { started: !already, candidate_id: t.candidate_id },
+          : `Started ${replaces ? 'a new script' : 'the script'} for "${t.title}". It takes a few minutes; I will say when it is ready.${when}`,
+        { started: !already, candidate_id: t.candidate_id, replaces_version: replaces },
       );
     },
   );
@@ -737,7 +791,10 @@ export function register(server, call, { reply, failure, shortId }) {
       if (!shown.length) return reply('Nothing new has finished yet.', { jobs });
       const lines = shown.map((r) => {
         const base = `${JOB_WORDS[r.job.kind]} for "${r.job.title}" ${r.said}.`;
-        return r.summary ? `${base} ${r.summary}` : base;
+        const replaced = r.state === 'done' && Number.isInteger(r.job.replaces_version)
+          ? ` It replaced version ${r.job.replaces_version}; tce_undo puts that one back.`
+          : '';
+        return r.summary ? `${base}${replaced} ${r.summary}` : `${base}${replaced}`;
       });
       return reply(lines.join('\n'), { jobs });
     },

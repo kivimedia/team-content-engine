@@ -186,6 +186,30 @@ async def restore_topic(
             raise _http(error) from error
 
 
+class RestoreScriptRequest(BaseModel):
+    version: int = Field(ge=1)
+    by: str = "voice"
+
+
+@router.post("/candidates/{candidate_id}/script/restore")
+async def restore_script(
+    candidate_id: str,
+    body: RestoreScriptRequest,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Put back a script version a rewrite replaced. Undo it with /change-sets/{id}/undo."""
+    cid = _uuid(candidate_id, "topic")
+    async with open_session(sm) as db:
+        try:
+            result = await voice_agent.restore_script_version(db, ws, cid, body.version, by=body.by)
+            await db.commit()
+            return result
+        except ServiceError as error:
+            await db.rollback()
+            raise _http(error) from error
+
+
 # ---------------------------------------------------------------- research
 
 
