@@ -94,10 +94,12 @@ def test_resilience_never_falls_back_to_another_model():
 
 
 def test_is_policy_model():
-    assert provider_mod.is_policy_model("claude-opus-5")
-    assert provider_mod.is_policy_model("claude-opus-5[1m]")
-    assert provider_mod.is_policy_model("claude-opus-5-20260601")
-    assert not provider_mod.is_policy_model("claude-opus-5-mini")
+    # Background writing moved to Opus 5.5 on 24-Sep (Ziv: "upgrade to 5.5").
+    assert provider_mod.is_policy_model("claude-opus-5-5")
+    assert provider_mod.is_policy_model("claude-opus-5-5[1m]")
+    assert provider_mod.is_policy_model("claude-opus-5-5-20260901")
+    assert not provider_mod.is_policy_model("claude-opus-5")
+    assert not provider_mod.is_policy_model("claude-opus-5-5-mini")
     assert not provider_mod.is_policy_model("claude-sonnet-5")
     assert not provider_mod.is_policy_model(None)
 

@@ -23,7 +23,7 @@ import structlog
 
 logger = structlog.get_logger()
 
-POLICY_MODEL = "claude-opus-5"
+POLICY_MODEL = "claude-opus-5-5"
 ACCEPTED_PROVIDER = "subscription"
 
 
