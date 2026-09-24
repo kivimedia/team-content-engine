@@ -252,6 +252,7 @@ async def render_edit(
     on_status: StatusCallback,
     ass_text: str | None = None,
     srt_text: str | None = None,
+    overlays: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Cut the kept ranges into `out_path` (MP4 when captions are given).
 
@@ -268,7 +269,7 @@ async def render_edit(
     out = Path(out_path).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     audio_only = src.suffix.lower() in AUDIO_EXTS
-    captioned = ass_text is not None or srt_text is not None
+    captioned = ass_text is not None or srt_text is not None or bool(overlays)
     parts: list[str] = []
     labels: list[str] = []
     n = len(keep)
@@ -301,6 +302,16 @@ async def render_edit(
             # Relative name + cwd: no drive-letter colons to escape inside the filtergraph.
             parts.append(f"{video}ass=filename={burn.name}[capv]")
             video = "[capv]"
+        if video is not None and overlays:
+            # Pill captions: each line is a still PNG shown between its times.
+            for k, item in enumerate(overlays):
+                index = inputs.count("-i")
+                inputs += ["-i", str(Path(item["path"]).resolve())]
+                parts.append(
+                    f"{video}[{index}:v]overlay=x={int(item['x'])}:y={int(item['y'])}:"
+                    f"enable='between(t,{item['start']:.3f},{item['end']:.3f})'[pill{k}]"
+                )
+                video = f"[pill{k}]"
         if video is not None:
             maps += ["-map", video]
         maps += ["-map", "[outa]"]

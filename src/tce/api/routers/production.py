@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import shutil
 import socket
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -48,7 +49,7 @@ from tce.models.editorial import (
 )
 from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingClip, RecordingSession
-from tce.production import media
+from tce.production import media, pills
 from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
 from tce.production.retakes import (
@@ -853,6 +854,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         async with session_factory()() as s:
             row = await _load(s, upload_id, ws)
             src, plan, duration = Path(row.storage_path), dict(row.edit_plan or {}), row.duration_s
+            words = list(row.transcript or [])
         if mode == "uncut":
             if not duration:
                 duration = await media.probe_duration(src)
@@ -865,14 +867,25 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             raise RuntimeError("could not read the video frame size with ffprobe")
         srt_text = to_srt(cues)
         out = src.with_name(f"{src.stem}-edited.mp4")
-        await media.render_edit(
-            src,
-            keep,
-            out,
-            on_status=report,
-            ass_text=to_ass(cues, *size),
-            srt_text=srt_text,
-        )
+        # His walking-video look (orange/cyan pills) when every word has its own
+        # timing and can be drawn in Outfit; the plain captions otherwise.
+        pill_dir = src.with_name(f".{src.stem}-pills")
+        overlays = None
+        if not audio_only and pills.usable(words):
+            await report("Drawing the orange and cyan caption pills")
+            overlays = pills.overlays(pills.phrases(words, keep), size[0], size[1], pill_dir)
+        try:
+            await media.render_edit(
+                src,
+                keep,
+                out,
+                on_status=report,
+                ass_text=None if overlays else to_ass(cues, *size),
+                srt_text=srt_text,
+                overlays=overlays,
+            )
+        finally:
+            shutil.rmtree(pill_dir, ignore_errors=True)
         srt = src.with_name(f"{src.stem}-edited.srt")
         srt.write_text(srt_text, encoding="utf-8")
         src.with_name(f"{src.stem}-edited.vtt").write_text(to_vtt(cues), encoding="utf-8")
