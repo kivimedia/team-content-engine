@@ -347,6 +347,18 @@ async def _week_ids(db: AsyncSession, ws: uuid.UUID) -> set[str]:
     return {str(i.candidate_id) for i in await lineup_service.list_items(db, ws, lineup.id)}
 
 
+async def chosen_and_listed(
+    db: AsyncSession, ws: uuid.UUID, candidate_id: uuid.UUID, decision: str | None
+) -> bool:
+    """Chosen for this week and on this week's list, whatever its status says.
+
+    Choosing does not move the status, so the engine can withdraw an idea he chose
+    (a re-run of the week's selection, a stale news idea, the Archive button) while
+    it stays on the list. Such an idea is not put away yet: a put-away takes it off.
+    """
+    return decision == "this_week" and str(candidate_id) in await _week_ids(db, ws)
+
+
 async def find_topics(
     db: AsyncSession, ws: uuid.UUID, query: str, *, strict: bool = False
 ) -> dict[str, Any]:
@@ -1521,14 +1533,18 @@ async def record_decision_change(
 
     `status` is {"before", "after"} when the write changed the topic's own status
     with no decision to take back (a restore of an idea the engine withdrew); it
-    is a change like any other, so it gets a row too.
+    is a change like any other, so it gets a row too. It may also be the same
+    status twice (a put-away of an idea the engine had withdrawn already): not a
+    change by itself, but kept on the row, so the undo gives that status back
+    rather than the one deciding again infers.
     """
     week = week or {}
     before, after = _no_decision(before), _no_decision(after)
     added = bool(week.get("added"))
     removed = week.get("removed")
-    status = dict(status) if status and status.get("before") != status.get("after") else None
-    if before == after and not added and not removed and not status:
+    status = dict(status) if status else None
+    moved = status is not None and status.get("before") != status.get("after")
+    if before == after and not added and not removed and not moved:
         return None
     last = (
         await db.execute(
@@ -1801,10 +1817,13 @@ async def undo_decision(
         )
 
     status = entry.candidate_status or {}
+    # The write brought back an idea the engine withdrew. A row may also keep the
+    # same status twice (a put-away of an idea already withdrawn), which is not that.
+    brought_back = status.get("before") == WITHDRAWN and status.get("after") != WITHDRAWN
     if status and candidate.status != status.get("after"):
         # Moved on since without a decision (recorded, scripted, or withdrawn
         # again by the engine): setting its status back now would lose that.
-        since = "it was brought back" if status.get("before") == WITHDRAWN else "that decision"
+        since = "it was brought back" if brought_back else "that decision"
         raise VoiceError(
             "changed",
             f'"{title}" has moved on since {since} (its status is now '
@@ -1886,8 +1905,12 @@ async def undo_decision(
     # engine withdrew brought it back; a put-away withdrew a selected idea):
     # the status it had comes back with the decision, not the one decide() infers.
     withdrawn_again = False
+    still_withdrawn = False
     if status.get("before"):
-        withdrawn_again = status["before"] == WITHDRAWN and candidate.status != WITHDRAWN
+        withdrawn_again = brought_back and candidate.status != WITHDRAWN
+        # A put-away of an idea the engine had withdrawn while it was chosen and
+        # listed: it comes back to the list withdrawn, as it was.
+        still_withdrawn = not brought_back and status["before"] == WITHDRAWN
         candidate.status = status["before"]
     entry.undone_at = _now()
     entry.undone_by = actor
@@ -1909,6 +1932,8 @@ async def undo_decision(
         )
     if withdrawn_again:
         said += " It is put away again (withdrawn, as it was before it was brought back)."
+    elif still_withdrawn:
+        said += " It is still withdrawn by the engine, as it was before."
     return {
         **base,
         "already": False,

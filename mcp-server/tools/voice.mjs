@@ -180,6 +180,17 @@ export function idText(raw) {
     .replace(/^[\s()[\]"'.]+|[\s()[\]"'.]+$/g, '');
 }
 
+/*
+ * Put away as he means it: withdrawn, and not still chosen for this week and on
+ * its list. Choosing an idea does not move its status, so the engine can withdraw
+ * one he chose (a re-run of the week's selection, a stale news idea, the Archive
+ * button) while it stays on this week's list; that one can still be put away,
+ * which takes it off the list. The decide route draws the same line.
+ */
+function isAway(t) {
+  return Boolean(t.put_away) && !(t.in_this_week && t.decision === 'this_week');
+}
+
 export function register(server, call, { reply, failure, shortId }) {
   const ledgerFile = ledgerPath();
   const ledger = loadLedger(ledgerFile);
@@ -421,7 +432,7 @@ export function register(server, call, { reply, failure, shortId }) {
       if (found.stop) return found.stop;
       const t = found.topic;
       const lines = [`${t.title} (id ${t.short_id})`];
-      const state = t.put_away ? 'Put away.'
+      const state = isAway(t) ? 'Put away.'
         : t.in_this_week ? 'In this week.'
         : t.decision ? `Decision: ${t.decision.replace('_', ' ')}.` : 'Not decided yet.';
       lines.push(state);
@@ -561,7 +572,7 @@ export function register(server, call, { reply, failure, shortId }) {
       const found = await byId(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
-      if (t.put_away) return reply(`"${t.title}" is already put away.`, { candidate_id: t.candidate_id });
+      if (isAway(t)) return reply(`"${t.title}" is already put away.`, { candidate_id: t.candidate_id });
       const result = await call('POST', `/editorial/topics/${t.candidate_id}/decide`, { decision: 'away', by: 'voice' });
       if (!result.ok) return spokenError(result, 'put that idea away');
       const change = rememberDecision(t, 'away', result.data);

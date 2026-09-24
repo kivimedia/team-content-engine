@@ -1405,6 +1405,79 @@ async def test_undoing_a_voice_put_away_gives_back_the_status_it_had(
     assert await decision_of(editorial_sessionmaker, cid) is None
 
 
+async def chosen_listed_then_withdrawn(client, sm, ws):
+    """Three chosen for this week on his phone; the engine then withdrew the one at place 2.
+
+    Choosing does not move the status, so the engine can still withdraw it (a re-run
+    of the week's selection, a stale news idea, the dashboard Archive button), and it
+    stays on this week's list, chosen for this week.
+    """
+    ids = [
+        await add_candidate(sm, ws, title)
+        for title in ("Receptionist at night", "Invoices nobody opens", "Funnel leaks")
+    ]
+    for cid in ids:
+        assert (await decide(client, ws, cid, "this_week")).status_code == 200
+    assert await week_ids(client, ws) == [str(c) for c in ids]
+    await set_status(sm, ids[1], "withdrawn")
+    return ids
+
+
+async def test_voice_away_on_a_withdrawn_idea_still_chosen_and_listed_takes_it_off_undoably(
+    client, editorial_sessionmaker
+):
+    """RP11: not "already put away"; off the list with a change id, and undo puts it back
+    at place 2, withdrawn and chosen for this week as it was."""
+    ws = uuid.uuid4()
+    ids = await chosen_listed_then_withdrawn(client, editorial_sessionmaker, ws)
+    cid = ids[1]
+
+    away = await decide(client, ws, cid, "away", by="voice")
+    assert away.status_code == 200, away.text
+    body = away.json()
+    assert body["change_id"], "it came off the list, so the call can take that back"
+    assert body["decision"] == "away"
+    assert body["removed_from_week"]["rank"] == 2
+    assert await week_ids(client, ws) == [str(ids[0]), str(ids[2])]
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+    assert await decision_of(editorial_sessionmaker, cid) == "away"
+
+    undone = await undo_decision(client, ws, cid, body["change_id"])
+    assert undone.status_code == 200, undone.text
+    assert await week_ids(client, ws) == [str(c) for c in ids]
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+    assert await decision_of(editorial_sessionmaker, cid) == "this_week"
+    said = undone.json()["said"]
+    assert "place 2" in said
+    assert "brought back" not in said, "it was never brought back, so it is not put away again"
+
+
+async def test_voice_away_on_a_withdrawn_idea_chosen_for_a_week_it_is_not_listed_in_is_already_away(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """Chosen for last week, not on this week's list, withdrawn: away already, nothing written."""
+    from datetime import timedelta
+
+    from tce.editorial import common as common_service
+    from tce.editorial import lineup as lineup_service
+
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Invoices nobody opens")
+    first = common_service.current_week_start()
+    monkeypatch.setattr(lineup_service, "current_week_start", lambda today=None: first)
+    assert (await decide(client, ws, cid, "this_week")).status_code == 200
+    await set_status(editorial_sessionmaker, cid, "withdrawn")
+    monkeypatch.setattr(
+        lineup_service, "current_week_start", lambda today=None: first + timedelta(days=7)
+    )
+
+    away = await decide(client, ws, cid, "away", by="voice")
+    assert away.status_code == 409, away.text
+    assert away.json()["detail"]["code"] == "already"
+    assert await decision_of(editorial_sessionmaker, cid) == "this_week"
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+
+
 # ------------------------- a round trip through undo keeps the place in the week
 
 

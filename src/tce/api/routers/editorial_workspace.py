@@ -241,6 +241,12 @@ async def decide_topic(
     the write's row too, so undo withdraws it again, and a write whose only
     change was bringing it back ("later" on an idea already saved for later) is
     a change with its own id, `brought_back` true.
+
+    A voice put-away of an idea the engine withdrew is "already put away" (409,
+    nothing written) unless he chose it for this week and it is still on this
+    week's list. Then it comes off the list, and its row keeps the status
+    ("withdrawn" before and after), so undo puts it back at its place, withdrawn
+    and chosen as it was.
     """
     if body.by not in ACTORS:
         raise HTTPException(status_code=400, detail=f"unknown actor {body.by}")
@@ -257,12 +263,21 @@ async def decide_topic(
                 if (
                     body.by == "voice"
                     and body.decision == "away"
-                    and (before == "away" or status_before == voice_agent.WITHDRAWN)
+                    and (
+                        before == "away"
+                        or (
+                            status_before == voice_agent.WITHDRAWN
+                            and not await voice_agent.chosen_and_listed(db, ws, cid, before)
+                        )
+                    )
                 ):
                     # Undoing it would bring back an idea that was away before
                     # the call, so a put-away that changes nothing is not a
                     # write. An idea the engine withdrew is away already too,
-                    # whatever decision it still carries.
+                    # unless he chose it for this week and it is still on this
+                    # week's list: choosing does not move the status, so the
+                    # engine can withdraw it there, and putting it away then
+                    # takes it off the list.
                     raise inbox_service.InboxError(
                         "already",
                         f'"{candidate.title}" is already put away. Nothing was changed.',
@@ -273,12 +288,18 @@ async def decide_topic(
                 )
             week = await lineup_service.follow_decision(db, ws, candidate, decision, by=body.by)
             after = decision.decision if decision is not None else None
-            status = (
-                {"before": status_before, "after": candidate.status}
-                if candidate.status != status_before
-                else None
-            )
-            brought_back = status is not None and status_before == voice_agent.WITHDRAWN
+            moved = candidate.status != status_before
+            if moved:
+                status = {"before": status_before, "after": candidate.status}
+            elif status_before == voice_agent.WITHDRAWN and after == "away":
+                # Put away while the engine had it withdrawn already (chosen and
+                # still on this week's list): the status did not move, but the
+                # undo must give back "withdrawn", not the "proposed" that
+                # deciding again infers, so the row keeps it.
+                status = {"before": status_before, "after": candidate.status}
+            else:
+                status = None
+            brought_back = moved and status_before == voice_agent.WITHDRAWN
             only_brought_back = (
                 brought_back and before == after and not week["added"] and not week["removed"]
             )

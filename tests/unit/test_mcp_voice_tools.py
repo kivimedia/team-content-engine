@@ -566,6 +566,49 @@ def test_put_away_then_undo_brings_it_back_by_its_change_id():
     assert out["sent"][-1]["body"] == {"change_id": away, "by": "voice"}
 
 
+def test_an_idea_the_engine_withdrew_that_is_still_chosen_and_listed_is_not_already_away():
+    """RP11: withdrawn, but still chosen for this week and on its list. The read says it is
+    in this week, and a put-away is sent, not answered "already put away"."""
+    withdrawn_listed = {
+        **TOPIC,
+        "status": "withdrawn",
+        "put_away": True,
+        "in_this_week": True,
+        "decision": "this_week",
+    }
+    away = "cccccccc-0000-0000-0000-000000000000"
+    out = run(
+        {
+            "steps": [step("tce_topic", topic=SID), step("tce_put_away", topic=SID)],
+            "responses": {
+                "GET /editorial/voice/topic": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"status": "found", "topic": withdrawn_listed},
+                },
+                "POST /editorial/topics/" + CID + "/decide": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "decision": "away",
+                        "previous_decision": "this_week",
+                        "changed": True,
+                        "change_id": away,
+                        "removed_from_week": {"slot": "primary", "rank": 2},
+                    },
+                },
+            },
+        }
+    )
+    assert "In this week." in out["texts"][0]
+    assert "Put away." not in out["texts"][0]
+    assert "already" not in out["texts"][1]
+    assert out["texts"][1].startswith('Put away: "Nobody opens the report".')
+    assert f"(change {away[:8]})" in out["texts"][1]
+    assert out["sent"][-1]["key"] == f"POST /editorial/topics/{CID}/decide"
+    assert out["sent"][-1]["body"] == {"decision": "away", "by": "voice"}
+
+
 def test_restore_idea_says_where_it_went():
     out = run(
         {
@@ -1031,7 +1074,16 @@ def test_every_reply_the_model_sees_carries_the_spoken_words():
                     {
                         "ok": True,
                         "status": 200,
-                        "data": {"status": "found", "topic": {**TOPIC, "put_away": True}},
+                        # A put-away idea: away, and off this week's list.
+                        "data": {
+                            "status": "found",
+                            "topic": {
+                                **TOPIC,
+                                "put_away": True,
+                                "in_this_week": False,
+                                "decision": "away",
+                            },
+                        },
                     },
                     {
                         "ok": True,
@@ -1756,6 +1808,15 @@ async def live_status(world, cid):
         return (await s.get(TopicCandidate, uuid.UUID(cid))).status
 
 
+async def live_set_status(world, cid, status):
+    """What the engine does on its own (a selection re-run, a stale news idea, Archive)."""
+    from tce.models.editorial import TopicCandidate
+
+    async with world.sm() as s:
+        (await s.get(TopicCandidate, uuid.UUID(cid))).status = status
+        await s.commit()
+
+
 async def test_live_restoring_a_superseded_idea_is_undone_by_its_id(live):
     cid = await live_superseded(live, "Invoices nobody opens")
     said, data = await live.tool("tce_restore_idea", topic=cid[:8])
@@ -1892,6 +1953,48 @@ async def test_live_away_on_a_superseded_idea_is_already_put_away(live):
     undone, _ = await live.tool("tce_undo")
     assert await live_status(live, cid) == "withdrawn", undone
     assert approved not in await live_week(live), "the plain undo reached the approval"
+
+
+@pytest.mark.parametrize(
+    ("tool", "extra"), [("tce_put_away", {}), ("tce_decide", {"decision": "away"})]
+)
+async def test_live_away_on_a_withdrawn_idea_still_in_the_week_then_undo_puts_it_back(
+    live, tool, extra
+):
+    """RP11 through the real voice call: chosen for this week at place 2, withdrawn by the
+    engine (it stays on the list), then put away by voice. It comes off the list with a
+    change id, and the plain undo puts it back at place 2, withdrawn and chosen as before."""
+    ids = [
+        await live_topic(live, title)
+        for title in ("Receptionist at night", "Invoices nobody opens", "Funnel leaks")
+    ]
+    for chosen in ids:  # on his phone
+        r = await live.http.post(
+            f"/api/v1/editorial/topics/{chosen}/decide",
+            json={"decision": "this_week", "by": "ziv"},
+        )
+        assert r.status_code == 200, r.text
+    cid = ids[1]
+    await live_set_status(live, cid, "withdrawn")
+    assert await live_week(live) == ids, "withdrawn, and still on this week's list"
+
+    read, _ = await live.tool("tce_topic", topic=cid[:8])
+    assert "In this week." in read and "Put away." not in read
+
+    said, data = await live.tool(tool, topic=cid[:8], **extra)
+    assert data.get("change_id"), said
+    assert "already" not in said
+    assert f"(change {data['change_id'][:8]})" in said
+    assert await live_week(live) == [ids[0], ids[2]]
+    assert await live_status(live, cid) == "withdrawn"
+    assert await live_decision(live, cid) == "away"
+
+    undone, _ = await live.tool("tce_undo")
+    assert await live_week(live) == ids, undone
+    assert await live_status(live, cid) == "withdrawn"
+    assert await live_decision(live, cid) == "this_week"
+    assert "place 2" in undone
+    assert "brought back" not in undone
 
 
 async def test_live_words_find_candidates_to_read_back_and_only_an_id_writes(live):
