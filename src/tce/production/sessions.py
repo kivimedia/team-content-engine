@@ -335,6 +335,7 @@ async def finalize_session(
     ).scalar_one_or_none()
     if recording is None:
         raise RecordingSessionError("recording session not found")
+    previous: RecordingUpload | None = None
     if recording.canonical_upload_id:
         upload = (
             await db.execute(
@@ -344,7 +345,20 @@ async def finalize_session(
                 )
             )
         ).scalar_one()
-        return recording, upload
+        # Finishing again with the same clips is the same video. With MORE clips it
+        # is a rebuild: on 24-Sep Finish landed while the 338 s walk clip was still
+        # sending its last pieces, the video was built from the 3 s clip alone, and
+        # the second Finish handed that 2.9 s video back because this was locked.
+        same = not selected_clip_ids or {str(v) for v in selected_clip_ids} == set(
+            recording.selected_clip_ids or []
+        )
+        if same:
+            return recording, upload
+        if upload.status != "uploaded":
+            raise RecordingSessionError(
+                "this take set's video is already being edited, so it cannot be rebuilt"
+            )
+        previous = upload
     if not selected_clip_ids:
         raise RecordingSessionError("select at least one clip")
     clips = list(
@@ -365,7 +379,9 @@ async def finalize_session(
         raise RecordingSessionError("every selected clip must be ready in this session")
     ordered = [by_id[clip_id] for clip_id in selected_clip_ids]
     recording.status = "finalizing"
-    output = root / str(workspace_id) / str(recording.id) / "canonical.mp4"
+    # A rebuild never writes over the file the old video row still points at.
+    name = "canonical.mp4" if previous is None else f"canonical-{uuid.uuid4().hex[:8]}.mp4"
+    output = root / str(workspace_id) / str(recording.id) / name
     proof = await assembler([Path(clip.assembled_path or "") for clip in ordered], output)
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
     upload = RecordingUpload(
@@ -380,6 +396,12 @@ async def finalize_session(
         status="uploaded",
         status_detail="assembled from selected session clips; source clips retained",
     )
+    if previous is not None:
+        previous.status = "superseded"
+        previous.status_detail = (
+            f"Superseded when the take set was rebuilt with {len(ordered)} clips "
+            f"at {utcnow():%Y-%m-%d %H:%M} UTC; kept for history"
+        )
     db.add(upload)
     await db.flush()
     recording.selected_clip_ids = [str(value) for value in selected_clip_ids]

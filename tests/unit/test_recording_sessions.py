@@ -152,3 +152,63 @@ async def test_finalize_clip_requires_audio_and_preserves_source_chunks(
     )
     assert ready.status == "ready" and ready.active_duration_s == 1.7
     assert list((tmp_path / str(ws) / str(recording.id) / str(clip.id)).glob("*.part"))
+
+
+async def uploading_clip(db, ws, recording, local_id, root):
+    clip = await sessions.create_clip(db, ws, recording.id, local_id, "video/webm", "webm")
+    body = f"synthetic-{local_id}".encode()
+    await sessions.store_chunk(db, ws, clip.id, 0, body, hashlib.sha256(body).hexdigest(), root)
+    return clip
+
+
+async def make_ready(db, ws, clip, seconds, root):
+    async def valid(_path):
+        return {"has_audio": True, "has_video": True, "duration_s": seconds}
+
+    return await sessions.finalize_clip(
+        db, ws, clip.id, root, active_duration_s=seconds, prober=valid
+    )
+
+
+async def ready_clip(db, ws, recording, local_id, seconds, root):
+    clip = await uploading_clip(db, ws, recording, local_id, root)
+    return await make_ready(db, ws, clip, seconds, root)
+
+
+async def test_a_clip_that_became_ready_after_finish_is_not_lost(editorial_session, tmp_path):
+    """24-Sep walk: Finish was pressed while the 338 s clip was still uploading its
+    last pieces, so the session was built from the 3 s clip alone, and the second
+    Finish handed back that 2.9 s video because a finished session was locked."""
+    ws = uuid.uuid4()
+    candidate, packet = await packet_fixture(editorial_session, ws)
+    recording = await sessions.create_session(editorial_session, ws, candidate.id, packet.id)
+    short = await ready_clip(editorial_session, ws, recording, "short", 3.0, tmp_path)
+    # The long clip exists and is still sending its last pieces when Finish lands.
+    long = await uploading_clip(editorial_session, ws, recording, "long", tmp_path)
+
+    async def joined(paths, output):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"|".join(p.name.encode() for p in paths) + str(len(paths)).encode())
+        return {"duration_s": 3.0 * len(paths)}
+
+    _, first = await sessions.finalize_session(
+        editorial_session, ws, recording.id, [short.id], tmp_path, assembler=joined
+    )
+    first_bytes = open(first.storage_path, "rb").read()
+    long = await make_ready(editorial_session, ws, long, 338.0, tmp_path)
+
+    again, second = await sessions.finalize_session(
+        editorial_session, ws, recording.id, [short.id, long.id], tmp_path, assembler=joined
+    )
+
+    assert second.id != first.id, "the rebuilt session must be a new video, not the old one"
+    assert again.canonical_upload_id == second.id
+    assert again.active_duration_s == 341.0
+    assert first.status == "superseded", "the short-only video must leave the Library"
+    assert open(first.storage_path, "rb").read() == first_bytes, "the old file is kept, untouched"
+    assert second.storage_path != first.storage_path
+    # The same selection a third time is the same video, not a third build.
+    _, third = await sessions.finalize_session(
+        editorial_session, ws, recording.id, [short.id, long.id], tmp_path, assembler=joined
+    )
+    assert third.id == second.id

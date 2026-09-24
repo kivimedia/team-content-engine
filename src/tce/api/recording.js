@@ -79,6 +79,9 @@ function packetToIdea(idea, packet) {
     wakeLock: null, pendingIdea: null, textSize: 1,
     sessionPending: null, sessionPendingFor: null,
     rawStream: null, cameraReport: null,
+    // Clips that were stopped and are still sending their last pieces. Finish
+    // waits for every one of them before it builds the video.
+    finalizing: new Set(), cameraSource: null,
   };
   const supportedMime = [
     "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
@@ -328,22 +331,81 @@ function packetToIdea(idea, packet) {
     return line;
   }
 
+  /* THE POINT NUMBERS PAGE (24-Sep): "if there are more than 5 the sixth one is
+     an arrow for the next batch of points and if I click it the top number
+     changes to up button". The column holds as many round buttons as fit its
+     height, six at most: page one is 1..5 then a down arrow; later pages start
+     with an up arrow. A short column (split screen) simply pages sooner rather
+     than cutting buttons off. */
+  const BEAT_SLOT = 52; // a 42px button plus its gap
+  function beatSlots(rail) {
+    const room = rail.clientHeight - 28;
+    // n buttons take n slots less one gap.
+    const fit = room > 0 ? Math.floor((room + 10) / BEAT_SLOT) : 6;
+    // Under three there is no room for an arrow, a number and an arrow: a very
+    // short split-screen half just scrolls its numbers (the column clips, so
+    // nothing ever paints over the bar above it).
+    return fit < 3 ? 0 : Math.min(6, fit);
+  }
+  function beatPages(count, slots) {
+    if (slots < 3) return [{ start: 0, end: count, up: false, down: false }];
+    // Five numbers at most, as asked; a sixth point turns the sixth slot into an arrow.
+    if (count <= Math.min(slots, 5)) return [{ start: 0, end: count, up: false, down: false }];
+    const pages = [];
+    let start = 0;
+    while (start < count) {
+      const first = pages.length === 0;
+      const room = first ? slots - 1 : slots - 1;
+      const left = count - start;
+      if (!first && left <= room) {
+        pages.push({ start, end: count, up: true, down: false });
+        break;
+      }
+      const numbers = first ? slots - 1 : slots - 2;
+      pages.push({ start, end: start + numbers, up: !first, down: true });
+      start += numbers;
+    }
+    return pages;
+  }
+  function arrowButton(label, direction) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "beat-button beat-arrow";
+    button.setAttribute("aria-label", direction > 0 ? "Next points" : "Earlier points");
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      state.beatPage = Math.max(0, (state.beatPage || 0) + direction);
+      renderBeats();
+    });
+    return button;
+  }
   function renderBeats() {
     const rail = $("beatRail");
+    const beats = state.idea ? (state.idea.beats || []) : [];
+    const pages = beatPages(beats.length, beatSlots(rail));
+    state.beatPage = Math.min(state.beatPage || 0, pages.length - 1);
+    const page = pages[state.beatPage];
     rail.replaceChildren();
-    (state.idea.beats || []).forEach((beat, index) => {
+    if (page.up) rail.appendChild(arrowButton("\u2191", -1));
+    for (let index = page.start; index < page.end; index += 1) {
+      const beat = beats[index];
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "beat-button";
+      button.className = "beat-button" + (index === state.currentBeat ? " is-current" : "");
+      button.dataset.beat = String(index);
       button.textContent = index + 1;
       button.title = beat.label;
       button.addEventListener("click", () => jumpToBeat(beat, index));
       rail.appendChild(button);
-    });
+    }
+    if (page.down) rail.appendChild(arrowButton("\u2193", 1));
   }
 
   function jumpToBeat(beat, index) {
-    [...$("beatRail").children].forEach((button, i) => button.classList.toggle("is-current", i === index));
+    state.currentBeat = index;
+    [...$("beatRail").querySelectorAll("[data-beat]")].forEach((button) => {
+      button.classList.toggle("is-current", Number(button.dataset.beat) === index);
+    });
     const target = state.mode === "points" ? beat.bullet_index : Math.max(0, Number(beat.start_phrase_id?.slice(1)) - 1);
     const line = $(`${state.mode}-${target}`);
     if (line) {
@@ -653,6 +715,9 @@ function packetToIdea(idea, packet) {
     $("bigIdea").textContent = idea.big_idea;
     $("hookChooser").hidden = true;
     renderHookPanel(idea, lockNote);
+    // A different idea starts its numbers from the first page, nothing marked.
+    state.beatPage = 0;
+    state.currentBeat = null;
     renderBeats();
     setMode("points");
     updateSessionLabels();
@@ -676,8 +741,37 @@ function packetToIdea(idea, packet) {
     openIdea(idea);
   }
 
-  async function ensureMedia() {
-    if (state.stream?.active) return state.stream;
+  /* "a few times today the video turned black and I had to re run it" (24-Sep).
+     Android switches the camera off when the screen locks, another app takes it,
+     or a call comes in. The 9:16 crop records a canvas, and a canvas stream never
+     ends on its own, so `state.stream.active` stayed true over a dead camera: the
+     studio never reopened it and only a reload brought the picture back. What
+     counts is the CAMERA's own track. */
+  function cameraLive() {
+    return Boolean(state.rawStream?.getVideoTracks().some((track) => track.readyState === "live"));
+  }
+
+  function releaseMedia() {
+    state.portraitStopped = true;
+    cancelAnimationFrame(state.portraitFrame);
+    [state.rawStream, state.stream].forEach((stream) => stream?.getTracks().forEach((track) => track.stop()));
+    state.rawStream = null;
+    state.stream = null;
+    state.cameraSource = null;
+  }
+
+  // One opening at a time: Record pressed while the camera is coming back waits
+  // for that reopen instead of asking Android for a second camera it refuses.
+  function ensureMedia() {
+    if (state.stream?.active && cameraLive()) return Promise.resolve(state.stream);
+    if (!state.mediaPending) {
+      state.mediaPending = openMedia().finally(() => { state.mediaPending = null; });
+    }
+    return state.mediaPending;
+  }
+
+  async function openMedia() {
+    if (state.stream) releaseMedia();
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !supportedMime) {
       throw new Error("This browser cannot record camera video with audio.");
     }
@@ -685,10 +779,51 @@ function packetToIdea(idea, packet) {
     state.rawStream = camera.stream;
     if (!state.rawStream.getAudioTracks().some((track) => track.enabled)) throw new Error("The recording has no active microphone track.");
     state.stream = portraitStream(camera);
+    state.cameraSource = camera.element;
+    state.rawStream.getVideoTracks().forEach((track) => {
+      track.addEventListener("ended", () => { if (state.rawStream === camera.stream) cameraLost(); });
+    });
     $("camera").srcObject = state.stream;
     await $("camera").play();
     $("cameraEmpty").hidden = true;
     return state.stream;
+  }
+
+  /* The camera died under the studio. Anything being recorded is kept as its
+     own clip (a recorder cannot switch cameras mid-file, and recording on would
+     only record black), and the picture comes back by itself - now if the page
+     is on screen, else the moment he returns to it. */
+  function cameraSending() {
+    return Boolean(state.rawStream?.getVideoTracks().some((track) => track.readyState === "live" && !track.muted));
+  }
+
+  let reopening = null;
+  async function cameraLost({ force = false } = {}) {
+    if (state.recorder && state.recorder.state !== "inactive" && !state.finalizing.size) {
+      // Stopped on the phone now; its pieces keep uploading, and Finish waits for them.
+      await finishClip({ waitForServer: false }).catch(() => {});
+      showNotice("The phone switched the camera off. What you recorded is kept - press Record to go on.", 8000);
+    }
+    await reviveCamera({ force });
+  }
+
+  function reviveCamera({ force = false } = {}) {
+    if (document.hidden || $("studioView").hidden) return Promise.resolve();
+    // Never pull the camera out from under a clip that is still being ended.
+    if (force && !state.recorder && !state.mediaPending) releaseMedia();
+    if (cameraLive()) {
+      // Alive but paused while the page was hidden: a paused source paints the
+      // same frame forever.
+      state.cameraSource?.play().catch(() => {});
+      $("camera").play().catch(() => {});
+      return Promise.resolve();
+    }
+    if (!reopening) {
+      reopening = ensureMedia()
+        .catch((error) => showNotice(`The camera did not come back: ${error.message}`, 7000))
+        .finally(() => { reopening = null; });
+    }
+    return reopening;
   }
 
   /* Ask the phone for a real portrait camera before settling for cropping one.
@@ -939,8 +1074,7 @@ function packetToIdea(idea, packet) {
   }
 
   function currentBeatId() {
-    const active = $("beatRail").querySelector(".is-current");
-    return active ? state.idea.beats[[...$("beatRail").children].indexOf(active)]?.id : null;
+    return Number.isInteger(state.currentBeat) ? state.idea.beats[state.currentBeat]?.id : null;
   }
 
   // Mark take was removed on 20-Sep-2026: the editor finds repeated takes from
@@ -958,8 +1092,23 @@ function packetToIdea(idea, packet) {
     });
   }
 
-  async function finishClip({ waitForServer = true } = {}) {
-    if (!state.clip || !state.recorder) return null;
+  /* 24-Sep walk: Stop, then Finish a moment later. Stop was still sending the
+     last pieces of a 5.6-minute clip, Finish did not wait for it, and the video
+     was built from the 3-second clip before it - the walk looked lost. Every
+     ending clip is now registered BEFORE its first await, and Finish waits for
+     all of them. Each settles true (on the server) or false (still on the phone). */
+  function finishClip(options) {
+    if (!state.clip || !state.recorder) return Promise.resolve(null);
+    let settle;
+    const ending = new Promise((resolve) => { settle = resolve; });
+    state.finalizing.add(ending);
+    ending.then(() => state.finalizing.delete(ending));
+    const run = finishClipNow(options, settle);
+    run.catch(() => settle(false));
+    return run;
+  }
+
+  async function finishClipNow({ waitForServer = true } = {}, settle = () => {}) {
     const clip = state.clip;
     const session = state.session;
     const takeMarkers = [...state.takeMarkers];
@@ -990,6 +1139,7 @@ function packetToIdea(idea, packet) {
       }
       return response.clip;
     })();
+    finalize.then(() => settle(true), () => settle(false));
     if (waitForServer) return finalize.catch((error) => { showNotice(error.message, 7000); throw error; });
     finalize.catch((error) => showNotice(error.message, 7000));
     state.clip = null;
@@ -1001,7 +1151,15 @@ function packetToIdea(idea, packet) {
 
   async function finishSession() {
     try {
-      if (state.recorder && state.recorder.state !== "inactive") await finishClip();
+      // A clip Stop is already ending must not be ended a second time.
+      if (state.recorder && state.recorder.state !== "inactive" && !state.finalizing.size) await finishClip().catch(() => {});
+      if (state.finalizing.size) {
+        $("syncState").textContent = "Sending the end of the last clip before building the video";
+        const sent = await Promise.all([...state.finalizing]);
+        if (sent.includes(false)) {
+          throw new Error("Some of the video is still on this phone. Reconnect and press Finish again.");
+        }
+      }
       if (!(state.session?.clips || []).some((clip) => clip.status === "ready")) {
         showNotice("Nothing recorded yet, so there is nothing to send for editing.");
         return;
@@ -1129,6 +1287,28 @@ function packetToIdea(idea, packet) {
   $("flipLayoutButton").addEventListener("click", () => toggleLayout("tce-layout-flipped"));
   $("overlayButton").addEventListener("click", () => toggleLayout("tce-layout-overlay"));
   applyLayout();
+  /* The background behind the words, five steps from white to black; from the
+     third step the letters turn white so they pop (24-Sep). Remembered on this
+     phone. In words-over-video mode the same steps set how dark the see-through
+     backing is. */
+  const SHADE_MAX = 4;
+  function applyShade() {
+    const level = Math.max(0, Math.min(SHADE_MAX, Number(state.shade) || 0));
+    document.querySelector(".reader-shell").dataset.shade = String(level);
+    $("shadeLighter").disabled = level === 0;
+    $("shadeDarker").disabled = level === SHADE_MAX;
+  }
+  function changeShade(step) {
+    state.shade = Math.max(0, Math.min(SHADE_MAX, (Number(state.shade) || 0) + step));
+    try { localStorage.setItem("tce-reader-shade", String(state.shade)); } catch { /* private mode */ }
+    applyShade();
+  }
+  try { state.shade = Number(localStorage.getItem("tce-reader-shade")) || 0; } catch { state.shade = 0; }
+  applyShade();
+  $("shadeDarker").addEventListener("click", () => changeShade(1));
+  $("shadeLighter").addEventListener("click", () => changeShade(-1));
+  // The number column pages by its own height, so a resize re-pages it.
+  if (window.ResizeObserver) new ResizeObserver(() => { if (state.idea) renderBeats(); }).observe($("beatRail"));
   $("textBigger").addEventListener("click", () => changeTextSize(.1));
   $("textSmaller").addEventListener("click", () => changeTextSize(-.1));
   restoreTextSize();
@@ -1153,6 +1333,16 @@ function packetToIdea(idea, packet) {
     } else if (!document.hidden) {
       $("interruptionFlag").hidden = true;
       requestWakeLock();
+      // Back on screen: a camera the phone switched off meanwhile comes back now.
+      // Android can also hand it back "live" but muted for good, which is just as
+      // black, so a camera still muted after a moment is treated as gone.
+      if (state.stream) {
+        setTimeout(() => {
+          if (document.hidden || !state.stream) return;
+          if (cameraSending()) reviveCamera();
+          else cameraLost({ force: true });
+        }, 1200);
+      }
     }
   });
   window.addEventListener("online", () => { updateSyncLabel(); retryStoredChunks(); });
