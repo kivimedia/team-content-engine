@@ -90,3 +90,11 @@ def test_a_zero_length_word_would_void_the_whole_list_so_the_worker_drops_it(wor
     assert parse_precise_words(result["words"])  # survives the editor's check
     assert result["word_count"] == 2
     assert result["transcript_md"] == "[00:00:00] hello world"
+
+
+def test_a_long_walk_recording_fits_through_the_socket(worker):
+    """24-Sep: a 5m41s walk (182 MB) failed with "Connection lost". The file goes
+    over in one WebSocket message and uvicorn drops anything over 16 MB unless
+    told otherwise, so only short takes could ever be transcribed."""
+    assert getattr(worker, "WS_MAX_BYTES", 0) >= 2 * 1024**3
+    assert "ws_max_size=WS_MAX_BYTES" in WORKER.read_text(encoding="utf-8")

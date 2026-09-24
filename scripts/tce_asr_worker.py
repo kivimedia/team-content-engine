@@ -160,5 +160,9 @@ async def transcribe(ws: WebSocket) -> None:
                 pass
 
 
+# The whole recording arrives as ONE message. uvicorn's default cap is 16 MB, so a
+# 5m41s walk (182 MB) was cut off mid-send on 24-Sep ("Connection lost").
+WS_MAX_BYTES = 2 * 1024**3
+
 if __name__ == "__main__":
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info", ws_max_size=WS_MAX_BYTES)
