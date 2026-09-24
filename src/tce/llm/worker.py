@@ -177,7 +177,10 @@ def run_preflight(
         "text": True,
         "encoding": "utf-8",
         "errors": "replace",
-        "timeout": 60,
+        # 24-Sep: on a loaded PC `claude auth status` took 18 s alone and over 60 s
+        # with three workers checking at once; each timeout parked the queue for
+        # 10 minutes, so writing stalled for an hour with a valid login.
+        "timeout": 180,
         "env": cenv,
         **_popen_kwargs(),
     }
