@@ -212,3 +212,46 @@ async def test_a_clip_that_became_ready_after_finish_is_not_lost(editorial_sessi
         editorial_session, ws, recording.id, [short.id, long.id], tmp_path, assembler=joined
     )
     assert third.id == second.id
+
+
+def _make_clip(exe, path, audio_first):
+    import subprocess
+
+    maps = ["-map", "1:a", "-map", "0:v"] if audio_first else ["-map", "0:v", "-map", "1:a"]
+    subprocess.run(
+        [exe, "-y", "-v", "error",
+         "-f", "lavfi", "-i", "color=c=blue:s=64x114:d=2:r=15",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=48000",
+         *maps, "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus", "-ac", "1",
+         str(path)],
+        check=True,
+    )
+
+
+async def test_clips_whose_tracks_come_in_different_orders_keep_their_sound(tmp_path):
+    """24-Sep walk: the 3 s clip was stored audio-then-video, the 338 s clip
+    video-then-audio (Chrome does not keep one order). The join matched tracks by
+    position, so after the first clip the audio track was filled with video: the
+    5m41s video had 2.9 s of sound and transcribed to 0 words."""
+    import subprocess
+
+    from tce.production.media import ffmpeg_path
+
+    exe = ffmpeg_path()
+    if not exe:
+        pytest.skip("ffmpeg not installed")
+    first, second = tmp_path / "a.webm", tmp_path / "b.webm"
+    _make_clip(exe, first, audio_first=True)
+    _make_clip(exe, second, audio_first=False)
+    out = tmp_path / "canonical.mp4"
+    await sessions.assemble_clips([first, second], out)
+    decode = subprocess.run(
+        [exe, "-v", "error", "-i", str(out), "-map", "0:a", "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    assert decode.stderr.strip() == "", f"the joined audio does not decode: {decode.stderr[:300]}"
+    heard = subprocess.run(
+        [exe, "-v", "error", "-i", str(out), "-map", "0:a", "-f", "s16le", "-ac", "1", "-ar", "8000", "-"],
+        capture_output=True,
+    ).stdout
+    assert len(heard) / 2 / 8000 > 3.5, f"only {len(heard) / 16000:.1f}s of sound in a 4s join"

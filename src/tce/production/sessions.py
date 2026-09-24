@@ -273,11 +273,25 @@ async def assemble_clips(paths: list[Path], output: Path) -> dict[str, Any]:
     if not exe:
         raise RecordingSessionError("ffmpeg is not installed")
     output.parent.mkdir(parents=True, exist_ok=True)
+    # 24-Sep walk: Chrome stored one clip audio-then-video and the next
+    # video-then-audio. The concat demuxer joins tracks by POSITION, so after the
+    # first clip the audio track was filled with video packets: a 5m41s video with
+    # 2.9 s of sound. Every clip is rewrapped (no re-encode) with video first.
+    ordered: list[Path] = []
+    for index, path in enumerate(paths):
+        fixed = output.with_name(f"{output.stem}.part{index}{path.suffix or '.webm'}")
+        proc = await asyncio.create_subprocess_exec(
+            exe, "-y", "-v", "error", "-i", str(path), "-map", "0:v:0", "-map", "0:a:0",
+            "-c", "copy", str(fixed),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        ordered.append(fixed if proc.returncode == 0 else path)
     listing = output.with_suffix(".concat.txt")
     listing.write_text(
         "".join(
             f"file '{str(path).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'\n"
-            for path in paths
+            for path in ordered
         ),
         encoding="utf-8",
     )
@@ -309,11 +323,25 @@ async def assemble_clips(paths: list[Path], output: Path) -> dict[str, Any]:
             _out, _err = await proc.communicate()
             if proc.returncode == 0:
                 proof = await probe_media(output)
-                if proof.get("has_audio") and proof.get("has_video"):
+                # "Has an audio track" is not "the sound plays": the broken join
+                # passed that check. The audio must decode end to end.
+                if proof.get("has_audio") and proof.get("has_video") and await _audio_decodes(exe, output):
                     return proof
         raise RecordingSessionError("ffmpeg could not assemble a valid audio and video timeline")
     finally:
         listing.unlink(missing_ok=True)
+        for fixed in ordered:
+            if fixed not in paths:
+                fixed.unlink(missing_ok=True)
+
+
+async def _audio_decodes(exe: str, path: Path) -> bool:
+    proc = await asyncio.create_subprocess_exec(
+        exe, "-v", "error", "-i", str(path), "-map", "0:a", "-f", "null", "-",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _out, err = await proc.communicate()
+    return proc.returncode == 0 and not err.strip()
 
 
 async def finalize_session(
