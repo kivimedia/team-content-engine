@@ -507,6 +507,39 @@ async def test_a_synthetic_pipeline_take_never_appears_in_the_library(
     assert [i["title"] for i in body["items"]] == ["A real topic"]
 
 
+async def test_the_edited_video_is_first_and_replaced_takes_are_gone(
+    client, editorial_sessionmaker
+):
+    """25-Sep: "I need a way to find the edited video on tce". His Library held 12
+    cards with the same title - the edit among old takes and two superseded,
+    broken versions - and nothing said which was the edit."""
+    from datetime import datetime, timedelta
+
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Walk topic")
+    now = datetime(2026, 9, 24, 12, 0)
+    rows = [
+        ("edited", "a", now - timedelta(hours=2), "/tmp/edit.mp4"),
+        ("superseded", "b", now - timedelta(hours=1), None),
+        ("uploaded", "c", now, None),
+    ]
+    async with editorial_sessionmaker() as s:
+        for status, digest, at, edited in rows:
+            s.add(
+                RecordingUpload(
+                    workspace_id=ws, candidate_id=cid, original_filename=f"{digest}.mp4",
+                    storage_path="/tmp/take.mp4", sha256=digest * 64, status=status,
+                    edited_path=edited, created_at=at,
+                )
+            )
+        await s.commit()
+
+    body = (await client.get("/api/v1/production/library", headers=headers(ws))).json()
+
+    assert [i["status"] for i in body["items"]] == ["edited", "uploaded"]
+    assert body["items"][0]["has_edit"] is True
+
+
 async def test_an_editing_request_is_recorded_against_the_recording(
     client, editorial_sessionmaker
 ):

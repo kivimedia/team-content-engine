@@ -24,7 +24,7 @@ button, input { font: inherit; color: var(--ink); }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 3px solid #f0a11a; outline-offset: 3px; }
 .topbar {
-  position: sticky; top: 0; z-index: 20; display: grid; grid-template-columns: 52px 1fr 52px;
+  position: sticky; top: 0; z-index: 20; display: grid; grid-template-columns: 52px 1fr auto;
   align-items: center; gap: 10px; min-height: 68px; padding: env(safe-area-inset-top) 12px 0;
   background: var(--ink); color: var(--white); box-shadow: var(--shadow);
 }
@@ -378,3 +378,4 @@ body.overlay-mode .studio-view > .reader-shell[data-shade="4"] { background: rgb
 .beat-button.beat-arrow { background: #2c4a6e; color: #fff; border-color: #2c4a6e; font-size: 1.2rem; }
 /* A short column (split screen): the size label gives its room to the buttons. */
 @media (max-height: 520px) { .size-value { display: none; } }
+.kmbot-link { display: inline-flex; align-items: center; min-height: 46px; padding: 0 12px; border-radius: 23px; background: #29405e; color: #fff; font-weight: 800; font-size: .86rem; text-decoration: none; white-space: nowrap; }

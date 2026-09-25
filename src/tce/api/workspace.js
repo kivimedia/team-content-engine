@@ -1240,6 +1240,8 @@
   function libraryCard(item) {
     var html = '<article class="card">';
     html += "<h3>" + esc(item.title) + "</h3>";
+    // The edit is what he comes here for: say so on the card (25-Sep).
+    if (item.has_edit) html += '<span class="tag is-ready">Edited video</span> ';
     html += '<span class="source">' + esc(when(item.recorded_at))
          + (item.duration_s ? " &middot; " + clock(item.duration_s) : "") + "</span>";
     html += '<p class="big-idea">' + esc(item.state_sentence) + "</p>";

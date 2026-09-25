@@ -186,6 +186,10 @@ async def list_library(
         open_by_upload[req.upload_id] = open_by_upload.get(req.upload_id, 0) + 1
 
     wanted = LIBRARY_FILTERS[filter_key]
+    # "I need a way to find the edited video" (25-Sep): a replaced take is kept on
+    # the server for history, never shown, and an edit sits above the raw takes.
+    uploads = [u for u in uploads if u.status != "superseded"]
+    uploads.sort(key=lambda u: not u.edited_path)
     items: list[dict[str, Any]] = []
     for upload in uploads:
         if wanted and upload.status not in wanted:

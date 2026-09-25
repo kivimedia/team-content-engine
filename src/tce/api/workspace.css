@@ -57,7 +57,7 @@ textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
 
 .topbar {
   position: sticky; top: 0; z-index: 20;
-  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px;
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px;
   min-height: 64px; padding: env(safe-area-inset-top) 16px 0;
   background: var(--ink); color: var(--white); box-shadow: var(--shadow);
 }
@@ -68,6 +68,12 @@ textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .topbar-actions { display: flex; gap: 8px; }
+.kmbot-link {
+  display: inline-flex; align-items: center; min-height: 46px; padding: 0 12px;
+  border-radius: 23px; background: #29405e; color: #fff; font-weight: 800; font-size: .86rem;
+  text-decoration: none; white-space: nowrap;
+}
+.kmbot-link:active { background: var(--lake); }
 .icon-button {
   min-width: 46px; min-height: 46px; border: 0; border-radius: 50%;
   background: #29405e; color: #fff; font-size: 1.2rem; font-weight: 800;
