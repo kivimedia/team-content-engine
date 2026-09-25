@@ -49,7 +49,7 @@ from tce.models.editorial import (
 )
 from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingClip, RecordingSession
-from tce.production import media, pills
+from tce.production import autoedit, media, pills
 from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
 from tce.production.retakes import (
@@ -280,6 +280,10 @@ async def recover_media_on_startup() -> None:
                 log.info("production.media_interrupted", count=len(ids), ids=[str(i) for i in ids])
         except Exception:
             log.warning("production.media_recovery_failed", exc_info=True)
+        if startup:
+            # After the sweep has marked dead steps: pick up edits and requests the
+            # restart cut short, so nothing he asked for waits for a click.
+            await resume_auto_work()
 
 
 # ---------------------------------------------------------------------------
@@ -784,8 +788,19 @@ async def plan_edit_route(
         raise HTTPException(
             status_code=409, detail="No transcript yet. Transcribe the recording first."
         )
+    await _compute_plan(db, ws, row, pause_threshold_s=body.pause_threshold_s)
+    await db.commit()
+    await db.refresh(row)
+    return upload_json(row)
+
+
+async def _compute_plan(
+    db: AsyncSession, ws: uuid.UUID, row: RecordingUpload, *, pause_threshold_s: float | None = None
+) -> None:
+    """Plan the cut from the transcript. Cuts and restores an editing request made
+    (edit_plan.overrides) and the proofread record survive every re-plan."""
+    previous = dict(row.edit_plan or {})
     phrases: list[str] = []
-    packet = None
     if row.packet_id:
         packet = (
             await db.execute(
@@ -794,14 +809,17 @@ async def plan_edit_route(
                 )
             )
         ).scalar_one_or_none()
-    if packet is not None:
-        phrases = list(packet.script_phrases or [])
+        if packet is not None:
+            phrases = list(packet.script_phrases or [])
     plan = plan_edit(
         row.transcript,
         phrases,
-        pause_threshold_s=body.pause_threshold_s or settings.production_pause_threshold_s,
+        pause_threshold_s=pause_threshold_s or settings.production_pause_threshold_s,
         duration_s=row.duration_s,
     )
+    plan = autoedit.apply_overrides(plan, previous.get("overrides"))
+    if previous.get("proofread") is not None:
+        plan["proofread"] = previous["proofread"]
     row.edit_plan = plan
     mc = plan["meaning_check"]
     drops = [d for d in plan["dropped"] if d["reason"] != "pause"]
@@ -816,9 +834,6 @@ async def plan_edit_route(
             f"drop {len(drops)} retakes and {len(pauses)} pauses. Meaning check passed. "
             f"{plan['timing']['summary']}."
         )
-    await db.commit()
-    await db.refresh(row)
-    return upload_json(row)
 
 
 def _caption_text(row: RecordingUpload, fmt: str) -> str:
@@ -1438,7 +1453,311 @@ async def finish_recording_session_route(
         )
     except recording_sessions.RecordingSessionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"session": await _recording_session_json(db, row), "upload": upload_json(upload)}
+    payload = {"session": await _recording_session_json(db, row), "upload": upload_json(upload)}
+    await db.commit()  # the edit runs in the background and must see the new video
+    if upload.status == "uploaded" and not upload.transcript:
+        start_auto_edit(upload.id, ws)
+    return payload
+
+
+
+# ---------------------------------------------------------------------------
+# TCE edits by itself, on the subscription (25-Sep): "allow tce to do editing by
+# itself on subscription". A finished session is transcribed, proofread, cut and
+# rendered with no clicks; an editing request is carried out by the subscription
+# worker. Every step writes what it is doing into status_detail (3-second rule),
+# and every failure lands on the row, never only in a log.
+
+AUTO_MARK = "auto-edit"
+
+
+async def _step(upload_id: uuid.UUID, ws: uuid.UUID, status: str, detail: str, work) -> RecordingUpload:
+    """Run one leased media step to completion and return the row as it ended."""
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        attempt = _claim(row, status, detail)
+        await s.commit()
+    await _run_leased(upload_id, ws, status, attempt, lambda: work(attempt))
+    async with session_factory()() as s:
+        return await _load(s, upload_id, ws)
+
+
+async def _note(upload_id: uuid.UUID, ws: uuid.UUID, status: str | None, detail: str) -> None:
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        if status:
+            row.status = status
+        row.status_detail = detail[:500]
+        await s.commit()
+
+
+async def _script_context(s: AsyncSession, ws: uuid.UUID, row: RecordingUpload) -> str:
+    packet = None
+    if row.packet_id:
+        packet = (
+            await s.execute(
+                select(RecordingPacket).where(
+                    RecordingPacket.id == row.packet_id, RecordingPacket.workspace_id == ws
+                )
+            )
+        ).scalar_one_or_none()
+    title = None
+    if row.candidate_id:
+        cand = (
+            await s.execute(
+                select(TopicCandidate).where(
+                    TopicCandidate.id == row.candidate_id, TopicCandidate.workspace_id == ws
+                )
+            )
+        ).scalar_one_or_none()
+        title = cand.title if cand else None
+    return autoedit.script_context(packet, title)
+
+
+async def _ask(kind: str, prompt: str, system: str, schema: dict[str, Any], ws: uuid.UUID, key: str):
+    from tce.llm import LLMRequest
+    from tce.llm import provider as llm
+
+    request = LLMRequest(
+        job_type=kind,
+        agent_name=autoedit.AGENT_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        system=system,
+        output_schema=schema,
+        max_tokens=2000,
+        prompt_version=autoedit.PROMPT_VERSION,
+        workspace_id=ws,
+        idempotency_key=key,
+    )
+    return await llm.complete(request, sessionmaker=session_factory())
+
+
+async def _proofread(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
+    from tce.llm import LLMUnavailable
+
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        words = list(row.transcript or [])
+        context = await _script_context(s, ws, row)
+        row.status = "proofreading"
+        row.status_detail = f"Proofreading {len(words)} words against your script on the subscription"
+        await s.commit()
+    if not words:
+        return
+    try:
+        answer = await _ask(
+            autoedit.PROOFREAD_JOB,
+            autoedit.proofread_prompt(words, context),
+            autoedit.PROOFREAD_SYSTEM,
+            autoedit.PROOFREAD_SCHEMA,
+            ws,
+            f"proofread:{upload_id}:{len(words)}",
+        )
+    except LLMUnavailable as exc:
+        await _note(upload_id, ws, None, f"Proofread skipped ({exc.status}); cutting the transcript as heard")
+        return
+    corrections = (answer.structured or {}).get("corrections") or []
+    fixed, applied = autoedit.apply_corrections(words, corrections)
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        row.transcript = fixed
+        plan = dict(row.edit_plan or {})
+        plan["proofread"] = [
+            {"heard": c["heard"], "replacement": c["replacement"], "why": str(c.get("why") or "")[:200]}
+            for c in applied
+        ]
+        row.edit_plan = plan
+        row.status_detail = (
+            f"Proofread: fixed {len(applied)} misheard {'word' if len(applied) == 1 else 'words'}"
+            if applied
+            else "Proofread: nothing misheard"
+        )
+        await s.commit()
+
+
+async def _plan_and_render(upload_id: uuid.UUID, ws: uuid.UUID) -> RecordingUpload:
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        await _compute_plan(s, ws, row)
+        await s.commit()
+        status = row.status
+    if status != "planned":  # the meaning check wants his eyes: never render past it
+        async with session_factory()() as s:
+            return await _load(s, upload_id, ws)
+    return await _step(
+        upload_id,
+        ws,
+        "rendering",
+        "Cutting and burning in your captions",
+        lambda attempt: _run_render(upload_id, ws, attempt, "cut"),
+    )
+
+
+async def auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
+    """Transcribe -> proofread -> plan -> render, for a session he just finished."""
+    try:
+        async with session_factory()() as s:
+            row = await _load(s, upload_id, ws)
+            row.job_ids = [j for j in row.job_ids or [] if j != AUTO_MARK] + [AUTO_MARK]
+            has_words = bool(row.transcript)
+            await s.commit()
+        if not has_words:
+            row = await _step(
+                upload_id,
+                ws,
+                "transcribing",
+                "Editing it for you: transcribing on this server",
+                lambda attempt: _run_transcription(upload_id, ws, attempt),
+            )
+            if row.status != "transcribed":
+                return  # failed / unavailable: the row already says why
+        await _proofread(upload_id, ws)
+        await _plan_and_render(upload_id, ws)
+    except Exception as exc:  # noqa: BLE001 - lands on the row
+        await _note(upload_id, ws, "failed", f"Automatic edit stopped: {str(exc)[:300]}. The recording is safe.")
+    finally:
+        async with session_factory()() as s:
+            row = await _load(s, upload_id, ws)
+            row.job_ids = [j for j in row.job_ids or [] if j != AUTO_MARK]
+            await s.commit()
+
+
+def start_auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
+    if settings.production_auto_edit:
+        _spawn(auto_edit(upload_id, ws))
+
+
+async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
+    """Carry out one editing request on the subscription, or ask one question."""
+    from tce.llm import LLMUnavailable
+    from tce.models.editorial_workspace import EditingRequest
+
+    async def settle(state: str, result: dict[str, Any]) -> None:
+        async with session_factory()() as s:
+            req = (
+                await s.execute(
+                    select(EditingRequest).where(
+                        EditingRequest.id == request_id, EditingRequest.workspace_id == ws
+                    )
+                )
+            ).scalar_one()
+            req.state = state
+            req.result = result
+            req.updated_at = _utcnow()
+            if state in ("done", "needs_you", "rejected"):
+                req.resolved_at = _utcnow()
+            await s.commit()
+
+    try:
+        async with session_factory()() as s:
+            req = (
+                await s.execute(
+                    select(EditingRequest).where(
+                        EditingRequest.id == request_id, EditingRequest.workspace_id == ws
+                    )
+                )
+            ).scalar_one_or_none()
+            if req is None or req.state not in ("open", "in_progress"):
+                return
+            row = await _load(s, req.upload_id, ws)
+            upload_id = row.id
+            words = list(row.transcript or [])
+            keep = [list(r) for r in (row.edit_plan or {}).get("keep") or []]
+            context = await _script_context(s, ws, row)
+            text, scope, start_s, end_s = req.request, req.scope, req.start_s, req.end_s
+        if not words or not keep:
+            await settle("open", {"status": "Waiting: this recording is not edited yet."})
+            return
+        await settle("in_progress", {"status": "Reading your request on the subscription"})
+        try:
+            answer = await _ask(
+                autoedit.EDIT_REQUEST_JOB,
+                autoedit.edit_request_prompt(
+                    words, keep, context, text, scope=scope, start_s=start_s, end_s=end_s
+                ),
+                autoedit.EDIT_REQUEST_SYSTEM,
+                autoedit.EDIT_REQUEST_SCHEMA,
+                ws,
+                f"edit-request:{request_id}",
+            )
+        except LLMUnavailable as exc:
+            await settle("in_progress", {"status": f"Waiting for the subscription worker ({exc.status})"})
+            return
+        out = answer.structured or {}
+        if out.get("needs_you"):
+            await settle(
+                "needs_you",
+                {"reply": str(out.get("reply") or ""), "question": str(out.get("question") or "")},
+            )
+            return
+        fixed, applied = autoedit.apply_corrections(words, out.get("corrections") or [])
+        cut = autoedit.word_ranges(words, out.get("cut") or [])
+        restore = autoedit.word_ranges(words, out.get("restore") or [])
+        if not (applied or cut or restore):
+            await settle(
+                "needs_you",
+                {
+                    "reply": str(out.get("reply") or ""),
+                    "question": "I could not turn that into a change to the video. "
+                    "What exactly should change, and roughly where?",
+                },
+            )
+            return
+        await settle("in_progress", {"status": "Applying your changes and re-rendering"})
+        async with session_factory()() as s:
+            row = await _load(s, upload_id, ws)
+            row.transcript = fixed
+            plan = dict(row.edit_plan or {})
+            plan["overrides"] = autoedit.merge_overrides(plan.get("overrides"), cut, restore)
+            row.edit_plan = plan
+            await s.commit()
+        row = await _plan_and_render(upload_id, ws)
+        result = {
+            "reply": str(out.get("reply") or "Done."),
+            "corrections": [{"heard": c["heard"], "replacement": c["replacement"]} for c in applied],
+            "cut": cut,
+            "restore": restore,
+            "file": f"/api/v1/production/uploads/{upload_id}/edited",
+            "model": answer.model,
+        }
+        if row.status == "edited":
+            await settle("done", result)
+        else:
+            await settle("needs_you", {**result, "question": f"The re-render stopped: {row.status_detail}"})
+    except Exception as exc:  # noqa: BLE001 - lands on the request
+        await settle("in_progress", {"status": f"Stopped with an error; it retries on restart: {str(exc)[:300]}"})
+
+
+def start_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
+    if settings.production_auto_edit:
+        _spawn(run_edit_request(request_id, ws))
+
+
+async def resume_auto_work() -> None:
+    """After a restart: finish automatic edits and requests that were mid-way."""
+    import structlog
+
+    from tce.models.editorial_workspace import EditingRequest
+
+    log = structlog.get_logger()
+    if not settings.production_auto_edit:
+        return
+    try:
+        async with session_factory()() as s:
+            rows = (await s.execute(select(RecordingUpload))).scalars().all()
+            marked = [(r.id, r.workspace_id) for r in rows if AUTO_MARK in (r.job_ids or [])]
+            reqs = (
+                await s.execute(select(EditingRequest).where(EditingRequest.state == "in_progress"))
+            ).scalars().all()
+            pending = [(r.id, r.workspace_id) for r in reqs]
+        for upload_id, ws in marked:
+            _spawn(auto_edit(upload_id, ws))
+        for request_id, ws in pending:
+            _spawn(run_edit_request(request_id, ws))
+        if marked or pending:
+            log.info("production.auto_resumed", uploads=len(marked), requests=len(pending))
+    except Exception:
+        log.warning("production.auto_resume_failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

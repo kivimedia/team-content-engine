@@ -1235,6 +1235,32 @@
     html += "</div>";
     view.innerHTML = html;
     status(items.length + " " + plural(items.length, "recording"));
+    scheduleLibraryPoll(items);
+  }
+
+  /* TCE edits by itself now (25-Sep), so a card changes while he looks at it. While
+     anything is being edited, re-read quietly every 8 s and redraw only when
+     something changed and no video is playing. */
+  var LIBRARY_LIVE = ["transcribing", "transcribed", "proofreading", "planned", "rendering"];
+  function libraryBusy(items) {
+    return items.some(function (i) {
+      return LIBRARY_LIVE.indexOf(i.status) >= 0
+        || (i.last_request && i.last_request.state === "in_progress");
+    });
+  }
+  function scheduleLibraryPoll(items) {
+    clearTimeout(state.libraryPoll);
+    if (libraryBusy(items)) state.libraryPoll = setTimeout(pollLibrary, 8000);
+  }
+  async function pollLibrary() {
+    if (!document.querySelector("[data-libfilter]")) return;  // he left the Library
+    var before = JSON.stringify((state.library || {}).items || []);
+    var data;
+    try { data = await api("/production/library?filter=" + encodeURIComponent(state.libraryFilter)); }
+    catch (error) { state.libraryPoll = setTimeout(pollLibrary, 8000); return; }
+    var playing = document.querySelector(".player:not([hidden])");
+    if (JSON.stringify(data.items || []) !== before && !playing) { renderLibrary(); return; }
+    scheduleLibraryPoll(data.items || []);
   }
 
   function libraryCard(item) {
@@ -1248,9 +1274,22 @@
     (item.issues || []).forEach(function (issue) {
       html += '<p class="notice is-bad">' + esc(issue) + "</p>";
     });
-    if (item.open_requests) {
-      html += '<span class="tag">' + item.open_requests + " open "
-           + plural(item.open_requests, "request") + "</span>";
+    // What the subscription changed on its own, and what it did with his last
+    // request (25-Sep: TCE edits by itself). Nothing changes unseen.
+    (item.proofread || []).forEach(function (fix) {
+      html += '<p class="notice">Proofread fixed: \u201c' + esc(fix.heard) + '\u201d \u2192 \u201c'
+           + esc(fix.replacement || "(removed)") + '\u201d</p>';
+    });
+    var last = item.last_request;
+    if (last) {
+      var res = last.result || {};
+      var says = last.state === "done" ? (res.reply || "Done.")
+               : last.state === "needs_you" ? (res.question || res.reply || "Needs you.")
+               : (res.status || "Working on it.");
+      html += '<p class="notice' + (last.state === "needs_you" ? " is-bad" : "") + '"><strong>'
+           + (last.state === "done" ? "Your request is done" : last.state === "needs_you" ? "Needs you"
+              : "Working on your request") + ':</strong> ' + esc(says)
+           + ' <span class="source">(you asked: ' + esc(last.request) + ')</span></p>';
     }
 
     // Only actions with a real destination. The server already decided which.
@@ -1336,7 +1375,7 @@
         method: "POST",
         body: { request: text.trim(), scope: "whole" }
       });
-      toast("Asked. It is on the record against this video.");
+      toast("Asked. TCE is making the change now on your subscription; this card updates as it goes.");
       await render();
     } catch (error) {
       toast(error.message, true);

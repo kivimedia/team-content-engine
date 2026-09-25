@@ -81,7 +81,7 @@ function packetToIdea(idea, packet) {
     rawStream: null, cameraReport: null,
     // Clips that were stopped and are still sending their last pieces. Finish
     // waits for every one of them before it builds the video.
-    finalizing: new Set(), cameraSource: null,
+    finalizing: new Set(), cameraSource: null, unfinished: [],
   };
   const supportedMime = [
     "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
@@ -1108,6 +1108,36 @@ function packetToIdea(idea, packet) {
     return run;
   }
 
+  /* Sending a stopped clip is its own step, so it can be retried: a clip whose
+     closing call failed (bad signal) stays on the phone in state.unfinished and
+     Finish sends it before building the video. */
+  async function sendClip(entry) {
+    const { clip, session, activeSeconds, takeMarkers } = entry;
+    const synced = await retryStoredChunks(clip.id);
+    if (!synced) throw new Error("Some of the video is still on this phone. Reconnect and press Finish again.");
+    const response = await api(`/recording-clips/${clip.id}/finish`, {
+      method: "POST", body: JSON.stringify({ active_duration_s: activeSeconds, take_markers: takeMarkers }),
+    });
+    await idbDeleteClip(clip.id);
+    session.clips = [...(session.clips || []).filter((item) => item.id !== response.clip.id), response.clip].sort((a, b) => a.position - b.position);
+    state.unfinished = (state.unfinished || []).filter((item) => item.clip.id !== clip.id);
+    return response.clip;
+  }
+
+  /* 24-25 Sep: a failed clip finish left Record greyed out for good - the studio
+     was stuck until a reload. Whatever happens to the send, the studio is free
+     again: the clip is either on the server, kept on the phone for Finish to
+     retry, or (no data at all) dropped with a word saying so. */
+  function freeStudio(clip) {
+    if (state.clip?.id !== clip.id) return;
+    state.clip = null;
+    state.recorder = null;
+    cameraFlag(false);
+    state.activeMs = 0;
+    updateSessionLabels();
+    $("recordButton").disabled = false;
+  }
+
   async function finishClipNow({ waitForServer = true } = {}, settle = () => {}) {
     const clip = state.clip;
     const session = state.session;
@@ -1116,36 +1146,41 @@ function packetToIdea(idea, packet) {
     setRecordingChrome(false);
     const activeSeconds = Number((state.activeMs / 1000).toFixed(3));
     await Promise.all(state.pendingWrites);
+    // Pieces of video the recorder actually handed over. A quick Record-then-Stop
+    // can hand over none; the server would refuse it as "missing chunk sequences".
+    const pieces = state.sequence;
     clearInterval(state.timerId);
     $("recordingFlag").hidden = true;
     $("pauseButton").disabled = true;
     $("finishClipButton").disabled = true;
+    const entry = { clip, session, activeSeconds, takeMarkers };
     const finalize = (async () => {
-      const synced = await retryStoredChunks(clip.id);
-      if (!synced) throw new Error("Some of the video is still on this phone. Reconnect and press Finish again.");
-      const response = await api(`/recording-clips/${clip.id}/finish`, {
-        method: "POST", body: JSON.stringify({ active_duration_s: activeSeconds, take_markers: takeMarkers }),
-      });
-      await idbDeleteClip(clip.id);
-      session.clips = [...(session.clips || []).filter((item) => item.id !== response.clip.id), response.clip].sort((a, b) => a.position - b.position);
-      if (state.session?.id === session.id && state.clip?.id === clip.id) {
-        state.clip = null;
-        state.recorder = null;
-        cameraFlag(false);
-        state.activeMs = 0;
-        updateSessionLabels();
-        $("recordButton").disabled = false;
-        showNotice("Clip saved and checked for camera and microphone tracks.");
+      if (!pieces) {
+        await idbDeleteClip(clip.id);
+        freeStudio(clip);
+        const error = new Error("That take was too short to keep. Press Record again.");
+        error.tooShort = true;
+        throw error;
       }
-      return response.clip;
+      try {
+        const saved = await sendClip(entry);
+        if (state.clip?.id === clip.id) showNotice("Clip saved and checked for camera and microphone tracks.");
+        freeStudio(clip);
+        return saved;
+      } catch (error) {
+        // Kept on the phone; Finish sends it before building the video.
+        if (!(state.unfinished || []).some((item) => item.clip.id === clip.id)) {
+          state.unfinished = [...(state.unfinished || []), entry];
+        }
+        freeStudio(clip);
+        throw error;
+      }
     })();
-    finalize.then(() => settle(true), () => settle(false));
-    if (waitForServer) return finalize.catch((error) => { showNotice(error.message, 7000); throw error; });
+    // A dropped empty take is not a clip Finish must wait for.
+    finalize.then(() => settle(true), (error) => settle(Boolean(error && error.tooShort)));
+    if (waitForServer) return finalize.catch((error) => { showNotice(error.message, 7000); if (!error.tooShort) throw error; return null; });
     finalize.catch((error) => showNotice(error.message, 7000));
-    state.clip = null;
-    state.recorder = null;
-    cameraFlag(false);
-    $("recordButton").disabled = false;
+    freeStudio(clip);
     return clip;
   }
 
@@ -1155,10 +1190,13 @@ function packetToIdea(idea, packet) {
       if (state.recorder && state.recorder.state !== "inactive" && !state.finalizing.size) await finishClip().catch(() => {});
       if (state.finalizing.size) {
         $("syncState").textContent = "Sending the end of the last clip before building the video";
-        const sent = await Promise.all([...state.finalizing]);
-        if (sent.includes(false)) {
-          throw new Error("Some of the video is still on this phone. Reconnect and press Finish again.");
-        }
+        await Promise.all([...state.finalizing]);
+      }
+      // Clips whose send failed earlier: send them now, or refuse to build without them.
+      for (const entry of [...(state.unfinished || [])]) {
+        if (entry.session.id !== state.session?.id) continue;
+        $("syncState").textContent = "Sending a clip that did not get through before";
+        await sendClip(entry);
       }
       if (!(state.session?.clips || []).some((clip) => clip.status === "ready")) {
         showNotice("Nothing recorded yet, so there is nothing to send for editing.");

@@ -170,6 +170,9 @@ class Settings(BaseSettings):
     production_transcribe_ws_url: str = ""
     production_transcribe_language: str = ""  # empty = auto-detect
     production_pause_threshold_s: float = 1.2
+    # 25-Sep: a finished session edits itself and editing requests run themselves,
+    # on the subscription worker. Off = the old click-each-step flow.
+    production_auto_edit: bool = True
     # "gws" = create Google Docs with the gws CLI on this host; "off" = private .docx only
     production_google_export: str = "off"
     production_gws_binary: str = "gws"

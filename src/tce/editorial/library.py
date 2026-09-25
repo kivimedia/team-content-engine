@@ -34,10 +34,12 @@ from tce.models.editorial_workspace import (
 LIBRARY_FILTERS: dict[str, tuple[str, ...]] = {
     "all": (),
     "uploading": ("uploaded",),
-    "editing": ("transcribing", "planned"),
+    "editing": ("transcribing", "transcribed", "proofreading", "planned", "rendering"),
     "needs_review": ("needs_review",),
     "ready": ("edited",),
 }
+
+_LIVE_STATUSES = ("transcribing", "transcribed", "proofreading", "planned", "rendering")
 
 FILTER_LABELS = {
     "all": "Everything",
@@ -51,6 +53,9 @@ FILTER_LABELS = {
 STATE_SENTENCES = {
     "uploaded": "On the server. Nothing has been done to it yet.",
     "transcribing": "Being transcribed.",
+    "transcribed": "Transcribed. Proofreading and the cut come next.",
+    "proofreading": "Being proofread on your subscription.",
+    "rendering": "Being cut and captioned.",
     "planned": "The cut is planned and waiting to be rendered.",
     "needs_review": "The cut would change what you said. It needs your eyes.",
     "edited": "Edited and ready.",
@@ -176,14 +181,16 @@ async def list_library(
         packet_versions = {row[0]: row[1] for row in rows.all()}
 
     requests = await db.execute(
-        select(EditingRequest).where(
-            EditingRequest.workspace_id == ws,
-            EditingRequest.state.in_(("open", "in_progress")),
-        )
+        select(EditingRequest)
+        .where(EditingRequest.workspace_id == ws)
+        .order_by(EditingRequest.created_at.asc())
     )
     open_by_upload: dict[uuid.UUID, int] = {}
+    last_by_upload: dict[uuid.UUID, EditingRequest] = {}
     for req in requests.scalars().all():
-        open_by_upload[req.upload_id] = open_by_upload.get(req.upload_id, 0) + 1
+        last_by_upload[req.upload_id] = req
+        if req.state in ("open", "in_progress"):
+            open_by_upload[req.upload_id] = open_by_upload.get(req.upload_id, 0) + 1
 
     wanted = LIBRARY_FILTERS[filter_key]
     # "I need a way to find the edited video" (25-Sep): a replaced take is kept on
@@ -203,8 +210,18 @@ async def list_library(
                 "recorded_at": upload.created_at.isoformat() if upload.created_at else None,
                 "duration_s": upload.duration_s,
                 "status": upload.status,
-                "state_sentence": STATE_SENTENCES.get(
-                    upload.status, upload.status_detail or ""
+                # While a step runs, say exactly what it is doing (3-second rule).
+                "state_sentence": (
+                    upload.status_detail
+                    if upload.status in _LIVE_STATUSES and upload.status_detail
+                    else STATE_SENTENCES.get(upload.status, upload.status_detail or "")
+                ),
+                # What the subscription proofread changed, so no word moves unseen.
+                "proofread": list((upload.edit_plan or {}).get("proofread") or []),
+                "last_request": (
+                    edit_request_to_json(last_by_upload[upload.id])
+                    if upload.id in last_by_upload
+                    else None
                 ),
                 "packet_id": str(upload.packet_id) if upload.packet_id else None,
                 "packet_version": packet_versions.get(upload.packet_id),

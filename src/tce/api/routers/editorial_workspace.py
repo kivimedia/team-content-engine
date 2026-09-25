@@ -893,9 +893,13 @@ async def create_edit_request(
             )
             payload = library_service.edit_request_to_json(row)
             await db.commit()
-            return payload
         except ServiceError as error:
             raise _http(error) from error
+    # 25-Sep: TCE carries the request out itself, on the subscription worker.
+    from tce.api.routers import production as production_routes
+
+    production_routes.start_edit_request(row.id, ws)
+    return payload
 
 
 @production_router.get("/recordings/{upload_id}/edit-requests")

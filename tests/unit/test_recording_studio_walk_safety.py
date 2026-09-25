@@ -145,3 +145,67 @@ def test_a_camera_the_phone_switches_off_comes_back_by_itself(studio):  # noqa: 
         assert page.evaluate("() => window.__raw.length") == count, "Record opened another camera"
         context.close()
         browser.close()
+
+
+# The phone's side of a failure: the clip's closing call fails once (a bad signal),
+# or the recorder hands over no data at all (a quick Record-then-Stop).
+FLAKY_FINISH = r"""
+const realFetch2 = window.fetch.bind(window);
+window.__failFinish = 0;
+window.__finishCalls = 0;
+window.fetch = async (url, options) => {
+  if (/recording-clips\/[^/]+\/finish/.test(String(url))) {
+    window.__finishCalls += 1;
+    if (window.__failFinish > 0) {
+      window.__failFinish -= 1;
+      return new Response(JSON.stringify({detail: "network dropped"}), {status: 503});
+    }
+  }
+  return realFetch2(url, options);
+};
+const desc = Object.getOwnPropertyDescriptor(MediaRecorder.prototype, "ondataavailable");
+Object.defineProperty(MediaRecorder.prototype, "ondataavailable", {
+  configurable: true,
+  get() { return desc.get.call(this); },
+  set(fn) { desc.set.call(this, (e) => { if (!window.__noData) fn(e); }); },
+});
+"""
+
+
+def test_a_stop_whose_finish_fails_gives_record_back_and_finish_retries_it(studio):  # noqa: F811
+    """24-25 Sep: after a failed clip finish, Record stayed greyed out forever - the
+    studio was stuck until a reload ("I am stuck", 23-Sep)."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, context, page = _studio_page(pw, studio["base"], LANDSCAPE_CAMERA, FLAKY_FINISH)
+        _record(page, 4)
+        page.evaluate("() => { window.__failFinish = 1; }")
+        page.click("#finishClipButton")
+        page.wait_for_function("() => !document.getElementById('recordButton').disabled", timeout=15000)
+        assert page.evaluate("() => window.__finishCalls") == 1
+        # Finish sends the clip that failed before it builds the video, and includes it.
+        with page.expect_request(
+            lambda r: "/recording-sessions/" in r.url and r.url.endswith("/finish"), timeout=60000
+        ) as finished:
+            page.click("#finishSessionButton")
+        assert page.evaluate("() => window.__finishCalls") == 2
+        assert len(finished.value.post_data_json["selected_clip_ids"]) == 1
+        context.close()
+        browser.close()
+
+
+def test_a_take_with_no_video_data_is_dropped_and_record_comes_back(studio):  # noqa: F811
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, context, page = _studio_page(pw, studio["base"], LANDSCAPE_CAMERA, FLAKY_FINISH)
+        page.evaluate("() => { window.__noData = true; }")
+        _record(page, 1)
+        page.click("#finishClipButton")
+        page.wait_for_function("() => !document.getElementById('recordButton').disabled", timeout=15000)
+        assert page.evaluate("() => window.__finishCalls") == 0, "an empty take was sent to the server"
+        notice = page.evaluate("() => (document.getElementById('notice') || {}).textContent || ''")
+        assert "too short" in notice, notice
+        context.close()
+        browser.close()
