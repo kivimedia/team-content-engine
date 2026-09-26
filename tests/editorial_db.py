@@ -52,6 +52,7 @@ TABLE_NAMES = (
     "topic_decision_changes",
     "weekly_lineups",
     "editorial_settings",
+    "video_publications",
     "weekly_lineup_items",
     "editorial_threads",
     "editorial_messages",

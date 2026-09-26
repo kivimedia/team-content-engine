@@ -1300,9 +1300,14 @@
      something changed and no video is playing. */
   var LIBRARY_LIVE = ["transcribing", "transcribed", "proofreading", "planned", "rendering"];
   function libraryBusy(items) {
+    var now = Date.now();
     return items.some(function (i) {
+      var writing = state.pubWriting && state.pubWriting[i.upload_id]
+        && !(i.publishing || []).length && now - state.pubWriting[i.upload_id] < 10 * 60000;
       return LIBRARY_LIVE.indexOf(i.status) >= 0
-        || (i.last_request && i.last_request.state === "in_progress");
+        || (i.last_request && i.last_request.state === "in_progress")
+        || writing
+        || (i.publishing || []).some(function (p) { return p.status === "posting"; });
     });
   }
   function scheduleLibraryPoll(items) {
@@ -1316,7 +1321,9 @@
     try { data = await api("/production/library?filter=" + encodeURIComponent(state.libraryFilter)); }
     catch (error) { state.libraryPoll = setTimeout(pollLibrary, 8000); return; }
     var playing = document.querySelector(".player:not([hidden])");
-    if (JSON.stringify(data.items || []) !== before && !playing) { renderLibrary(); return; }
+    var typing = document.activeElement && document.activeElement.closest
+      && document.activeElement.closest(".publish");
+    if (JSON.stringify(data.items || []) !== before && !playing && !typing) { renderLibrary(); return; }
     scheduleLibraryPoll(data.items || []);
   }
 
@@ -1370,8 +1377,125 @@
         html += '<a class="btn quiet" href="' + prefix + '/record">' + esc(action.label) + "</a>";
       }
     });
-    html += '</div><div class="player" hidden></div></article>';
+    html += '</div><div class="player" hidden></div>';
+    if (item.has_edit) html += publishSection(item);
+    html += "</article>";
     return html;
+  }
+
+  /* 26-Sep: "I want tce to be able to do the full publishing and to show me the post
+     in the library". The four posts, written from what he says in the edit, each
+     editable; his tap posts or schedules them; a posted one links to the live post. */
+  var PUB_FIELDS = {
+    instagram: [["caption", "Caption", 9]],
+    facebook: [["message", "Post", 10]],
+    youtube: [["title", "Title", 1], ["description", "Description", 5], ["tags", "Tags (comma separated)", 1]],
+    linkedin: [["message", "Post", 10], ["hashtags", "Hashtags (comma separated)", 1]]
+  };
+  var PUB_STATUS = { draft: "Ready to post", posting: "Posting now", scheduled: "Scheduled",
+                     posted: "Posted", failed: "Did not go out" };
+
+  function publishSection(item) {
+    var pubs = item.publishing || [];
+    var id = esc(item.upload_id);
+    var html = '<section class="publish" data-pub-upload="' + id + '"><h4>Publish</h4>';
+    if (!pubs.length) {
+      var writing = state.pubWriting && state.pubWriting[item.upload_id];
+      html += writing
+        ? '<p class="notice">Writing the Instagram, Facebook, YouTube and LinkedIn posts from what you say in this video, on your subscription. This card fills in when they are ready.</p>'
+        : '<p class="section-hint">TCE writes the four posts from what you say in the edit. You read them, change anything, then post.</p>'
+          + '<div class="actions"><button class="btn primary" type="button" data-pub-draft="' + id + '">Write the posts</button></div>';
+      return html + "</section>";
+    }
+    pubs.forEach(function (p) {
+      var done = p.status === "posted" || p.status === "scheduled" || p.status === "posting";
+      html += '<div class="pub-platform" data-platform="' + esc(p.platform) + '">';
+      html += '<div class="pub-head"><label class="pub-pick"><input type="checkbox" data-pub-pick="' + esc(p.platform) + '"'
+           + (done ? " disabled" : " checked") + "> <strong>" + esc(p.label) + "</strong></label>"
+           + '<span class="tag' + (p.status === "posted" ? " is-ready" : p.status === "failed" ? " is-timely" : "") + '">'
+           + esc(PUB_STATUS[p.status] || p.status) + "</span></div>";
+      if (p.status === "posted" && p.url) {
+        html += '<p><a class="btn quiet" href="' + esc(p.url) + '" target="_blank" rel="noopener">See it on '
+             + esc(p.label.split(" ")[0]) + " &#8599;</a></p>";
+      }
+      if (p.status === "scheduled" && p.scheduled_for) {
+        html += '<p class="source">Goes out ' + esc(new Date(p.scheduled_for + "Z").toLocaleString()) + "</p>";
+      }
+      if (p.detail && p.status !== "posted") html += '<p class="source">' + esc(p.detail) + "</p>";
+      (PUB_FIELDS[p.platform] || []).forEach(function (f) {
+        var value = p.copy[f[0]];
+        if (Array.isArray(value)) value = value.join(", ");
+        html += '<label class="pub-field"><span>' + esc(f[1]) + "</span>";
+        html += f[2] > 1
+          ? '<textarea rows="' + f[2] + '" data-pub-field="' + f[0] + '"' + (done ? " readonly" : "") + ">" + esc(value || "") + "</textarea>"
+          : '<input type="text" data-pub-field="' + f[0] + '" value="' + esc(value || "") + '"' + (done ? " readonly" : "") + ">";
+        html += "</label>";
+      });
+      html += "</div>";
+    });
+    var open = pubs.some(function (p) { return p.status === "draft" || p.status === "failed"; });
+    if (open) {
+      html += '<div class="actions pub-actions">'
+           + '<button class="btn primary" type="button" data-pub-post="' + id + '">Post the ticked ones now</button>'
+           + '<input type="datetime-local" class="pub-when" aria-label="When to post">'
+           + '<button class="btn" type="button" data-pub-schedule="' + id + '">Schedule the ticked ones</button>'
+           + '<button class="btn quiet" type="button" data-pub-draft="' + id + '">Write them again</button></div>';
+    }
+    return html + "</section>";
+  }
+
+  function publishFields(section, platform) {
+    var box = section.querySelector('.pub-platform[data-platform="' + platform + '"]');
+    var out = {};
+    box.querySelectorAll("[data-pub-field]").forEach(function (el) {
+      var key = el.getAttribute("data-pub-field");
+      out[key] = (key === "tags" || key === "hashtags")
+        ? el.value.split(",").map(function (t) { return t.trim(); }).filter(Boolean)
+        : el.value;
+    });
+    return out;
+  }
+
+  async function publishStart(uploadId, schedule) {
+    var section = document.querySelector('[data-pub-upload="' + uploadId + '"]');
+    var picked = [].slice.call(section.querySelectorAll("[data-pub-pick]:checked"))
+      .map(function (el) { return el.getAttribute("data-pub-pick"); });
+    if (!picked.length) { toast("Tick at least one place to post.", true); return; }
+    var at = null;
+    if (schedule) {
+      var when = section.querySelector(".pub-when").value;
+      if (!when) { toast("Choose when to post first.", true); return; }
+      at = new Date(when).toISOString();
+    }
+    var names = picked.map(function (p) { return p.charAt(0).toUpperCase() + p.slice(1); }).join(", ");
+    if (!window.confirm((schedule ? "Schedule this video on " : "Post this video now on ") + names + "?")) return;
+    try {
+      // Save what he changed first: the post goes out exactly as it reads on screen.
+      for (var i = 0; i < picked.length; i++) {
+        await api("/production/uploads/" + encodeURIComponent(uploadId) + "/publishing/" + picked[i], {
+          method: "PUT", body: { fields: publishFields(section, picked[i]) }
+        });
+      }
+      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/publishing/publish", {
+        method: "POST", body: { platforms: picked, at: at }
+      });
+      toast(schedule ? "Scheduling. The card shows each one as it is booked." : "Posting. The card shows each link as it goes live.");
+      renderLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function publishDraft(uploadId) {
+    try {
+      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/publishing/draft", { method: "POST" });
+      state.pubWriting = state.pubWriting || {};
+      state.pubWriting[uploadId] = Date.now();
+      toast("Writing the posts on your subscription. This card fills in when they are ready.");
+      renderLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
   }
 
   /* The player opens inside the card it belongs to, under its buttons: one
@@ -1607,7 +1731,7 @@
     "slot", "remove", "ask-script", "change", "edit", "restore", "wtab",
     "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
     "watch", "watch-close", "voice-undo", "voice-restore",
-    "videos-step", "save-settings"
+    "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -1626,6 +1750,9 @@
       return;
     }
     if (d.saveSettings !== undefined) { saveSettings(); return; }
+    if (d.pubDraft !== undefined) { publishDraft(d.pubDraft); return; }
+    if (d.pubPost !== undefined) { publishStart(d.pubPost, false); return; }
+    if (d.pubSchedule !== undefined) { publishStart(d.pubSchedule, true); return; }
     if (d.filter !== undefined) { state.topicFilter = d.filter; render(); return; }
     if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; render(); return; }
     if (d.wtab !== undefined) { state.workshopTab = d.wtab; render(); return; }

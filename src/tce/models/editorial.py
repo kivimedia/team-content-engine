@@ -308,6 +308,35 @@ class RecordingUpload(_PrivateWorkspaceMixin, Base):
     job_ids: Mapped[list[str]] = mapped_column(JSONType, default=list)
 
 
+class VideoPublication(_PrivateWorkspaceMixin, Base):
+    """One edited video on one platform: its post copy, and what happened when it went out.
+
+    26-Sep: "I want tce to be able to do the full publishing and to show me the post in
+    the library". TCE writes the copy on the subscription, he reads and edits it on the
+    Library card, and his tap posts it through the four schedule-* skills on this server.
+    """
+
+    __tablename__ = "video_publications"
+    __table_args__ = (UniqueConstraint("upload_id", "platform", name="uq_video_publication"),)
+
+    upload_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("recording_uploads.id", ondelete="CASCADE"), index=True
+    )
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    # instagram | facebook | youtube | linkedin
+    platform: Mapped[str] = mapped_column(String(20))
+    # draft | posting | scheduled | posted | failed
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    # instagram {caption}; facebook {message}; youtube {title, description, tags};
+    # linkedin {message, hashtags}
+    copy: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    external_id: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class PublicationReceipt(_PrivateWorkspaceMixin, Base):
     """Recorded after a human-authorised publication. TCE never publishes by itself here."""
 

@@ -46,10 +46,11 @@ from tce.models.editorial import (
     RecordingPacket,
     RecordingUpload,
     TopicCandidate,
+    VideoPublication,
 )
 from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingClip, RecordingSession
-from tce.production import autoedit, media, pills
+from tce.production import autoedit, media, pills, publishing
 from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
 from tce.production.retakes import (
@@ -1612,7 +1613,9 @@ async def auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             if row.status != "transcribed":
                 return  # failed / unavailable: the row already says why
         await _proofread(upload_id, ws)
-        await _plan_and_render(upload_id, ws)
+        row = await _plan_and_render(upload_id, ws)
+        if row.status == "edited":
+            start_draft_posts(upload_id, ws)
     except Exception as exc:  # noqa: BLE001 - lands on the row
         await _note(upload_id, ws, "failed", f"Automatic edit stopped: {str(exc)[:300]}. The recording is safe.")
     finally:
@@ -1758,6 +1761,348 @@ async def resume_auto_work() -> None:
             log.info("production.auto_resumed", uploads=len(marked), requests=len(pending))
     except Exception:
         log.warning("production.auto_resume_failed", exc_info=True)
+
+
+
+# ---------------------------------------------------------------------------
+# Publishing (26-Sep): "I want tce to be able to do the full publishing and to show
+# me the post in the library". Copy is written on the subscription; his tap posts it
+# through the schedule-* skills on this server; the Library shows the live links.
+
+
+def _publication_json(row: VideoPublication) -> dict[str, Any]:
+    return {
+        "platform": row.platform,
+        "label": publishing.LABELS.get(row.platform, row.platform),
+        "status": row.status,
+        "copy": row.copy or {},
+        "scheduled_for": _iso(row.scheduled_for),
+        "url": row.url,
+        "detail": row.detail,
+        "posted_at": _iso(row.posted_at),
+    }
+
+
+async def _publications(s: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID) -> dict[str, VideoPublication]:
+    rows = (
+        await s.execute(
+            select(VideoPublication).where(
+                VideoPublication.workspace_id == ws, VideoPublication.upload_id == upload_id
+            )
+        )
+    ).scalars().all()
+    return {r.platform: r for r in rows}
+
+
+def _media_token(upload_id: uuid.UUID) -> str:
+    key = settings.private_access_key.get_secret_value() if settings.private_access_key else ""
+    return hashlib.sha256(f"social-media|{upload_id}|{key}".encode()).hexdigest()[:40]
+
+
+async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = False) -> None:
+    """Write the four posts from what he says in the edit. Never touches a post that
+    is already out, going out, or scheduled."""
+    from tce.llm import LLMUnavailable
+
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        existing = await _publications(s, ws, upload_id)
+        if not rewrite and len(existing) == len(publishing.PLATFORMS):
+            return
+        words = list(row.transcript or [])
+        keep = [list(r) for r in (row.edit_plan or {}).get("keep") or []]
+        if not words or not keep:
+            return
+        title, script_posts = "", {}
+        if row.candidate_id:
+            cand = await s.get(TopicCandidate, row.candidate_id)
+            title = cand.title if cand else ""
+        if row.packet_id:
+            packet = await s.get(RecordingPacket, row.packet_id)
+            if packet is not None:
+                script_posts = {"facebook": packet.facebook_post or "", "linkedin": packet.linkedin_post or ""}
+        candidate_id = row.candidate_id
+        spoken = publishing.spoken_text(words, keep)
+    try:
+        answer = await _ask(
+            publishing.COPY_JOB,
+            publishing.copy_prompt(title, spoken, settings.tce_booking_url, script_posts),
+            publishing.COPY_SYSTEM,
+            publishing.COPY_SCHEMA,
+            ws,
+            f"post-copy:{upload_id}:{hashlib.sha256(spoken.encode()).hexdigest()[:12]}",
+        )
+    except LLMUnavailable:
+        return  # the card offers "Write the posts" again
+    copies = publishing.clean_copy(answer.structured or {})
+    async with session_factory()() as s:
+        existing = await _publications(s, ws, upload_id)
+        for platform in publishing.PLATFORMS:
+            pub = existing.get(platform)
+            if pub is None:
+                s.add(
+                    VideoPublication(
+                        workspace_id=ws, upload_id=upload_id, candidate_id=candidate_id,
+                        platform=platform, status="draft", copy=copies[platform],
+                    )
+                )
+            elif pub.status in ("draft", "failed"):
+                pub.copy = copies[platform]
+                pub.status, pub.detail = "draft", None
+        await s.commit()
+
+
+def start_draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = False) -> None:
+    _spawn(draft_posts(upload_id, ws, rewrite=rewrite))
+
+
+async def _social_copy(upload_id: uuid.UUID, ws: uuid.UUID) -> Path:
+    """The upload-sized encode every platform gets (made once)."""
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        edited = Path(row.edited_path or "")
+    if not edited.exists():
+        raise RuntimeError("the edited video is not on the server")
+    out = edited.with_name(f"{edited.stem}-social.mp4")
+    if out.exists() and out.stat().st_mtime >= edited.stat().st_mtime:
+        return out
+    ff = media.ffmpeg_path()
+    if not ff:
+        raise RuntimeError("ffmpeg is not installed")
+    tmp = out.with_name(f".{out.name}.part.mp4")
+    proc = await asyncio.create_subprocess_exec(
+        ff, *publishing.social_encode_args(edited, tmp),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _o, err = await proc.communicate()
+    if proc.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"could not make the upload copy: {err.decode(errors='replace')[-200:]}")
+    os.replace(tmp, out)
+    return out
+
+
+def _linkedin_env() -> dict[str, str]:
+    env = dict(os.environ)
+    path = Path(settings.production_linkedin_env_file)
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip().removeprefix("export ").strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+async def run_platform(platform: str, argv: list[str]) -> tuple[int, str]:
+    """Run one schedule-* skill from its own folder (its .env is read from there)."""
+    cwd = Path(settings.production_skills_dir) / publishing.SKILLS[platform]
+    env = _linkedin_env() if platform == "linkedin" else dict(os.environ)
+    proc = await asyncio.create_subprocess_exec(
+        *argv, cwd=str(cwd), env=env,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=1500)
+    except TimeoutError:
+        proc.kill()
+        return 124, "timed out after 25 minutes"
+    return proc.returncode or 0, out.decode(errors="replace")
+
+
+async def _instagram_permalink(media_id: str) -> str | None:
+    """The public link of an Instagram post (read-only Graph lookup, skill's own token)."""
+    env_file = Path(settings.production_skills_dir) / publishing.SKILLS["instagram"] / ".env"
+    token = None
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("META_PAGE_ACCESS_TOKEN="):
+                token = line.split("=", 1)[1].strip().strip('"')
+    if not token:
+        return None
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(
+                f"https://graph.facebook.com/v19.0/{media_id}",
+                params={"fields": "permalink", "access_token": token},
+            )
+            return r.json().get("permalink")
+    except Exception:  # noqa: BLE001 - a missing link is shown as "posted" without it
+        return None
+
+
+async def publish_video(
+    upload_id: uuid.UUID, ws: uuid.UUID, platforms: list[str], at: datetime | None
+) -> None:
+    """Post (or schedule) the edited video on each chosen platform, one at a time."""
+    async def mark(platform: str, **fields: Any) -> None:
+        async with session_factory()() as s:
+            pub = (await _publications(s, ws, upload_id))[platform]
+            for k, v in fields.items():
+                setattr(pub, k, v)
+            await s.commit()
+
+    try:
+        for platform in platforms:
+            await mark(platform, status="posting", detail="Making the upload copy of the video")
+        social = await _social_copy(upload_id, ws)
+    except Exception as exc:  # noqa: BLE001
+        for platform in platforms:
+            await mark(platform, status="failed", detail=str(exc)[:500])
+        return
+    media_url = (
+        f"{settings.production_self_url}/api/v1/production/social-media/{upload_id}/"
+        f"{_media_token(upload_id)}.mp4"
+    )
+    at_iso = at.replace(microsecond=0).isoformat() + "Z" if at else None
+    for platform in platforms:
+        async with session_factory()() as s:
+            pub = (await _publications(s, ws, upload_id))[platform]
+            copy, candidate_id = dict(pub.copy or {}), pub.candidate_id
+        await mark(platform, detail=f"{'Scheduling' if at else 'Posting'} on {publishing.LABELS[platform]}")
+        argv = publishing.command(platform, copy, media_path=str(social), media_url=media_url, at_iso=at_iso)
+        code, out = await run_platform(platform, argv)
+        result = publishing.read_result(platform, out)
+        if code != 0 or (not at and not result["post_id"] and platform != "linkedin"):
+            tail = " ".join(out.strip().splitlines()[-3:])[-400:]
+            await mark(platform, status="failed", detail=f"Did not go out: {tail}")
+            continue
+        if at:
+            await mark(platform, status="scheduled", scheduled_for=at, external_id=result["row_id"],
+                       detail=f"Scheduled for {at_iso}")
+            continue
+        url = result["url"]
+        if platform == "instagram" and result["post_id"]:
+            url = await _instagram_permalink(result["post_id"])
+        await mark(platform, status="posted", external_id=result["post_id"] or result["row_id"],
+                   url=url, posted_at=_utcnow(), detail=None)
+        if candidate_id and result["post_id"]:
+            async with session_factory()() as s:
+                s.add(
+                    PublicationReceipt(
+                        workspace_id=ws, candidate_id=candidate_id, platform=platform,
+                        external_post_id=str(result["post_id"])[:300], url=url,
+                        published_at=_utcnow(),
+                        final_text=copy.get("caption") or copy.get("message") or copy.get("description"),
+                        recorded_by="tce-publish",
+                    )
+                )
+                try:
+                    await s.commit()
+                except Exception:  # noqa: BLE001 - a duplicate receipt is not a failed post
+                    await s.rollback()
+
+
+class PublishBody(BaseModel):
+    platforms: list[str] = Field(min_length=1)
+    at: datetime | None = None
+
+
+class CopyBody(BaseModel):
+    fields: dict[str, Any]
+
+
+@router.get("/uploads/{upload_id}/publishing")
+async def get_publishing(
+    upload_id: uuid.UUID,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    await _upload(db, ws, upload_id)
+    pubs = await _publications(db, ws, upload_id)
+    return {
+        "upload_id": str(upload_id),
+        "platforms": [
+            _publication_json(pubs[p]) if p in pubs
+            else {"platform": p, "label": publishing.LABELS[p], "status": "none", "copy": {}}
+            for p in publishing.PLATFORMS
+        ],
+    }
+
+
+@router.post("/uploads/{upload_id}/publishing/draft", status_code=202)
+async def write_posts(
+    upload_id: uuid.UUID,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await _upload(db, ws, upload_id)
+    if not row.edited_path:
+        raise HTTPException(status_code=409, detail="Edit the video first; the posts are written from the edit")
+    start_draft_posts(upload_id, ws, rewrite=True)
+    return {"status": "writing"}
+
+
+@router.put("/uploads/{upload_id}/publishing/{platform}")
+async def save_post_copy(
+    upload_id: uuid.UUID,
+    platform: str,
+    body: CopyBody,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    if platform not in publishing.PLATFORMS:
+        raise HTTPException(status_code=404, detail="Unknown platform")
+    pub = (await _publications(db, ws, upload_id)).get(platform)
+    if pub is None:
+        raise HTTPException(status_code=404, detail="No post written for this platform yet")
+    if pub.status in ("posting", "posted", "scheduled"):
+        raise HTTPException(status_code=409, detail="This post is already out; it cannot be edited here")
+    pub.copy = publishing.clean_copy({platform: body.fields})[platform]
+    await db.commit()
+    return _publication_json(pub)
+
+
+@router.post("/uploads/{upload_id}/publishing/publish", status_code=202)
+async def publish_route(
+    upload_id: uuid.UUID,
+    body: PublishBody,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await _upload(db, ws, upload_id)
+    if not row.edited_path:
+        raise HTTPException(status_code=409, detail="There is no edited video to post")
+    unknown = [p for p in body.platforms if p not in publishing.PLATFORMS]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown platform: {', '.join(unknown)}")
+    if body.at is not None:
+        at = body.at.astimezone(UTC).replace(tzinfo=None) if body.at.tzinfo else body.at
+        if at < _utcnow() + timedelta(minutes=15):
+            raise HTTPException(status_code=400, detail="Schedule at least 15 minutes ahead")
+    else:
+        at = None
+    pubs = await _publications(db, ws, upload_id)
+    for platform in body.platforms:
+        pub = pubs.get(platform)
+        if pub is None:
+            raise HTTPException(status_code=409, detail=f"No {publishing.LABELS[platform]} post written yet")
+        if pub.status in ("posting", "posted", "scheduled"):
+            raise HTTPException(status_code=409, detail=f"{publishing.LABELS[platform]} is already {pub.status}")
+        reason = publishing.missing(platform, pub.copy or {})
+        if reason:
+            raise HTTPException(status_code=409, detail=reason)
+        pub.status, pub.detail = "posting", "Queued"
+    await db.commit()
+    _spawn(publish_video(upload_id, ws, list(body.platforms), at))
+    return {"status": "posting", "platforms": body.platforms}
+
+
+@router.get("/social-media/{upload_id}/{token}.mp4", include_in_schema=False)
+async def social_media_file(upload_id: uuid.UUID, token: str):
+    """The upload copy, for LinkedIn's fetcher on this box. No workspace key: the token
+    is a secret derived from the private key, and the file is only what he chose to post."""
+    if token != _media_token(upload_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    async with session_factory()() as s:
+        row = await s.get(RecordingUpload, upload_id)
+        edited = Path(row.edited_path) if row and row.edited_path else None
+    social = edited.with_name(f"{edited.stem}-social.mp4") if edited else None
+    if social is None or not social.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(social, media_type="video/mp4")
 
 
 # ---------------------------------------------------------------------------

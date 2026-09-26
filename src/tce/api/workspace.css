@@ -456,3 +456,20 @@ body[data-reader="largest"] .msg .bubble { font-size: 1.3rem; }
 .player { margin-top: 12px; display: grid; gap: 8px; justify-items: end; }
 .player[hidden] { display: none; }
 .player video { width: 100%; max-height: 72vh; background: #000; border-radius: 10px; object-fit: contain; }
+
+/* Publish (26-Sep): the four posts on an edited video's card. */
+.publish { margin-top: 18px; padding-top: 14px; border-top: 2px solid var(--line, #d8d2c4); }
+.publish h4 { margin: 0 0 8px; font-size: 1.05rem; }
+.pub-platform { margin: 12px 0 16px; }
+.pub-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.pub-pick { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; color: var(--ink); }
+.pub-pick input { width: 22px; height: 22px; }
+.pub-field { display: block; margin-top: 8px; }
+.pub-field span { display: block; font-size: .86rem; font-weight: 700; color: var(--ink); margin-bottom: 4px; }
+.pub-field textarea, .pub-field input, .pub-when {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: .95rem; color: var(--ink);
+  background: #fff; border: 1.5px solid #b9b2a3; border-radius: 10px; padding: 10px 12px;
+}
+.pub-field textarea[readonly], .pub-field input[readonly] { background: #f3efe6; }
+.pub-actions { flex-wrap: wrap; }
+.pub-when { min-height: 46px; max-width: 260px; }

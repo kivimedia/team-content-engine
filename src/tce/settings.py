@@ -173,6 +173,13 @@ class Settings(BaseSettings):
     # 25-Sep: a finished session edits itself and editing requests run themselves,
     # on the subscription worker. Off = the old click-each-step flow.
     production_auto_edit: bool = True
+    # 26-Sep: TCE publishes the edited video through the schedule-* skills on this box.
+    production_skills_dir: str = "/home/ziv/skills"
+    production_linkedin_env_file: str = "/home/ziv/.kmboards-li.env"
+    # His own 15-minute booking page (memory: ziv-booking-link).
+    tce_booking_url: str = "https://kivimedia.co/15"
+    # Where this server answers itself; LinkedIn fetches the video from a URL.
+    production_self_url: str = "http://127.0.0.1:8200"
     # "gws" = create Google Docs with the gws CLI on this host; "off" = private .docx only
     production_google_export: str = "off"
     production_gws_binary: str = "gws"

@@ -24,7 +24,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.editorial.common import ORIGIN_TECHNICAL_VALIDATION
-from tce.models.editorial import RecordingPacket, RecordingUpload, TopicCandidate
+from tce.models.editorial import (
+    RecordingPacket,
+    RecordingUpload,
+    TopicCandidate,
+    VideoPublication,
+)
 from tce.models.editorial_workspace import (
     EDIT_REQUEST_SCOPES,
     EditingRequest,
@@ -117,6 +122,39 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
     return actions
 
 
+PUBLISH_ORDER = ("instagram", "facebook", "youtube", "linkedin")
+PUBLISH_LABELS = {
+    "instagram": "Instagram Reel",
+    "facebook": "Facebook Page",
+    "youtube": "YouTube Short",
+    "linkedin": "LinkedIn",
+}
+
+
+def _publishing_json(pubs: dict[str, VideoPublication]) -> list[dict[str, Any]]:
+    """The four posts, in a fixed order; empty until they are written."""
+    if not pubs:
+        return []
+    out = []
+    for platform in PUBLISH_ORDER:
+        pub = pubs.get(platform)
+        if pub is None:
+            continue
+        out.append(
+            {
+                "platform": platform,
+                "label": PUBLISH_LABELS[platform],
+                "status": pub.status,
+                "copy": pub.copy or {},
+                "url": pub.url,
+                "detail": pub.detail,
+                "scheduled_for": pub.scheduled_for.isoformat() if pub.scheduled_for else None,
+                "posted_at": pub.posted_at.isoformat() if pub.posted_at else None,
+            }
+        )
+    return out
+
+
 def _issues(upload: RecordingUpload) -> list[str]:
     """Problems the pipeline found, in plain words. Empty when there are none."""
     plan = upload.edit_plan or {}
@@ -192,6 +230,12 @@ async def list_library(
         if req.state in ("open", "in_progress"):
             open_by_upload[req.upload_id] = open_by_upload.get(req.upload_id, 0) + 1
 
+    # 26-Sep: the posts for each edited video, and whether they went out.
+    pubs = await db.execute(select(VideoPublication).where(VideoPublication.workspace_id == ws))
+    pubs_by_upload: dict[uuid.UUID, dict[str, VideoPublication]] = {}
+    for pub in pubs.scalars().all():
+        pubs_by_upload.setdefault(pub.upload_id, {})[pub.platform] = pub
+
     wanted = LIBRARY_FILTERS[filter_key]
     # "I need a way to find the edited video" (25-Sep): a replaced take is kept on
     # the server for history, never shown, and an edit sits above the raw takes.
@@ -218,6 +262,7 @@ async def list_library(
                 ),
                 # What the subscription proofread changed, so no word moves unseen.
                 "proofread": list((upload.edit_plan or {}).get("proofread") or []),
+                "publishing": _publishing_json(pubs_by_upload.get(upload.id, {})),
                 "last_request": (
                     edit_request_to_json(last_by_upload[upload.id])
                     if upload.id in last_by_upload
