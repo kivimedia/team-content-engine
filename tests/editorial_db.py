@@ -51,6 +51,7 @@ TABLE_NAMES = (
     # changed, migration 050)
     "topic_decision_changes",
     "weekly_lineups",
+    "editorial_settings",
     "weekly_lineup_items",
     "editorial_threads",
     "editorial_messages",

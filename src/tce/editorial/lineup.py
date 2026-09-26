@@ -1,4 +1,4 @@
-"""The weekly recording lineup: three slots, a reserve, and a reason beside each.
+"""The weekly recording lineup: his usual number of videos, a reserve, and a reason beside each.
 
 The old queue answered "what has a script". This answers "what am I recording
 this week, in what order, and why that one first" - which is the decision Ziv
@@ -32,12 +32,15 @@ from tce.editorial.common import current_week_start, week_bounds
 from tce.models.editorial import RecordingPacket, TopicCandidate
 from tce.models.editorial_workspace import (
     LINEUP_SLOTS,
+    EditorialSettings,
     TopicDecision,
     WeeklyLineup,
     WeeklyLineupItem,
 )
 
 DEFAULT_PRIMARY_SLOTS = 3
+MIN_VIDEOS_PER_WEEK = 1
+MAX_VIDEOS_PER_WEEK = 14
 
 LANE_LABELS = {
     "build": "Build",
@@ -128,6 +131,41 @@ async def get_lineup(
     return result.scalar_one_or_none()
 
 
+async def videos_per_week(db: AsyncSession, ws: uuid.UUID) -> int:
+    """His usual number of videos a week (the Settings page). Three until he sets it."""
+    row = (
+        await db.execute(select(EditorialSettings).where(EditorialSettings.workspace_id == ws))
+    ).scalar_one_or_none()
+    return row.videos_per_week if row is not None else DEFAULT_PRIMARY_SLOTS
+
+
+async def set_videos_per_week(db: AsyncSession, ws: uuid.UUID, count: int) -> int:
+    """Save his number, and apply it to this week and every week already started
+    after it: a week he is in the middle of follows the setting he just chose."""
+    if not isinstance(count, int) or not MIN_VIDEOS_PER_WEEK <= count <= MAX_VIDEOS_PER_WEEK:
+        raise LineupError(
+            "bad_count",
+            f"choose between {MIN_VIDEOS_PER_WEEK} and {MAX_VIDEOS_PER_WEEK} videos a week",
+            status=400,
+        )
+    row = (
+        await db.execute(select(EditorialSettings).where(EditorialSettings.workspace_id == ws))
+    ).scalar_one_or_none()
+    if row is None:
+        db.add(EditorialSettings(workspace_id=ws, videos_per_week=count))
+    else:
+        row.videos_per_week = count
+    weeks = await db.execute(
+        select(WeeklyLineup).where(
+            WeeklyLineup.workspace_id == ws, WeeklyLineup.week_start >= week_start_for(None)
+        )
+    )
+    for week in weeks.scalars().all():
+        week.primary_slots = count
+    await db.flush()
+    return count
+
+
 async def ensure_lineup(
     db: AsyncSession, ws: uuid.UUID, week_start: datetime
 ) -> WeeklyLineup:
@@ -140,7 +178,7 @@ async def ensure_lineup(
         week_start=week_start,
         status="draft",
         revision=1,
-        primary_slots=DEFAULT_PRIMARY_SLOTS,
+        primary_slots=await videos_per_week(db, ws),
     )
     db.add(row)
     try:
@@ -253,11 +291,12 @@ async def add_topic(
     added_by: str | None = None,
     rank: int | None = None,
 ) -> WeeklyLineupItem:
-    """Put a topic in the week. Overflowing the primary slots lands in reserve.
+    """Put a topic in the week, in the slot asked for.
 
-    The overflow is deliberate and silent-free: the caller is told which slot it
-    landed in, so the UI can say "this week is full, it went to reserve" instead
-    of refusing the tap.
+    His number of videos a week is his usual week, not a wall (26-Sep: "I need to
+    be able to promote more than the slots defined if I have a good week. nothing
+    wrong with it."). A topic past that number goes into the week like any other;
+    it used to be moved to reserve behind his back.
 
     `rank` puts it back at a known place (the one it was taken out of) instead of
     at the end, moving the ones below it down one. It is ignored when the topic
@@ -278,10 +317,7 @@ async def add_topic(
         return found
 
     items = await list_items(db, ws, lineup.id)
-    primary_count = sum(1 for i in items if i.slot == "primary")
     wanted_slot = slot
-    if slot == "primary" and primary_count >= lineup.primary_slots:
-        slot = "reserve"
 
     siblings = [i for i in items if i.slot == slot]
     at = len(siblings) + 1
@@ -636,6 +672,8 @@ async def lineup_to_json(
         "status": lineup.status,
         "revision": lineup.revision,
         "primary_slots": lineup.primary_slots,
+        # A good week: how many past his usual number. Shown, never refused.
+        "over_by": max(0, len(primary) - lineup.primary_slots),
         "primary": primary,
         "reserve": reserve,
         # Information, not a rule. An unbalanced week is visible and allowed.

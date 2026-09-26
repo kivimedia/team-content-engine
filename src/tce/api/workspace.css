@@ -68,6 +68,10 @@ textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .topbar-actions { display: flex; gap: 8px; }
+.settings-link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.stepper { display: flex; align-items: center; gap: 14px; margin: 14px 0 6px; }
+.stepper .count { min-width: 64px; text-align: center; font-size: 2.4rem; font-weight: 900; color: var(--ink); }
+.stepper .btn { min-width: 56px; min-height: 56px; font-size: 1.6rem; font-weight: 900; }
 .kmbot-link {
   display: inline-flex; align-items: center; min-height: 46px; padding: 0 12px;
   border-radius: 23px; background: #29405e; color: #fff; font-weight: 800; font-size: .86rem;

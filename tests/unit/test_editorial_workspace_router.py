@@ -655,3 +655,27 @@ async def test_start_recording_points_at_the_idea_not_the_list(
 
     assert body["next_action"]["key"] == "record"
     assert body["next_action"]["href"] == f"/record?candidate={cid}"
+
+
+# --------------------------------------------------------------- settings
+
+
+async def test_videos_a_week_is_saved_and_a_fifth_topic_still_goes_into_the_week(
+    client, editorial_sessionmaker
+):
+    """26-Sep: choose how many videos a week, and go past it on a good week."""
+    ws = uuid.uuid4()
+    assert (await client.get("/api/v1/editorial/settings", headers=headers(ws))).json()[
+        "videos_per_week"
+    ] == 3
+    saved = await client.put(
+        "/api/v1/editorial/settings", json={"videos_per_week": 4}, headers=headers(ws)
+    )
+    assert saved.status_code == 200 and saved.json()["videos_per_week"] == 4
+    refused = await client.put(
+        "/api/v1/editorial/settings", json={"videos_per_week": 0}, headers=headers(ws)
+    )
+    assert refused.status_code == 422
+    assert (await client.get("/api/v1/editorial/settings", headers=headers(ws))).json()[
+        "videos_per_week"
+    ] == 4

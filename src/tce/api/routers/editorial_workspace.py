@@ -857,6 +857,43 @@ async def get_workshop(
 # ---------------------------------------------------------------------------
 
 
+class SettingsBody(BaseModel):
+    videos_per_week: int = Field(ge=lineup_service.MIN_VIDEOS_PER_WEEK, le=lineup_service.MAX_VIDEOS_PER_WEEK)
+
+
+def _settings_json(count: int) -> dict[str, Any]:
+    return {
+        "videos_per_week": count,
+        "min": lineup_service.MIN_VIDEOS_PER_WEEK,
+        "max": lineup_service.MAX_VIDEOS_PER_WEEK,
+    }
+
+
+@router.get("/settings")
+async def get_settings(
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """26-Sep: his Settings page - how many videos a week."""
+    async with open_session(sm) as db:
+        return _settings_json(await lineup_service.videos_per_week(db, ws))
+
+
+@router.put("/settings")
+async def put_settings(
+    body: SettingsBody,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    async with open_session(sm) as db:
+        try:
+            count = await lineup_service.set_videos_per_week(db, ws, body.videos_per_week)
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+        return _settings_json(count)
+
+
 @production_router.get("/library")
 async def get_library(
     filter: str = Query("all"),

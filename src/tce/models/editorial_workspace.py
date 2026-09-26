@@ -257,6 +257,20 @@ class WeeklyLineup(_PrivateWorkspaceMixin, Base):
     updated_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
+class EditorialSettings(_PrivateWorkspaceMixin, Base):
+    """His settings for the editorial workspace, one row per workspace.
+
+    26-Sep: "a setting page that allows me to promote more than 3 videos a week
+    (choose how many videos)". videos_per_week is his usual week: new weeks start
+    with that many recording slots, and a good week may go past it.
+    """
+
+    __tablename__ = "editorial_settings"
+    __table_args__ = (UniqueConstraint("workspace_id", name="uq_editorial_settings_workspace"),)
+
+    videos_per_week: Mapped[int] = mapped_column(Integer, default=3)
+
+
 class WeeklyLineupItem(_PrivateWorkspaceMixin, Base):
     """One topic in one week, at one rank, in a primary slot or in reserve."""
 

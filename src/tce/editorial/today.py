@@ -146,7 +146,7 @@ async def build(db: AsyncSession, ws: uuid.UUID, *, sessionmaker: Any = None) ->
             "reserve": [],
             "mix": "",
             "ready_count": 0,
-            "primary_slots": lineup_service.DEFAULT_PRIMARY_SLOTS,
+            "primary_slots": await lineup_service.videos_per_week(db, ws),
             "status": "draft",
         }
     )

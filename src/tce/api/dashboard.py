@@ -24,7 +24,7 @@ _CACHE: str | None = None
 # Every editorial workspace path serves the same shell; the page reads the URL
 # and renders itself. They are real paths, not hash fragments, so the back
 # button, a bookmark and a link in a message all behave the way he expects.
-WORKSPACE_PATHS = ("/today", "/topics", "/week", "/library")
+WORKSPACE_PATHS = ("/today", "/topics", "/week", "/library", "/settings")
 
 
 def _load_html() -> str:
@@ -83,6 +83,7 @@ async def _workspace_page() -> HTMLResponse | RedirectResponse:
 @router.get("/topics", response_class=HTMLResponse, include_in_schema=False)
 @router.get("/week", response_class=HTMLResponse, include_in_schema=False)
 @router.get("/library", response_class=HTMLResponse, include_in_schema=False)
+@router.get("/settings", response_class=HTMLResponse, include_in_schema=False)
 async def workspace_shell():
     return await _workspace_page()
 

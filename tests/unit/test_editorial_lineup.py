@@ -60,18 +60,45 @@ def order_of(payload, slot="primary"):
 # ------------------------------------------------------------------ slots
 
 
-async def test_the_fourth_topic_lands_in_reserve_rather_than_being_refused(editorial_session):
-    """Three slots is the shape of the week, not a wall to tap against."""
+async def test_a_good_week_takes_a_fourth_video_straight_into_the_week(editorial_session):
+    """26-Sep: "I need to be able to promote more than the slots defined if I have a
+    good week. nothing wrong with it." The number is his usual week, not a wall:
+    a fourth topic goes into the week, never quietly into reserve."""
     ws = uuid.uuid4()
     week = await lineup_service.ensure_lineup(editorial_session, ws, WEEK)
     for n in range(1, 5):
         candidate = await add_candidate(editorial_session, ws, f"Topic {n}")
-        await lineup_service.add_topic(editorial_session, ws, week, candidate)
+        placed = await lineup_service.add_topic(editorial_session, ws, week, candidate)
+        assert placed.slot == "primary"
     await editorial_session.commit()
 
     payload = await lineup_service.lineup_to_json(editorial_session, ws, week)
-    assert order_of(payload) == ["Topic 1", "Topic 2", "Topic 3"]
-    assert order_of(payload, "reserve") == ["Topic 4"]
+    assert order_of(payload) == ["Topic 1", "Topic 2", "Topic 3", "Topic 4"]
+    assert order_of(payload, "reserve") == []
+    assert payload["primary_slots"] == 3 and payload["over_by"] == 1
+
+
+async def test_videos_a_week_is_his_setting_for_this_week_and_new_weeks(editorial_session):
+    """26-Sep: "a setting page that allows me to promote more than 3 videos a week
+    (choose how many videos)"."""
+    ws = uuid.uuid4()
+    this_week = await lineup_service.ensure_lineup(editorial_session, ws, WEEK)
+    assert await lineup_service.videos_per_week(editorial_session, ws) == 3
+
+    await lineup_service.set_videos_per_week(editorial_session, ws, 5)
+    await editorial_session.commit()
+
+    assert await lineup_service.videos_per_week(editorial_session, ws) == 5
+    assert this_week.primary_slots == 5
+    from datetime import timedelta
+
+    later = await lineup_service.ensure_lineup(editorial_session, ws, WEEK + timedelta(days=7))
+    assert later.primary_slots == 5
+    # Another workspace keeps its own number.
+    assert await lineup_service.videos_per_week(editorial_session, uuid.uuid4()) == 3
+    for bad in (0, 15, -1):
+        with pytest.raises(LineupError):
+            await lineup_service.set_videos_per_week(editorial_session, ws, bad)
 
 
 async def test_adding_the_same_topic_twice_is_one_item(editorial_session):

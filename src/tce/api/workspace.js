@@ -124,6 +124,7 @@
     { name: "topics",   pattern: /^\/topics\/?$/,              title: "Topics" },
     { name: "week",     pattern: /^\/week\/?$/,                title: "This week" },
     { name: "library",  pattern: /^\/library\/?$/,             title: "Library" },
+    { name: "settings", pattern: /^\/settings\/?$/,            title: "Settings" },
     { name: "room",     pattern: /^\/topics\/([0-9a-f-]{36})\/?$/, title: "Topic" },
     { name: "workshop", pattern: /^\/scripts\/([0-9a-f-]{36})\/?$/, title: "Script" }
   ];
@@ -434,13 +435,19 @@
     var html = '<div class="page">';
     html += '<div class="page-head"><p class="kicker">Week of ' + esc(data.week_start) + "</p>";
     html += "<h1>This week</h1>";
-    html += '<p class="lede">' + primary.length + " of " + data.primary_slots
-         + " recording " + plural(data.primary_slots, "slot") + " used."
-         + (data.mix ? " " + esc(data.mix) + "." : "") + "</p></div>";
+    // 26-Sep: his number is his usual week, not a wall. Past it is a good week.
+    var usual = data.primary_slots;
+    var lede = data.over_by > 0
+      ? primary.length + " videos this week, " + data.over_by + " more than your usual "
+        + usual + ". A good week."
+      : primary.length + " of " + usual + " " + plural(usual, "video") + " planned.";
+    html += '<p class="lede">' + lede + (data.mix ? " " + esc(data.mix) + "." : "")
+         + ' <a href="settings" data-go="/settings">Change how many a week</a></p></div>';
 
     if (!primary.length && !reserve.length) {
       html += '<div class="empty"><strong>Nothing chosen yet</strong>'
-            + "Open Topics and put three ideas in this week.</div>";
+            + "Open Topics and put " + data.primary_slots + " "
+            + plural(data.primary_slots, "idea") + " in this week, or more on a good week.</div>";
       html += '<div class="actions"><button class="btn primary" type="button" data-go="/topics">Choose topics</button></div>';
     } else {
       html += "<h2>Record first</h2>";
@@ -451,7 +458,7 @@
 
       if (reserve.length) {
         html += "<h2>Possible replacements</h2>";
-        html += '<p class="section-hint">Ready to swap in if one of the three stops feeling right.</p>';
+        html += '<p class="section-hint">Ready to swap in, or add to the week if it is a good one.</p>';
         html += '<div class="card-list">';
         reserve.forEach(function (item, index) { html += weekCard(item, index, true, reserve.length, true); });
         html += "</div>";
@@ -1204,6 +1211,56 @@
     return html;
   }
 
+  // --------------------------------------------------------------- Settings
+
+  /* 26-Sep: "I need a setting page that allows me to promote more than 3 videos a
+     week (choose how many videos)". One number: his usual week. Going past it on a
+     good week is always allowed, so the page says that too. */
+  async function renderSettings() {
+    var view = $("view");
+    view.innerHTML = '<div class="page">' + working("Reading your settings") + "</div>";
+    var data = await api("/editorial/settings");
+    state.settings = data;
+    state.videosDraft = data.videos_per_week;
+    paintSettings();
+  }
+
+  function paintSettings() {
+    var data = state.settings, n = state.videosDraft;
+    var html = '<div class="page">';
+    html += '<div class="page-head"><p class="kicker">Editorial workspace</p><h1>Settings</h1></div>';
+    html += '<article class="card"><h3>Videos a week</h3>';
+    html += '<p class="big-idea">How many videos you usually record in a week. Each new week '
+         + "starts with this many places, and this week changes too.</p>";
+    html += '<div class="stepper">'
+         + '<button class="btn" type="button" data-videos-step="-1" aria-label="One fewer"'
+         + (n <= data.min ? " disabled" : "") + ">&#8722;</button>"
+         + '<span class="count" id="videosCount" aria-live="polite">' + n + "</span>"
+         + '<button class="btn" type="button" data-videos-step="1" aria-label="One more"'
+         + (n >= data.max ? " disabled" : "") + ">+</button></div>";
+    html += '<p class="section-hint">Had a good week? Put more in the week anyway. This number '
+         + "is your usual week, not a limit.</p>";
+    html += '<div class="actions"><button class="btn primary" type="button" data-save-settings'
+         + (n === data.videos_per_week ? " disabled" : "") + ">Save " + n + " a week</button>"
+         + '<button class="btn quiet" type="button" data-go="/week">Open this week</button></div>';
+    html += "</article></div>";
+    $("view").innerHTML = html;
+    status(data.videos_per_week + " " + plural(data.videos_per_week, "video") + " a week");
+  }
+
+  async function saveSettings() {
+    try {
+      state.settings = await api("/editorial/settings", {
+        method: "PUT", body: { videos_per_week: state.videosDraft }
+      });
+      toast("Saved. Your week is now " + state.settings.videos_per_week + " "
+            + plural(state.settings.videos_per_week, "video") + ".");
+      paintSettings();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
   // ---------------------------------------------------------------- Library
 
   async function renderLibrary() {
@@ -1505,7 +1562,7 @@
       });
       if (decision === "this_week" && result.placed) {
         toast(result.placed.slot === "reserve"
-          ? "This week is full, so it went to the reserve list."
+          ? "In the reserve list."
           : "In this week's list at number " + result.placed.rank + ".");
       } else {
         toast(decisionSentence(decision));
@@ -1549,7 +1606,8 @@
     "go", "filter", "libfilter", "decide", "open-room", "open-script", "move",
     "slot", "remove", "ask-script", "change", "edit", "restore", "wtab",
     "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
-    "watch", "watch-close", "voice-undo", "voice-restore"
+    "watch", "watch-close", "voice-undo", "voice-restore",
+    "videos-step", "save-settings"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -1561,6 +1619,13 @@
     var d = target.dataset;
 
     if (d.go !== undefined) { event.preventDefault(); go(d.go); return; }
+    if (d.videosStep !== undefined) {
+      var s = state.settings;
+      state.videosDraft = Math.max(s.min, Math.min(s.max, state.videosDraft + Number(d.videosStep)));
+      paintSettings();
+      return;
+    }
+    if (d.saveSettings !== undefined) { saveSettings(); return; }
     if (d.filter !== undefined) { state.topicFilter = d.filter; render(); return; }
     if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; render(); return; }
     if (d.wtab !== undefined) { state.workshopTab = d.wtab; render(); return; }
@@ -1769,6 +1834,7 @@
       else if (route.name === "topics") await renderTopics();
       else if (route.name === "week") await renderWeek();
       else if (route.name === "library") await renderLibrary();
+      else if (route.name === "settings") await renderSettings();
       else if (route.name === "room") await renderRoom(route.id);
       else if (route.name === "workshop") await renderWorkshop(route.id);
       if (route.name === "room") $("pageTitle").textContent = "Topic";
