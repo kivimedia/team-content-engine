@@ -269,6 +269,9 @@ class EditorialSettings(_PrivateWorkspaceMixin, Base):
     __table_args__ = (UniqueConstraint("workspace_id", name="uq_editorial_settings_workspace"),)
 
     videos_per_week: Mapped[int] = mapped_column(Integer, default=3)
+    # 26-Sep: how his posts read, in his words. Every post TCE writes obeys it.
+    # None = the default rule (publishing.DEFAULT_POST_RULES: no call to action).
+    post_rules: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class WeeklyLineupItem(_PrivateWorkspaceMixin, Base):

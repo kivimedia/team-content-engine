@@ -1243,9 +1243,29 @@
     html += '<div class="actions"><button class="btn primary" type="button" data-save-settings'
          + (n === data.videos_per_week ? " disabled" : "") + ">Save " + n + " a week</button>"
          + '<button class="btn quiet" type="button" data-go="/week">Open this week</button></div>';
+    html += "</article>";
+    // 26-Sep: "I want to build an audience without asking anyone for anything."
+    html += '<article class="card"><h3>How your posts read</h3>';
+    html += '<p class="big-idea">Every post TCE writes for you follows this, in your words. '
+         + "Change it any time; the next posts follow the new version.</p>";
+    html += '<label class="pub-field"><span>Your post rules</span><textarea rows="6" id="postRules">'
+         + esc(data.post_rules || "") + "</textarea></label>";
+    html += '<div class="actions"><button class="btn primary" type="button" data-save-rules>Save the rules</button></div>';
     html += "</article></div>";
     $("view").innerHTML = html;
     status(data.videos_per_week + " " + plural(data.videos_per_week, "video") + " a week");
+  }
+
+  async function saveRules() {
+    try {
+      state.settings = await api("/editorial/settings", {
+        method: "PUT", body: { post_rules: $("postRules").value }
+      });
+      toast("Saved. The next posts follow these rules.");
+      paintSettings();
+    } catch (error) {
+      toast(error.message, true);
+    }
   }
 
   async function saveSettings() {
@@ -1307,7 +1327,7 @@
       return LIBRARY_LIVE.indexOf(i.status) >= 0
         || (i.last_request && i.last_request.state === "in_progress")
         || writing
-        || (i.publishing || []).some(function (p) { return p.status === "posting"; });
+        || (i.publishing || []).some(function (p) { return p.status === "posting" || p.status === "revising"; });
     });
   }
   function scheduleLibraryPoll(items) {
@@ -1393,7 +1413,7 @@
     linkedin: [["message", "Post", 10], ["hashtags", "Hashtags (comma separated)", 1]]
   };
   var PUB_STATUS = { draft: "Ready to post", posting: "Posting now", scheduled: "Scheduled",
-                     posted: "Posted", failed: "Did not go out" };
+                     posted: "Posted", failed: "Did not go out", revising: "Being changed" };
 
   function publishSection(item) {
     var pubs = item.publishing || [];
@@ -1408,7 +1428,8 @@
       return html + "</section>";
     }
     pubs.forEach(function (p) {
-      var done = p.status === "posted" || p.status === "scheduled" || p.status === "posting";
+      var done = p.status === "posted" || p.status === "scheduled" || p.status === "posting"
+        || p.status === "revising";
       html += '<div class="pub-platform" data-platform="' + esc(p.platform) + '">';
       html += '<div class="pub-head"><label class="pub-pick"><input type="checkbox" data-pub-pick="' + esc(p.platform) + '"'
            + (done ? " disabled" : " checked") + "> <strong>" + esc(p.label) + "</strong></label>"
@@ -1435,6 +1456,11 @@
     });
     var open = pubs.some(function (p) { return p.status === "draft" || p.status === "failed"; });
     if (open) {
+      // 26-Sep: "I need a way to request a change to the posts".
+      html += '<label class="pub-field"><span>Ask for a change to the posts</span>'
+           + '<textarea rows="2" class="pub-change" placeholder="For example: shorter, and start with the 9 a.m. line"></textarea></label>'
+           + '<div class="actions"><button class="btn" type="button" data-pub-revise="' + id + '">Change the posts</button>'
+           + '<a class="btn quiet" href="settings" data-go="/settings">How your posts read</a></div>';
       html += '<div class="actions pub-actions">'
            + '<button class="btn primary" type="button" data-pub-post="' + id + '">Post the ticked ones now</button>'
            + '<input type="datetime-local" class="pub-when" aria-label="When to post">'
@@ -1480,6 +1506,21 @@
         method: "POST", body: { platforms: picked, at: at }
       });
       toast(schedule ? "Scheduling. The card shows each one as it is booked." : "Posting. The card shows each link as it goes live.");
+      renderLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function publishRevise(uploadId) {
+    var section = document.querySelector('[data-pub-upload="' + uploadId + '"]');
+    var text = (section.querySelector(".pub-change") || {}).value || "";
+    if (text.trim().length < 2) { toast("Say what should change first.", true); return; }
+    try {
+      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/publishing/revise", {
+        method: "POST", body: { request: text.trim() }
+      });
+      toast("Changing the posts on your subscription. This card updates when they are ready.");
       renderLibrary();
     } catch (error) {
       toast(error.message, true);
@@ -1731,7 +1772,8 @@
     "slot", "remove", "ask-script", "change", "edit", "restore", "wtab",
     "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
     "watch", "watch-close", "voice-undo", "voice-restore",
-    "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule"
+    "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise",
+    "save-rules"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -1753,6 +1795,8 @@
     if (d.pubDraft !== undefined) { publishDraft(d.pubDraft); return; }
     if (d.pubPost !== undefined) { publishStart(d.pubPost, false); return; }
     if (d.pubSchedule !== undefined) { publishStart(d.pubSchedule, true); return; }
+    if (d.pubRevise !== undefined) { publishRevise(d.pubRevise); return; }
+    if (d.saveRules !== undefined) { saveRules(); return; }
     if (d.filter !== undefined) { state.topicFilter = d.filter; render(); return; }
     if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; render(); return; }
     if (d.wtab !== undefined) { state.workshopTab = d.wtab; render(); return; }

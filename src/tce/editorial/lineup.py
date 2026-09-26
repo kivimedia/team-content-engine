@@ -139,6 +139,35 @@ async def videos_per_week(db: AsyncSession, ws: uuid.UUID) -> int:
     return row.videos_per_week if row is not None else DEFAULT_PRIMARY_SLOTS
 
 
+async def post_rules(db: AsyncSession, ws: uuid.UUID) -> str:
+    """How his posts must read (the Settings page). The no-call-to-action rule until he
+    writes his own."""
+    from tce.production.publishing import DEFAULT_POST_RULES
+
+    row = (
+        await db.execute(select(EditorialSettings).where(EditorialSettings.workspace_id == ws))
+    ).scalar_one_or_none()
+    text = (row.post_rules or "").strip() if row is not None else ""
+    return text or DEFAULT_POST_RULES
+
+
+async def set_post_rules(db: AsyncSession, ws: uuid.UUID, rules: str) -> str:
+    from tce.production.publishing import DEFAULT_POST_RULES
+
+    text = (rules or "").strip()
+    if len(text) > 4000:
+        raise LineupError("too_long", "keep the post rules under 4000 characters", status=400)
+    row = (
+        await db.execute(select(EditorialSettings).where(EditorialSettings.workspace_id == ws))
+    ).scalar_one_or_none()
+    if row is None:
+        row = EditorialSettings(workspace_id=ws, videos_per_week=DEFAULT_PRIMARY_SLOTS)
+        db.add(row)
+    row.post_rules = text or None
+    await db.flush()
+    return text or DEFAULT_POST_RULES
+
+
 async def set_videos_per_week(db: AsyncSession, ws: uuid.UUID, count: int) -> int:
     """Save his number, and apply it to this week and every week already started
     after it: a week he is in the middle of follows the setting he just chose."""

@@ -1823,14 +1823,17 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
                 script_posts = {"facebook": packet.facebook_post or "", "linkedin": packet.linkedin_post or ""}
         candidate_id = row.candidate_id
         spoken = publishing.spoken_text(words, keep)
+        from tce.editorial import lineup as lineup_service
+
+        rules = await lineup_service.post_rules(s, ws)
     try:
         answer = await _ask(
             publishing.COPY_JOB,
-            publishing.copy_prompt(title, spoken, settings.tce_booking_url, script_posts),
+            publishing.copy_prompt(title, spoken, rules, script_posts),
             publishing.COPY_SYSTEM,
             publishing.COPY_SCHEMA,
             ws,
-            f"post-copy:{upload_id}:{hashlib.sha256(spoken.encode()).hexdigest()[:12]}",
+            f"post-copy:{upload_id}:{hashlib.sha256((spoken + rules).encode()).hexdigest()[:12]}",
         )
     except LLMUnavailable:
         return  # the card offers "Write the posts" again
@@ -1854,6 +1857,54 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
 
 def start_draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = False) -> None:
     _spawn(draft_posts(upload_id, ws, rewrite=rewrite))
+
+
+async def revise_posts(upload_id: uuid.UUID, ws: uuid.UUID, request: str) -> None:
+    """26-Sep: "I need a way to request a change to the posts". His words go to the
+    subscription with the posts as they are; posts already out are never touched."""
+    from tce.editorial import lineup as lineup_service
+    from tce.llm import LLMUnavailable
+
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        pubs = await _publications(s, ws, upload_id)
+        words = list(row.transcript or [])
+        keep = [list(r) for r in (row.edit_plan or {}).get("keep") or []]
+        title = ""
+        if row.candidate_id:
+            cand = await s.get(TopicCandidate, row.candidate_id)
+            title = cand.title if cand else ""
+        rules = await lineup_service.post_rules(s, ws)
+        current = {p: dict(pub.copy or {}) for p, pub in pubs.items()}
+        locked = [p for p, pub in pubs.items() if pub.status in ("posted", "scheduled", "posting")]
+    spoken = publishing.spoken_text(words, keep)
+
+    async def finish(detail: str | None, copies: dict[str, dict[str, Any]] | None) -> None:
+        async with session_factory()() as s:
+            for p, pub in (await _publications(s, ws, upload_id)).items():
+                if pub.status != "revising":
+                    continue
+                if copies is not None:
+                    pub.copy = copies[p]
+                pub.status, pub.detail = "draft", detail
+            await s.commit()
+
+    try:
+        answer = await _ask(
+            publishing.REVISE_JOB,
+            publishing.revise_prompt(title, spoken, rules, current, locked, request),
+            publishing.REVISE_SYSTEM,
+            publishing.COPY_SCHEMA,
+            ws,
+            f"post-revise:{upload_id}:{hashlib.sha256((request + repr(current)).encode()).hexdigest()[:16]}",
+        )
+    except LLMUnavailable as exc:
+        await finish(f"The change did not run ({exc.status}); ask again", None)
+        return
+    except Exception as exc:  # noqa: BLE001 - lands on the card
+        await finish(f"The change stopped: {str(exc)[:200]}", None)
+        return
+    await finish(f"Changed as you asked: {request.strip()[:200]}", publishing.clean_copy(answer.structured or {}))
 
 
 async def _social_copy(upload_id: uuid.UUID, ws: uuid.UUID) -> Path:
@@ -2004,6 +2055,10 @@ class CopyBody(BaseModel):
     fields: dict[str, Any]
 
 
+class ReviseBody(BaseModel):
+    request: str = Field(min_length=2, max_length=2000)
+
+
 @router.get("/uploads/{upload_id}/publishing")
 async def get_publishing(
     upload_id: uuid.UUID,
@@ -2035,6 +2090,24 @@ async def write_posts(
     return {"status": "writing"}
 
 
+@router.post("/uploads/{upload_id}/publishing/revise", status_code=202)
+async def revise_posts_route(
+    upload_id: uuid.UUID,
+    body: ReviseBody,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    pubs = await _publications(db, ws, upload_id)
+    open_ones = [pub for pub in pubs.values() if pub.status in ("draft", "failed")]
+    if not open_ones:
+        raise HTTPException(status_code=409, detail="There is no post left to change: they are all out")
+    for pub in open_ones:
+        pub.status, pub.detail = "revising", f"Changing: {body.request.strip()[:200]}"
+    await db.commit()
+    _spawn(revise_posts(upload_id, ws, body.request))
+    return {"status": "revising"}
+
+
 @router.put("/uploads/{upload_id}/publishing/{platform}")
 async def save_post_copy(
     upload_id: uuid.UUID,
@@ -2048,8 +2121,8 @@ async def save_post_copy(
     pub = (await _publications(db, ws, upload_id)).get(platform)
     if pub is None:
         raise HTTPException(status_code=404, detail="No post written for this platform yet")
-    if pub.status in ("posting", "posted", "scheduled"):
-        raise HTTPException(status_code=409, detail="This post is already out; it cannot be edited here")
+    if pub.status in ("posting", "posted", "scheduled", "revising"):
+        raise HTTPException(status_code=409, detail="This post is already out or being changed; it cannot be edited now")
     pub.copy = publishing.clean_copy({platform: body.fields})[platform]
     await db.commit()
     return _publication_json(pub)
@@ -2079,8 +2152,8 @@ async def publish_route(
         pub = pubs.get(platform)
         if pub is None:
             raise HTTPException(status_code=409, detail=f"No {publishing.LABELS[platform]} post written yet")
-        if pub.status in ("posting", "posted", "scheduled"):
-            raise HTTPException(status_code=409, detail=f"{publishing.LABELS[platform]} is already {pub.status}")
+        if pub.status in ("posting", "posted", "scheduled", "revising"):
+            raise HTTPException(status_code=409, detail=f"{publishing.LABELS[platform]} is {pub.status} right now")
         reason = publishing.missing(platform, pub.copy or {})
         if reason:
             raise HTTPException(status_code=409, detail=reason)

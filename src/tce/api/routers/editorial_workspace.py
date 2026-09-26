@@ -858,14 +858,21 @@ async def get_workshop(
 
 
 class SettingsBody(BaseModel):
-    videos_per_week: int = Field(ge=lineup_service.MIN_VIDEOS_PER_WEEK, le=lineup_service.MAX_VIDEOS_PER_WEEK)
+    videos_per_week: int | None = Field(
+        default=None, ge=lineup_service.MIN_VIDEOS_PER_WEEK, le=lineup_service.MAX_VIDEOS_PER_WEEK
+    )
+    post_rules: str | None = None
 
 
-def _settings_json(count: int) -> dict[str, Any]:
+def _settings_json(count: int, rules: str) -> dict[str, Any]:
+    from tce.production.publishing import DEFAULT_POST_RULES
+
     return {
         "videos_per_week": count,
         "min": lineup_service.MIN_VIDEOS_PER_WEEK,
         "max": lineup_service.MAX_VIDEOS_PER_WEEK,
+        "post_rules": rules,
+        "post_rules_default": DEFAULT_POST_RULES,
     }
 
 
@@ -876,7 +883,9 @@ async def get_settings(
 ) -> dict[str, Any]:
     """26-Sep: his Settings page - how many videos a week."""
     async with open_session(sm) as db:
-        return _settings_json(await lineup_service.videos_per_week(db, ws))
+        return _settings_json(
+            await lineup_service.videos_per_week(db, ws), await lineup_service.post_rules(db, ws)
+        )
 
 
 @router.put("/settings")
@@ -887,11 +896,16 @@ async def put_settings(
 ) -> dict[str, Any]:
     async with open_session(sm) as db:
         try:
-            count = await lineup_service.set_videos_per_week(db, ws, body.videos_per_week)
+            if body.videos_per_week is not None:
+                await lineup_service.set_videos_per_week(db, ws, body.videos_per_week)
+            if body.post_rules is not None:
+                await lineup_service.set_post_rules(db, ws, body.post_rules)
             await db.commit()
         except ServiceError as error:
             raise _http(error) from error
-        return _settings_json(count)
+        return _settings_json(
+            await lineup_service.videos_per_week(db, ws), await lineup_service.post_rules(db, ws)
+        )
 
 
 @production_router.get("/library")

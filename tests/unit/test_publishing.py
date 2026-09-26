@@ -86,8 +86,18 @@ async def app_client(editorial_sessionmaker, monkeypatch, tmp_path):
     monkeypatch.setattr(prod, "session_factory", lambda: editorial_sessionmaker)
     ran: list[tuple[str, list[str]]] = []
 
+    asked: list[tuple[str, str, str]] = []
+
     async def fake_ask(kind, prompt, system, schema, ws, key):
-        assert kind == publishing.COPY_JOB and "What he says in the edited video" in prompt
+        asked.append((kind, prompt, system))
+        assert "What he says in the edited video" in prompt
+        if kind == publishing.REVISE_JOB:
+            return LLMResult(job_id=uuid.uuid4(), text="", model="claude-opus-5-5", structured={
+                "instagram": {"caption": "SHORTER IG"},
+                "facebook": {"message": "SHORTER FB"},
+                "youtube": {"title": "T", "description": "SHORTER YT #shorts", "tags": ["shorts"]},
+                "linkedin": {"message": "SHORTER LI", "hashtags": ["Coaching"]},
+            })
         return LLMResult(job_id=uuid.uuid4(), text="", model="claude-opus-5-5", structured={
             "instagram": {"caption": "IG caption"},
             "facebook": {"message": "FB post"},
@@ -126,7 +136,7 @@ async def app_client(editorial_sessionmaker, monkeypatch, tmp_path):
 
     app.dependency_overrides[get_db] = _db
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
-        yield c, editorial_sessionmaker, ran
+        yield c, editorial_sessionmaker, ran, asked
 
 
 async def seed(sm) -> tuple[uuid.UUID, uuid.UUID]:
@@ -154,7 +164,7 @@ def h(ws) -> dict:
 
 
 async def test_posts_are_written_edited_posted_and_each_live_link_is_kept(app_client):
-    client, sm, ran = app_client
+    client, sm, ran, asked = app_client
     ws, uid = await seed(sm)
 
     await prod.draft_posts(uid, ws)
@@ -189,7 +199,7 @@ async def test_posts_are_written_edited_posted_and_each_live_link_is_kept(app_cl
 
 
 async def test_scheduling_needs_a_real_future_time(app_client):
-    client, sm, _ = app_client
+    client, sm, _, _a = app_client
     ws, uid = await seed(sm)
     await prod.draft_posts(uid, ws)
     soon = await client.post(f"/api/v1/production/uploads/{uid}/publishing/publish",
@@ -198,8 +208,46 @@ async def test_scheduling_needs_a_real_future_time(app_client):
 
 
 async def test_the_linkedin_file_link_only_opens_with_its_token(app_client, tmp_path):
-    client, sm, _ = app_client
+    client, sm, _, _a = app_client
     ws, uid = await seed(sm)
     bad = await client.get(f"/api/v1/production/social-media/{uid}/nope.mp4")
     assert bad.status_code == 404
     assert Path(prod._media_token(uid)).name  # derived, stable
+
+
+
+def test_his_rule_rides_every_copy_job_and_no_call_to_action_is_asked_for():
+    """26-Sep: "I want to build an audience without asking anyone for anything." """
+    prompt = publishing.copy_prompt("Walk", "he says things", publishing.DEFAULT_POST_RULES, {})
+    assert publishing.DEFAULT_POST_RULES in prompt and "No call to action" in prompt
+    for system in (publishing.COPY_SYSTEM, publishing.REVISE_SYSTEM):
+        assert "booking" not in system.lower() and "book 15" not in system.lower()
+
+
+async def test_a_change_request_rewrites_only_the_posts_not_yet_out(app_client):
+    """26-Sep: "I need a way to request a change to the posts"."""
+    client, sm, ran, asked = app_client
+    ws, uid = await seed(sm)
+    await prod.draft_posts(uid, ws)
+    async with sm() as s:
+        pub = (await prod._publications(s, ws, uid))["youtube"]
+        pub.status, pub.url = "posted", "https://youtube.com/shorts/YT1"
+        await s.commit()
+
+    started = await client.post(f"/api/v1/production/uploads/{uid}/publishing/revise",
+                                json={"request": "make them shorter"}, headers=h(ws))
+    assert started.status_code == 202
+    # While it runs, nothing can post over it.
+    blocked = await client.post(f"/api/v1/production/uploads/{uid}/publishing/publish",
+                                json={"platforms": ["facebook"]}, headers=h(ws))
+    assert blocked.status_code == 409
+    await prod.revise_posts(uid, ws, "make them shorter")
+
+    body = (await client.get(f"/api/v1/production/uploads/{uid}/publishing", headers=h(ws))).json()
+    by = {p["platform"]: p for p in body["platforms"]}
+    assert by["instagram"]["copy"]["caption"] == "SHORTER IG" and by["instagram"]["status"] == "draft"
+    assert by["youtube"]["status"] == "posted" and by["youtube"]["copy"]["description"] == "D #shorts"
+    kind, prompt, _system = asked[-1]
+    assert kind == publishing.REVISE_JOB and "make them shorter" in prompt
+    assert "Already out, return unchanged: youtube" in prompt
+    assert publishing.DEFAULT_POST_RULES in prompt

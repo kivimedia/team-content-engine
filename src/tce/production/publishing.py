@@ -27,8 +27,17 @@ LABELS = {
     "linkedin": "LinkedIn",
 }
 COPY_JOB = "video_post_copy"
+REVISE_JOB = "video_post_revise"
+
+# 26-Sep: "I dont see TJ use CTAs on the posts. I want to build an audience without
+# asking anyone for anything." His rules until he writes his own on the Settings page.
+DEFAULT_POST_RULES = (
+    "No call to action, ever. Never ask the reader for anything: no booking link, no "
+    "'book a call', no 'comment below', no 'DM me', no 'follow for more', no 'link in bio', "
+    "no 'share this'. Give the idea and stop. Build the audience by being worth following."
+)
 AGENT_NAME = "video_publisher"
-PROMPT_VERSION = "post-copy-v1"
+PROMPT_VERSION = "post-copy-v2"
 
 SKILLS = {
     "instagram": "schedule-insta-post-skill",
@@ -55,17 +64,16 @@ COPY_SYSTEM = (
     "You write the social posts for Ziv Raviv's walking videos (he coaches event-business "
     "owners and coaches on growing their business). Write from what he SAYS in the video - "
     "never add examples, numbers or claims he did not say. Plain, direct, first person, his "
-    "voice. Never use an em dash or en dash; use a plain hyphen. No emojis. End every post "
-    "with the booking line using the booking link given. House style per platform:\n"
-    "- instagram.caption: a hook line, short paragraphs or a short numbered list, the "
-    "booking line, then two lines each containing a single '.', then 5-8 lowercase hashtags.\n"
-    "- facebook.message: the fullest version, short paragraphs, booking line with the link. "
-    "No hashtags.\n"
+    "voice. Never use an em dash or en dash; use a plain hyphen. No emojis. HIS POST RULES "
+    "(given with the video) come first and override anything below. House style per platform:\n"
+    "- instagram.caption: a hook line, short paragraphs or a short numbered list, then two "
+    "lines each containing a single '.', then 5-8 lowercase hashtags.\n"
+    "- facebook.message: the fullest version, short paragraphs. No hashtags.\n"
     "- youtube.title: under 60 characters, the idea not clickbait. youtube.description: one or "
-    "two sentences, a blank line, 'Book 15 minutes with Ziv: <link>', a blank line, 3-5 "
-    "hashtags including #shorts. youtube.tags: 5-8 plain tags, the last one 'shorts'.\n"
-    "- linkedin.message: professional, short paragraphs, booking line with the link, no "
-    "hashtags in the text. linkedin.hashtags: 3-5 CamelCase words without '#'."
+    "two sentences, a blank line, 3-5 hashtags including #shorts. youtube.tags: 5-8 plain "
+    "tags, the last one 'shorts'.\n"
+    "- linkedin.message: professional, short paragraphs, no hashtags in the text. "
+    "linkedin.hashtags: 3-5 CamelCase words without '#'."
 )
 
 COPY_SCHEMA = {
@@ -95,16 +103,42 @@ COPY_SCHEMA = {
 }
 
 
-def copy_prompt(title: str, spoken: str, booking_url: str, script_posts: dict[str, str]) -> str:
+def copy_prompt(title: str, spoken: str, rules: str, script_posts: dict[str, str]) -> str:
     ref = "\n\n".join(
         f"{k} (written from the script BEFORE he recorded - use only for tone, not content):\n{v}"
         for k, v in script_posts.items()
         if v
     )
     return (
-        f"Video topic: {title}\nBooking link: {booking_url}\n\n"
+        f"His post rules (obey exactly):\n{rules}\n\nVideo topic: {title}\n\n"
         f"What he says in the edited video:\n{spoken}\n\n{ref}".strip()
     )
+
+
+REVISE_SYSTEM = (
+    COPY_SYSTEM
+    + "\n\nYou are REVISING posts he already has. Apply his change request to every post "
+    "given, keep everything he did not ask to change, and still obey his post rules. Return "
+    "all four platforms; a platform marked 'already out' is returned unchanged."
+)
+
+
+def revise_prompt(
+    title: str, spoken: str, rules: str, current: dict[str, dict[str, Any]],
+    locked: list[str], request: str,
+) -> str:
+    import json
+
+    lines = [
+        f"His change request:\n{request.strip()}",
+        f"His post rules (obey exactly):\n{rules}",
+        f"Video topic: {title}",
+        f"What he says in the edited video:\n{spoken}",
+        "The posts as they are now (JSON):\n" + json.dumps(current, ensure_ascii=False, indent=1),
+    ]
+    if locked:
+        lines.append("Already out, return unchanged: " + ", ".join(locked))
+    return "\n\n".join(lines)
 
 
 def clean_copy(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:

@@ -679,3 +679,18 @@ async def test_videos_a_week_is_saved_and_a_fifth_topic_still_goes_into_the_week
     assert (await client.get("/api/v1/editorial/settings", headers=headers(ws))).json()[
         "videos_per_week"
     ] == 4
+
+
+async def test_post_rules_start_as_no_call_to_action_and_are_his_to_rewrite(
+    client, editorial_sessionmaker
+):
+    """26-Sep: "I want to build an audience without asking anyone for anything." """
+    ws = uuid.uuid4()
+    first = (await client.get("/api/v1/editorial/settings", headers=headers(ws))).json()
+    assert "No call to action" in first["post_rules"]
+    saved = await client.put("/api/v1/editorial/settings",
+                             json={"post_rules": "Short. No hashtags on Facebook."}, headers=headers(ws))
+    assert saved.json()["post_rules"] == "Short. No hashtags on Facebook."
+    assert saved.json()["videos_per_week"] == 3, "saving the rules left the weekly number alone"
+    cleared = await client.put("/api/v1/editorial/settings", json={"post_rules": ""}, headers=headers(ws))
+    assert "No call to action" in cleared.json()["post_rules"], "empty goes back to the default"
