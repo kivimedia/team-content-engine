@@ -179,6 +179,37 @@ async def test_a_topic_with_no_connection_to_his_work_never_reaches_the_inbox(
     assert "could not say how they connect" in body["withheld_note"]
 
 
+async def test_today_and_the_topics_page_count_the_same_ideas(client, editorial_sessionmaker):
+    """27-Sep: "Tce dashboard shows 18 topics. Topics page says 25." Today counted
+    ideas the inbox withheld, and the inbox listed ideas the engine had set aside
+    and ideas marked to think about, which Today did not count. One number now."""
+    ws = uuid.uuid4()
+    await add_candidate(editorial_sessionmaker, ws, "Plain waiting", rank=1)
+    thinking = await add_candidate(editorial_sessionmaker, ws, "Thinking about it", rank=2)
+    await add_candidate(editorial_sessionmaker, ws, "Set aside", rank=3, status="withdrawn")
+    await add_candidate(
+        editorial_sessionmaker, ws, "Unconnected", rank=4, citations_private=[], reasons_to_care=[]
+    )
+    await client.post(
+        f"/api/v1/editorial/topics/{thinking}/decide",
+        json={"decision": "discuss"},
+        headers=headers(ws),
+    )
+
+    today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+    best = (await client.get("/api/v1/editorial/topics", headers=headers(ws))).json()
+    away = (
+        await client.get("/api/v1/editorial/topics?filter=away", headers=headers(ws))
+    ).json()
+
+    assert [t["title"] for t in best["topics"]] == ["Plain waiting", "Thinking about it"]
+    assert today["attention"]["waiting"] == best["total"] == 2
+    # An idea the engine set aside is put away, where he can still bring it back.
+    assert [t["title"] for t in away["topics"]] == ["Set aside"]
+    assert away["topics"][0]["decision"] == "away"
+    assert away["topics"][0]["set_aside_by_engine"] is True
+
+
 async def test_the_inbox_filters_by_where_the_idea_came_from(client, editorial_sessionmaker):
     ws = uuid.uuid4()
     await add_candidate(editorial_sessionmaker, ws, "From a call", rank=1)

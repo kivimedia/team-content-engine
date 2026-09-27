@@ -390,7 +390,9 @@
     if (topic.has_script) html += '<span class="tag is-ready">Script written</span>';
 
     if (topic.decision) {
-      html += '<p class="section-hint">' + esc(decisionSentence(topic.decision)) + "</p>";
+      html += '<p class="section-hint">' + esc(topic.set_aside_by_engine
+        ? "Set aside by the engine: a newer run replaced it, or its news went stale. Putting it in the week brings it back."
+        : decisionSentence(topic.decision)) + "</p>";
       html += '<div class="actions">';
       html += '<button class="btn" type="button" data-open-room="' + esc(topic.candidate_id) + '">Open it</button>';
       if (topic.decision !== "this_week") {

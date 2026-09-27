@@ -154,12 +154,26 @@ def freshness_note_for(candidate: TopicCandidate, *, now: datetime | None = None
     return note
 
 
+def effective_decision(candidate: TopicCandidate, decision: TopicDecision | None) -> str | None:
+    """His decision, or "away" for an idea the engine set aside before he decided.
+
+    The engine withdraws an idea when a newer run replaces it or its news goes
+    stale. It is not waiting for him any more, so it belongs under Put away, where
+    deciding it brings it back, and never in the count of things to decide.
+    """
+    if decision is not None and decision.decision:
+        return decision.decision
+    if candidate.status == "withdrawn":
+        return "away"
+    return None
+
+
 def _matches(
     filter_key: str,
     candidate: TopicCandidate,
     decision: TopicDecision | None,
 ) -> bool:
-    decided = decision.decision if decision else None
+    decided = effective_decision(candidate, decision)
 
     if filter_key == "later":
         return decided == "later"
@@ -222,7 +236,9 @@ def _row_to_json(
         "lane_label": LANE_LABELS.get(lane, lane),
         "timely": candidate.freshness_role == "news",
         "freshness_note": freshness_note_for(candidate),
-        "decision": decision.decision if decision else None,
+        "decision": effective_decision(candidate, decision),
+        "set_aside_by_engine": not (decision and decision.decision)
+        and candidate.status == "withdrawn",
         "note": decision.note if decision else None,
         "has_script": packet_count > 0,
         "rank": candidate.rank,
@@ -268,7 +284,7 @@ async def list_topics(
         # A stored brief wins: he may have written the connection himself.
         brief = stored.get(candidate.id) or briefs.seed_brief(candidate)
         if not briefs.is_inbox_eligible(brief) and (
-            not decision or decision.decision not in ("later", "away")
+            effective_decision(candidate, decision) not in ("later", "away")
         ):
             withheld += 1
             continue

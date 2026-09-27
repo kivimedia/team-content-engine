@@ -27,28 +27,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.editorial import inbox
 from tce.editorial import lineup as lineup_service
-from tce.models.editorial import RecordingUpload, TopicCandidate
-from tce.models.editorial_workspace import EditorialChangeSet, TopicDecision
+from tce.models.editorial import RecordingUpload
+from tce.models.editorial_workspace import EditorialChangeSet
 
 # Upload states that mean "the machine still owes me something".
 IN_FLIGHT_UPLOADS = ("uploaded", "transcribing", "planned")
 
 
 async def _waiting_count(db: AsyncSession, ws: uuid.UUID) -> int:
-    """Topics with no decision yet. The number he is actually being asked about."""
-    # A row whose decision was taken back (NULL) keeps its note but is undecided.
-    decided = select(TopicDecision.candidate_id).where(
-        TopicDecision.workspace_id == ws, TopicDecision.decision.is_not(None)
-    )
-    result = await db.execute(
-        select(func.count(TopicCandidate.id)).where(
-            TopicCandidate.workspace_id == ws,
-            TopicCandidate.status.notin_(("rejected", "recorded", "published", "withdrawn")),
-            TopicCandidate.origin.notin_(inbox.HIDDEN_ORIGINS),
-            TopicCandidate.id.notin_(decided),
-        )
-    )
-    return int(result.scalar_one() or 0)
+    """The number the Topics page shows under Best matches, taken from that page.
+
+    27-Sep: Today said 18 and Topics said 25, because each had its own query. The
+    card links to that list, so it counts that list and nothing else.
+    """
+    listing = await inbox.list_topics(db, ws, filter_key="best", limit=1)
+    return int(listing["total"])
 
 
 async def _editing_count(db: AsyncSession, ws: uuid.UUID) -> int:
