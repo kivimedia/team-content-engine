@@ -321,12 +321,13 @@ async def test_coaching_topics_come_from_his_recent_calls_in_the_number_he_chose
     run_id = uuid.uuid4()
     job_status.start(ws, idea_lane.KIND_RESEARCH, str(run_id), "Starting")
     await idea_lane.run_idea_research(editorial_sessionmaker, ws, run_id, topic=None, count=5,
-                                      kind="coaching")
+                                      kind="coaching", days=14)
     run = job_status.get(ws, idea_lane.KIND_RESEARCH, str(run_id))
     assert run["state"] == "done", run
     assert seen["max_candidates"] == 5 and seen["adds_only"] is True
     assert seen["source_ids"] == [call.id], "coaching reads his calls, not his commits"
     assert '"Idea 1"' in run["said"] and '"Idea 2"' in run["said"]
+    assert "last 14 days" in run["said"], "his window, said back to him"
     # Closed the app? The topics are on his list, and his phone is told.
     async with editorial_sessionmaker() as s:
         events = (await s.execute(select(NotificationEvent).where(NotificationEvent.workspace_id == ws))).scalars().all()

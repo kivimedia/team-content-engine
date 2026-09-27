@@ -310,6 +310,7 @@ async def run_idea_research(
     topic: str | None,
     count: int = MAX_RESEARCH_IDEAS,
     kind: str = "any",
+    days: int = SEED_DAYS,
     search: Any = None,
     fetch_text: Any = None,
     complete: Any = None,
@@ -318,9 +319,11 @@ async def run_idea_research(
     key = str(run_id)
     count = max(1, min(MAX_IDEAS_ASKED, int(count or MAX_RESEARCH_IDEAS)))
     kind = kind if kind in KINDS else "any"
+    # 27-Sep: "five ideas from the last two weeks of Fathom" - his window, not ours.
+    days = max(1, min(60, int(days or SEED_DAYS)))
     try:
         if kind in KIND_SOURCES:
-            await _run_from_his_work(sm, ws, run_id, topic=topic, count=count, kind=kind)
+            await _run_from_his_work(sm, ws, run_id, topic=topic, count=count, kind=kind, days=days)
         else:
             await _run_idea_research(
                 sm, ws, run_id, topic=topic, search=search, fetch_text=fetch_text,
@@ -336,14 +339,15 @@ async def run_idea_research(
 
 
 async def _run_from_his_work(
-    sm: Any, ws: uuid.UUID, run_id: uuid.UUID, *, topic: str | None, count: int, kind: str
+    sm: Any, ws: uuid.UUID, run_id: uuid.UUID, *, topic: str | None, count: int, kind: str,
+    days: int = SEED_DAYS,
 ) -> None:
     """Coaching topics from his recent calls, build topics from his recent commits,
     through the same selector and gates as the weekly run, adds-only."""
     from tce.editorial import selector
 
     key = str(run_id)
-    since = _now() - timedelta(days=SEED_DAYS)
+    since = _now() - timedelta(days=days)
     job_status.update(ws, KIND_RESEARCH, key, current_activity=f"Reading your recent {'calls' if kind == 'coaching' else 'commits'}")
     async with open_session(sm) as db:
         q = select(EvidenceSource.id).where(
@@ -358,7 +362,7 @@ async def _run_from_his_work(
     if not source_ids:
         job_status.update(
             ws, KIND_RESEARCH, key, state="done", finished_at=_now().isoformat(),
-            said=f"found no {where} of yours from the last three weeks"
+            said=f"found no {where} of yours from the last {days} days"
             + (f" about {topic}" if topic else "") + ". Nothing on your list changed.",
             result={"ideas": [], "kind": kind},
         )
@@ -375,7 +379,7 @@ async def _run_from_his_work(
         return
     ideas = [{"candidate_id": c["id"], "title": c.get("title")} for c in result.candidates]
     await _mark_origin(sm, ws, [c["candidate_id"] for c in ideas], f"From your recent {where}")
-    looked = f"read {len(source_ids)} of your recent {where}"
+    looked = f"read {len(source_ids)} of your {where} from the last {days} days"
     if ideas:
         said = f"{looked}. {_topics_word(len(ideas), kind).capitalize()} on your list: " + "; ".join(
             f'"{c["title"]}"' for c in ideas) + "."

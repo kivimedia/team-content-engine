@@ -361,6 +361,8 @@ class IdeaResearchRequest(BaseModel):
     # 27-Sep: how many, and which type (news | coaching | build | any).
     count: int = Field(default=3, ge=1, le=10)
     type: str = "any"
+    # How far back to look in his calls or commits ("the last two weeks" = 14).
+    days: int = Field(default=21, ge=1, le=60)
 
 
 @router.post("/spoken-idea", status_code=202)
@@ -429,7 +431,8 @@ async def start_idea_research(
         topic=topic or None, count=count, type=kind,
     )
     background.add_task(
-        idea_lane.run_idea_research, sm, ws, run_id, topic=topic or None, count=count, kind=kind
+        idea_lane.run_idea_research, sm, ws, run_id, topic=topic or None, count=count, kind=kind,
+        days=body.days if body else idea_lane.SEED_DAYS,
     )
     return {
         "run_id": str(run_id),

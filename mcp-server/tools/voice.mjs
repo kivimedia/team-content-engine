@@ -1034,21 +1034,23 @@ export function register(server, call, { reply, failure, shortId }) {
         topic: { type: 'string', description: 'The topic or angle he named. Leave out for "surprise me".' },
         count: { type: 'integer', minimum: 1, maximum: 10, description: 'How many new topics he wants. Default 3.' },
         type: { type: 'string', enum: ['news', 'coaching', 'build', 'any'], description: 'The type of video he asked for. Default any.' },
+        days: { type: 'integer', minimum: 1, maximum: 60, description: 'How far back in his calls or commits, in days ("last two weeks" = 14). Default 21.' },
       },
     },
-    async ({ topic, count, type }) => {
+    async ({ topic, count, type, days }) => {
       const about = String(topic || '').trim();
       const n = Math.max(1, Math.min(10, Number.isInteger(count) ? count : 3));
       const kind = ['news', 'coaching', 'build', 'any'].includes(type) ? type : 'any';
+      const back = Number.isInteger(days) ? Math.max(1, Math.min(60, days)) : 21;
       const result = await call('POST', '/editorial/idea-research', {
-        topic: about || null, by: 'voice', count: n, type: kind,
+        topic: about || null, by: 'voice', count: n, type: kind, days: back,
       });
       if (!result.ok) return spokenError(result, 'start the research');
       const title = about || 'what you have been working on';
       track({ kind: 'idea_research', title, run_id: result.data.run_id });
       const what = `${n} new ${kind === 'any' ? '' : `${kind} `}topic${n === 1 ? '' : 's'}`;
-      const where = kind === 'coaching' ? ' from your recent calls'
-        : kind === 'build' ? ' from your recent commits'
+      const where = kind === 'coaching' ? ` from your calls of the last ${back} days`
+        : kind === 'build' ? ` from your commits of the last ${back} days`
         : about ? ` about "${about}"` : ' about what you have been working on lately';
       return reply(
         `Started looking for ${what}${where}. It takes a few minutes; I will say what it found. `

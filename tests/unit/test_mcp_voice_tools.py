@@ -2116,8 +2116,8 @@ def test_find_ideas_starts_research_and_reports_what_it_found():
     })
     bodies = [s["body"] for s in out["sent"] if s["key"] == "POST /editorial/idea-research"]
     assert bodies == [
-        {"topic": "pricing for coaches", "by": "voice", "count": 3, "type": "any"},
-        {"topic": None, "by": "voice", "count": 3, "type": "any"},
+        {"topic": "pricing for coaches", "by": "voice", "count": 3, "type": "any", "days": 21},
+        {"topic": None, "by": "voice", "count": 3, "type": "any", "days": 21},
     ]
     assert 'about "pricing for coaches"' in out["texts"][0]
     assert "what you have been working on lately" in out["texts"][1]
@@ -2127,13 +2127,14 @@ def test_find_ideas_starts_research_and_reports_what_it_found():
 def test_find_ideas_takes_how_many_and_what_type():
     """27-Sep: "research new topics, decide how many, choose a specific type of videos"."""
     out = run({
-        "steps": [step("tce_find_ideas", count=5, type="coaching")],
+        "steps": [step("tce_find_ideas", count=5, type="coaching", days=14)],
         "responses": {
             "POST /editorial/idea-research": {"ok": True, "status": 202, "data": {"run_id": RUN}},
         },
     })
     bodies = [s["body"] for s in out["sent"] if s["key"] == "POST /editorial/idea-research"]
-    assert bodies == [{"topic": None, "by": "voice", "count": 5, "type": "coaching"}]
+    assert bodies == [{"topic": None, "by": "voice", "count": 5, "type": "coaching", "days": 14}]
+    assert "last 14 days" in out["texts"][0]
     assert "5 new coaching topics" in out["texts"][0]
     assert "notification" in out["texts"][0].lower() or "topics page" in out["texts"][0].lower()
 
