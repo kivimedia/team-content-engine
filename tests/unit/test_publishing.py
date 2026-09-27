@@ -251,3 +251,34 @@ async def test_a_change_request_rewrites_only_the_posts_not_yet_out(app_client):
     assert kind == publishing.REVISE_JOB and "make them shorter" in prompt
     assert "Already out, return unchanged: youtube" in prompt
     assert publishing.DEFAULT_POST_RULES in prompt
+
+
+
+def test_linkedin_now_goes_through_the_route_kmboards_has():
+    """27-Sep: LinkedIn failed with 404 - the skill's publish-now route was removed
+    from kmboards. Now it is queued for kmboards' 5-minute LinkedIn publisher."""
+    li = publishing.command("linkedin", {"message": "m", "hashtags": []}, media_path="/v.mp4",
+                            media_url="http://x/f.mp4", at_iso=None)
+    assert li[2:5] == ["schedule", "--at", "now"]
+
+
+async def test_a_restart_finishes_posts_that_never_left_and_never_reposts_blind(app_client, monkeypatch):
+    """27-Sep: a deploy restarted TCE a minute after he tapped Post; all four sat on
+    'posting' forever."""
+    client, sm, ran, asked = app_client
+    ws, uid = await seed(sm)
+    await prod.draft_posts(uid, ws)
+    async with sm() as s:
+        pubs = await prod._publications(s, ws, uid)
+        pubs["instagram"].status, pubs["instagram"].detail = "posting", "Making the upload copy of the video"
+        pubs["facebook"].status, pubs["facebook"].detail = "posting", "Posting on Facebook Page now"
+        await s.commit()
+    spawned = []
+    monkeypatch.setattr(prod, "_spawn", lambda coro: (spawned.append(coro), coro.close()))
+    monkeypatch.setattr(prod.settings, "production_auto_edit", True)
+    await prod.resume_auto_work()
+    async with sm() as s:
+        pubs = await prod._publications(s, ws, uid)
+    assert pubs["facebook"].status == "failed" and "may already be live" in pubs["facebook"].detail
+    assert pubs["instagram"].status == "posting"
+    assert len(spawned) == 1, "the post that never left is finished; the other waits for him"

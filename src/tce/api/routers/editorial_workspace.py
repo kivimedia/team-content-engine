@@ -921,6 +921,28 @@ async def get_library(
             raise _http(error) from error
 
 
+class ArchiveBody(BaseModel):
+    archived: bool = True
+
+
+@production_router.post("/recordings/{upload_id}/archive")
+async def archive_recording(
+    upload_id: str,
+    body: ArchiveBody,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """27-Sep: "need to be able to archive". Out of the list, kept on the server."""
+    uid = _uuid(upload_id, "recording")
+    async with open_session(sm) as db:
+        try:
+            row = await library_service.set_archived(db, ws, uid, body.archived)
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+        return {"upload_id": str(row.id), "archived": row.archived_at is not None}
+
+
 @production_router.post("/recordings/{upload_id}/edit-requests")
 async def create_edit_request(
     upload_id: str,

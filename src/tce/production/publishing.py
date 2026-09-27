@@ -189,6 +189,12 @@ def command(
 ) -> list[str]:
     """The exact CLI call for one platform ('publish' now, or 'schedule --at')."""
     verb = ["schedule", "--at", at_iso] if at_iso else ["publish"]
+    if platform == "linkedin" and not at_iso:
+        # 27-Sep: the skill's `publish` calls kmboards /api/linkedin/one-off-publish-now,
+        # which does not exist (404) - LinkedIn failed while the other three went out.
+        # `schedule --at now` uses the route that exists; kmboards' LinkedIn publisher
+        # posts it within about five minutes.
+        verb = ["schedule", "--at", "now"]
     base = ["node", "dist/cli.js", *verb]
     if platform == "instagram":
         return [*base, "--type", "reel", "--media", media_path, "--caption", copy["caption"]]

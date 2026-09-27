@@ -290,6 +290,8 @@ class RecordingUpload(_PrivateWorkspaceMixin, Base):
     packet_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("recording_packets.id", ondelete="SET NULL"), nullable=True
     )
+    # 27-Sep: "need to be able to archive" - out of the Library list, never deleted.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     recording_session_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("recording_sessions.id", ondelete="SET NULL"), nullable=True, index=True
     )

@@ -42,6 +42,7 @@ LIBRARY_FILTERS: dict[str, tuple[str, ...]] = {
     "editing": ("transcribing", "transcribed", "proofreading", "planned", "rendering"),
     "needs_review": ("needs_review",),
     "ready": ("edited",),
+    "archived": (),
 }
 
 _LIVE_STATUSES = ("transcribing", "transcribed", "proofreading", "planned", "rendering")
@@ -52,6 +53,7 @@ FILTER_LABELS = {
     "editing": "Being edited",
     "needs_review": "Needs your review",
     "ready": "Ready",
+    "archived": "Archived",
 }
 
 # What each stored state means in his words, not the pipeline's.
@@ -240,6 +242,11 @@ async def list_library(
     # "I need a way to find the edited video" (25-Sep): a replaced take is kept on
     # the server for history, never shown, and an edit sits above the raw takes.
     uploads = [u for u in uploads if u.status != "superseded"]
+    # 27-Sep: archived recordings live only under the Archived filter.
+    if filter_key == "archived":
+        uploads = [u for u in uploads if u.archived_at is not None]
+    else:
+        uploads = [u for u in uploads if u.archived_at is None]
     uploads.sort(key=lambda u: not u.edited_path)
     items: list[dict[str, Any]] = []
     for upload in uploads:
@@ -271,6 +278,7 @@ async def list_library(
                 "packet_id": str(upload.packet_id) if upload.packet_id else None,
                 "packet_version": packet_versions.get(upload.packet_id),
                 "has_edit": bool(upload.edited_path),
+                "archived": upload.archived_at is not None,
                 "has_captions": bool(upload.captions_path),
                 "has_transcript": bool(upload.transcript),
                 "issues": _issues(upload),
@@ -333,6 +341,16 @@ async def create_edit_request(
     db.add(row)
     await db.flush()
     return row
+
+
+async def set_archived(
+    db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID, archived: bool
+) -> RecordingUpload:
+    """Archive or bring back a recording. Nothing is deleted either way."""
+    upload = await _get_upload(db, ws, upload_id)
+    upload.archived_at = datetime.now(UTC).replace(tzinfo=None) if archived else None
+    await db.flush()
+    return upload
 
 
 async def list_edit_requests(

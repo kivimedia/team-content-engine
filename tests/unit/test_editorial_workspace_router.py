@@ -694,3 +694,24 @@ async def test_post_rules_start_as_no_call_to_action_and_are_his_to_rewrite(
     assert saved.json()["videos_per_week"] == 3, "saving the rules left the weekly number alone"
     cleared = await client.put("/api/v1/editorial/settings", json={"post_rules": ""}, headers=headers(ws))
     assert "No call to action" in cleared.json()["post_rules"], "empty goes back to the default"
+
+
+async def test_archive_hides_a_recording_and_bring_it_back_restores_it(client, editorial_sessionmaker):
+    """27-Sep: "need to be able to archive" in the Library. Nothing is deleted."""
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Old take")
+    async with editorial_sessionmaker() as s:
+        up = RecordingUpload(workspace_id=ws, candidate_id=cid, original_filename="t.mp4",
+                             storage_path="/tmp/t.mp4", sha256="e" * 64, status="uploaded")
+        s.add(up)
+        await s.commit()
+        uid = up.id
+    lib = "/api/v1/production/library"
+    assert len((await client.get(lib, headers=headers(ws))).json()["items"]) == 1
+    r = await client.post(f"/api/v1/production/recordings/{uid}/archive", json={"archived": True}, headers=headers(ws))
+    assert r.json()["archived"] is True
+    assert (await client.get(lib, headers=headers(ws))).json()["items"] == []
+    archived = (await client.get(lib + "?filter=archived", headers=headers(ws))).json()["items"]
+    assert [i["archived"] for i in archived] == [True]
+    await client.post(f"/api/v1/production/recordings/{uid}/archive", json={"archived": False}, headers=headers(ws))
+    assert len((await client.get(lib, headers=headers(ws))).json()["items"]) == 1

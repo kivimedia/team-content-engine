@@ -1402,8 +1402,12 @@
         html += '<a class="btn quiet" href="' + prefix + '/record">' + esc(action.label) + "</a>";
       }
     });
+    // 27-Sep: "need to be able to archive". Kept on the server; Archived brings it back.
+    html += item.archived
+      ? '<div class="actions"><button class="btn" type="button" data-unarchive="' + esc(item.upload_id) + '">Bring it back</button></div>'
+      : '<div class="actions"><button class="btn quiet" type="button" data-archive="' + esc(item.upload_id) + '">Archive</button></div>';
     html += '</div><div class="player" hidden></div>';
-    if (item.has_edit) html += publishSection(item);
+    if (item.has_edit && !item.archived) html += publishSection(item);
     html += "</article>";
     return html;
   }
@@ -1511,6 +1515,19 @@
         method: "POST", body: { platforms: picked, at: at }
       });
       toast(schedule ? "Scheduling. The card shows each one as it is booked." : "Posting. The card shows each link as it goes live.");
+      renderLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function archiveRecording(uploadId, archived) {
+    try {
+      await api("/production/recordings/" + encodeURIComponent(uploadId) + "/archive", {
+        method: "POST", body: { archived: archived }
+      });
+      toast(archived ? "Archived. It is under the Archived filter, and nothing was deleted."
+                     : "Back in your Library.");
       renderLibrary();
     } catch (error) {
       toast(error.message, true);
@@ -1780,7 +1797,7 @@
     "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
     "watch", "watch-close", "voice-undo", "voice-restore",
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise",
-    "save-rules"
+    "save-rules", "archive", "unarchive"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -1804,6 +1821,8 @@
     if (d.pubSchedule !== undefined) { publishStart(d.pubSchedule, true); return; }
     if (d.pubRevise !== undefined) { publishRevise(d.pubRevise); return; }
     if (d.saveRules !== undefined) { saveRules(); return; }
+    if (d.archive !== undefined) { archiveRecording(d.archive, true); return; }
+    if (d.unarchive !== undefined) { archiveRecording(d.unarchive, false); return; }
     if (d.filter !== undefined) { state.topicFilter = d.filter; render(); return; }
     if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; render(); return; }
     if (d.wtab !== undefined) { state.workshopTab = d.wtab; render(); return; }

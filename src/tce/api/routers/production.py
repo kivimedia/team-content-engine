@@ -1757,6 +1757,28 @@ async def resume_auto_work() -> None:
             _spawn(auto_edit(upload_id, ws))
         for request_id, ws in pending:
             _spawn(run_edit_request(request_id, ws))
+        # 27-Sep: a deploy restarted TCE a minute after he tapped Post, and all four posts
+        # sat on "posting" forever. A post that never reached its platform (still making
+        # the upload copy, or queued) is finished now - his tap stands. One that was
+        # mid-upload might be live already, so it waits for him instead of posting twice.
+        async with session_factory()() as s:
+            stuck = (
+                await s.execute(select(VideoPublication).where(VideoPublication.status == "posting"))
+            ).scalars().all()
+            resume: dict[tuple[uuid.UUID, uuid.UUID], list[str]] = {}
+            for pub in stuck:
+                if (pub.detail or "").endswith(" now"):
+                    pub.status = "failed"
+                    pub.detail = (
+                        "A restart stopped this while it was uploading. Check the platform before "
+                        "posting again; it may already be live."
+                    )
+                else:
+                    resume.setdefault((pub.upload_id, pub.workspace_id), []).append(pub.platform)
+            await s.commit()
+        for (upload_id, ws), platforms in resume.items():
+            _spawn(publish_video(upload_id, ws, platforms, None))
+            log.info("production.publish_resumed", upload=str(upload_id), platforms=platforms)
         if marked or pending:
             log.info("production.auto_resumed", uploads=len(marked), requests=len(pending))
     except Exception:
@@ -2012,10 +2034,14 @@ async def publish_video(
         async with session_factory()() as s:
             pub = (await _publications(s, ws, upload_id))[platform]
             copy, candidate_id = dict(pub.copy or {}), pub.candidate_id
-        await mark(platform, detail=f"{'Scheduling' if at else 'Posting'} on {publishing.LABELS[platform]}")
         argv = publishing.command(platform, copy, media_path=str(social), media_url=media_url, at_iso=at_iso)
+        await mark(platform, detail=f"{'Scheduling' if at else 'Posting'} on {publishing.LABELS[platform]} now")
         code, out = await run_platform(platform, argv)
         result = publishing.read_result(platform, out)
+        if code == 0 and platform == "linkedin" and not at:
+            await mark(platform, status="scheduled", scheduled_for=_utcnow(), external_id=result["row_id"],
+                       detail="Queued on LinkedIn: kmboards posts it within about 5 minutes")
+            continue
         if code != 0 or (not at and not result["post_id"] and platform != "linkedin"):
             tail = " ".join(out.strip().splitlines()[-3:])[-400:]
             await mark(platform, status="failed", detail=f"Did not go out: {tail}")
