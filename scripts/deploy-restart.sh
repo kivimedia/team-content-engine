@@ -42,6 +42,10 @@ if ! pm2 start tce >"$start_log" 2>&1; then
 fi
 rm -f "$start_log"
 sleep 3
+# 27-Sep: the call seat (tools + brief) ships with every deploy, or a new voice tool
+# stays unreachable on real calls while every test passes.
+bash "$(dirname "$0")/install-voice-seat.sh" || echo "[deploy-restart] voice seat install FAILED - check /etc/kmbot/voice-seats.json"
+
 echo "[deploy-restart] Final status:"
 pm2 show tce 2>&1 | grep -E 'status|uptime|restarts' || {
   echo "[deploy-restart] tce status was not available"
