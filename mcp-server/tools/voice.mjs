@@ -1019,28 +1019,40 @@ export function register(server, call, { reply, failure, shortId }) {
 
   server.tool(
     'tce_find_ideas',
-    'Go and research NEW video ideas in the background, when he asks you to look for ideas. Give the '
-      + 'topic or angle he named; leave it out when he says "surprise me", and the search starts from his '
-      + 'own calls and commits of the last three weeks. Each page found goes through the same checks as '
-      + 'the news lane: news write-ups are skipped, a page must touch something he actually uses, and an '
-      + 'idea is saved only if it passes the four checks. Takes several minutes; returns at once and '
-      + 'tce_jobs reports what it looked at and which new ideas, if any, are on his list. Nothing on his '
+    'Go and find NEW video topics in the background, when he asks for new topics or ideas. He can say '
+      + 'HOW MANY (count, 1-10; 3 if he does not say) and WHAT TYPE: "news" (things happening in AI and '
+      + 'tools, found on the web), "coaching" (from his own recent calls), "build" (from his own recent '
+      + 'commits), or "any". If he did not say a number or a type, ask once in a short sentence, then go. '
+      + 'Give the topic or angle he named; leave it out for "surprise me". Every idea goes through the '
+      + 'four checks and is saved only if it passes; a repeat of one on his list is not saved twice. Takes '
+      + 'several minutes and returns at once: tce_jobs reports it on this call, and if he hangs up the new '
+      + 'topics wait on his Topics page and his phone gets a notification when they land. Nothing on his '
       + 'week is removed.',
     {
       type: 'object',
       properties: {
         topic: { type: 'string', description: 'The topic or angle he named. Leave out for "surprise me".' },
+        count: { type: 'integer', minimum: 1, maximum: 10, description: 'How many new topics he wants. Default 3.' },
+        type: { type: 'string', enum: ['news', 'coaching', 'build', 'any'], description: 'The type of video he asked for. Default any.' },
       },
     },
-    async ({ topic }) => {
+    async ({ topic, count, type }) => {
       const about = String(topic || '').trim();
-      const result = await call('POST', '/editorial/idea-research', { topic: about || null, by: 'voice' });
+      const n = Math.max(1, Math.min(10, Number.isInteger(count) ? count : 3));
+      const kind = ['news', 'coaching', 'build', 'any'].includes(type) ? type : 'any';
+      const result = await call('POST', '/editorial/idea-research', {
+        topic: about || null, by: 'voice', count: n, type: kind,
+      });
       if (!result.ok) return spokenError(result, 'start the research');
       const title = about || 'what you have been working on';
       track({ kind: 'idea_research', title, run_id: result.data.run_id });
+      const what = `${n} new ${kind === 'any' ? '' : `${kind} `}topic${n === 1 ? '' : 's'}`;
+      const where = kind === 'coaching' ? ' from your recent calls'
+        : kind === 'build' ? ' from your recent commits'
+        : about ? ` about "${about}"` : ' about what you have been working on lately';
       return reply(
-        `Started looking for new ideas about ${about ? `"${about}"` : 'what you have been working on lately'}. `
-          + 'It takes a few minutes; I will say what it found.',
+        `Started looking for ${what}${where}. It takes a few minutes; I will say what it found. `
+          + 'If you hang up, they will be on your Topics page and your phone gets a notification.',
         { started: true, run_id: result.data.run_id },
       );
     },

@@ -1221,6 +1221,8 @@
     view.innerHTML = '<div class="page">' + working("Reading your settings") + "</div>";
     var data = await api("/editorial/settings");
     state.settings = data;
+    try { state.notifyConfig = await api("/editorial/notifications/config"); }
+    catch (e) { state.notifyConfig = null; }
     state.videosDraft = data.videos_per_week;
     paintSettings();
   }
@@ -1251,7 +1253,10 @@
     html += '<label class="pub-field"><span>Your post rules</span><textarea rows="6" id="postRules">'
          + esc(data.post_rules || "") + "</textarea></label>";
     html += '<div class="actions"><button class="btn primary" type="button" data-save-rules>Save the rules</button></div>';
-    html += "</article></div>";
+    html += "</article>";
+    html += '<article class="card"><h3>Notifications</h3>' + (notifyRow(state.notifyConfig)
+         || '<p class="section-hint">Notifications are not available on this device.</p>') + "</article>";
+    html += "</div>";
     $("view").innerHTML = html;
     status(data.videos_per_week + " " + plural(data.videos_per_week, "video") + " a week");
   }
@@ -1714,8 +1719,10 @@
       return '<p class="notice">' + esc(status.why) + "</p>";
     }
     if (!config.available) return "";
-    return '<div class="actions"><button class="btn quiet" type="button" data-notify="on">'
-         + "Tell me when a script is ready</button></div>";
+    // 27-Sep: new topics found after he hangs up reach him here, not only scripts.
+    return '<div class="actions"><button class="btn primary" type="button" data-notify="on">'
+         + "Turn on notifications on this phone</button></div>"
+         + '<p class="section-hint">New topics you asked for, scripts and edits: a buzz when each is ready.</p>';
   }
 
   // ----------------------------------------------------------------- events

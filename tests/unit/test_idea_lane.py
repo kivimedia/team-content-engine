@@ -278,3 +278,73 @@ async def test_surprise_me_seeds_from_his_own_recent_work(editorial_sessionmaker
         await s.commit()
         queries = await idea_lane.seed_queries(s, ws)
     assert queries == ["Follow up within a day of the demo call"]
+
+
+# ---------------------------------------------------------------------------
+# 27-Sep: "use talk to tce to ask it to research new topics, decide how many,
+# choose a specific type of videos and be updated when its done"
+
+
+async def _source(s, ws, kind, ext):
+    src = EvidenceSource(
+        workspace_id=ws, source_kind=kind, external_id=ext, title=f"{kind} {ext}",
+        occurred_at=idea_lane._now(), version_hash="b" * 64, fetch_status="ok",
+        payload_private={}, meta={},
+    )
+    s.add(src)
+    await s.flush()
+    return src
+
+
+async def test_coaching_topics_come_from_his_recent_calls_in_the_number_he_chose(
+    editorial_sessionmaker, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from tce.editorial import selector
+    from tce.models.editorial_workspace import NotificationEvent
+
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        call = await _source(s, ws, "fathom_meeting", "c1")
+        await _source(s, ws, "github_commit_group", "g1")
+        await s.commit()
+    seen: dict = {}
+
+    async def fake_select(sm, w, week, **kw):
+        seen.update(kw)
+        return SimpleNamespace(status="complete", detail="", rejected=[], candidates=[
+            {"id": str(uuid.uuid4()), "title": f"Idea {n}"} for n in range(1, 3)
+        ])
+
+    monkeypatch.setattr(selector, "select_candidates", fake_select)
+    run_id = uuid.uuid4()
+    job_status.start(ws, idea_lane.KIND_RESEARCH, str(run_id), "Starting")
+    await idea_lane.run_idea_research(editorial_sessionmaker, ws, run_id, topic=None, count=5,
+                                      kind="coaching")
+    run = job_status.get(ws, idea_lane.KIND_RESEARCH, str(run_id))
+    assert run["state"] == "done", run
+    assert seen["max_candidates"] == 5 and seen["adds_only"] is True
+    assert seen["source_ids"] == [call.id], "coaching reads his calls, not his commits"
+    assert '"Idea 1"' in run["said"] and '"Idea 2"' in run["said"]
+    # Closed the app? The topics are on his list, and his phone is told.
+    async with editorial_sessionmaker() as s:
+        events = (await s.execute(select(NotificationEvent).where(NotificationEvent.workspace_id == ws))).scalars().all()
+    assert [(e.kind, e.path) for e in events] == [("new_topics", "/topics")]
+    assert "2 new coaching topics" in events[0].title
+
+
+async def test_a_bigger_number_reads_more_pages(editorial_sessionmaker):
+    ws = uuid.uuid4()
+    fetched: list[str] = []
+
+    async def fetch_text(url):
+        fetched.append(url)
+        return {"title": "t", "body_text": "nothing that matches"}
+
+    search = FakeSearch([{"url": f"https://vendor{n}.example/a"} for n in range(40)])
+    run_id = uuid.uuid4()
+    job_status.start(ws, idea_lane.KIND_RESEARCH, str(run_id), "Starting")
+    await idea_lane.run_idea_research(editorial_sessionmaker, ws, run_id, topic="pricing",
+                                      count=8, kind="news", search=search, fetch_text=fetch_text)
+    assert len(fetched) == idea_lane.pages_for(8) > idea_lane.pages_for(3)

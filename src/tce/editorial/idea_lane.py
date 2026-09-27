@@ -34,6 +34,46 @@ MAX_RESEARCH_URLS = 6
 MAX_RESEARCH_IDEAS = 3
 SEED_DAYS = 21
 
+# 27-Sep: "research new topics, decide how many, choose a specific type of videos".
+# A topic's type (its lane) is a fact of its evidence, so each type is found where
+# that evidence lives: news on the web, coaching in his calls, build in his commits.
+KINDS = ("any", "news", "coaching", "build")
+KIND_LABEL = {"any": "", "news": "news", "coaching": "coaching", "build": "build"}
+KIND_SOURCES = {"coaching": ("fathom_meeting",), "build": ("github_commit_group",)}
+MAX_IDEAS_ASKED = 10
+
+
+def pages_for(count: int) -> int:
+    """How many pages a web search reads for the number of ideas he asked for."""
+    return max(MAX_RESEARCH_URLS, min(20, 2 * int(count) + 2))
+
+
+def _topics_word(n: int, kind: str) -> str:
+    label = KIND_LABEL.get(kind, "")
+    return f"{n} new {label + ' ' if label else ''}topic{'s' if n != 1 else ''}"
+
+
+async def _tell_his_phone(sm: Any, ws: uuid.UUID, run_id: uuid.UUID, ideas: list[dict], kind: str) -> None:
+    """Closed the app? The topics are on his list, and his phone is told once."""
+    if not ideas:
+        return
+    from tce.editorial import notify
+
+    try:
+        async with open_session(sm) as db:
+            event = await notify.record_event(db, ws, {
+                "kind": "new_topics",
+                "dedupe_key": f"new_topics:{run_id}",
+                "title": _topics_word(len(ideas), kind).capitalize(),
+                "body": "; ".join(str(i.get("title") or "") for i in ideas)[:300],
+                "path": "/topics",
+            })
+            if event is not None:
+                await notify.deliver(db, ws, event)
+            await db.commit()
+    except Exception:  # a failed buzz never loses the topics themselves
+        logger.warning("idea_lane.notify_failed", exc_info=True)
+
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
@@ -268,16 +308,24 @@ async def run_idea_research(
     run_id: uuid.UUID,
     *,
     topic: str | None,
+    count: int = MAX_RESEARCH_IDEAS,
+    kind: str = "any",
     search: Any = None,
     fetch_text: Any = None,
     complete: Any = None,
 ) -> None:
-    """Search, then send each page through the news lane's own gates. Never raises."""
+    """Find new ideas of the kind he asked for, as many as he asked. Never raises."""
     key = str(run_id)
+    count = max(1, min(MAX_IDEAS_ASKED, int(count or MAX_RESEARCH_IDEAS)))
+    kind = kind if kind in KINDS else "any"
     try:
-        await _run_idea_research(
-            sm, ws, run_id, topic=topic, search=search, fetch_text=fetch_text, complete=complete
-        )
+        if kind in KIND_SOURCES:
+            await _run_from_his_work(sm, ws, run_id, topic=topic, count=count, kind=kind)
+        else:
+            await _run_idea_research(
+                sm, ws, run_id, topic=topic, search=search, fetch_text=fetch_text,
+                complete=complete, count=count, kind=kind,
+            )
     except Exception as exc:
         logger.exception("idea_lane.research_failed", run_id=key)
         job_status.update(
@@ -285,6 +333,58 @@ async def run_idea_research(
             detail=type(exc).__name__,
             said=f"stopped with an error ({type(exc).__name__}). Nothing on your list changed.",
         )
+
+
+async def _run_from_his_work(
+    sm: Any, ws: uuid.UUID, run_id: uuid.UUID, *, topic: str | None, count: int, kind: str
+) -> None:
+    """Coaching topics from his recent calls, build topics from his recent commits,
+    through the same selector and gates as the weekly run, adds-only."""
+    from tce.editorial import selector
+
+    key = str(run_id)
+    since = _now() - timedelta(days=SEED_DAYS)
+    job_status.update(ws, KIND_RESEARCH, key, current_activity=f"Reading your recent {'calls' if kind == 'coaching' else 'commits'}")
+    async with open_session(sm) as db:
+        q = select(EvidenceSource.id).where(
+            EvidenceSource.workspace_id == ws,
+            EvidenceSource.source_kind.in_(KIND_SOURCES[kind]),
+            EvidenceSource.created_at >= since,
+        )
+        if topic:
+            q = q.where(EvidenceSource.title.ilike(f"%{_clean(topic, 80)}%"))
+        source_ids = list((await db.execute(q.order_by(EvidenceSource.created_at.desc()).limit(60))).scalars().all())
+    where = "calls" if kind == "coaching" else "commits"
+    if not source_ids:
+        job_status.update(
+            ws, KIND_RESEARCH, key, state="done", finished_at=_now().isoformat(),
+            said=f"found no {where} of yours from the last three weeks"
+            + (f" about {topic}" if topic else "") + ". Nothing on your list changed.",
+            result={"ideas": [], "kind": kind},
+        )
+        return
+    job_status.update(ws, KIND_RESEARCH, key, current_activity=f"Checking {len(source_ids)} {where} against your four checks")
+    result = await selector.select_candidates(
+        sm, ws, current_week_start(), max_candidates=count, selection_run_id=run_id,
+        source_ids=source_ids, adds_only=True,
+        on_activity=lambda msg, **kw: job_status.update(ws, KIND_RESEARCH, key, current_activity=msg),
+    )
+    if result.status == "waiting_capacity":
+        job_status.update(ws, KIND_RESEARCH, key, state="waiting", detail=result.detail,
+                          said="waits for the writing computer and carries on by itself.")
+        return
+    ideas = [{"candidate_id": c["id"], "title": c.get("title")} for c in result.candidates]
+    await _mark_origin(sm, ws, [c["candidate_id"] for c in ideas], f"From your recent {where}")
+    looked = f"read {len(source_ids)} of your recent {where}"
+    if ideas:
+        said = f"{looked}. {_topics_word(len(ideas), kind).capitalize()} on your list: " + "; ".join(
+            f'"{c["title"]}"' for c in ideas) + "."
+    else:
+        why = _rejection_said(result.rejected[0]) if result.rejected else ""
+        said = f"{looked}. Nothing new passed the checks; the rest is already on your list. {why}".strip()
+    job_status.update(ws, KIND_RESEARCH, key, state="done", finished_at=_now().isoformat(),
+                      said=said, result={"ideas": ideas, "kind": kind, "sources": len(source_ids)})
+    await _tell_his_phone(sm, ws, run_id, ideas, kind)
 
 
 async def _run_idea_research(
@@ -296,6 +396,8 @@ async def _run_idea_research(
     search: Any,
     fetch_text: Any,
     complete: Any,
+    count: int = MAX_RESEARCH_IDEAS,
+    kind: str = "any",
 ) -> None:
     from tce import llm as _llm
     from tce.editorial.selector import select_candidates
@@ -339,7 +441,8 @@ async def _run_idea_research(
     activity(f"Searching the web for {len(queries)} question(s)")
     urls: list[str] = []
     blocked = 0
-    per_query = max(3, MAX_RESEARCH_URLS // len(queries) + 1)
+    pages = pages_for(count)
+    per_query = max(3, pages // len(queries) + 1)
     for q in queries:
         try:
             hits = await service.search(q, count=per_query + 4, freshness="pm", raise_errors=True)
@@ -363,7 +466,7 @@ async def _run_idea_research(
             taken += 1
             if taken >= per_query:
                 break
-    urls = urls[:MAX_RESEARCH_URLS]
+    urls = urls[:pages]
 
     counts = {"pages": len(urls), "news_sites_skipped": blocked, "no_match": 0,
               "unreachable": 0, "matched": 0, "published": 0, "watched": 0, "rejected": 0,
@@ -453,7 +556,7 @@ async def _run_idea_research(
         sm,
         ws,
         current_week_start(),
-        max_candidates=MAX_RESEARCH_IDEAS,
+        max_candidates=count,
         selection_run_id=run_id,
         source_ids=source_ids,
         adds_only=True,
@@ -479,3 +582,4 @@ async def _run_idea_research(
         said, queries=queries, counts=counts, urls=urls, web_status="searched", ideas=ideas,
         rejected=result.rejected,
     )
+    await _tell_his_phone(sm, ws, run_id, ideas, kind)

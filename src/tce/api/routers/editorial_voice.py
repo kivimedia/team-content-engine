@@ -358,6 +358,9 @@ class IdeaResearchRequest(BaseModel):
     # Empty means "surprise me": start from his own recent calls and commits.
     topic: str | None = Field(default=None, max_length=200)
     by: str = "voice"
+    # 27-Sep: how many, and which type (news | coaching | build | any).
+    count: int = Field(default=3, ge=1, le=10)
+    type: str = "any"
 
 
 @router.post("/spoken-idea", status_code=202)
@@ -416,16 +419,24 @@ async def start_idea_research(
     from tce.editorial import status as job_status
 
     topic = (body.topic or "").strip() if body else ""
+    count = body.count if body else 3
+    kind = (body.type if body else "any") or "any"
+    if kind not in idea_lane.KINDS:
+        raise HTTPException(status_code=400, detail=f"type must be one of {', '.join(idea_lane.KINDS)}")
     run_id = uuid.uuid4()
     job_status.start(
         ws, idea_lane.KIND_RESEARCH, str(run_id), "Starting the search",
-        topic=topic or None,
+        topic=topic or None, count=count, type=kind,
     )
-    background.add_task(idea_lane.run_idea_research, sm, ws, run_id, topic=topic or None)
+    background.add_task(
+        idea_lane.run_idea_research, sm, ws, run_id, topic=topic or None, count=count, kind=kind
+    )
     return {
         "run_id": str(run_id),
         "state": "running",
         "topic": topic or None,
+        "count": count,
+        "type": kind,
         "status_url": f"/api/v1/editorial/idea-runs/{run_id}",
     }
 
