@@ -965,7 +965,91 @@ export function register(server, call, { reply, failure, shortId }) {
     },
   );
 
-  const JOB_WORDS = { script: 'The script', more_hooks: 'More openings', research: 'Research' };
+  // ------------------------------------------------------------ new ideas
+
+  server.tool(
+    'tce_new_idea',
+    'Save a NEW video idea he says on the call, then (by default) start its script. Use it when he '
+      + 'describes an idea that is not already a topic ("I want a video about X"). First call it with '
+      + 'confirmed false: nothing is saved, and it returns one sentence to read back to him. Only after '
+      + 'he says yes, call it again with confirmed true and the same words. The idea then goes through '
+      + 'the same four checks as an idea from his calls: it is saved only if it passes, and a repeat of '
+      + 'one already on his list is not saved twice. Returns at once; tce_jobs says whether it was '
+      + 'saved, and why not if not, and then when its script is ready. Nothing on his week is removed.',
+    {
+      type: 'object',
+      properties: {
+        said: { type: 'string', description: 'His own words describing the idea, as close to verbatim as you have them.' },
+        idea: { type: 'string', description: 'The idea in one plain line, the line you read back to him.' },
+        angle: { type: 'string', description: 'Optional: the angle or example he gave, in his words.' },
+        confirmed: { type: 'boolean', description: 'True only after he said yes to the read-back.' },
+        write_script: { type: 'boolean', description: 'Start the script once it is saved. Default true; false if he only wants the idea kept.' },
+      },
+      required: ['said', 'idea'],
+    },
+    async ({ said, idea, angle, confirmed, write_script }) => {
+      const words = String(said || '').trim();
+      const line = String(idea || '').trim();
+      if (words.length < 3 || line.length < 3) {
+        return reply('Ask him to say the idea in a sentence; nothing was saved.', { ok: false, code: 'too_short' });
+      }
+      const scriptToo = write_script !== false;
+      if (!confirmed) {
+        return reply(
+          `Read this back to him and ask if it is right: "${line}"${angle ? ` (angle: ${String(angle).trim()})` : ''}. `
+            + (scriptToo ? 'If he says yes it is checked, saved if it passes, and its script is started. ' : 'If he says yes it is checked and saved if it passes. ')
+            + 'Nothing is saved until you call tce_new_idea again with confirmed true.',
+          { ok: false, code: 'read_back', idea: line, saved: false },
+        );
+      }
+      const callId = String(process.env.TCE_VOICE_CALL_ID || process.env.KMBOT_VOICE_SESSION || '').trim() || null;
+      const result = await call('POST', '/editorial/spoken-idea', {
+        said: words, idea: line, angle: angle ? String(angle).trim() : null,
+        call_id: callId, write_script: scriptToo, by: 'voice',
+      });
+      if (!result.ok) return spokenError(result, 'save the idea');
+      track({ kind: 'idea', title: line, run_id: result.data.run_id, write_script: scriptToo });
+      return reply(
+        `Checking "${line}" against the four checks now${scriptToo ? '; if it passes its script starts by itself' : ''}. `
+          + 'I will say how it went.',
+        { started: true, run_id: result.data.run_id },
+      );
+    },
+  );
+
+  server.tool(
+    'tce_find_ideas',
+    'Go and research NEW video ideas in the background, when he asks you to look for ideas. Give the '
+      + 'topic or angle he named; leave it out when he says "surprise me", and the search starts from his '
+      + 'own calls and commits of the last three weeks. Each page found goes through the same checks as '
+      + 'the news lane: news write-ups are skipped, a page must touch something he actually uses, and an '
+      + 'idea is saved only if it passes the four checks. Takes several minutes; returns at once and '
+      + 'tce_jobs reports what it looked at and which new ideas, if any, are on his list. Nothing on his '
+      + 'week is removed.',
+    {
+      type: 'object',
+      properties: {
+        topic: { type: 'string', description: 'The topic or angle he named. Leave out for "surprise me".' },
+      },
+    },
+    async ({ topic }) => {
+      const about = String(topic || '').trim();
+      const result = await call('POST', '/editorial/idea-research', { topic: about || null, by: 'voice' });
+      if (!result.ok) return spokenError(result, 'start the research');
+      const title = about || 'what you have been working on';
+      track({ kind: 'idea_research', title, run_id: result.data.run_id });
+      return reply(
+        `Started looking for new ideas about ${about ? `"${about}"` : 'what you have been working on lately'}. `
+          + 'It takes a few minutes; I will say what it found.',
+        { started: true, run_id: result.data.run_id },
+      );
+    },
+  );
+
+  const JOB_WORDS = {
+    script: 'The script', more_hooks: 'More openings', research: 'Research',
+    idea: 'Your idea', idea_research: 'Looking for ideas',
+  };
   const FINISHED = new Set(['done', 'ready', 'failed', 'interrupted']);
 
   async function jobState(job) {
@@ -994,6 +1078,31 @@ export function register(server, call, { reply, failure, shortId }) {
         return { state: 'interrupted', said: 'stopped when the server restarted. Ask for more openings again (tce_more_hooks)' };
       }
       return { state: r.data.state || 'running', said: `are still being written (${r.data.current_activity || 'working'})` };
+    }
+    if (job.kind === 'idea' || job.kind === 'idea_research') {
+      const r = await call('GET', `/editorial/idea-runs/${job.run_id}`);
+      if (r.status === 404) {
+        return {
+          state: 'interrupted',
+          said: job.kind === 'idea'
+            ? 'stopped when the server restarted. Your words are kept and the next weekly pick of ideas sees them'
+            : 'stopped when the server restarted. Ask again (tce_find_ideas)',
+        };
+      }
+      if (!r.ok) return { state: 'unknown', said: 'could not be checked' };
+      const d = r.data;
+      if (d.state === 'running' || d.state === 'waiting') {
+        return { state: 'running', said: `is still going (${d.said || d.current_activity || 'working'})` };
+      }
+      if (d.state === 'failed') return { state: 'failed', said: d.said || 'stopped with an error' };
+      const res = d.result || {};
+      // A saved idea whose script was started: the script becomes its own job,
+      // so tce_jobs says when it is ready like any other script.
+      if (job.kind === 'idea' && res.saved && res.script_started && !job.script_tracked) {
+        job.script_tracked = true;
+        track({ kind: 'script', title: res.title || job.title, candidate_id: res.candidate_id, replaces_version: null });
+      }
+      return { state: 'done', said: d.said || 'is done', candidate_id: res.candidate_id ?? null };
     }
     const r = await call('GET', `/editorial/research/${job.research_id}`);
     if (!r.ok) return { state: 'unknown', said: 'could not be checked' };

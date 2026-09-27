@@ -339,3 +339,111 @@ async def get_research(
         if row is None:
             raise HTTPException(status_code=404, detail="research not found")
         return voice_agent.research_to_json(row)
+
+
+# ---------------------------------------------------------------- new ideas
+
+
+class SpokenIdeaRequest(BaseModel):
+    # His words as he said them, and the one-line idea the agent read back to him.
+    said: str = Field(min_length=3, max_length=4000)
+    idea: str = Field(min_length=3, max_length=2000)
+    angle: str | None = Field(default=None, max_length=2000)
+    call_id: str | None = Field(default=None, max_length=200)
+    write_script: bool = True
+    by: str = "voice"
+
+
+class IdeaResearchRequest(BaseModel):
+    # Empty means "surprise me": start from his own recent calls and commits.
+    topic: str | None = Field(default=None, max_length=200)
+    by: str = "voice"
+
+
+@router.post("/spoken-idea", status_code=202)
+async def start_spoken_idea(
+    body: SpokenIdeaRequest,
+    background: BackgroundTasks,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Keep an idea he said as evidence, then let the selector decide on it.
+
+    Returns at once. The idea becomes a topic only if it passes the same checks
+    as one from a call; poll /editorial/idea-runs/{run_id}.
+    """
+    from tce.editorial import idea_lane
+    from tce.editorial import status as job_status
+
+    run_id = uuid.uuid4()
+    async with open_session(sm) as db:
+        try:
+            source, _moment = await idea_lane.record_spoken_idea(
+                db, ws, run_id=run_id, said=body.said, idea=body.idea, angle=body.angle,
+                by=body.by, call_id=body.call_id,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        source_id = source.id
+        await db.commit()
+    job_status.start(
+        ws, idea_lane.KIND_SPOKEN, str(run_id), "Checking the idea against your four checks",
+        idea=body.idea, write_script=body.write_script,
+    )
+    background.add_task(
+        idea_lane.run_spoken_idea, sm, ws, run_id, source_id,
+        write_script=body.write_script, by=body.by,
+    )
+    return {
+        "run_id": str(run_id),
+        "state": "running",
+        "status_url": f"/api/v1/editorial/idea-runs/{run_id}",
+    }
+
+
+@router.post("/idea-research", status_code=202)
+async def start_idea_research(
+    background: BackgroundTasks,
+    body: IdeaResearchRequest | None = None,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Look for new video ideas on the web, through the news lane's own gates.
+
+    Returns at once; poll /editorial/idea-runs/{run_id}.
+    """
+    from tce.editorial import idea_lane
+    from tce.editorial import status as job_status
+
+    topic = (body.topic or "").strip() if body else ""
+    run_id = uuid.uuid4()
+    job_status.start(
+        ws, idea_lane.KIND_RESEARCH, str(run_id), "Starting the search",
+        topic=topic or None,
+    )
+    background.add_task(idea_lane.run_idea_research, sm, ws, run_id, topic=topic or None)
+    return {
+        "run_id": str(run_id),
+        "state": "running",
+        "topic": topic or None,
+        "status_url": f"/api/v1/editorial/idea-runs/{run_id}",
+    }
+
+
+@router.get("/idea-runs/{run_id}")
+async def get_idea_run(
+    run_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+) -> dict[str, Any]:
+    """Where a spoken idea or a research run stands. 404 after a restart."""
+    from tce.editorial import idea_lane
+    from tce.editorial import status as job_status
+
+    rid = str(_uuid(run_id, "idea run"))
+    for kind in (idea_lane.KIND_SPOKEN, idea_lane.KIND_RESEARCH):
+        entry = job_status.get(ws, kind, rid)
+        if entry is not None:
+            return {"run_id": rid, **entry}
+    raise HTTPException(
+        status_code=404, detail="idea run not found (the server may have restarted)"
+    )

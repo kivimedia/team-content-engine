@@ -191,6 +191,8 @@ VOICE_TOOLS = [
     "tce_more_hooks",
     "tce_research",
     "tce_jobs",
+    "tce_new_idea",
+    "tce_find_ideas",
 ]
 
 OLDER_TOOLS = [

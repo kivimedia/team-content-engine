@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
@@ -1405,6 +1405,19 @@ async def _stored_shard_specs(
 _FAILURE_ORDER = ("failed", "invalid_output", "cancelled", "waiting_capacity", "timeout")
 
 
+def _supersedable(
+    row: TopicCandidate, scoped_ids: set[str] | None, adds_only: bool = False
+) -> bool:
+    """Whether a run may withdraw this row. A whole-week run may withdraw any
+    (it re-proposes the week whole); a run scoped to some sources only rows that
+    cite one of its own moments; a run that only adds, none."""
+    if adds_only:
+        return False
+    if scoped_ids is None:
+        return True
+    return any(str(i) in scoped_ids for i in (row.moment_ids or []))
+
+
 async def select_candidates(
     sessionmaker_or_session: SessionSource,
     workspace_id: uuid.UUID | str,
@@ -1414,8 +1427,14 @@ async def select_candidates(
     selection_run_id: uuid.UUID | None = None,
     on_activity: Any = None,
     source_ids: list[uuid.UUID] | None = None,
+    adds_only: bool = False,
 ) -> SelectionResult:
     """Run (or resume) one selection for a week.
+
+    `adds_only` (an idea he said on a call, a research run he started): the run
+    only ever ADDS ideas. Nothing already on the week is withdrawn, and an idea
+    that repeats one already on the list, this week included, is recorded as a
+    duplicate instead of saved twice.
 
     Passing the `selection_run_id` of a run whose jobs already exist resumes it: the
     stored requests are replayed under the same idempotency keys, so the queue returns
@@ -1763,6 +1782,8 @@ async def select_candidates(
             result.detail = "this selection run was already saved; returning the saved rows"
             return result
 
+        scoped_ids = {pm.id for pm in plan.moments} if source_ids else None
+
         # Existing week rows are only READ here; nothing is superseded until the ranking
         # has succeeded, so a failed or waiting ranking leaves the week untouched.
         existing = (
@@ -1792,7 +1813,9 @@ async def select_candidates(
                     select(TopicCandidate)
                     .where(
                         TopicCandidate.workspace_id == ws,
-                        TopicCandidate.week_start != start,
+                        # A run that only adds has no supersede pass behind it,
+                        # so this week's own list is checked too.
+                        true() if adds_only else TopicCandidate.week_start != start,
                         TopicCandidate.status.in_(LIVE_STATUSES),
                     )
                     .order_by(TopicCandidate.week_start.desc())
@@ -1911,7 +1934,12 @@ async def select_candidates(
 
         # supersede proposed + prior selector rejections; never touch
         # selected/recorded/published/editor-rejected/calibration rows.
+        # A run scoped to some sources (a spoken idea, a research run) ADDS ideas:
+        # it may only replace rows drawn from its own moments, never the rest of
+        # the week he has not looked at yet.
         for row in existing:
+            if not _supersedable(row, scoped_ids, adds_only):
+                continue
             if row.status == "proposed" or (
                 row.origin == ORIGIN_SELECTOR_REJECTED and row.status == "rejected"
             ):

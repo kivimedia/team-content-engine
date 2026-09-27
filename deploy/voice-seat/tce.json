@@ -1,0 +1,19 @@
+{
+  "allowedTools": [
+    "mcp__tce__tce_week",
+    "mcp__tce__tce_topic",
+    "mcp__tce__tce_edit",
+    "mcp__tce__tce_decide",
+    "mcp__tce__tce_put_away",
+    "mcp__tce__tce_restore_idea",
+    "mcp__tce__tce_choose_hook",
+    "mcp__tce__tce_reorder_week",
+    "mcp__tce__tce_undo",
+    "mcp__tce__tce_write_script",
+    "mcp__tce__tce_more_hooks",
+    "mcp__tce__tce_research",
+    "mcp__tce__tce_jobs",
+    "mcp__tce__tce_new_idea",
+    "mcp__tce__tce_find_ideas"
+  ]
+}

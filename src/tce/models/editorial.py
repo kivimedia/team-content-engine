@@ -40,7 +40,9 @@ JSONType = JSON().with_variant(JSONB(), "postgresql")
 # a category of client, or a problem the owners Ziv coaches keep bringing - which
 # exists so those connections are citable at all. Both are inert until
 # TCE_NEWS_LANE is on.
-SOURCE_KINDS = ("fathom_meeting", "github_commit_group", "news_item", "standing_fact")
+SOURCE_KINDS = (
+    "fathom_meeting", "github_commit_group", "news_item", "standing_fact", "spoken_idea"
+)
 CLAIM_TYPES = ("quoted", "paraphrased", "inferred", "demonstrated", "measured")
 REJECTION_GATES = (
     "small_service_business",

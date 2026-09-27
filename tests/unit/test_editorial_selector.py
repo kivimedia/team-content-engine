@@ -398,3 +398,86 @@ async def test_request_uses_contract_fields(editorial_sessionmaker, fake_llm):
     assert req.workspace_id == ws and req.output_schema
     prompt = req.messages[0]["content"]
     assert "EVIDENCE POOL" in prompt and "strategy session" in prompt.lower()
+
+
+async def test_scoped_run_keeps_the_rest_of_the_week(editorial_sessionmaker, fake_llm):
+    """A run scoped to one source (a spoken idea, a research run) ADDS an idea.
+    It must not withdraw the week's other proposals he has not looked at yet."""
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        m1 = await add_moment(s, ws)
+        m2 = await add_moment(s, ws)
+    fake_llm["response"] = {
+        "candidates": [raw_candidate([m1.id]), raw_candidate([m2.id], title="Two")],
+        "rejections": [],
+    }
+    first = await selector.select_candidates(editorial_sessionmaker, ws, WEEK)
+    assert len(first.candidates) == 2
+
+    async with editorial_sessionmaker() as s:
+        m3 = await add_moment(s, ws, lesson="Price the outcome, not the hours.")
+    fake_llm["response"] = {
+        "candidates": [raw_candidate([m3.id], title="Three")],
+        "rejections": [],
+    }
+    scoped = await selector.select_candidates(
+        editorial_sessionmaker, ws, WEEK, source_ids=[m3.source_id], max_candidates=1
+    )
+    assert scoped.superseded == 0
+    assert [c["title"] for c in scoped.candidates] == ["Three"]
+
+    async with editorial_sessionmaker() as s:
+        rows = (
+            (await s.execute(select(TopicCandidate).where(TopicCandidate.workspace_id == ws)))
+            .scalars()
+            .all()
+        )
+    assert sorted(r.title for r in rows if r.status == "proposed") == [
+        "Build the course around problems solved", "Three", "Two",
+    ]
+
+    # Scoped again to the same source: only that source's own idea is replaced.
+    again = await selector.select_candidates(
+        editorial_sessionmaker, ws, WEEK, source_ids=[m3.source_id], max_candidates=1
+    )
+    assert again.superseded == 1
+    async with editorial_sessionmaker() as s:
+        rows = (
+            (await s.execute(select(TopicCandidate).where(TopicCandidate.workspace_id == ws)))
+            .scalars()
+            .all()
+        )
+    assert sorted(r.title for r in rows if r.status == "proposed") == [
+        "Build the course around problems solved", "Three", "Two",
+    ]
+
+
+async def test_adds_only_run_withdraws_nothing_and_catches_same_week_repeat(
+    editorial_sessionmaker, fake_llm
+):
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        m1 = await add_moment(s, ws)
+    fake_llm["response"] = {"candidates": [raw_candidate([m1.id])], "rejections": []}
+    await selector.select_candidates(editorial_sessionmaker, ws, WEEK)
+
+    # He says the same idea again on a call: recorded as a repeat, nothing withdrawn.
+    async with editorial_sessionmaker() as s:
+        m2 = await add_moment(s, ws, source_kind="spoken_idea")
+    fake_llm["response"] = {"candidates": [raw_candidate([m2.id])], "rejections": []}
+    again = await selector.select_candidates(
+        editorial_sessionmaker, ws, WEEK, source_ids=[m2.source_id], adds_only=True,
+        max_candidates=1,
+    )
+    assert again.superseded == 0
+    assert again.candidates == []
+    assert [r["code"] for r in again.rejected] == ["duplicate_existing"]
+    async with editorial_sessionmaker() as s:
+        rows = (
+            (await s.execute(select(TopicCandidate).where(TopicCandidate.workspace_id == ws)))
+            .scalars()
+            .all()
+        )
+    assert [r.title for r in rows if r.status == "proposed"] == [
+        "Build the course around problems solved"
+    ]

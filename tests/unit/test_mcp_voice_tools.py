@@ -171,6 +171,8 @@ def test_the_voice_family_registers_every_tool():
             "tce_more_hooks",
             "tce_research",
             "tce_jobs",
+            "tce_new_idea",
+            "tce_find_ideas",
         ]
     )
 
@@ -2034,3 +2036,105 @@ def test_a_failed_request_that_is_not_json_says_what_came_back():
     text = out["texts"][0]
     assert "did not answer with JSON" in text
     assert "502 Bad Gateway" in text and "<" not in text
+
+
+# ------------------------------------------------------------------ new ideas
+
+RUN = "12121212-3434-5656-7878-909090909090"
+
+
+def test_a_new_idea_is_read_back_first_and_nothing_is_saved():
+    out = run({
+        "steps": [step("tce_new_idea", said="a video about selling outcomes not hours",
+                       idea="Coaches should price the outcome, not the hours")],
+        "responses": {},
+    })
+    assert out["sent"] == []
+    assert out["texts"][0].startswith('Read this back to him and ask if it is right: "Coaches should price')  # noqa: E501
+    assert "Nothing is saved until" in out["texts"][0]
+
+
+def test_a_confirmed_idea_is_saved_through_the_gates_and_its_script_is_followed():
+    out = run({
+        "steps": [
+            step("tce_new_idea", said="a video about selling outcomes not hours",
+                 idea="Coaches should price the outcome, not the hours", confirmed=True),
+            step("tce_jobs"),
+            step("tce_jobs"),
+        ],
+        "responses": {
+            "POST /editorial/spoken-idea": {"ok": True, "status": 202, "data": {"run_id": RUN}},
+            f"GET /editorial/idea-runs/{RUN}": {"ok": True, "status": 200, "data": {
+                "state": "done", "said": 'is saved as "Price the outcome"; its script is being written now',  # noqa: E501
+                "result": {"saved": True, "candidate_id": CID, "title": "Price the outcome",
+                           "script_started": True},
+            }},
+            f"GET /editorial/candidates/{CID}/packet-status": [
+                {"ok": True, "status": 200, "data": {"job": {"state": "running", "current_activity": "Writing"}}},  # noqa: E501
+                {"ok": True, "status": 200, "data": {"job": {"state": "done", "result": {}}}},
+            ],
+        },
+    })
+    post = [s for s in out["sent"] if s["key"] == "POST /editorial/spoken-idea"][0]["body"]
+    assert post["said"] == "a video about selling outcomes not hours"
+    assert post["write_script"] is True and post["by"] == "voice"
+    assert out["texts"][0].startswith('Checking "Coaches should price the outcome, not the hours"')
+    assert 'Your idea for "Coaches should price the outcome, not the hours" is saved as "Price the outcome"' in out["texts"][1]  # noqa: E501
+    assert 'The script for "Price the outcome" is still going' in out["texts"][1]
+    assert 'The script for "Price the outcome" is ready.' in out["texts"][2]
+
+
+def test_a_refused_idea_says_which_check_it_failed():
+    out = run({
+        "steps": [
+            step("tce_new_idea", said="funding news", idea="Funding news", confirmed=True),
+            step("tce_jobs"),
+        ],
+        "responses": {
+            "POST /editorial/spoken-idea": {"ok": True, "status": 202, "data": {"run_id": RUN}},
+            f"GET /editorial/idea-runs/{RUN}": {"ok": True, "status": 200, "data": {
+                "state": "done",
+                "said": "was not saved. It did not pass the owner relevance check: not for coaches",
+                "result": {"saved": False},
+            }},
+        },
+    })
+    assert "did not pass the owner relevance check" in out["texts"][1]
+    assert not any("packet-status" in s["key"] for s in out["sent"])
+
+
+def test_find_ideas_starts_research_and_reports_what_it_found():
+    out = run({
+        "steps": [step("tce_find_ideas", topic="pricing for coaches"), step("tce_find_ideas"),
+                  step("tce_jobs")],
+        "responses": {
+            "POST /editorial/idea-research": {"ok": True, "status": 202, "data": {"run_id": RUN}},
+            f"GET /editorial/idea-runs/{RUN}": {"ok": True, "status": 200, "data": {
+                "state": "done", "said": 'looked at 6 pages: New on your list: "X".', "result": {},
+            }},
+        },
+    })
+    bodies = [s["body"] for s in out["sent"] if s["key"] == "POST /editorial/idea-research"]
+    assert bodies == [{"topic": "pricing for coaches", "by": "voice"}, {"topic": None, "by": "voice"}]  # noqa: E501
+    assert 'about "pricing for coaches"' in out["texts"][0]
+    assert "what you have been working on lately" in out["texts"][1]
+    assert 'Looking for ideas for "pricing for coaches" looked at 6 pages' in out["texts"][2]
+
+
+def test_an_idea_run_lost_to_a_restart_says_so():
+    out = run({
+        "steps": [step("tce_find_ideas", topic="x"), step("tce_jobs")],
+        "responses": {
+            "POST /editorial/idea-research": {"ok": True, "status": 202, "data": {"run_id": RUN}},
+            f"GET /editorial/idea-runs/{RUN}": {"ok": False, "status": 404, "data": {"detail": "gone"}},  # noqa: E501
+        },
+    })
+    assert "stopped when the server restarted" in out["texts"][1]
+
+
+def test_the_call_seat_allows_exactly_the_tools_the_voice_family_registers():
+    """deploy/voice-seat/tce.json is what the release copies into the call's seat.
+    A tool missing there cannot be called on a call; one extra names nothing."""
+    seat = json.loads((ROOT.parent / "deploy" / "voice-seat" / "tce.json").read_text())
+    out = run({"steps": [], "responses": {}})
+    assert sorted(t.split("__")[-1] for t in seat["allowedTools"]) == out["names"]
