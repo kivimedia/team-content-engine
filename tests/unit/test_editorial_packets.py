@@ -32,11 +32,11 @@ def good_output(**over) -> dict:
             "Name the problems first.",
             "Put them in order.",
             "Then decide what each lesson is for.",
-            "If you want help with that in your coaching business,",
-            "book a strategy session.",
+            "The lessons come last,",
+            "because now you know what they are for.",
         ],
-        "facebook_post": "A question before you plan a course. Book a strategy session.",
-        "linkedin_post": "Plan the course from the problems. Book a strategy session.",
+        "facebook_post": "A question before you plan a course: what can they do at the end?",
+        "linkedin_post": "Plan the course from the problems, and the lessons follow.",
         "interviewer_prompt": "What do you ask before discussing lessons?",
         "hook_options": [
             {
@@ -200,10 +200,54 @@ def test_bullets_within_range_accepted(count):
     assert len(out["bullets"]) == count
 
 
-def test_script_must_end_with_strategy_session():
-    phrases = good_output()["script_phrases"][:-2] + ["Thanks for watching."]
-    with pytest.raises(packets.PacketValidationError, match="strategy-session"):
-        packets.validate_packet_output(good_output(script_phrases=phrases))
+def test_script_that_ends_on_the_lesson_is_accepted():
+    # His rule (27-Sep-2026): no call to action, so no invitation is required.
+    out = packets.validate_packet_output(good_output(), forbid_asks=True)
+    assert out["script_phrases"][-1] == "because now you know what they are for."
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("script_phrases", "book a strategy session."),
+        ("script_phrases", "DM me and we will talk."),
+        ("facebook_post", "Plan it this way. Book a call with me."),
+        ("linkedin_post", "Plan it this way. Follow for more."),
+        ("facebook_post", "The full plan is at the link in bio."),
+    ],
+)
+def test_fresh_packet_that_asks_for_something_is_refused(field, value):
+    out = good_output()
+    if field == "script_phrases":
+        out["script_phrases"] = out["script_phrases"] + [value]
+    else:
+        out[field] = value
+    with pytest.raises(packets.PacketValidationError, match="no call to action"):
+        packets.validate_packet_output(out, forbid_asks=True)
+
+
+def test_packet_written_before_the_rule_still_revalidates():
+    # A new opening or a voice pass re-validates an old packet; the old invitation
+    # ending must not make it unusable.
+    old = good_output()
+    old["script_phrases"] = old["script_phrases"] + ["book a strategy session."]
+    old["facebook_post"] = "A question before you plan a course. Book a strategy session."
+    assert packets.validate_packet_output(old)["script_phrases"][-1] == "book a strategy session."
+
+
+def test_packet_prompt_carries_his_post_rules():
+    cand = packets.TopicCandidate(title="t", lesson="l", citations_private=[], moment_ids=[])
+    prompt = packets.build_packet_prompt("STRAT", cand, post_rules="No call to action, ever.")
+    assert "HIS POST RULES" in prompt and "No call to action, ever." in prompt
+    assert "No call to action of any kind" in packets.SYSTEM_PROMPT
+    assert "invite the viewer to book" not in packets.SYSTEM_PROMPT
+
+
+def test_idea_picker_follows_the_no_call_to_action_rule():
+    from tce.editorial import selector
+
+    assert "The only call to action is a strategy session" not in selector.SYSTEM_PROMPT
+    assert "No call to action" in selector.SYSTEM_PROMPT
 
 
 def test_giveaway_cta_rejected():
@@ -250,7 +294,7 @@ def test_safety_scan_clean_text():
     assert result == {"checked": True, "status": "clean", "issues": []}
 
 
-async def test_build_packet_persists_clean_packet_with_cta_and_no_price(
+async def test_build_packet_persists_clean_packet_with_no_call_to_action_and_no_price(
     editorial_sessionmaker, fake_llm
 ):
     ws = uuid.uuid4()
@@ -260,10 +304,14 @@ async def test_build_packet_persists_clean_packet_with_cta_and_no_price(
     assert out.status == "ready"
     p = out.packet
     assert p["version"] == 1 and p["public_safety"]["status"] == "clean"
-    assert "strategy session" in " ".join(p["script_phrases"][-2:]).lower()
+    assert "strategy session" not in " ".join(p["script_phrases"]).lower()
     assert "$" not in " ".join(p["script_phrases"] + p["bullets"])
     req = fake_llm["calls"][0]
-    assert (req.job_type, req.prompt_version) == ("recording_packet", "recording_packet.v2")
+    assert (req.job_type, req.prompt_version) == ("recording_packet", "recording_packet.v3")
+    # His post rules (the Settings default here) ride in the writer's request.
+    from tce.production.publishing import DEFAULT_POST_RULES
+
+    assert DEFAULT_POST_RULES in req.messages[0]["content"]
 
 
 def test_hook_and_beat_contract_rejects_unknown_payoff_and_wrong_opening():

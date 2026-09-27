@@ -394,7 +394,10 @@ async def test_request_uses_contract_fields(editorial_sessionmaker, fake_llm):
     req = fake_llm["calls"][0]
     assert req.job_type == "editorial_selection"
     assert req.agent_name == "editorial_selector"
-    assert req.prompt_version == "editorial_selection.v2"
+    assert req.prompt_version == "editorial_selection.v3"
+    from tce.production.publishing import DEFAULT_POST_RULES
+
+    assert DEFAULT_POST_RULES in req.messages[0]["content"]
     assert req.workspace_id == ws and req.output_schema
     prompt = req.messages[0]["content"]
     assert "EVIDENCE POOL" in prompt and "strategy session" in prompt.lower()

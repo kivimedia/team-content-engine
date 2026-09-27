@@ -1,7 +1,8 @@
 """Recording packets: one selected idea -> walking bullets, phrase script, text posts.
 
 One subscription job writes the packet. Code then validates the shape (5-7 bullets,
-a phrase-broken script ending in the strategy-session invitation, no giveaway CTA)
+a phrase-broken script that ends on the lesson and asks the viewer for nothing, no
+giveaway CTA)
 and runs the deterministic public-safety scan over every public field. When the LLM
 is unavailable nothing is persisted: the caller gets the waiting state.
 """
@@ -19,7 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
-from tce.editorial import voice_retrieval
+from tce.editorial import lineup, voice_retrieval
 from tce.editorial.common import (
     SessionSource,
     coerce_uuid,
@@ -39,7 +40,7 @@ from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingSession
 from tce.services.strategy_loader import load_effective_strategy
 
-PROMPT_VERSION = "recording_packet.v2"
+PROMPT_VERSION = "recording_packet.v3"
 JOB_TYPE = "recording_packet"
 AGENT_NAME = "recording_packet_writer"
 MIN_BULLETS = 5
@@ -50,7 +51,17 @@ HOOK_OPTIONS_WRITTEN = 3
 # opening of that version cannot be switched underneath it (see choose_hook).
 RECORDING_IN_PROGRESS_STATUSES = ("recording", "finalizing")
 
-_CTA = re.compile(r"strategy[\s-]+session", re.IGNORECASE)
+# His rule (27-Sep-2026, plan item 8): no call to action, ever. A freshly written
+# packet that still asks the viewer for something is refused. Packets written before
+# the rule are left alone when they are re-validated (a new opening, a voice pass).
+_ASK = re.compile(
+    r"\b(?:(?:book|schedule|grab|claim)\s+(?:a|an|your|my)\s+(?:free\s+)?"
+    r"(?:strategy\s+session|strategy\s+call|call|session|consult\w*|spot|meeting)|"
+    r"strategy[\s-]+session|dm\s+me|send\s+me\s+a\s+(?:dm|message)|message\s+me|"
+    r"comment\s+below|drop\s+a\s+comment|follow\s+(?:me\s+)?for\s+more|link\s+in\s+(?:my\s+)?bio|"
+    r"share\s+this|subscribe|click\s+the\s+link)\b",
+    re.IGNORECASE,
+)
 _GIVEAWAY = re.compile(
     r"\b(?:free (?:guide|download|checklist|template|pdf|ebook)|giveaway|lead magnet|"
     r"comment (?:the word|below with)|dm me (?:the word|for the)|"
@@ -73,16 +84,18 @@ fixed number of parts. No forced company names, statistics, news hooks or crisis
 Hard rules:
 - bullets: 5 to 7 short walking bullets he can talk from.
 - script_phrases: the FULL script, first person, one short phrase per item (roughly 3-12 \
-words each). The final phrase(s) invite the viewer to book a strategy session.
-- The only call to action is booking a strategy session. No giveaway, guide, download, \
-comment keyword or software pitch.
+words each). The final phrase(s) land the lesson and stop.
+- No call to action of any kind. Never ask the viewer or reader for anything: no \
+strategy session, no booking, no "comment below", no "DM me", no "follow for more", no \
+link, no giveaway, guide, download, comment keyword or software pitch. His post rules, \
+given in the request, win over any call to action the strategy mentions.
 - Never prices, fees, revenue, money figures or business percentages.
 - No client or customer names, no customer words or quotes, no credentials, no private \
 links, no identifying sensitive stories. Keep only the general lesson.
 - Claims discipline: built, tested, deployed, used and measured are different. State no \
 outcome that the cited evidence does not measure.
-- facebook_post and linkedin_post adapt the same lesson for text, ending with the same \
-strategy-session invitation. No long dashes.
+- facebook_post and linkedin_post adapt the same lesson for text, and follow his post \
+rules: they give the idea and stop. No long dashes.
 - interviewer_prompt: one question an interviewer could ask so Ziv answers in his own words.
 """
     + HOOK_RULE
@@ -148,7 +161,7 @@ OUTPUT_SCHEMA: dict[str, Any] = {
                 "claims_supported": {"type": "boolean"},
                 "no_prices_or_money": {"type": "boolean"},
                 "no_customer_words_or_identities": {"type": "boolean"},
-                "cta_is_strategy_session": {"type": "boolean"},
+                "no_call_to_action": {"type": "boolean"},
                 "notes": {"type": "string"},
             },
         },
@@ -199,6 +212,7 @@ def validate_packet_output(
     *,
     max_hooks: int = HOOK_OPTIONS_WRITTEN,
     news_terms: list[str] | None = None,
+    forbid_asks: bool = False,
 ) -> dict[str, Any]:
     """Return a cleaned packet dict or raise PacketValidationError with all problems.
 
@@ -224,8 +238,6 @@ def validate_packet_output(
         phrases = []
     elif len(phrases) < 6:
         errors.append("script_phrases must be a full script (at least 6 phrases)")
-    elif not _CTA.search(" ".join(phrases[-3:])):
-        errors.append("script must end with the strategy-session invitation")
 
     for key in ("facebook_post", "linkedin_post", "interviewer_prompt"):
         if not isinstance(data.get(key), str) or not data[key].strip():
@@ -312,6 +324,12 @@ def validate_packet_output(
         if m:
             errors.append(f"giveaway-style CTA is not allowed: '{m.group(0)}'")
             break
+    if forbid_asks:
+        for text in public:
+            m = _ASK.search(text)
+            if m:
+                errors.append(f"no call to action is allowed: '{m.group(0)}'")
+                break
     banned = first_banned(public)
     if banned:
         errors.append(f"banned vocabulary is not allowed: '{banned}'")
@@ -459,7 +477,9 @@ def safety_fields(packet: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_packet_prompt(strategy_text: str, cand: TopicCandidate, voice_block: str = "") -> str:
+def build_packet_prompt(
+    strategy_text: str, cand: TopicCandidate, voice_block: str = "", post_rules: str = ""
+) -> str:
     # The moment_id is the only citation the validator accepts; without it in the
     # prompt the model invented labels ("ev1") and every packet failed (20-Sep-2026).
     evidence = [
@@ -478,6 +498,11 @@ def build_packet_prompt(strategy_text: str, cand: TopicCandidate, voice_block: s
         if not item["moment_id"]:
             item["moment_id"] = fallback
     parts = ["STRATEGY:\n" + (strategy_text or "(none)")]
+    if post_rules:
+        parts.append(
+            "HIS POST RULES (they win over any call to action in the strategy above):\n"
+            + post_rules
+        )
     # His own words on this subject, when the corpus has any. Placed before the idea
     # so the register is set before the task is read.
     if voice_block:
@@ -573,8 +598,9 @@ async def build_packet(
             )
             nonce = str(uuid.uuid4())
             # The header line lets a restarted process rebuild this job's key.
+            rules = await lineup.post_rules(session, ws)
             prompt = f"PACKET REQUEST: {nonce}\n\n" + build_packet_prompt(
-                strategy.text, cand, voice_block
+                strategy.text, cand, voice_block, post_rules=rules
             )
             if voice_used["samples"]:
                 activity(
@@ -618,7 +644,7 @@ async def build_packet(
         news_terms = await news_terms_for(session, ws, cand.id)
         news_block, news_format = await news_block_for(session, ws, cand)
         try:
-            clean = validate_packet_output(data, news_terms=news_terms)
+            clean = validate_packet_output(data, news_terms=news_terms, forbid_asks=True)
         except PacketValidationError as exc:
             # Persist nothing; the job is reported as failed so it can be re-run.
             return PacketOutcome(

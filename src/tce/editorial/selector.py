@@ -33,7 +33,7 @@ from sqlalchemy import or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
-from tce.editorial import news_rules
+from tce.editorial import lineup, news_rules
 from tce.editorial.common import (
     ORIGIN_SELECTOR,
     ORIGIN_SELECTOR_REJECTED,
@@ -63,7 +63,7 @@ from tce.models.llm_job import LLMJob
 from tce.services.strategy_loader import load_effective_strategy
 
 # v2: sharded full-week coverage with explicit per-moment accounting
-PROMPT_VERSION = "editorial_selection.v2"
+PROMPT_VERSION = "editorial_selection.v3"
 JOB_TYPE = "editorial_selection"
 AGENT_NAME = "editorial_selector"
 MAX_CANDIDATES_CAP = 6
@@ -106,7 +106,9 @@ work) that are worth him saying on camera this week.
 
 Apply the strategy you are given. In short: audience is coaches first, event-industry \
 small business owners second. The offer is Super Coaching (coaching plus AI integration \
-inside the client's business). The only call to action is a strategy session. Never \
+inside the client's business). No call to action: an idea never asks the viewer for \
+anything (no strategy session, no booking, no comment, DM or follow asks). His post rules, \
+given with the strategy, win over any call to action the strategy mentions. Never \
 prices, never a giveaway.
 
 Every candidate must pass ALL four gates, each with a one-sentence reason:
@@ -1529,11 +1531,18 @@ async def select_candidates(
                 pool_by_id.setdefault(pm.id, pm)
             activity(f"Loading strategy and feedback ({len(plan.moments)} moments in pool)")
             strategy = await load_effective_strategy(session, ws)
+            # Plan item 8 (27-Sep-2026): the idea-picker follows his post rules too.
+            rules = await lineup.post_rules(session, ws)
+            strategy_text = (
+                strategy.text
+                + "\n\nHIS POST RULES (they win over any call to action above):\n"
+                + rules
+            )
             feedback = await summarize_feedback(session, ws)
             feedback_text = feedback.to_prompt_text()
             for i, shard in enumerate(shards, start=1):
                 prompt = build_selection_prompt(
-                    strategy.text,
+                    strategy_text,
                     feedback_text,
                     shard,
                     max_candidates,
