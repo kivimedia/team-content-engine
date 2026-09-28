@@ -14,6 +14,7 @@
 import {
   mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -1160,4 +1161,205 @@ export function register(server, call, { reply, failure, shortId }) {
       return reply(lines.join('\n'), { jobs });
     },
   );
+
+  // ------------------------------------------------- recorded videos and posts
+  //
+  // 28-Sep call: "how many videos did I record today, where does each stand,
+  // read me the posts once the edit is done, and let me approve one." Read from
+  // the same Library the web screen shows, so the call and the screen agree.
+
+  /** The library, or a reply to return instead. */
+  async function library() {
+    const result = await call('GET', '/production/library?filter=all');
+    if (!result.ok) return { stop: failure(result, 'read your recordings') };
+    return { items: result.data?.items || [] };
+  }
+
+  /** One recorded video by its id or short id; never by words. */
+  async function videoById(video) {
+    const id = idText(video);
+    if (!ID_TEXT.test(id)) {
+      return { stop: reply(`A video is named by its id, not by words ("${String(video ?? '')}" is not an id). `
+        + 'Find it with tce_recordings, read its title back to him, then pass its id. Nothing was done.',
+        { ok: false, code: 'id_required' }) };
+    }
+    const lib = await library();
+    if (lib.stop) return lib;
+    const hits = lib.items.filter((v) => String(v.upload_id).startsWith(id));
+    if (hits.length !== 1) {
+      return { stop: reply(hits.length ? `More than one video starts with "${id}"; use more of its id.`
+        : `No recorded video has the id "${id}". Find it with tce_recordings.`, { ok: false, code: 'unknown_video' }) };
+    }
+    return { video: hits[0] };
+  }
+
+  server.tool(
+    'tce_recordings',
+    'The videos he recorded, and where each one stands: recording now, uploading, in editing, edited and '
+      + 'waiting for his review, or editing done. Use it when he asks how many videos he recorded today, '
+      + 'what is being edited, or what is ready. Defaults to today (his day, Israel time); pass when "all" '
+      + 'for every recording in his library. Each video comes back with its title and its id; the id is '
+      + 'for tce_video_posts and tce_publish and is never read out.',
+    {
+      type: 'object',
+      properties: {
+        when: { type: 'string', enum: ['today', 'all'], description: 'today (default) or all' },
+      },
+    },
+    async ({ when }) => {
+      const lib = await library();
+      if (lib.stop) return lib.stop;
+      const all = when === 'all';
+      const today = localDay(new Date());
+      const items = lib.items.filter((v) => all || localDay(v.recorded_at) === today);
+      // A take still being recorded has no library row yet: it lives on the queue.
+      const queue = await call('GET', '/production/recording-queue');
+      const live = queue.ok ? (queue.data?.ideas || [])
+        .filter((i) => ['recording', 'finalizing'].includes(i.active_session_status)) : [];
+      const videos = items.map((v) => ({ id: shortId(v.upload_id), title: v.title, stage: stageOf(v.status),
+        detail: v.state_sentence || '', edited: v.status === 'edited', recorded_at: v.recorded_at }));
+      const n = videos.length;
+      const head = all
+        ? `There ${n === 1 ? 'is one recording' : `are ${n} recordings`} in your library.`
+        : n ? `You recorded ${n === 1 ? 'one video' : `${n} videos`} today.` : 'You have not recorded a video yet today.';
+      const lines = videos.slice(0, 12).map((v) => `${v.title}: ${v.stage}.`);
+      if (live.length) {
+        lines.push(`Still recording: ${live.map((i) => i.title).join(', ')}.`);
+      }
+      if (n > 12) lines.push(`And ${n - 12} more.`);
+      return reply([head, ...lines].join('\n'), { count: n, when: all ? 'all' : 'today', videos,
+        recording_now: live.map((i) => ({ title: i.title, session: shortId(i.active_session_id) })) });
+    },
+  );
+
+  server.tool(
+    'tce_video_posts',
+    'The posts planned for one recorded video, platform by platform, with the words of each and whether '
+      + 'it is a draft, scheduled or already posted. Use it when he asks to hear the posts for a video. '
+      + 'Posts exist once editing is done. Pass the video id from tce_recordings, never words.',
+    {
+      type: 'object',
+      properties: { video: { type: 'string', description: 'The video id or short id from tce_recordings.' } },
+      required: ['video'],
+    },
+    async ({ video }) => {
+      const found = await videoById(video);
+      if (found.stop) return found.stop;
+      const v = found.video;
+      if (v.status !== 'edited') {
+        return reply(`"${v.title}" is ${stageOf(v.status)}, so its posts are not written yet.`,
+          { ok: false, code: 'not_edited', stage: stageOf(v.status) });
+      }
+      const result = await call('GET', `/production/uploads/${v.upload_id}/publishing`);
+      if (!result.ok) return failure(result, 'read the posts');
+      const posts = result.data?.platforms || [];
+      const rows = (Array.isArray(posts) ? posts : []).map((p) => ({ platform: p.platform, label: p.label || p.platform,
+        status: p.status, words: postWords(p.platform, p.copy) }));
+      const written = rows.filter((r) => r.status !== 'none' && r.words);
+      if (!written.length) return reply(`No posts are written for "${v.title}" yet.`, { video: v.upload_id, posts: rows });
+      const lines = written.map((r) => `${r.label}, ${POST_STATE[r.status] || r.status}: ${clip(r.words, 600)}`);
+      return reply([`The posts for "${v.title}":`, ...lines].join('\n'), { video: v.upload_id, posts: rows });
+    },
+  );
+
+  server.tool(
+    'tce_publish',
+    'Publish ONE post of a finished video to ONE platform, now. It really posts; there is no undo. '
+      + 'First call it with confirmed false: nothing goes out, and it returns exactly which post, which '
+      + 'platform and the words, plus a check code. Read that back to him and ask for a spoken yes. Only '
+      + 'after he says yes, call it again with confirmed true and the same check code. If the post changed '
+      + 'after you read it back, it refuses and gives you the new words to read.',
+    {
+      type: 'object',
+      properties: {
+        video: { type: 'string', description: 'The video id or short id from tce_recordings.' },
+        platform: { type: 'string', enum: PLATFORMS, description: 'instagram, facebook, youtube or linkedin' },
+        confirmed: { type: 'boolean', description: 'True only after he said yes to the read-back.' },
+        check: { type: 'string', description: 'The check code the read-back returned.' },
+      },
+      required: ['video', 'platform'],
+    },
+    async ({ video, platform, confirmed, check }) => {
+      const where = String(platform || '').toLowerCase().trim();
+      if (!PLATFORMS.includes(where)) {
+        return reply('Which platform: Instagram, Facebook, YouTube or LinkedIn? Nothing was published.', { ok: false, code: 'platform' });
+      }
+      const found = await videoById(video);
+      if (found.stop) return found.stop;
+      const v = found.video;
+      if (v.status !== 'edited') {
+        return reply(`"${v.title}" is ${stageOf(v.status)}; it can be published once editing is done. Nothing was published.`,
+          { ok: false, code: 'not_edited' });
+      }
+      const result = await call('GET', `/production/uploads/${v.upload_id}/publishing`);
+      if (!result.ok) return failure(result, 'read the post');
+      const rows = result.data?.platforms || [];
+      const post = (Array.isArray(rows) ? rows : []).find((p) => p.platform === where);
+      const words = post ? postWords(where, post.copy) : '';
+      const label = post?.label || where;
+      if (!post || post.status === 'none' || !words) {
+        return reply(`There is no ${label} post written for "${v.title}". Nothing was published.`, { ok: false, code: 'no_post' });
+      }
+      if (['posting', 'posted', 'scheduled', 'revising'].includes(post.status)) {
+        return reply(`The ${label} post for "${v.title}" is already ${POST_STATE[post.status] || post.status}. Nothing was published.`,
+          { ok: false, code: 'not_draft', status: post.status });
+      }
+      const code = createHash('sha256').update(JSON.stringify(post.copy || {})).digest('hex').slice(0, 12);
+      const readBack = `Publish the ${label} post for "${v.title}" now. It says: "${clip(words, 900)}"`;
+      if (!confirmed) {
+        return reply(`Read this back to him and ask for a clear yes: ${readBack}. `
+          + `Nothing goes out until you call tce_publish again with confirmed true and check ${code}.`,
+        { ok: false, code: 'read_back', check: code, video: v.upload_id, platform: where, published: false });
+      }
+      if (String(check || '').trim() !== code) {
+        return reply(`The ${label} post is not the one you read back (it changed, or no check code was given). `
+          + `Read him the post as it is now and ask again: ${readBack}. Nothing was published.`,
+        { ok: false, code: 'changed', check: code, published: false });
+      }
+      const sent = await call('POST', `/production/uploads/${v.upload_id}/publishing/publish`, { platforms: [where] });
+      if (!sent.ok) return spokenError(sent, `publish the ${label} post`);
+      return reply(`Publishing the ${label} post for "${v.title}" now. tce_video_posts will say when it is live.`,
+        { published: true, video: v.upload_id, platform: where });
+    },
+  );
+}
+
+const PLATFORMS = ['instagram', 'facebook', 'youtube', 'linkedin'];
+const POST_STATE = { draft: 'a draft', posting: 'going out now', scheduled: 'scheduled', posted: 'posted',
+  failed: 'failed to post', revising: 'being rewritten', none: 'not written' };
+
+/** The library's status in his words. */
+export function stageOf(status) {
+  if (status === 'uploaded') return 'uploading';
+  if (['transcribing', 'transcribed', 'proofreading', 'planned', 'rendering'].includes(status)) return 'in editing';
+  if (status === 'needs_review') return 'edited, waiting for your review';
+  if (status === 'edited') return 'editing done';
+  if (['failed', 'interrupted', 'unavailable'].includes(status)) return 'stopped with a problem';
+  return String(status || 'unknown');
+}
+
+/** The words of a post, whatever the platform keeps them in. */
+export function postWords(platform, copy) {
+  const c = copy || {};
+  if (platform === 'instagram') return String(c.caption || '').trim();
+  if (platform === 'youtube') return [c.title, c.description].filter(Boolean).join('. ').trim();
+  if (platform === 'linkedin') {
+    const tags = Array.isArray(c.hashtags) ? c.hashtags.join(' ') : String(c.hashtags || '');
+    return [c.message, tags].filter(Boolean).join(' ').trim();
+  }
+  return String(c.message || c.caption || '').trim();
+}
+
+/** His calendar day (Israel), for a UTC timestamp the server may send without a zone. */
+export function localDay(value) {
+  if (!value) return '';
+  const text = value instanceof Date ? value.toISOString() : String(value);
+  const at = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(text) ? text : `${text}Z`);
+  if (Number.isNaN(at.getTime())) return '';
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' }).format(at);
+}
+
+function clip(text, max) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1)}...` : t;
 }

@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -173,6 +174,9 @@ def test_the_voice_family_registers_every_tool():
             "tce_jobs",
             "tce_new_idea",
             "tce_find_ideas",
+            "tce_recordings",
+            "tce_video_posts",
+            "tce_publish",
         ]
     )
 
@@ -2156,3 +2160,129 @@ def test_the_call_seat_allows_exactly_the_tools_the_voice_family_registers():
     seat = json.loads((ROOT.parent / "deploy" / "voice-seat" / "tce.json").read_text())
     out = run({"steps": [], "responses": {}})
     assert sorted(t.split("__")[-1] for t in seat["allowedTools"]) == out["names"]
+
+
+# ------------------------------------------- recorded videos, posts, publishing
+#
+# 28-Sep call: how many videos he recorded today, where each stands, the posts
+# once editing is done, and approving one to go out. Publishing really posts,
+# so it reads back the exact post and platform and needs his yes, and refuses
+# when the words changed after the read-back.
+
+EDITED = "11111111-2222-4333-8444-555555555555"
+EDITING = "99999999-2222-4333-8444-555555555555"
+OLD = "77777777-2222-4333-8444-555555555555"
+
+
+def _library(today_iso):
+    return {"ok": True, "status": 200, "data": {"items": [
+        {"upload_id": EDITED, "title": "Charge what you are worth", "recorded_at": today_iso, "status": "edited",
+         "state_sentence": "Ready."},
+        {"upload_id": EDITING, "title": "The first ten seconds", "recorded_at": today_iso, "status": "rendering",
+         "state_sentence": "Rendering the cut."},
+        {"upload_id": OLD, "title": "Last week's talk", "recorded_at": "2020-01-01T10:00:00", "status": "edited"},
+    ]}}
+
+
+def _posts(caption="Stop discounting. Here is why."):
+    return {"ok": True, "status": 200, "data": {"upload_id": EDITED, "platforms": [
+        {"platform": "instagram", "label": "Instagram", "status": "draft", "copy": {"caption": caption}},
+        {"platform": "facebook", "label": "Facebook", "status": "none", "copy": {}},
+        {"platform": "youtube", "label": "YouTube", "status": "draft",
+         "copy": {"title": "Charge more", "description": "Why discounts cost you."}},
+        {"platform": "linkedin", "label": "LinkedIn", "status": "posted", "copy": {"message": "Out already."}},
+    ]}}
+
+
+def _now_utc_naive():
+    # The server sends naive UTC; "today" is his day in Israel.
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+
+
+QUEUE = {"ok": True, "status": 200, "data": {"ideas": [
+    {"title": "Pricing for coaches", "active_session_status": "recording", "active_session_id": "abcdef12-0000"},
+    {"title": "Not started", "active_session_status": None},
+]}}
+
+
+def test_recordings_counts_today_says_where_each_stands_and_who_is_still_recording():
+    out = run({"steps": [step("tce_recordings"), step("tce_recordings", when="all")],
+               "responses": {"GET /production/library": _library(_now_utc_naive()),
+                             "GET /production/recording-queue": QUEUE}})
+    today, every = out["texts"]
+    assert today.startswith("You recorded 2 videos today."), today
+    assert "Charge what you are worth: editing done." in today
+    assert "The first ten seconds: in editing." in today
+    assert "Last week's talk" not in today
+    assert "Still recording: Pricing for coaches." in today
+    assert every.startswith("There are 3 recordings in your library."), every
+    assert EDITED not in today, "ids are for tools, never read out"
+
+
+def test_the_day_is_israel_not_utc():
+    # 22:30 UTC on 27-Sep is already 28-Sep in Israel (UTC+3).
+    harness = ROOT / f"_voice_day_{uuid.uuid4().hex[:8]}.mjs"
+    harness.write_text(
+        "import { localDay } from './tools/voice.mjs';\n"
+        "console.log(JSON.stringify([localDay('2026-09-27T22:30:00'), localDay('2026-09-27T20:59:00Z')]));\n"
+    )
+    try:
+        got = subprocess.run(["node", str(harness)], cwd=ROOT, capture_output=True, text=True, timeout=60)
+    finally:
+        harness.unlink(missing_ok=True)
+    assert json.loads(got.stdout) == ["2026-09-28", "2026-09-27"], got.stdout + got.stderr
+
+
+def test_video_posts_reads_each_written_post_and_waits_for_the_edit():
+    out = run({"steps": [step("tce_video_posts", video=EDITED[:8]), step("tce_video_posts", video=EDITING[:8]),
+                         step("tce_video_posts", video="the pricing one")],
+               "responses": {"GET /production/library": _library(_now_utc_naive()),
+                             "GET /production/uploads/": _posts()}})
+    posts, not_yet, words = out["texts"]
+    assert "Instagram, a draft: Stop discounting. Here is why." in posts
+    assert "YouTube, a draft: Charge more. Why discounts cost you." in posts
+    assert "LinkedIn, posted" in posts and "Facebook" not in posts
+    assert "in editing" in not_yet and "not written yet" in not_yet
+    assert "not an id" in words
+
+
+def test_publish_reads_back_first_and_posts_only_after_a_yes_with_the_same_words():
+    base = {"GET /production/library": _library(_now_utc_naive()), "GET /production/uploads/": _posts()}
+    first = run({"steps": [step("tce_publish", video=EDITED[:8], platform="instagram")], "responses": base})
+    said = first["texts"][0]
+    assert 'Publish the Instagram post for "Charge what you are worth" now' in said
+    assert "Stop discounting. Here is why." in said
+    assert not any(s["key"].startswith("POST") for s in first["sent"]), "nothing goes out on the read-back"
+    code = json.loads(first["seen"][0])["data"]["check"]
+
+    yes = run({"steps": [step("tce_publish", video=EDITED[:8], platform="instagram", confirmed=True, check=code)],
+               "responses": {**base, "POST /production/uploads/": {"ok": True, "status": 202, "data": {"ok": True}}}})
+    posts = [s for s in yes["sent"] if s["key"].startswith("POST")]
+    assert posts == [{"key": f"POST /production/uploads/{EDITED}/publishing/publish", "body": {"platforms": ["instagram"]}}]
+    assert "Publishing the Instagram post" in yes["texts"][0]
+
+
+def test_publish_refuses_changed_words_a_missing_check_and_anything_not_a_draft():
+    changed = {"GET /production/library": _library(_now_utc_naive()),
+               "GET /production/uploads/": _posts(caption="Different words now.")}
+    first = run({"steps": [step("tce_publish", video=EDITED[:8], platform="instagram")],
+                 "responses": {"GET /production/library": _library(_now_utc_naive()), "GET /production/uploads/": _posts()}})
+    code = json.loads(first["seen"][0])["data"]["check"]
+    out = run({"steps": [
+        step("tce_publish", video=EDITED[:8], platform="instagram", confirmed=True, check=code),
+        step("tce_publish", video=EDITED[:8], platform="instagram", confirmed=True),
+        step("tce_publish", video=EDITED[:8], platform="linkedin", confirmed=True, check=code),
+        step("tce_publish", video=EDITED[:8], platform="facebook"),
+        step("tce_publish", video=EDITING[:8], platform="instagram", confirmed=True, check=code),
+        step("tce_publish", video="the pricing one", platform="instagram", confirmed=True, check=code),
+        step("tce_publish", video=EDITED[:8], platform="tiktok", confirmed=True, check=code),
+    ], "responses": changed})
+    t = out["texts"]
+    assert "not the one you read back" in t[0] and "Different words now." in t[0]
+    assert "not the one you read back" in t[1]
+    assert "already posted" in t[2]
+    assert "no Facebook post written" in t[3]
+    assert "once editing is done" in t[4]
+    assert "not an id" in t[5]
+    assert "Which platform" in t[6]
+    assert not any(s["key"].startswith("POST") for s in out["sent"]), "none of these publishes anything"

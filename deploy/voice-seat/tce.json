@@ -14,6 +14,9 @@
     "mcp__tce__tce_research",
     "mcp__tce__tce_jobs",
     "mcp__tce__tce_new_idea",
-    "mcp__tce__tce_find_ideas"
+    "mcp__tce__tce_find_ideas",
+    "mcp__tce__tce_recordings",
+    "mcp__tce__tce_video_posts",
+    "mcp__tce__tce_publish"
   ]
 }
