@@ -715,7 +715,9 @@ function packetToIdea(idea, packet) {
     $("bigIdea").textContent = idea.big_idea;
     $("hookChooser").hidden = true;
     renderHookPanel(idea, lockNote);
-    // A different idea starts its numbers from the first page, nothing marked.
+    // A different idea starts its numbers from the first page, nothing marked,
+    // and its clock at zero.
+    if (!state.recorder || state.recorder.state === "inactive") resetTimer();
     state.beatPage = 0;
     state.currentBeat = null;
     renderBeats();
@@ -1008,7 +1010,7 @@ function packetToIdea(idea, packet) {
       });
       state.clip = response.clip;
       state.sequence = 0;
-      state.activeMs = 0;
+      resetTimer({ hide: false });
       state.activeStartedAt = performance.now();
       state.startedAt = Date.now();
       state.takeMarkers = [];
@@ -1048,6 +1050,20 @@ function packetToIdea(idea, packet) {
     } catch (error) {
       showNotice(`Recording did not start: ${error.message}`, 7000);
     }
+  }
+
+  /* 28-Sep call: after a nine-minute take and "start editing", the next script
+     opened with the timer still reading nine minutes. Nothing reset the number
+     on screen: Stop cleared the interval and freeStudio zeroed activeMs, but the
+     text stayed until the first tick of the next take, 250 ms after Record. A
+     new script, and a new take, start from zero here. The recording itself never
+     carried over (new take set per script, new clip per take). */
+  function resetTimer({ hide = true } = {}) {
+    clearInterval(state.timerId);
+    state.timerId = null;
+    state.activeMs = 0;
+    $("timer").textContent = "00:00";
+    $("timer").hidden = hide;
   }
 
   function updateTimer() {
@@ -1210,6 +1226,7 @@ function packetToIdea(idea, packet) {
         method: "POST", body: JSON.stringify({ selected_clip_ids: ready.map((clip) => clip.id) }),
       });
       state.session = response.session;
+      resetTimer();
       showNotice("Session saved as one editable recording. Every source clip is retained.", 7000);
       showQueue();
       await loadQueue();
