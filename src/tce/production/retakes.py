@@ -146,8 +146,7 @@ EN_STOPWORDS = frozenset(
     "it its this that these those i me my we our you your he she they them their his her "
     "do does did done have has had will would can could should just very really then than "
     "also about into over up out if what when where who how which there here all any each "
-    "every some more most much many one yes ok okay um uh like well until while because "
-    "after before again still even only too being going gonna actually basically".split()
+    "every some more most much many one yes ok okay um uh like well gonna actually basically".split()
 )
 HE_STOPWORDS = frozenset("של את על עם זה זו גם כי אם או הוא היא הם אני אנחנו אתם יש מה".split())
 
@@ -671,18 +670,37 @@ def _prefix_retakes(sentences: list[Unit]) -> None:
             continue
         if _shared_prefix(a.tokens, b.tokens) < PREFIX_RETAKE_TOKENS:
             continue
-        if _complete(b.text) or not _complete(a.text):
-            a.dropped_reason = "retake" if _complete(a.text) else "false_start"
-            a.superseded_by = b.index
-        else:
-            b.dropped_reason = "false_start"
-            b.superseded_by = a.index
+        drop, keep = (a, b) if _complete(b.text) or not _complete(a.text) else (b, a)
+        # These rules stand in when the editor did not answer: a take that says a word
+        # the kept one does not ("before" vs "after") may be a second point, so both stay.
+        if lost_content_words(drop.text, keep.text) or [
+            n for n in negations_in(drop.text) if n not in negations_in(keep.text)
+        ]:
+            continue
+        drop.dropped_reason = "retake" if _complete(drop.text) else "false_start"
+        drop.superseded_by = keep.index
+
+
+# Words that make a line with a dog's name a call to the dog, not a sentence.
+ASIDE_CALLING = frozenset("hey come boy bo bou bow no stop wait sit stay girl good".split())
+
+
+def _calls_a_dog(text: str, tokens: list[str], names: Sequence[str]) -> bool:
+    """A dog's name as written (capitalised, so "rain" in "looks like rain" is not
+    one) in a line that calls: a calling word, or the name set off by a comma or an
+    exclamation mark ("Hey, Maple Rain, boy!", "No, no, no, Rain", "Maple!")."""
+    for name in names:
+        for m in re.finditer(r"\b" + re.escape(name) + r"\b", text):
+            after = text[m.end() : m.end() + 1]
+            before = text[max(0, m.start() - 2) : m.start()]
+            if after in (",", "!") or "," in before or ASIDE_CALLING & set(tokens):
+                return True
+    return False
 
 
 def _asides(sentences: list[Unit], names: Sequence[str]) -> None:
-    """Talk that is not for the viewer: a short line with a dog's name in it, the
-    call words around it, and a run of "no, no, no"."""
-    name_tokens = {t for n in names for t in sim_tokens(n)}
+    """Talk that is not for the viewer: a short line calling a dog by name, the call
+    words around it, and a run of "no, no, no"."""
     marked: list[Unit] = []
     for s in sentences:
         if s.dropped_reason:
@@ -690,7 +708,7 @@ def _asides(sentences: list[Unit], names: Sequence[str]) -> None:
         toks = s.tokens
         if toks and len(toks) >= 2 and all(t == "no" for t in toks):
             s.dropped_reason = "aside"
-        elif name_tokens and len(toks) <= ASIDE_NAME_MAX_TOKENS and name_tokens & set(toks):
+        elif names and len(toks) <= ASIDE_NAME_MAX_TOKENS and _calls_a_dog(s.text, toks, names):
             s.dropped_reason = "aside"
             marked.append(s)
     for s in sentences:
@@ -838,6 +856,14 @@ def _plan_words(
             u.superseded_by = None
     kept_units = [u for u in sentences if u.dropped_reason is None]
     issues = _meaning_issues(sentences + review_units, kept_units, script_phrases or [])
+    # The editor chose these takes reading the whole walk: a reworded take losing a word
+    # the kept one lacks is a note on the card, not a block. A lost "not" still blocks.
+    reviewed_ids = {u.index for u in review_units}
+    notes = [
+        i for i in issues
+        if i.get("dropped_index") in reviewed_ids and i["kind"] in ("content_dropped", "truncated_take")
+    ]
+    issues = [i for i in issues if i not in notes]
 
     words_sorted = [
         {"start_s": s, "end_s": e, "text": t, "index": i} for i, s, e, t in rows
@@ -940,7 +966,7 @@ def _plan_words(
             "issues": issues,
             "negations_full": len(negations_in(" ".join(r[3] for r in rows))),
             "negations_kept": len(negations_in(kept_text)),
-            "notes": [],
+            "notes": notes,
         },
         "timing": {
             "precision": precision,
@@ -1081,13 +1107,37 @@ def _wrap(text: str, width: int = MAX_CAPTION_LINE) -> list[str]:
     return lines
 
 
+def words_on_edit(words: list[dict[str, Any]], keep: list[list[float]]) -> list[dict[str, Any]]:
+    """Kept words ({text, start, end} on the recording) moved onto the edited clock.
+
+    A word goes with the kept range holding its midpoint and is clamped inside it: a
+    word whose recorded end sits a hair past a cut still shows (the subtitles used to
+    drop it), and one the recogniser starts early still shows with its speech.
+    """
+    out: list[dict[str, Any]] = []
+    offsets: list[float] = []
+    acc = 0.0
+    for s, e in keep:
+        offsets.append(acc)
+        acc += e - s
+    for w in words:
+        ws, we = float(w["start"]), float(w["end"])
+        mid = (ws + we) / 2
+        for (rs, re_), off in zip(keep, offsets, strict=True):
+            if rs <= mid <= re_:
+                s, e = max(ws, rs), min(we, re_)
+                out.append({"text": w["text"], "start": off + s - rs, "end": off + max(e, s) - rs})
+                break
+    return out
+
+
 def _cues_from_words(words: list[dict[str, Any]], keep: list[list[float]]) -> list[dict[str, Any]]:
     """Subtitle cues from the kept words (fillers and cut words never appear)."""
-    timed = []
-    for w in words:
-        s, e = map_to_edit(float(w["start"]), keep), map_to_edit(float(w["end"]), keep)
-        if s is not None and e is not None and e > s:
-            timed.append((s, e, str(w["text"])))
+    timed = [
+        (w["start"], w["end"], str(w["text"]))
+        for w in words_on_edit(words, keep)
+        if w["end"] > w["start"]
+    ]
     cues: list[dict[str, Any]] = []
     cur: list[tuple[float, float, str]] = []
 

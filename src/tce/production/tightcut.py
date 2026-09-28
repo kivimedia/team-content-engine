@@ -187,6 +187,13 @@ def _edges(
     neighbours: there is no speech of theirs to avoid.
     """
     start, end = float(words[i]["start_s"]), float(words[j]["end_s"])
+
+    def middle(k: int) -> float:
+        return (float(words[k]["start_s"]) + float(words[k]["end_s"])) / 2
+
+    # The dip is looked for only between the middles of the two words: reaching further
+    # found the silence on the far side of a short word, so a dropped "um" stayed in or
+    # a kept "is" was cut out (review, 28-Sep).
     prev = next((k for k in range(i - 1, -1, -1) if audible[k]), None)
     if prev is None:
         lo = start - SEARCH_FAR_S
@@ -197,7 +204,8 @@ def _edges(
         elif start - pe >= NEAR_S:
             lo = max(pe, start - SEARCH_FAR_S)
         elif levels:
-            lo = _dip(levels, pe - 0.25, start + 0.1, (pe + start) / 2)
+            lo = _dip(levels, max(pe - 0.25, middle(prev)), min(start + 0.1, middle(i)),
+                      (pe + start) / 2)
         else:
             lo = max(start - SEARCH_S, pe - PRE_S)
     nxt = next((k for k in range(j + 1, len(words)) if audible[k]), None)
@@ -210,7 +218,8 @@ def _edges(
         elif ns - end >= NEAR_S:
             hi = min(ns, end + SEARCH_FAR_S)
         elif levels:
-            hi = _dip(levels, end - 0.25, ns + 0.05, (end + ns) / 2)
+            hi = _dip(levels, max(end - 0.25, middle(j)), min(ns + 0.05, middle(nxt)),
+                      (end + ns) / 2)
         else:
             hi = min(end + SEARCH_S, ns + PRE_S)
     return max(0.0, lo), min(end_bound, hi)
@@ -267,7 +276,9 @@ def tight_keep(
             run_pieces.append([max(lo, rs - PRE_S), min(hi, re_ + post)])
         for w in words[i : j + 1]:
             ws, we = float(w["start_s"]), float(w["end_s"])
-            if not any(a < we and b > ws for a, b in run_pieces):
+            # Measured against the speech found, not the padded pieces: a quiet word
+            # right after a loud one touched the loud word's breath and was lost.
+            if not any(a < we and b > ws for a, b in regions):
                 run_pieces.append([max(lo, ws), min(hi, max(we, ws + 0.1))])
         pieces.extend(run_pieces)
         i = j + 1
@@ -334,11 +345,14 @@ def retime(
         offset = next((b for a, b in reversed(inside) if a <= e and b >= s), None)
         if offset is not None and offset < e and not after:
             e = max(offset + 0.04, s + 0.06)
-        out.append({"index": index, "text": str(w["text"]), "start": round(s, 3),
-                    "end": round(min(e, re_), 3)})
+        # Rounded, then clamped: rounding alone put a word ending on a cut just outside
+        # its range, and the subtitles dropped it (review, 28-Sep).
+        s = min(max(round(s, 6), rs), re_)
+        e = min(max(round(min(e, re_), 6), s), re_)
+        out.append({"index": index, "text": str(w["text"]), "start": s, "end": e})
     for a, b in zip(out, out[1:], strict=False):
         if a["end"] > b["start"]:
-            a["end"] = max(a["start"] + 0.02, b["start"])
+            a["end"] = max(a["start"], b["start"])
     return out
 
 

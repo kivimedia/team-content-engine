@@ -162,7 +162,16 @@ async def test_the_render_boxes_the_word_being_said_and_cuts_on_the_frame_grid(t
     video = next(line for line in probe if line.startswith("video"))
     audio = next(line for line in probe if line.startswith("audio"))
     assert video.split(",")[1] == "30/1"
-    assert abs(float(video.split(",")[2]) - 4.0) < 0.05 and abs(float(audio.split(",")[2]) - 4.0) < 0.05
+    assert abs(float(audio.split(",")[2]) - 4.0) < 0.05
+    # The picture stops with the sound: the caption stream is padded past the end and
+    # once ran the video on, frozen and silent (review, 28-Sep). The stream duration
+    # hides that; the last frame's time does not.
+    last = subprocess.run(
+        [media.ffprobe_path(), "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "packet=pts_time", "-of", "csv=p=0", str(out)],
+        check=True, capture_output=True, text=True,
+    ).stdout.split()
+    assert max(float(t) for t in last) < float(audio.split(",")[2]), last[-3:]
     # "had" is boxed while it is said, and "We" is not.
     layout = wordbox._Layout(*size)
     fsize, placed = layout.place(pages[0])

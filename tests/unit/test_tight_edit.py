@@ -43,18 +43,47 @@ def test_a_lone_word_before_a_pause_joins_its_sentence_instead_of_being_a_false_
     assert kept_text(plan).startswith("A coach is a guide")
 
 
-def test_a_line_said_twice_keeps_the_complete_later_take():
+def test_a_partial_repeat_keeps_the_complete_take():
     words = (
         said("Strategy sessions can be free too.", 0.0)
-        + said("So go and work for free until you do.", 3.0)
+        + said("So go and work for free", 3.0)  # he stops and says it again, whole
         + said("So go and work for free for a while.", 7.0)
         + said("Bring people value.", 11.0)
     )
     plan = plan_edit(words, [], aside_names=DOGS)
     assert kept_text(plan).count("So go and work for free") == 1
-    assert "for a while." in kept_text(plan) and "until you do" not in kept_text(plan)
+    assert "for a while." in kept_text(plan)
     assert plan["meaning_check"]["status"] == "ok"
-    assert [r["reason"] for r in plan["removed"]] == ["retake"]
+    assert [r["reason"] for r in plan["removed"]] == ["false_start"]
+
+
+def test_when_the_rules_decide_two_takes_that_differ_in_a_word_both_stay():
+    # "before" vs "after" may be a second point, not a retake: the rules keep both
+    # (the editor's review is the one that chooses), and nothing is blocked.
+    words = said("Call them before you pitch.", 0.0) + said("Call them after you pitch.", 3.0)
+    plan = plan_edit(words, [], aside_names=DOGS)
+    assert kept_text(plan) == "Call them before you pitch. Call them after you pitch."
+    assert plan["meaning_check"]["status"] == "ok"
+
+
+def test_the_editors_reworded_retake_is_a_note_but_a_lost_not_still_blocks():
+    words = said("So go and work for free until you do.", 0.0) + said(
+        "So go and work for free for a while.", 4.0
+    )
+    removals = [{"start": 0.0, "end": 2.6, "text": "So go and work for free until you do.",
+                 "kind": "retake", "keeper_start": 4.0}]
+    plan = plan_edit(words, [], aside_names=DOGS, removals=removals)
+    assert plan["meaning_check"]["status"] == "ok"
+    assert [n["kind"] for n in plan["meaning_check"]["notes"]] == ["content_dropped"]
+    assert kept_text(plan) == "So go and work for free for a while."
+
+
+def test_rain_in_a_sentence_is_not_a_dog():
+    words = said("It looks like rain today.", 0.0) + said("Okay, here we go.", 2.5) + said(
+        "Maple syrup is great.", 5.0
+    )
+    plan = plan_edit(words, [], aside_names=DOGS)
+    assert kept_text(plan) == "It looks like rain today. Okay, here we go. Maple syrup is great."
 
 
 def test_an_abandoned_restart_keeps_the_full_take_that_came_first():
@@ -259,3 +288,90 @@ def test_a_far_neighbour_lets_the_edge_follow_a_late_recogniser():
     act = find_activity(speech_levels([(0.0, 0.25), (19.47, 19.98)], 21.0))
     keep, _ = tight_keep(words, [False, True], act, 21.0)
     assert keep[0][0] <= 19.47
+
+
+def test_a_short_dropped_um_stays_out_and_a_short_kept_word_stays_in():
+    # Review, 28-Sep: the dip search reached past the far edge of a short word.
+    hop = 0.01
+    levels = [tightcut.SILENT_DB] * 500
+    for k in range(100, 118):  # "um" 1.00-1.18, after a pause
+        levels[k] = -20.0
+    for k in range(118, 200):  # "so the point" straight after it
+        levels[k] = -15.0
+    words = [
+        {"text": "um", "start_s": 1.0, "end_s": 1.18, "precision": "word"},
+        {"text": "so", "start_s": 1.18, "end_s": 1.4, "precision": "word"},
+        {"text": "the", "start_s": 1.4, "end_s": 1.6, "precision": "word"},
+        {"text": "point.", "start_s": 1.6, "end_s": 2.0, "precision": "word"},
+    ]
+    act = find_activity(levels, hop)
+    keep, _ = tight_keep(words, [False, True, True, True], act, 5.0)
+    kept_um = sum(max(0.0, min(e, 1.18) - max(s, 1.0)) for s, e in keep)
+    assert kept_um < 0.06, keep  # at most the join, never the whole "um"
+
+    levels = [tightcut.SILENT_DB] * 500
+    for k in range(100, 200):  # "The point"
+        levels[k] = -15.0
+    for k in range(206, 220):  # "is" after a 60 ms gap
+        levels[k] = -18.0
+    for k in range(220, 240):  # a dropped "um" straight after
+        levels[k] = -20.0
+    words = [
+        {"text": "The", "start_s": 1.0, "end_s": 1.4, "precision": "word"},
+        {"text": "point", "start_s": 1.4, "end_s": 2.0, "precision": "word"},
+        {"text": "is", "start_s": 2.06, "end_s": 2.2, "precision": "word"},
+        {"text": "um", "start_s": 2.2, "end_s": 2.4, "precision": "word"},
+    ]
+    act = find_activity(levels, hop)
+    keep, _ = tight_keep(words, [True, True, True, False], act, 5.0)
+    kept_is = sum(max(0.0, min(e, 2.2) - max(s, 2.06)) for s, e in keep)
+    assert kept_is > 0.1, keep
+
+
+def test_a_quiet_word_right_after_a_loud_one_is_kept_whole():
+    # Review, 28-Sep: a quiet "cat" right after "the" lost 0.28 s of its 0.34 s: it touched
+    # the breath padded onto "the", so it never got its own span.
+    levels = [tightcut.SILENT_DB] * 400
+    for k in range(100, 130):
+        levels[k] = -20.0  # "the"
+    for k in range(130, 164):
+        levels[k] = -60.0  # "cat", too quiet for the speech detector to hear
+    for k in range(170, 220):
+        levels[k] = -18.0  # "sat."
+    words = [
+        {"text": "the", "start_s": 1.0, "end_s": 1.3, "precision": "word"},
+        {"text": "cat", "start_s": 1.3, "end_s": 1.64, "precision": "word"},
+        {"text": "sat.", "start_s": 1.7, "end_s": 2.2, "precision": "word"},
+    ]
+    act = find_activity(levels)
+    keep, _ = tight_keep(words, [True, True, True], act, 4.0)
+    kept_cat = sum(max(0.0, min(e, 1.64) - max(s, 1.3)) for s, e in keep)
+    assert kept_cat >= 0.3, keep
+
+
+def test_subtitles_keep_a_word_that_ends_on_a_cut():
+    # Review, 28-Sep: "coached." ending at 10.467 against a cut at 10.466667 vanished.
+    plan = {
+        "keep": [[9.0, 10.466667], [12.0, 13.0]],
+        "words": [
+            {"index": 0, "text": "We", "start": 9.1, "end": 9.4},
+            {"index": 1, "text": "coached.", "start": 9.9, "end": 10.467},
+            {"index": 2, "text": "Which", "start": 12.1, "end": 12.5},
+        ],
+    }
+    text = " ".join(" ".join(c["lines"]) for c in build_cues(plan))
+    assert text == "We coached. Which"
+
+
+def test_the_meaning_check_still_blocks_before_turned_into_after():
+    # Review, 28-Sep: "before", "after", "until" were added to the words the meaning
+    # check ignores, and a dropped "before" take stopped blocking on every path.
+    from tce.production.retakes import plan_edit as plan
+
+    rows = [
+        {"start_s": 0.0, "end_s": 2.0, "text": "Call them before you pitch."},
+        {"start_s": 2.5, "end_s": 4.5, "text": "Call them after you pitch."},
+    ]
+    result = plan(rows, ["Call them after you pitch."])
+    assert result["meaning_check"]["status"] == "blocked"
+    assert any(i["kind"] == "content_dropped" for i in result["meaning_check"]["issues"])

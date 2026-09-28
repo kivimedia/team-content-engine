@@ -229,6 +229,8 @@ def _remove_partial_render(row: RecordingUpload) -> None:
     src = Path(row.storage_path)
     for part in src.parent.glob(f".{src.stem}-edited.rendering*"):
         part.unlink(missing_ok=True)
+    for band in src.parent.glob(f".{src.stem}-captions*"):  # caption images of a dead render
+        shutil.rmtree(band, ignore_errors=True)
 
 
 async def reconcile_interrupted_uploads(
@@ -827,8 +829,10 @@ async def _speech_activity(path: str | Path | None) -> tightcut.Activity | None:
             levels = await tightcut.measure_levels(str(src), ff)
         except RuntimeError:
             return None
-        try:
-            cache.write_text(key + "\n" + " ".join(f"{v:.1f}" for v in levels), encoding="utf-8")
+        try:  # written aside and renamed: a crash never leaves a short envelope behind
+            part = cache.with_name(cache.name + ".part")
+            part.write_text(key + "\n" + " ".join(f"{v:.1f}" for v in levels), encoding="utf-8")
+            os.replace(part, cache)
         except OSError:
             pass
     return tightcut.find_activity(levels) if levels else None
@@ -855,7 +859,9 @@ async def _compute_plan(
     review = previous.get("review") or {}
     word_level = is_word_level(row.transcript or [])
     activity = await _speech_activity(row.storage_path) if word_level else None
-    plan = plan_edit(
+    # A long walk takes a second or more to plan: off the event loop.
+    plan = await asyncio.to_thread(
+        plan_edit,
         row.transcript,
         phrases,
         pause_threshold_s=pause_threshold_s or settings.production_pause_threshold_s,
@@ -938,7 +944,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         out = src.with_name(f"{src.stem}-edited.mp4")
         # TJ's look (28-Sep): the word being said on an orange box, when every caption
         # word has its own timing and Roboto can draw it; the plain captions otherwise.
-        band_dir = src.with_name(f".{src.stem}-captions")
+        band_dir = src.with_name(f".{src.stem}-captions-{attempt}")
         band = None
         if mode == "uncut":  # every word he said, on the recording's own clock
             spoken = [
@@ -1018,7 +1024,7 @@ async def auto_edit_again(
     unchanged."""
     await reconcile_interrupted_uploads(db, ws)
     row = await _upload(db, ws, upload_id)
-    if row.status in BUSY_STATUSES or AUTO_MARK in (row.job_ids or []):
+    if row.status in BUSY_STATUSES or AUTO_MARK in (row.job_ids or []) or _render_lock(row.id).locked():
         return upload_json(row)
     if not row.storage_path or not Path(row.storage_path).exists():
         raise HTTPException(status_code=409, detail="The recording is not on this server")
@@ -1687,10 +1693,28 @@ async def _ask(
 REVIEW_FIRST_WAIT_S = 600.0
 
 
-def _review_key(upload_id: uuid.UUID, words: list[dict[str, Any]]) -> str:
-    said = " ".join(str(w.get("text") or "") for w in words)
-    digest = hashlib.sha256(said.encode()).hexdigest()[:16]
-    return f"edit-review:{autoedit.REVIEW_PROMPT_VERSION}:{upload_id}:{digest}"
+_render_locks: dict[uuid.UUID, asyncio.Lock] = {}
+
+
+def _render_lock(upload_id: uuid.UUID) -> asyncio.Lock:
+    """One plan-and-render of a video at a time in this process (review, 28-Sep: a late
+    review landing during another render started a second ffmpeg on the same files)."""
+    lock = _render_locks.get(upload_id)
+    if lock is None:
+        lock = _render_locks[upload_id] = asyncio.Lock()
+    return lock
+
+
+def _review_request(words: list[dict[str, Any]], context: str) -> tuple[str, str]:
+    return autoedit.review_prompt(words, context), autoedit.review_system(aside_names())
+
+
+def _review_key(upload_id: uuid.UUID, prompt: str, system: str) -> str:
+    """Everything the job reads is in its key: a changed topic title, script or dog name
+    asks afresh instead of colliding with the old job (the queue refuses a reused key
+    with a different input, and "Edit it again" failed on every click)."""
+    body = "\x1f".join([autoedit.REVIEW_PROMPT_VERSION, system, prompt])
+    return f"edit-review:{upload_id}:{hashlib.sha256(body.encode()).hexdigest()[:24]}"
 
 
 async def _save_review(upload_id: uuid.UUID, ws: uuid.UUID, review: dict[str, Any], detail: str | None) -> None:
@@ -1705,24 +1729,31 @@ async def _save_review(upload_id: uuid.UUID, ws: uuid.UUID, review: dict[str, An
 
 
 async def _apply_review(
-    upload_id: uuid.UUID, ws: uuid.UUID, words: list[dict[str, Any]], answer: Any
+    upload_id: uuid.UUID,
+    ws: uuid.UUID,
+    words: list[dict[str, Any]],
+    answer: Any,
+    *,
+    fix_words: bool = True,
 ) -> dict[str, Any]:
     """Store what the editor decided. Removals are kept as time ranges, so the word
-    fixes applied beside them cannot shift what they point at."""
+    fixes applied beside them cannot shift what they point at. `fix_words` False keeps
+    the transcript as it is (a posted video: its word indices must not move)."""
     out = answer.structured or {}
     removals, notes = autoedit.validate_removals(words, out.get("removals") or [])
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
         current = list(row.transcript or [])
         applied: list[dict[str, Any]] = []
-        if [w.get("text") for w in current] == [w.get("text") for w in words]:
+        if fix_words and [w.get("text") for w in current] == [w.get("text") for w in words]:
             fixed, applied = autoedit.apply_corrections(current, out.get("corrections") or [])
             row.transcript = fixed
         plan = dict(row.edit_plan or {})
-        plan["proofread"] = [
-            {"heard": c["heard"], "replacement": c["replacement"], "why": str(c.get("why") or "")[:200]}
-            for c in applied
-        ]
+        if fix_words:
+            plan["proofread"] = [
+                {"heard": c["heard"], "replacement": c["replacement"], "why": str(c.get("why") or "")[:200]}
+                for c in applied
+            ]
         review = {
             "state": "done" if removals is not None else "rules",
             "removals": removals or [],
@@ -1747,6 +1778,7 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
     """The editor's review on the subscription: misheard words, retakes (the complete
     take stays), talk to the dogs, recogniser junk. Returns its state."""
     from tce.llm import LLMUnavailable
+    from tce.llm.queue import QueueError
 
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
@@ -1761,21 +1793,17 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
             await s.commit()
     if not words or not is_word_level(words):
         return "skipped"
-    key = _review_key(upload_id, words)
+    prompt, system = _review_request(words, context)
+    key = _review_key(upload_id, prompt, system)
     try:
         answer = await _ask(
-            autoedit.REVIEW_JOB,
-            autoedit.review_prompt(words, context),
-            autoedit.review_system(aside_names()),
-            autoedit.REVIEW_SCHEMA,
-            ws,
-            key,
-            wait_timeout_s=wait_timeout_s,
-            prompt_version=autoedit.REVIEW_PROMPT_VERSION,
+            autoedit.REVIEW_JOB, prompt, system, autoedit.REVIEW_SCHEMA, ws, key,
+            wait_timeout_s=wait_timeout_s, prompt_version=autoedit.REVIEW_PROMPT_VERSION,
             max_tokens=4000,
         )
-    except LLMUnavailable as exc:
-        waiting = exc.status in ("timeout", "waiting_capacity")
+    except (LLMUnavailable, QueueError) as exc:
+        waiting = isinstance(exc, LLMUnavailable) and exc.status in ("timeout", "waiting_capacity")
+        why = getattr(exc, "status", exc.__class__.__name__)
         await _save_review(
             upload_id,
             ws,
@@ -1785,7 +1813,7 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
                 "Your editor has not answered yet, so this edit uses the rules; it re-edits "
                 "by itself when the review lands"
                 if waiting
-                else f"Your editor could not review this one ({exc.status}); cutting with the rules"
+                else f"Your editor could not review this one ({why}); cutting with the rules"
             ),
         )
         return "waiting" if waiting else "unavailable"
@@ -1796,36 +1824,42 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
 async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
     """Keep waiting for a review the edit went out without, then re-edit with it.
 
-    Restart-safe: the review's state and job key live on the plan, and startup
-    resumes every waiter. It gives up after production_review_wait_h, when he changed
-    the words himself meanwhile (the review read other words), or once a post of this
-    video went out (the edit he posted stays the edit he sees).
+    Restart-safe: the review's state, job key and start time live on the plan, and
+    startup resumes every waiter until production_review_wait_h after the review was
+    first asked for. It stops when he changed the words or the brief meanwhile (the
+    review read something else), when another edit of the video is running (that one
+    asks for its own review), and once a post of this video went out (the edit he
+    posted stays the edit he sees). While it applies and renders, the video carries
+    the auto-edit mark: posting waits, "Edit it again" waits, a restart resumes it.
     """
     from tce.llm import LLMUnavailable
+    from tce.llm.queue import QueueError
 
-    deadline = _utcnow() + timedelta(hours=settings.production_review_wait_h)
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        since = ((row.edit_plan or {}).get("review") or {}).get("since")
+    try:
+        started = datetime.fromisoformat(since) if since else _utcnow()
+    except ValueError:
+        started = _utcnow()
+    deadline = started + timedelta(hours=settings.production_review_wait_h)
     while _utcnow() < deadline:
         async with session_factory()() as s:
             row = await _load(s, upload_id, ws)
             review = dict((row.edit_plan or {}).get("review") or {})
-            if review.get("state") != "waiting":
+            if review.get("state") != "waiting" or AUTO_MARK in (row.job_ids or []):
                 return
             words = list(row.transcript or [])
             context = await _script_context(s, ws, row)
-        key = str(review.get("key") or "")
-        if key != _review_key(upload_id, words):
+        prompt, system = _review_request(words, context)
+        key = _review_key(upload_id, prompt, system)
+        if key != str(review.get("key") or ""):
             await _save_review(upload_id, ws, {**review, "state": "stale"}, None)
             return
         try:
             answer = await _ask(
-                autoedit.REVIEW_JOB,
-                autoedit.review_prompt(words, context),
-                autoedit.review_system(aside_names()),
-                autoedit.REVIEW_SCHEMA,
-                ws,
-                key,
-                prompt_version=autoedit.REVIEW_PROMPT_VERSION,
-                max_tokens=4000,
+                autoedit.REVIEW_JOB, prompt, system, autoedit.REVIEW_SCHEMA, ws, key,
+                prompt_version=autoedit.REVIEW_PROMPT_VERSION, max_tokens=4000,
             )
         except LLMUnavailable as exc:
             if exc.status in ("timeout", "waiting_capacity"):
@@ -1833,17 +1867,41 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
                 continue
             await _save_review(upload_id, ws, {**review, "state": "unavailable", "detail": str(exc)[:300]}, None)
             return
-        async with session_factory()() as s:
-            out = await _publications(s, ws, upload_id)
-        if any(p.status in ("posting", "scheduled", "posted") for p in out.values()):
-            await _apply_review(upload_id, ws, words, answer)
-            await _note(
-                upload_id, ws, None,
-                "Your editor's review arrived after this video was posted; the posted edit stays",
-            )
+        except QueueError as exc:
+            await _save_review(upload_id, ws, {**review, "state": "unavailable", "detail": str(exc)[:300]}, None)
             return
-        await _apply_review(upload_id, ws, words, answer)
-        await _plan_and_render(upload_id, ws)
+        async with _render_lock(upload_id):
+            async with session_factory()() as s:
+                row = await _load(s, upload_id, ws)
+                if ((row.edit_plan or {}).get("review") or {}).get("state") != "waiting":
+                    return
+                if AUTO_MARK in (row.job_ids or []) or row.status in BUSY_STATUSES:
+                    return
+                if [w.get("text") for w in row.transcript or []] != [w.get("text") for w in words]:
+                    return
+                posted = any(
+                    p.status in ("posting", "scheduled", "posted")
+                    for p in (await _publications(s, ws, upload_id)).values()
+                )
+                snapshot = (list(row.transcript or []), dict(row.edit_plan or {}), row.status, row.status_detail)
+                if not posted:
+                    row.job_ids = [j for j in row.job_ids or [] if j != AUTO_MARK] + [AUTO_MARK]
+                await s.commit()
+            if posted:
+                await _apply_review(upload_id, ws, words, answer, fix_words=False)
+                await _note(
+                    upload_id, ws, None,
+                    "Your editor's review arrived after this video was posted; the posted edit stays",
+                )
+                return
+            try:
+                await _apply_review(upload_id, ws, words, answer)
+                await _plan_and_render_locked(upload_id, ws, restore_if_blocked=snapshot)
+            finally:
+                async with session_factory()() as s:
+                    row = await _load(s, upload_id, ws)
+                    row.job_ids = [j for j in row.job_ids or [] if j != AUTO_MARK]
+                    await s.commit()
         return
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
@@ -1854,9 +1912,35 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
 
 
 async def _plan_and_render(upload_id: uuid.UUID, ws: uuid.UUID) -> RecordingUpload:
+    async with _render_lock(upload_id):
+        return await _plan_and_render_locked(upload_id, ws)
+
+
+async def _plan_and_render_locked(
+    upload_id: uuid.UUID,
+    ws: uuid.UUID,
+    *,
+    restore_if_blocked: tuple[list[dict[str, Any]], dict[str, Any], str, str | None] | None = None,
+) -> RecordingUpload:
+    """Plan, then render unless the meaning check wants his eyes. With
+    `restore_if_blocked` (a late review), a plan that needs his eyes does not replace
+    the edit he already has: transcript, plan and status go back, and the review is
+    kept as "blocked" with the reason, so the card, the subtitles and the posts keep
+    describing the video that exists."""
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
         await _compute_plan(s, ws, row)
+        if restore_if_blocked is not None and row.status != "planned" and row.edited_path:
+            reason = row.status_detail or "the cut would change what you said"
+            review = {**((row.edit_plan or {}).get("review") or {}), "state": "blocked", "detail": reason[:300]}
+            transcript, plan, status, detail = restore_if_blocked
+            row.transcript = transcript
+            row.edit_plan = {**plan, "review": review}
+            row.status = status
+            row.status_detail = (
+                "Your editor's review wants a cut that needs your eyes, so the edit you have "
+                f"stays: {reason}"
+            )[:500]
         await s.commit()
         status = row.status
     if status != "planned":  # the meaning check wants his eyes: never render past it
@@ -2455,6 +2539,13 @@ async def publish_route(
     row = await _upload(db, ws, upload_id)
     if not row.edited_path:
         raise HTTPException(status_code=409, detail="There is no edited video to post")
+    # 28-Sep review: a post tapped while the video is being edited again would upload
+    # the edit that is about to be replaced.
+    if AUTO_MARK in (row.job_ids or []) or row.status in ("proofreading", "planned", "rendering"):
+        raise HTTPException(
+            status_code=409,
+            detail="This video is being edited again. Post it when the new edit is ready.",
+        )
     unknown = [p for p in body.platforms if p not in publishing.PLATFORMS]
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown platform: {', '.join(unknown)}")

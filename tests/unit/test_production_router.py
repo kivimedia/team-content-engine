@@ -676,3 +676,27 @@ async def test_a_player_gets_the_video_in_short_parts_and_the_phone_plays_the_li
     # The Library's player asks for the light copy.
     phone = await client.get(url + "?preview=1", headers={**AUTH, "Range": "bytes=0-"})
     assert phone.headers["content-range"] == "bytes 0-999/3000" and phone.content == b"p" * 1000
+
+
+
+async def test_posting_waits_while_the_video_is_being_edited_again(client, editorial_sessionmaker, tmp_path):
+    """28-Sep review: a post tapped mid re-edit would upload the edit being replaced."""
+    cand = _candidate()
+    await _seed(editorial_sessionmaker, cand)
+    r = await client.post(
+        f"/api/v1/production/candidates/{cand.id}/recording", headers=AUTH, files=_file(b"v" * 100)
+    )
+    up = r.json()
+    edited = tmp_path / "walk-edited.mp4"
+    edited.write_bytes(b"e" * 100)
+    async with editorial_sessionmaker() as s:
+        row = await s.get(prod.RecordingUpload, uuid.UUID(up["id"]))
+        row.edited_path = str(edited)
+        row.status = "edited"
+        row.job_ids = [prod.AUTO_MARK]
+        await s.commit()
+    res = await client.post(
+        f"/api/v1/production/uploads/{up['id']}/publishing/publish",
+        headers=AUTH, json={"platforms": ["linkedin"]},
+    )
+    assert res.status_code == 409 and "being edited again" in res.json()["detail"]

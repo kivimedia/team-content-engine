@@ -200,6 +200,10 @@ REVIEW_SENTENCES = {
     "It edits itself again when the review lands.",
     "unavailable": "Your editor could not review this one, so the rules decided what to cut.",
     "rules": "Your editor's answer was not usable, so the rules decided what to cut.",
+    "blocked": "Your editor's review wants a cut that would change what you said, so the "
+    "edit you have stays. Edit it again to see the review's cut and decide.",
+    "stale": "You changed the words after your editor started reading, so that review was "
+    "not used. Edit it again for a fresh one.",
 }
 
 

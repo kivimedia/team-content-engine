@@ -54,8 +54,9 @@ HOLD_GAP_S = 0.2  # the box stays on through a gap shorter than this
 
 FILLERS = {"um", "uh", "ah", "er", "erm", "hmm", "mm", "umm", "uhh", "ehh", "uhm"}
 _BARE = re.compile(r"[^\w']+")
-# Roboto here carries Latin; anything else keeps the plain libass captions.
-_LATIN = re.compile(r"^[\x00-ɏ‘-‟…]*$")
+# The bundled Roboto is the Latin-1 build (review, 28-Sep: ā, č, ł drew as empty
+# boxes); a word it cannot draw keeps the plain libass captions.
+_LATIN = re.compile(r"^[\x00-\xff\u2018-\u201f\u2026]*$")
 
 
 def usable(words: list[dict[str, Any]]) -> bool:
@@ -263,23 +264,7 @@ def render_band(
 
 
 def on_edit_timeline(words: list[dict[str, Any]], keep: list[list[float]]) -> list[dict[str, Any]]:
-    """Kept words ({text, start, end} on the recording) moved onto the edited clock.
+    """Kept words moved onto the edited clock (shared with the subtitles)."""
+    from tce.production.retakes import words_on_edit
 
-    A word is placed by the kept range holding its midpoint and clamped inside it, so
-    a word the recogniser starts early still shows with the speech it belongs to.
-    """
-    out: list[dict[str, Any]] = []
-    offsets: list[float] = []
-    acc = 0.0
-    for s, e in keep:
-        offsets.append(acc)
-        acc += e - s
-    for w in words:
-        ws, we = float(w["start"]), float(w["end"])
-        mid = (ws + we) / 2
-        for (rs, re_), off in zip(keep, offsets, strict=True):
-            if rs <= mid <= re_:
-                s, e = max(ws, rs), min(we, re_)
-                out.append({"text": w["text"], "start": off + s - rs, "end": off + max(e, s) - rs})
-                break
-    return out
+    return words_on_edit(words, keep)

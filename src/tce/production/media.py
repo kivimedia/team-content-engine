@@ -335,7 +335,8 @@ async def render_edit(
         parts.append("".join(labels) + f"concat=n={n}:v=1:a=1[outv][outa]")
         video = "[outv]"
 
-    tmp_tag = f".{out.stem}.rendering"
+    # Its own temp names per render: two renders of one video must not share files.
+    tmp_tag = f".{out.stem}.rendering-{os.urandom(4).hex()}"
     burn = out.parent / f"{tmp_tag}.ass"
     soft = out.parent / f"{tmp_tag}.srt"
     part = out.parent / f"{tmp_tag}{out.suffix}"
@@ -350,9 +351,11 @@ async def render_edit(
         if video is not None and caption_band:
             index = inputs.count("-i")
             inputs += ["-f", "concat", "-safe", "0", "-i", str(Path(caption_band["list"]).resolve())]
+            # shortest=1: the caption stream is padded past the end, and without it the
+            # picture ran on, frozen and silent, after the sound stopped (review, 28-Sep).
             parts.append(
                 f"[{index}:v]format=rgba[band];"
-                f"{video}[band]overlay=x=0:y={int(caption_band['y'])}:format=auto[capv]"
+                f"{video}[band]overlay=x=0:y={int(caption_band['y'])}:format=auto:shortest=1[capv]"
             )
             video = "[capv]"
         if video is not None:
@@ -391,6 +394,9 @@ async def render_edit(
                     cwd=out.parent,
                 )
                 os.replace(light_part, light)
+            except RuntimeError as exc:
+                # The edit itself is done; without a fresh light copy the player streams it.
+                await on_status(f"Edit ready; the light copy for your phone failed ({exc})")
             finally:
                 light_part.unlink(missing_ok=True)
     finally:

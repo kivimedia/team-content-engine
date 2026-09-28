@@ -274,3 +274,107 @@ async def test_an_unclear_request_comes_back_as_one_question(wired):
     async with wired["sm"]() as s:
         req = await s.get(EditingRequest, req.id)
     assert req.state == "needs_you" and "music" in req.result["question"]
+
+
+def test_the_review_key_changes_with_anything_the_editor_reads():
+    # Review, 28-Sep: the key held the words only, so a renamed topic reused it with a
+    # different prompt, the queue refused, and "Edit it again" failed on every click.
+    uid = uuid.uuid4()
+    w = words("Selling is where the coaching starts.")
+    a = prod._review_key(uid, *prod._review_request(w, "Topic: Selling"))
+    b = prod._review_key(uid, *prod._review_request(w, "Topic: Selling, renamed"))
+    assert a != b and a == prod._review_key(uid, *prod._review_request(w, "Topic: Selling"))
+    assert len(a) <= 128
+
+
+async def test_a_queue_refusal_is_an_unavailable_review_not_a_failed_edit(wired):
+    from tce.llm.queue import IdempotencyConflictError
+
+    ws, uid = await seed_walk(wired["sm"])
+    wired["answers"][autoedit.REVIEW_JOB] = lambda: (_ for _ in ()).throw(
+        IdempotencyConflictError("key reused with a different input")
+    )
+    await prod.auto_edit(uid, ws)
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+    assert row.status == "edited" and row.edit_plan["review"]["state"] == "unavailable"
+
+
+async def _late_review(wired, monkeypatch, answer_later):
+    spawned: list = []
+    monkeypatch.setattr(prod, "_spawn", lambda coro: spawned.append(coro))
+    ws, uid = await seed_walk(wired["sm"])
+    calls = {"n": 0}
+
+    def answer():
+        calls["n"] += 1
+        return LLMUnavailable("timeout", "still queued") if calls["n"] == 1 else answer_later
+
+    wired["answers"][autoedit.REVIEW_JOB] = answer
+    await prod.auto_edit(uid, ws)
+    waiter = next(c for c in spawned if c.__name__ == "_await_review")
+    for c in spawned:
+        if c is not waiter:
+            c.close()
+    return ws, uid, waiter
+
+
+async def test_a_late_review_waits_while_another_edit_of_the_video_runs(wired, monkeypatch):
+    ws, uid, waiter = await _late_review(wired, monkeypatch, review_of_walk())
+    renders: list = []
+    real = prod._run_render
+
+    async def counting(*a, **k):
+        renders.append(a)
+        return await real(*a, **k)
+
+    monkeypatch.setattr(prod, "_run_render", counting)
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        row.job_ids = [*(row.job_ids or []), prod.AUTO_MARK]  # "Edit it again" is running
+        await s.commit()
+    await waiter
+    assert renders == []  # the running edit asks for its own review
+
+
+async def test_a_late_review_that_needs_his_eyes_leaves_the_edit_he_has(wired, monkeypatch):
+    blocked = {
+        "removals": [
+            # Drops the only "not" in favour of a take that lacks it: the meaning check blocks.
+            {"first": 32, "last": 36, "heard": "It is not a detour.", "kind": "retake",
+             "kept_from": 0, "why": "?"},
+        ],
+        "corrections": [
+            {"first": 0, "last": 0, "heard": "Selling", "replacement": "Sales", "why": "?"}
+        ],
+    }
+    ws, uid, waiter = await _late_review(wired, monkeypatch, blocked)
+    async with wired["sm"]() as s:
+        before = await prod._load(s, uid, ws)
+        before_keep = list(before.edit_plan["keep"])
+        before_words = [w["text"] for w in before.transcript]
+    await waiter
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+    assert row.status == "edited"
+    assert row.edit_plan["review"]["state"] == "blocked"
+    assert row.edit_plan["keep"] == before_keep  # the plan still describes the video
+    assert [w["text"] for w in row.transcript] == before_words  # no word moved
+    assert prod.AUTO_MARK not in (row.job_ids or [])
+
+
+async def test_a_late_review_on_a_posted_video_moves_no_word(wired, monkeypatch):
+    from tce.models.editorial import VideoPublication
+
+    fix = review_of_walk()
+    fix["corrections"] = [{"first": 0, "last": 0, "heard": "Selling", "replacement": "Sales", "why": "x"}]
+    ws, uid, waiter = await _late_review(wired, monkeypatch, fix)
+    async with wired["sm"]() as s:
+        s.add(VideoPublication(workspace_id=ws, upload_id=uid, platform="linkedin",
+                               status="posted", copy={}))
+        await s.commit()
+    await waiter
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+    assert row.transcript[0]["text"] == "Selling"  # indices of the posted edit stay put
+    assert row.edit_plan["review"]["state"] == "done"
