@@ -12,6 +12,9 @@ and drives headless Chromium at 390x844. Asserts:
 - the topic's own page says the same and offers nothing to press;
 - pressing "Prepare the script" says when it comes (not "a few minutes") and the
   button becomes that sentence in place;
+- a topic with a script ready and a new one asked for over it says the new one
+  is on its way and that filming this one first keeps it aside, on the week
+  card and on the topic's page, and still offers "Record this one";
 - nothing overflows sideways.
 
 Skipped when Playwright or its Chromium build is not installed. Nothing here
@@ -45,7 +48,7 @@ from tce.editorial.lineup import week_start_for
 from tce.llm import LLMRequest
 from tce.llm import queue as llm_queue
 from tce.models.content_run import WorkerGroupState
-from tce.models.editorial import TopicCandidate
+from tce.models.editorial import RecordingPacket, TopicCandidate
 from tce.models.editorial_workspace import WeeklyLineup, WeeklyLineupItem
 from tce.settings import settings
 from tests.editorial_db import create_tables
@@ -84,11 +87,26 @@ def _candidate(title: str) -> TopicCandidate:
     )
 
 
+def _parked_job_request(candidate_id: uuid.UUID) -> LLMRequest:
+    nonce = str(uuid.uuid4())
+    return LLMRequest(
+        job_type="recording_packet",
+        agent_name="recording_packet_writer",
+        messages=[{"role": "user", "content": f"PACKET REQUEST: {nonce}\n\nIDEA"}],
+        workspace_id=WS,
+        run_id=candidate_id,
+        idempotency_key=packet_key_text(WS, nonce),
+    )
+
+
 async def _seed(sessionmaker) -> dict:
     asked = _candidate("Asked during the limit")
     fresh = _candidate("Never asked yet")
+    # Review, 28-Sep: a topic with a script ready and a new one asked for over
+    # it. The week showed the old one as ready and nothing about the new one.
+    rewrite = _candidate("New script asked for")
     async with sessionmaker() as s:
-        s.add_all([asked, fresh])
+        s.add_all([asked, fresh, rewrite])
         lineup = WeeklyLineup(
             id=uuid.uuid4(), workspace_id=WS, week_start=week_start_for(None), primary_slots=3
         )
@@ -108,27 +126,55 @@ async def _seed(sessionmaker) -> dict:
                     status="planned",
                 )
             )
-        # The 28-Sep job: leased, hit the weekly limit, parked for two days.
-        nonce = str(uuid.uuid4())
-        job = await llm_queue.enqueue(
-            s,
-            LLMRequest(
-                job_type="recording_packet",
-                agent_name="recording_packet_writer",
-                messages=[{"role": "user", "content": f"PACKET REQUEST: {nonce}\n\nIDEA"}],
+        # A spare for this week, so Today's own count stays about the two above.
+        s.add(
+            WeeklyLineupItem(
+                id=uuid.uuid4(),
                 workspace_id=WS,
-                run_id=asked.id,
-                idempotency_key=packet_key_text(WS, nonce),
-            ),
+                lineup_id=lineup.id,
+                candidate_id=rewrite.id,
+                rank=1,
+                slot="reserve",
+                lane="coaching",
+                reason="A spare.",
+                status="planned",
+            )
         )
-        job.status, job.error_code, job.retry_at = "waiting_capacity", "capacity", PARK
+        s.add(
+            RecordingPacket(
+                workspace_id=WS,
+                candidate_id=rewrite.id,
+                version=1,
+                bullets=["First point.", "Second point.", "Third point."],
+                script_phrases=["Line one.", "Line two.", "Line three."],
+                hook_options=[
+                    {
+                        "id": "h1",
+                        "text": "An opening.",
+                        "question": "q",
+                        "payoff_phrase_id": "p1",
+                        "moment_ids": ["m"],
+                        "rationale": "r",
+                    }
+                ],
+                selected_hook_id="h1",
+                status="ready",
+                citations_private=[],
+                public_safety={},
+            )
+        )
+        # The 28-Sep job: leased, hit the weekly limit, parked for two days.
+        # The rewrite's job waits on the same limit.
+        for candidate in (asked, rewrite):
+            job = await llm_queue.enqueue(s, _parked_job_request(candidate.id))
+            job.status, job.error_code, job.retry_at = "waiting_capacity", "capacity", PARK
         s.add(
             WorkerGroupState(
                 group_key=llm_queue.WORKER_GROUP_KEY, state="waiting_capacity", retry_at=PARK
             )
         )
         await s.commit()
-    return {"asked": str(asked.id), "fresh": str(fresh.id)}
+    return {"asked": str(asked.id), "fresh": str(fresh.id), "rewrite": str(rewrite.id)}
 
 
 @pytest.fixture
@@ -269,6 +315,26 @@ def test_phone_a_script_on_its_way_says_when_and_offers_nothing_to_press(workspa
         assert workspace["asked_for"] == [workspace["fresh"]]
         assert page.evaluate(OVERFLOW) is False
         page.screenshot(path=str(shots / "week-asked-during-limit-phone.png"), full_page=True)
+
+        # ------------------------------- A new script on its way over one
+        card = page.locator("article.card", has_text="New script asked for")
+        tags = card.locator(".tag").all_text_contents()
+        hints = card.locator(".section-hint").all_text_contents()
+        buttons = card.locator(".actions a, .actions button").all_text_contents()
+        assert "Script ready" in tags and "New script on its way" in tags, tags
+        assert any(when in h and "film this script first" in h for h in hints), hints
+        assert "Record this one" in buttons, buttons
+        assert page.evaluate(OVERFLOW) is False
+        card.scroll_into_view_if_needed()
+        card.screenshot(path=str(shots / "week-new-script-on-its-way-phone.png"))
+
+        page.goto(f"{workspace['base']}/topics/{workspace['rewrite']}")
+        page.wait_for_selector("h2")
+        body = page.locator("#view").text_content()
+        assert "Version 1, ready." in body, body
+        assert when in body and "film this script first" in body, body
+        assert page.evaluate(OVERFLOW) is False
+        page.screenshot(path=str(shots / "topic-new-script-on-its-way-phone.png"), full_page=True)
 
         assert errors == [], errors
         browser.close()

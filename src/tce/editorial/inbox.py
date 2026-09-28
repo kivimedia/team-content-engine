@@ -471,12 +471,13 @@ async def topic_room(
     current = next((p for p in packet_rows if p.status != "superseded"), None)
     lane = lane_for(candidate)
     # A script asked for and not saved yet says when it comes, and the room
-    # stops offering to ask for it again (28-Sep-2026).
-    request = None
-    if current is None:
-        from tce.editorial import status as job_status
+    # stops offering to ask for it again (28-Sep-2026). Over a script he has,
+    # only a new one on its way is said, and what filming first does to it.
+    from tce.editorial import status as job_status
 
-        request = (await job_status.packet_requests(db, ws, [candidate.id])).get(candidate.id)
+    request = (await job_status.packet_requests(db, ws, [candidate.id])).get(candidate.id)
+    if current is not None:
+        request = job_status.rewrite_request(request)
 
     return {
         "candidate_id": str(candidate.id),

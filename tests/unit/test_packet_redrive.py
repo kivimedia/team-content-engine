@@ -28,6 +28,7 @@ import pytest
 from fastapi import FastAPI
 from pydantic import SecretStr
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -40,7 +41,7 @@ from tce.editorial import status as job_status
 from tce.llm import provider as llm_provider
 from tce.llm import queue as llm_queue
 from tce.models.content_run import WorkerGroupState
-from tce.models.editorial import RecordingPacket, TopicCandidate
+from tce.models.editorial import RecordingPacket, RecordingUpload, TopicCandidate
 from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingSession
 from tce.settings import settings
@@ -692,3 +693,415 @@ def test_the_tick_log_line_names_the_scripts_it_saved_and_the_ones_waiting(tmp_p
 
     body["packets"] = {"redriven": [], "waiting": [], "failed": [], "error": "OperationalError: x"}
     assert "scripts_error=(OperationalError: x)" in tick_line(tmp_path, body)
+
+
+# ---------------------------------------------------------------------------
+# Review of the first cut (28-Sep): a save that raises, an old ask, a fault
+# in the tick itself, and a topic filmed while its new script waited
+# ---------------------------------------------------------------------------
+
+
+def locked(statement: str = "UPDATE topic_candidates") -> OperationalError:
+    """What a save meets when the database is busy for a moment: SQLite's
+    "database is locked", a PostgreSQL lock timeout or a dropped connection."""
+    return OperationalError(statement, {}, Exception("database is locked"))
+
+
+async def test_a_save_that_raises_is_tried_again_by_the_next_tick(sm, worker, client, monkeypatch):
+    """A lock or a dropped connection says nothing about the script. It used to
+    mark the written script unsaveable for good: the tick stopped trying, and
+    his "Prepare the script" paid for a new model call to write it again."""
+    ws = uuid.uuid4()
+    cid = await new_topic(sm, ws)
+    job_id = await ask_and_restart(sm, ws, cid)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: good_output())
+    build = editorial_router.build_packet
+    tries: list = []
+
+    async def locked_once(*args, **kwargs):
+        tries.append(kwargs.get("resume_job_id"))
+        if len(tries) == 1:
+            raise locked()
+        return await build(*args, **kwargs)
+
+    monkeypatch.setattr(editorial_router, "build_packet", locked_once)
+    first = (await client.post(TICK, headers=headers(ws))).json()
+    assert first["packets"]["redriven"] == []
+    assert [(p["candidate_id"], p["reason"]) for p in first["packets"]["failed"]] == [
+        (str(cid), "OperationalError")
+    ]
+    async with sm() as s:
+        view = await job_status.latest_packet_job(s, ws, cid)
+    assert view["state"] == "waiting" and view["resumable"] is True, view
+    assert "saved within five minutes" in view["current_activity"]
+
+    second = (await client.post(TICK, headers=headers(ws))).json()
+    assert [p["candidate_id"] for p in second["packets"]["redriven"]] == [str(cid)]
+    saved = await packets_of(sm, ws)
+    assert len(saved) == 1 and saved[0].job_id == job_id
+    assert len(await jobs_of(sm, ws)) == 1, "saved with no new model call"
+
+
+async def test_his_ask_after_a_save_that_raised_saves_the_written_script(
+    sm, worker, client, monkeypatch
+):
+    ws = uuid.uuid4()
+    cid = await new_topic(sm, ws)
+    job_id = await ask_and_restart(sm, ws, cid)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: good_output())
+    build = editorial_router.build_packet
+    tries: list = []
+
+    async def locked_once(*args, **kwargs):
+        tries.append(kwargs.get("resume_job_id"))
+        if len(tries) == 1:
+            raise locked()
+        return await build(*args, **kwargs)
+
+    monkeypatch.setattr(editorial_router, "build_packet", locked_once)
+    await client.post(TICK, headers=headers(ws))
+
+    asked = await client.post(f"/api/v1/editorial/candidates/{cid}/packet", headers=headers(ws))
+    assert asked.status_code == 200, asked.text
+    assert asked.json()["resumed"] is True
+    assert len(await jobs_of(sm, ws)) == 1, "his ask spent no new model call"
+    saved = await packets_of(sm, ws)
+    assert len(saved) == 1 and saved[0].job_id == job_id
+
+
+async def test_a_save_that_keeps_raising_is_tried_three_times_then_offered_back(
+    sm, worker, client, monkeypatch
+):
+    """Something that raises every time (a bug, not a lock) is not tried every
+    five minutes for ever, and nothing keeps promising it saves itself: the
+    button comes back, and pressing it still saves the written script."""
+    ws = uuid.uuid4()
+    cid = await new_topic(sm, ws)
+    await ask_and_restart(sm, ws, cid)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: good_output())
+    tries: list = []
+
+    async def always_locked(*args, **kwargs):
+        tries.append(kwargs.get("resume_job_id"))
+        raise locked()
+
+    monkeypatch.setattr(editorial_router, "build_packet", always_locked)
+    for _ in range(5):
+        last = (await client.post(TICK, headers=headers(ws))).json()
+    assert len(tries) == 3, tries
+    (failed,) = last["packets"]["failed"]
+    assert failed["candidate_id"] == str(cid) and "3 times" in failed["reason"], failed
+
+    async with sm() as s:
+        room = await inbox.topic_room(s, ws, cid)
+        view = await job_status.latest_packet_job(s, ws, cid)
+    request = room["script_request"]
+    assert request["pending"] is False, request
+    assert "without a new model call" in request["sentence"], request
+    assert "saved within five minutes" not in request["sentence"]
+    assert view["resumable"] is True
+
+    asked = await client.post(f"/api/v1/editorial/candidates/{cid}/packet", headers=headers(ws))
+    assert asked.status_code == 200 and asked.json()["resumed"] is True, asked.text
+    assert len(await jobs_of(sm, ws)) == 1
+
+
+async def test_more_openings_are_asked_for_once_the_new_script_stops_coming(sm, worker, client):
+    """While a new script is on its way, more openings for the old one are
+    refused: the new one replaces it when it saves itself. When its job fails
+    nothing is on its way, and the refusal ("It saves itself") would be false
+    for as long as the process runs."""
+    ws = uuid.uuid4()
+    cid = await new_topic(sm, ws)
+    first = await packets.build_packet(sm, ws, cid)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: good_output())
+    v1 = await packets.build_packet(sm, ws, cid, resume_job_id=first.job_id)
+    async with sm() as s:
+        (await s.get(LLMJob, first.job_id)).created_at = utcnow() - timedelta(minutes=10)
+        await s.commit()
+    asked = await client.post(
+        f"/api/v1/editorial/candidates/{cid}/packet",
+        json={"replace": True},
+        headers=headers(ws),
+    )
+    assert asked.status_code == 200, asked.text
+    more = f"/api/v1/editorial/packets/{v1.packet['id']}/more-hooks"
+
+    coming = await client.post(more, headers=headers(ws))
+    assert coming.status_code == 409, coming.text
+    assert coming.json()["detail"]["code"] == "still_writing"
+    assert "saves itself" in coming.json()["detail"]["message"]
+
+    rewrite = max(await jobs_of(sm, ws), key=lambda j: j.created_at)
+    async with sm() as s:
+        job = await s.get(LLMJob, rewrite.id)
+        job.status, job.error_code = "failed", "worker_error"
+        await s.commit()
+    await client.post(TICK, headers=headers(ws))
+
+    stopped = await client.post(more, headers=headers(ws))
+    assert stopped.status_code == 202, stopped.text
+    assert job_status.get(ws, "more_hooks", v1.packet["id"]) is not None
+
+
+async def test_a_script_asked_for_more_than_eight_days_ago_saves_itself_when_written(
+    sm, worker, client
+):
+    """A weekly park and a few days with the PC away: the job is written nine
+    days after it was asked for. It was never saved, while the topic promised
+    it within five minutes and hid the button."""
+    ws = uuid.uuid4()
+    cid = await new_topic(sm, ws)
+    job_id = await ask_and_restart(sm, ws, cid)
+    async with sm() as s:
+        (await s.get(LLMJob, job_id)).created_at = utcnow() - timedelta(days=9)
+        await s.commit()
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: good_output())
+
+    tick = (await client.post(TICK, headers=headers(ws))).json()
+    assert [p["candidate_id"] for p in tick["packets"]["redriven"]] == [str(cid)]
+    saved = await packets_of(sm, ws)
+    assert len(saved) == 1 and saved[0].job_id == job_id
+    assert len(await jobs_of(sm, ws)) == 1
+
+
+async def test_a_script_written_long_ago_and_never_saved_is_offered_not_promised(
+    sm, worker, client
+):
+    """The tick finishes what moved in the last eight days. A script written
+    and left unsaved before that is not saved by the clock days later, so
+    nothing may promise it: the button comes back, and pressing it saves the
+    written script with no new model call."""
+    ws = uuid.uuid4()
+    cid = await new_topic(sm, ws)
+    job_id = await ask_and_restart(sm, ws, cid)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: good_output())
+    long_ago = utcnow() - timedelta(days=10)
+    async with sm() as s:
+        job = await s.get(LLMJob, job_id)
+        job.created_at, job.completed_at, job.updated_at = long_ago, long_ago, long_ago
+        await s.commit()
+
+    tick = (await client.post(TICK, headers=headers(ws))).json()
+    assert tick["packets"] == {"redriven": [], "waiting": [], "failed": []}
+    async with sm() as s:
+        room = await inbox.topic_room(s, ws, cid)
+        view = await job_status.latest_packet_job(s, ws, cid)
+    request = room["script_request"]
+    assert request["pending"] is False, request
+    assert "without a new model call" in request["sentence"], request
+    assert room["script_note"] == request["sentence"]
+    assert view["resumable"] is True and "five minutes" not in view["current_activity"]
+
+    asked = await client.post(f"/api/v1/editorial/candidates/{cid}/packet", headers=headers(ws))
+    assert asked.status_code == 200 and asked.json()["resumed"] is True, asked.text
+    saved = await packets_of(sm, ws)
+    assert len(saved) == 1 and saved[0].job_id == job_id
+    assert len(await jobs_of(sm, ws)) == 1
+
+
+async def test_a_fault_on_one_script_does_not_strand_the_one_claimed_before_it(
+    sm, worker, client, monkeypatch
+):
+    """The tick claims each written script, then saves them. A lookup that
+    raised on the second one used to leave the first claimed ("being saved")
+    for as long as the process ran: never saved, and his own ask refused with
+    "packet already being written"."""
+    from tce.editorial import voice_agent
+
+    ws = uuid.uuid4()
+    first_topic = await new_topic(sm, ws)
+    second_topic = await new_topic(sm, ws)
+    first_job = await ask_and_restart(sm, ws, first_topic)
+    async with sm() as s:
+        (await s.get(LLMJob, first_job)).created_at = utcnow() - timedelta(minutes=10)
+        await s.commit()
+    await ask_and_restart(sm, ws, second_topic)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: good_output())
+    # The second one carries a voice rewrite asked for earlier in this process,
+    # so the tick looks up its script before claiming it.
+    job_status.start(ws, "packet", str(second_topic), "Waiting", rewrite_id=str(uuid.uuid4()))
+    job_status.update(ws, "packet", str(second_topic), state="waiting")
+    real = voice_agent.current_packet
+    calls: list = []
+
+    async def blip(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise locked("SELECT recording_packets")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(voice_agent, "current_packet", blip)
+    tick = (await client.post(TICK, headers=headers(ws))).json()
+    assert [p["candidate_id"] for p in tick["packets"]["redriven"]] == [str(first_topic)]
+    assert [(p["candidate_id"], p["reason"]) for p in tick["packets"]["failed"]] == [
+        (str(second_topic), "OperationalError")
+    ]
+    assert not job_status.is_running(ws, "packet", str(second_topic))
+
+    again = (await client.post(TICK, headers=headers(ws))).json()
+    assert [p["candidate_id"] for p in again["packets"]["redriven"]] == [str(second_topic)]
+    assert {p.candidate_id for p in await packets_of(sm, ws)} == {first_topic, second_topic}
+    assert len(await jobs_of(sm, ws)) == 2
+
+
+async def test_a_fault_after_the_tick_claimed_a_script_releases_it(sm, worker, client, monkeypatch):
+    """Whatever stops the tick between claiming a script and saving it (here
+    the listing's session failing as it closes), the claim is let go, so the
+    next tick saves it and his own ask is not refused."""
+    from contextlib import asynccontextmanager
+
+    ws = uuid.uuid4()
+    cid = await new_topic(sm, ws)
+    job_id = await ask_and_restart(sm, ws, cid)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: good_output())
+
+    @asynccontextmanager
+    async def drops_on_close(source):
+        async with source() as session:
+            yield session
+        raise locked("COMMIT")
+
+    real = editorial_router.open_session
+    monkeypatch.setattr(editorial_router, "open_session", drops_on_close)
+    tick = (await client.post(TICK, headers=headers(ws))).json()
+    assert tick["packets"]["error"].startswith("OperationalError"), tick["packets"]
+    monkeypatch.setattr(editorial_router, "open_session", real)
+
+    assert not job_status.is_running(ws, "packet", str(cid))
+    status = (
+        await client.get(f"/api/v1/editorial/candidates/{cid}/packet-status", headers=headers(ws))
+    ).json()["job"]
+    assert status["state"] == "waiting" and "five minutes" in status["current_activity"], status
+
+    again = (await client.post(TICK, headers=headers(ws))).json()
+    assert [p["candidate_id"] for p in again["packets"]["redriven"]] == [str(cid)]
+    saved = await packets_of(sm, ws)
+    assert len(saved) == 1 and saved[0].job_id == job_id
+
+
+async def film(sm, ws, cid, packet_id, *, at: datetime | None = None) -> None:
+    """A take on this script that the pipeline made something of: filmed."""
+    async with sm() as s:
+        take = RecordingUpload(
+            workspace_id=ws,
+            candidate_id=cid,
+            packet_id=uuid.UUID(str(packet_id)),
+            original_filename="take.mp4",
+            storage_path="/tmp/take.mp4",
+            sha256=uuid.uuid4().hex * 2,
+            status="transcribed",
+            transcript=[{"w": "hello"}],
+        )
+        if at is not None:
+            take.created_at = at
+        s.add(take)
+        (await s.get(TopicCandidate, cid)).status = "recorded"
+        await s.commit()
+
+
+async def scripted_topic(sm, ws):
+    """A topic with version 1 saved, asked for a while ago."""
+    cid = await new_topic(sm, ws)
+    first = await packets.build_packet(sm, ws, cid)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: good_output())
+    v1 = await packets.build_packet(sm, ws, cid, resume_job_id=first.job_id)
+    async with sm() as s:
+        (await s.get(LLMJob, first.job_id)).created_at = utcnow() - timedelta(days=2)
+        await s.commit()
+    return cid, v1
+
+
+async def test_a_rewrite_is_kept_aside_when_he_films_the_script_after_asking(sm, worker, client):
+    """Asked for a new script on Monday while the worker was parked; filmed the
+    old one on Tuesday; the new one was written on Wednesday. The tick saved it
+    over the script he filmed and buzzed "Your script is ready" for a topic
+    already filmed. The script he filmed stays; the new one waits for him."""
+    ws = uuid.uuid4()
+    cid, v1 = await scripted_topic(sm, ws)
+    park = utcnow() + timedelta(days=2)
+    worker["park_until"] = park
+    await park_group(sm, park)
+    asked = await client.post(
+        f"/api/v1/editorial/candidates/{cid}/packet",
+        json={"replace": True, "by": "voice"},
+        headers=headers(ws),
+    )
+    assert asked.status_code == 200, asked.text
+    rewrite = max(await jobs_of(sm, ws), key=lambda j: j.created_at)
+    async with sm() as s:
+        (await s.get(LLMJob, rewrite.id)).created_at = utcnow() - timedelta(days=1)
+        await s.commit()
+    await film(sm, ws, cid, v1.packet["id"])
+
+    worker["park_until"] = None
+    await park_group(sm, None)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: good_output())
+    tick = (await client.post(TICK, headers=headers(ws))).json()
+    assert tick["packets"]["redriven"] == []
+    (held,) = tick["packets"]["failed"]
+    assert held["candidate_id"] == str(cid) and "filmed" in held["reason"], held
+
+    saved = await packets_of(sm, ws)
+    assert [(p.version, p.status) for p in saved] == [(1, "ready")], "the filmed script stays"
+    async with sm() as s:
+        events = await notify.collect_events(s, ws)
+        room = await inbox.topic_room(s, ws, cid)
+        view = await job_status.latest_packet_job(s, ws, cid)
+    assert [e["dedupe_key"] for e in events if e["kind"] == "script_ready"] == [
+        f"script_ready:{v1.packet['id']}:1"
+    ], "no buzz for a script over one he filmed"
+    assert room["script"]["version"] == 1 and room["script_request"] is None
+    assert "filmed" in view["current_activity"] and view["resumable"] is True
+
+    again = (await client.post(TICK, headers=headers(ws))).json()
+    assert again["packets"]["redriven"] == [] and len(await packets_of(sm, ws)) == 1
+
+
+async def test_a_rewrite_asked_for_after_filming_is_saved_as_usual(sm, worker, client):
+    """Filming first and then asking for a new script (to film it again) is
+    the other order: that ask is the newer word, and the tick saves it."""
+    ws = uuid.uuid4()
+    cid, v1 = await scripted_topic(sm, ws)
+    await film(sm, ws, cid, v1.packet["id"], at=utcnow() - timedelta(days=1))
+    rewrite_job = await ask_and_restart(sm, ws, cid)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: good_output())
+
+    tick = (await client.post(TICK, headers=headers(ws))).json()
+    assert [p["candidate_id"] for p in tick["packets"]["redriven"]] == [str(cid)]
+    saved = await packets_of(sm, ws)
+    assert [p.version for p in saved] == [1, 2] and saved[1].job_id == rewrite_job
+
+
+async def test_the_week_and_the_topic_say_a_new_script_is_on_its_way(sm, worker, client):
+    """The week showed the old script as ready with nothing about the new one
+    coming to replace it, so he could not know that filming it now keeps the
+    new one aside."""
+    ws = uuid.uuid4()
+    cid, _v1 = await scripted_topic(sm, ws)
+    async with sm() as s:
+        week = await lineup.current_lineup(s, ws)
+        await lineup.add_topic(s, ws, week, await s.get(TopicCandidate, cid))
+        await s.commit()
+    park = utcnow() + timedelta(days=2)
+    worker["park_until"] = park
+    await park_group(sm, park)
+    asked = await client.post(
+        f"/api/v1/editorial/candidates/{cid}/packet",
+        json={"replace": True},
+        headers=headers(ws),
+    )
+    assert asked.status_code == 200, asked.text
+
+    async with sm() as s:
+        data = await today.build(s, ws)
+        room = await inbox.topic_room(s, ws, cid)
+    (item,) = data["week"]["primary"]
+    assert item["script_state"] == "ready"
+    request = item["script_request"]
+    assert request is not None and request["pending"] is True, item
+    assert request["label"] == "New script on its way"
+    assert said_at(park) in request["sentence"]
+    assert "film this script first" in request["sentence"], request
+    assert room["script"]["version"] == 1
+    assert room["script_request"] == request

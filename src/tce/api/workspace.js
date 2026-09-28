@@ -504,16 +504,23 @@
     /* 28-Sep: a script asked for while his Claude limit was used up waited two
        days, and the card said "No script yet" with "Prepare the script" all
        along. A script on its way says when it comes, and is not offered again. */
-    var request = !item.packet_id ? item.script_request : null;
+    var request = item.script_request || null;
     var coming = !!(request && request.pending);
     if (item.filmed) {
       html += '<span class="tag is-ready">Filmed</span>';
-    } else if (request) {
+    } else if (request && !item.packet_id) {
       html += '<span class="tag">' + esc(request.label) + "</span>";
       html += '<p class="section-hint">' + esc(request.sentence) + "</p>";
     } else {
       html += '<span class="tag' + (item.script_state === "ready" ? " is-ready" : "") + '">'
            + esc(scriptSentence(item.script_state)) + "</span>";
+      /* Review, 28-Sep: a new script on its way over the one he has was not
+         shown, so nothing told him that filming this one first keeps the new
+         one aside. The server sends one only while it is on its way. */
+      if (coming) {
+        html += '<span class="tag">' + esc(request.label) + "</span>";
+        html += '<p class="section-hint">' + esc(request.sentence) + "</p>";
+      }
     }
 
     if (controls) {
@@ -603,6 +610,10 @@
     html += "<h2>The script</h2>";
     if (data.script) {
       html += '<p class="section-hint">Version ' + data.script.version + ", " + esc(data.script.status) + ".</p>";
+      // A new script on its way over this one says so, and what filming first does.
+      if (data.script_request && data.script_request.pending) {
+        html += '<p class="section-hint">' + esc(data.script_request.sentence) + "</p>";
+      }
       // Recording lives in the bar at the bottom of the screen, one tap from
       // here. This is for reading and changing the words, which is a different
       // errand.

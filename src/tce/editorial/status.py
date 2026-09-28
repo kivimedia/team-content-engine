@@ -320,10 +320,23 @@ async def latest_selection_run(
 # "interrupted, retry" for work that finishes on its own.
 
 # How far back the tick looks for a request whose job finished after it ended.
-# A weekly limit can park a job for up to a week.
+# A weekly limit can park a job for up to a week. Measured from the job's last
+# move (asked, taken, written), not from the ask alone: a job asked for at the
+# start of a weekly park, with the PC away a few days more, is written nine
+# days after it was asked for, and it still saves itself (review, 28-Sep).
 REDRIVE_LOOKBACK_DAYS = 8
+# A save that raises (a lock, a dropped connection) is tried again by the next
+# tick. Something that raises every time is a bug, not a lock: after this many
+# tries the tick leaves it and the button comes back.
+RESUME_FAULT_LIMIT = 3
 WRITING_WORDS = "Asked for. It is written on your PC worker and saves itself when it is done."
 SAVING_WORDS = "Written. It is saved within five minutes, without a new model call."
+ASK_AGAIN_WORDS = "Ask for it again: it is saved without a new model call."
+FILMED_WORDS = (
+    "You filmed this topic after asking for a new script, so the new one is kept aside "
+    "and the script you filmed stays. " + ASK_AGAIN_WORDS
+)
+FILMED_REASON = "the topic was filmed after this script was asked for; kept aside"
 
 
 def israel_time(moment: datetime) -> str:
@@ -378,29 +391,52 @@ async def capacity_park(session: Any, *, now: datetime | None = None) -> datetim
     return group.retry_at if group.retry_at > now else None
 
 
+def _moved_since(job: Any, since: datetime) -> bool:
+    """Whether the tick still finishes this job: in flight, or it moved (asked
+    for, taken, written, failed) within the lookback."""
+    if job.status in IN_FLIGHT:
+        return True
+    stamps = [s for s in (job.created_at, job.updated_at, job.completed_at) if s]
+    return bool(stamps) and max(stamps) >= since
+
+
 def _packet_request(
     job: Any,
     *,
     saved_version: int | None,
     park: datetime | None,
-    failed_resume: str | None = None,
+    resume: dict[str, Any] | None = None,
+    filmed: bool = False,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """One packet job's honest state, for the status route, the week and the tick.
 
     state/resumable/activity are the status route's durable view; `request` is
     what the week, Today and the topic show ("pending" means it finishes by
     itself, so nothing offers to ask for it again); `action` is the tick's.
+
+    "Pending" is a promise the tick keeps, so it is pending only where the tick
+    will save it: not after a save of it was refused or kept raising in this
+    process (`resume`), not when the topic was filmed after it was asked for
+    (`filmed`), and not past the lookback. Each of those leaves a written
+    script that his own ask still saves with no new model call.
     """
+    from datetime import timedelta
+
     from tce.editorial.common import job_prompt_text, parse_packet_header
     from tce.editorial.packets import PacketValidationError, validate_packet_output
     from tce.llm.queue import utcnow
 
+    now = now or utcnow()
+    resume = resume or {}
+    refused = resume.get("refused")
+    faults = int(resume.get("faults") or 0)
     replayable = parse_packet_header(job_prompt_text(job.request_json)) is not None
     # A parked job whose retry time has passed is leasable again: it is not
     # waiting for capacity any more, only for the worker to take it.
     retry_at = (
         job.retry_at
-        if job.status == "waiting_capacity" and job.retry_at and job.retry_at > utcnow()
+        if job.status == "waiting_capacity" and job.retry_at and job.retry_at > now
         else None
     )
     # A job not yet taken waits on the parked group too. A leased one is being
@@ -418,6 +454,18 @@ def _packet_request(
             "job_id": str(job.id),
         }
 
+    def not_saved(kind: str, label: str, words: str, reason: str) -> dict[str, Any]:
+        # Written and not saved, and the clock will not save it: his ask does,
+        # by resuming the job, so it costs no new model call.
+        return {
+            "state": "interrupted",
+            "resumable": True,
+            "activity": words,
+            "request": request(kind, label, words, False),
+            "action": "failed",
+            "reason": reason,
+        }
+
     if saved_version is not None:
         return {
             "state": "done",
@@ -425,6 +473,16 @@ def _packet_request(
             "activity": f"Packet v{saved_version} saved",
             "request": None,
             "action": "saved",
+        }
+    if job.status in IN_FLIGHT and replayable and filmed:
+        # Still written when the worker gets to it, then kept aside.
+        return {
+            "state": "waiting",
+            "resumable": True,
+            "activity": FILMED_WORDS,
+            "request": request("kept_aside", "New script kept aside", FILMED_WORDS, False),
+            "action": "waiting",
+            "reason": FILMED_REASON,
         }
     if job.status in IN_FLIGHT and replayable:
         parked = retry_at is not None
@@ -447,7 +505,24 @@ def _packet_request(
             valid = True
         except PacketValidationError:
             valid = False
-        if valid and replayable and failed_resume is None:
+        if valid and replayable and refused is None:
+            if filmed:
+                return not_saved("kept_aside", "New script kept aside", FILMED_WORDS, FILMED_REASON)
+            if faults >= RESUME_FAULT_LIMIT:
+                fault = resume.get("fault") or "an error"
+                return not_saved(
+                    "failed",
+                    "Script not saved",
+                    f"Written, but saving it failed {faults} times ({fault}). {ASK_AGAIN_WORDS}",
+                    f"saving it failed {faults} times ({fault}); left for him",
+                )
+            if not _moved_since(job, now - timedelta(days=REDRIVE_LOOKBACK_DAYS)):
+                return not_saved(
+                    "failed",
+                    "Script not saved",
+                    f"Written, but never saved. {ASK_AGAIN_WORDS}",
+                    "written before the lookback",
+                )
             return {
                 "state": "waiting",
                 "resumable": True,
@@ -456,7 +531,7 @@ def _packet_request(
                 "action": "resume",
             }
         if valid and replayable:
-            words = f"Written, but it could not be saved ({failed_resume}). Ask for a new script."
+            words = f"Written, but it could not be saved ({refused}). Ask for a new script."
         elif valid:
             words = "Written, but the request that asked for it is lost. Ask for a new script."
         else:
@@ -467,6 +542,7 @@ def _packet_request(
             "activity": words,
             "request": request("failed", "Script not saved", words, False),
             "action": "failed",
+            "reason": refused or words,
         }
     if job.status in IN_FLIGHT:
         words = (
@@ -492,19 +568,28 @@ def _packet_request(
     }
 
 
-def _failed_resume(
+def _resume_record(
     workspace_id: uuid.UUID, candidate_id: uuid.UUID, job_id: uuid.UUID
-) -> str | None:
-    """Why a resume of this very job ended failed in this process, if it did.
+) -> dict[str, Any]:
+    """What saving this very job ran into in this process.
 
-    Saving a written job cannot fail by waiting; when it fails (a stricter check
-    at save time, the idea withdrawn) it fails the same way every time, so the
-    tick must not try again every five minutes, and nothing may promise it.
+    - "refused": the save came back refused (a stricter check at save time,
+      evidence from outside the idea, the idea put away). It is refused the same
+      way every time, so the tick does not try again and nothing promises it.
+    - "faults", "fault": how many saves of it raised (a lock, a dropped
+      connection) and the last one. That passes, so the job stays resumable and
+      the tick tries again, up to RESUME_FAULT_LIMIT times (review, 28-Sep: one
+      lock used to make a written script unsaveable, and his ask then paid for
+      a new model call).
     """
     entry = get(workspace_id, "packet", str(candidate_id))
-    if entry and entry.get("resumed_job_id") == str(job_id) and entry.get("state") == "failed":
-        return str(entry.get("detail") or entry.get("current_activity") or "it failed")
-    return None
+    if not entry or entry.get("resumed_job_id") != str(job_id):
+        return {"refused": None, "faults": 0, "fault": None}
+    return {
+        "refused": entry.get("resume_refused"),
+        "faults": int(entry.get("resume_faults") or 0),
+        "fault": entry.get("resume_fault"),
+    }
 
 
 async def _newest_packet_jobs(
@@ -512,15 +597,31 @@ async def _newest_packet_jobs(
     ws: uuid.UUID,
     *,
     candidate_ids: list[uuid.UUID] | None = None,
-    since: datetime | None = None,
+    moved_since: datetime | None = None,
 ) -> dict[uuid.UUID, Any]:
-    """The newest packet job per idea: a later ask replaces an earlier one."""
+    """The newest packet job per idea: a later ask replaces an earlier one.
+
+    With `moved_since`, only ideas whose newest job is still in flight or moved
+    since then (the tick's lookback). The newest job is found first and the
+    lookback applied to it, so an older job that moved lately never stands in
+    for a newer one; and only those rows are loaded whole, since a job carries
+    its full prompt and answer.
+    """
     from sqlalchemy import select
 
     from tce.models.llm_job import LLMJob
 
+    if candidate_ids is not None and not candidate_ids:
+        return {}
     stmt = (
-        select(LLMJob)
+        select(
+            LLMJob.id,
+            LLMJob.run_id,
+            LLMJob.status,
+            LLMJob.created_at,
+            LLMJob.updated_at,
+            LLMJob.completed_at,
+        )
         .where(
             LLMJob.workspace_id == ws,
             LLMJob.job_type == PACKET_JOB_TYPE,
@@ -529,15 +630,39 @@ async def _newest_packet_jobs(
         .order_by(LLMJob.created_at.desc())
     )
     if candidate_ids is not None:
-        if not candidate_ids:
-            return {}
         stmt = stmt.where(LLMJob.run_id.in_(candidate_ids))
-    if since is not None:
-        stmt = stmt.where(LLMJob.created_at >= since)
     newest: dict[uuid.UUID, Any] = {}
-    for job in (await session.execute(stmt)).scalars():
-        newest.setdefault(job.run_id, job)
-    return newest
+    for row in (await session.execute(stmt)).all():
+        newest.setdefault(row.run_id, row)
+    ids = [
+        row.id for row in newest.values() if moved_since is None or _moved_since(row, moved_since)
+    ]
+    if not ids:
+        return {}
+    jobs = (await session.execute(select(LLMJob).where(LLMJob.id.in_(ids)))).scalars()
+    return {job.run_id: job for job in jobs}
+
+
+async def _filmed_since_asked(
+    session: Any, ws: uuid.UUID, jobs: dict[uuid.UUID, Any]
+) -> set[uuid.UUID]:
+    """Ideas filmed after their newest script was asked for.
+
+    Review, 28-Sep: a new script asked for on Monday while the worker was
+    parked, the old one filmed on Tuesday, the new one written on Wednesday:
+    the tick saved it over the script he had filmed. Filming the script he has
+    while a new one is on its way says which one he went with. Filming first
+    and asking after is the other order, and that ask stands.
+    """
+    from tce.editorial.lineup import filmed_candidate_ids
+
+    out: set[uuid.UUID] = set()
+    for cid, job in jobs.items():
+        if job.created_at is None or not (job.status in IN_FLIGHT or job.status == "succeeded"):
+            continue
+        if await filmed_candidate_ids(session, ws, [cid], since=job.created_at):
+            out.add(cid)
+    return out
 
 
 async def _saved_versions(
@@ -576,11 +701,13 @@ async def latest_packet_job(
     if job is None:
         return None
     saved = (await _saved_versions(session, ws, {cid: job})).get(cid)
+    filmed = saved is None and bool(await _filmed_since_asked(session, ws, {cid: job}))
     view = _packet_request(
         job,
         saved_version=saved,
         park=await capacity_park(session),
-        failed_resume=_failed_resume(ws, cid, job.id),
+        resume=_resume_record(ws, cid, job.id),
+        filmed=filmed,
     )
     packet_id = None
     if saved is not None:
@@ -626,17 +753,44 @@ async def packet_requests(
     ws = coerce_uuid(workspace_id)
     jobs = await _newest_packet_jobs(session, ws, candidate_ids=list(candidate_ids))
     saved = await _saved_versions(session, ws, jobs)
-    park = await capacity_park(session) if jobs else None
+    jobs = {cid: job for cid, job in jobs.items() if cid not in saved}
+    if not jobs:
+        return {}
+    park = await capacity_park(session)
+    filmed = await _filmed_since_asked(session, ws, jobs)
     out: dict[uuid.UUID, dict[str, Any]] = {}
     for cid, job in jobs.items():
-        if cid in saved:
-            continue
         view = _packet_request(
-            job, saved_version=None, park=park, failed_resume=_failed_resume(ws, cid, job.id)
+            job,
+            saved_version=None,
+            park=park,
+            resume=_resume_record(ws, cid, job.id),
+            filmed=cid in filmed,
         )
         if view["request"] is not None:
             out[cid] = view["request"]
     return out
+
+
+def rewrite_request(request: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A request on a topic that already has a script, as the week and the topic show it.
+
+    Only one on its way is shown. It takes the place of the script he has when
+    it is saved, and filming that script first keeps it aside, which he cannot
+    know unless the week says so (review, 28-Sep: the week showed the old
+    script as ready and nothing about the new one). One that stopped leaves the
+    script he has as it is, so there is nothing to say.
+    """
+    if request is None or not request["pending"]:
+        return None
+    return request | {
+        "rewrite": True,
+        "label": "New script on its way",
+        "sentence": (
+            f"{request['sentence']} It takes the place of this script when it is saved; "
+            "if you film this script first, the new one is kept aside."
+        ),
+    }
 
 
 async def unsaved_packet_requests(
@@ -649,9 +803,13 @@ async def unsaved_packet_requests(
       stored request, which finds the finished job, so the save costs no model call.
     - "waiting": the job is still queued, leased or parked, or a take is being
       recorded on the script it would replace. Left alone; a later tick sees it.
-    - "failed": the job failed or was cancelled, or its answer cannot be saved.
-      Left as it is: re-queueing a failed job is his call, not the clock's.
+    - "failed": the job failed or was cancelled, its answer cannot be saved,
+      saving it kept raising, or the topic was filmed after it was asked for.
+      Left as it is: re-queueing a failed job, or putting a new script over a
+      filmed one, is his call, not the clock's.
     Ideas he took away or rejected are not listed: the ask no longer stands.
+    Nor are jobs that last moved before the lookback; what he is told about
+    those (`_packet_request`) says his own ask saves them.
     """
     from datetime import timedelta
 
@@ -665,7 +823,9 @@ async def unsaved_packet_requests(
 
     ws = coerce_uuid(workspace_id)
     now = now or utcnow()
-    jobs = await _newest_packet_jobs(session, ws, since=now - timedelta(days=REDRIVE_LOOKBACK_DAYS))
+    jobs = await _newest_packet_jobs(
+        session, ws, moved_since=now - timedelta(days=REDRIVE_LOOKBACK_DAYS)
+    )
     saved = await _saved_versions(session, ws, jobs)
     jobs = {cid: job for cid, job in jobs.items() if cid not in saved}
     if not jobs:
@@ -682,6 +842,9 @@ async def unsaved_packet_requests(
             )
         ).all()
     }
+    jobs = {cid: job for cid, job in jobs.items() if cid in standing}
+    if not jobs:
+        return []
     recording = {
         row[0]
         for row in (
@@ -694,16 +857,21 @@ async def unsaved_packet_requests(
             )
         ).all()
     }
+    filmed = await _filmed_since_asked(session, ws, jobs)
     park = await capacity_park(session, now=now)
     out: list[dict[str, Any]] = []
     for cid, job in sorted(jobs.items(), key=lambda kv: kv[1].created_at or now):
-        if cid not in standing:
-            continue
-        failed_resume = _failed_resume(ws, cid, job.id)
-        view = _packet_request(job, saved_version=None, park=park, failed_resume=failed_resume)
+        view = _packet_request(
+            job,
+            saved_version=None,
+            park=park,
+            resume=_resume_record(ws, cid, job.id),
+            filmed=cid in filmed,
+            now=now,
+        )
         action = view["action"]
         request = view["request"] or {}
-        reason = {
+        reason = view.get("reason") or {
             "queued": "queued for the PC worker",
             "leased": "being written",
             "waiting_capacity": "waiting for capacity",
@@ -715,7 +883,7 @@ async def unsaved_packet_requests(
             # would move the words he is reading out from under the take.
             action, reason = "waiting", "a take is being recorded on this script"
         if action == "failed":
-            reason = failed_resume or view["activity"]
+            reason = view.get("reason") or view["activity"]
         out.append(
             {
                 "candidate_id": cid,

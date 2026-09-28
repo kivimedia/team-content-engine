@@ -472,6 +472,18 @@ async def _run_packet(
         )
     except Exception as exc:
         logger.exception("editorial.packet_failed", workspace_id=str(ws), candidate_id=key)
+        # A save that raises (a lock, a dropped connection) is no verdict on a
+        # written script. It used to mark it unsaveable for good: the tick
+        # stopped trying and his own ask paid for a new model call (review,
+        # 28-Sep). It stays resumable and is counted, so the next tick tries
+        # again and something that raises every time stops.
+        faults: dict[str, Any] = {}
+        if resume_job_id is not None:
+            entry = job_status.get(ws, "packet", key) or {}
+            faults = {
+                "resume_faults": int(entry.get("resume_faults") or 0) + 1,
+                "resume_fault": type(exc).__name__,
+            }
         job_status.update(
             ws,
             "packet",
@@ -479,6 +491,7 @@ async def _run_packet(
             state="failed",
             current_activity="Packet failed",
             detail=type(exc).__name__,
+            **faults,
         )
         return
     # A request that stops waiting (the Claude limit, or its wait running out)
@@ -494,6 +507,12 @@ async def _run_packet(
     activity, detail = f"Packet {outcome.status}", outcome.detail
     if state == "waiting":
         activity, detail = job_status.packet_wait_words(outcome.status, outcome.retry_at)
+    # A save the job's own answer refused (a stricter check at save time,
+    # evidence from outside the idea, the idea put away) is refused the same
+    # way every time, so it is marked for the tick and for what he is told.
+    refused: dict[str, Any] = {}
+    if state == "failed" and resume_job_id is not None:
+        refused = {"resume_refused": outcome.detail or activity}
     job_status.update(
         ws,
         "packet",
@@ -502,6 +521,7 @@ async def _run_packet(
         job_id=outcome.job_id,
         current_activity=activity,
         detail=detail,
+        **refused,
         result={
             "status": outcome.status,
             "packet_id": outcome.packet["id"] if outcome.packet else None,
@@ -654,77 +674,124 @@ async def redrive_packet_requests(sm: Any, ws: uuid.UUID) -> dict[str, list[dict
     Claiming happens in this process with no await between the check and the
     claim, so two ticks at once resume a job once; a person resuming it at the
     same moment is caught by the save itself, which saves a job once.
+
+    A claim is never left behind (review, 28-Sep). A lookup that raises for one
+    idea is reported for that idea and the others are still saved; anything
+    else that stops the tick between a claim and its save lets the claim go.
+    A claim left "running" was never saved, and refused his own ask as
+    "already being written" for as long as the process ran.
     """
     from tce.editorial.voice_agent import current_packet
 
     report: dict[str, list[dict[str, Any]]] = {"redriven": [], "waiting": [], "failed": []}
     claimed: list[tuple[dict[str, str], uuid.UUID, uuid.UUID, Any]] = []
-    async with open_session(sm) as db:
-        rows = await job_status.unsaved_packet_requests(db, ws)
-        for row in rows:
-            cid, job_id = row["candidate_id"], row["job_id"]
-            base = {"candidate_id": str(cid), "job_id": str(job_id)}
-            if row["action"] == "waiting":
-                report["waiting"].append(
-                    base
-                    | {
-                        "job_status": row["job_status"],
-                        "retry_at": row["retry_at"],
-                        "reason": row["reason"],
-                    }
+    unsaved: set[uuid.UUID] = set()  # claimed here and not yet through a save
+    try:
+        async with open_session(sm) as db:
+            rows = await job_status.unsaved_packet_requests(db, ws)
+            for row in rows:
+                cid, job_id = row["candidate_id"], row["job_id"]
+                base = {"candidate_id": str(cid), "job_id": str(job_id)}
+                if row["action"] == "waiting":
+                    report["waiting"].append(
+                        base
+                        | {
+                            "job_status": row["job_status"],
+                            "retry_at": row["retry_at"],
+                            "reason": row["reason"],
+                        }
+                    )
+                    continue
+                if row["action"] == "failed":
+                    report["failed"].append(
+                        base
+                        | {
+                            "job_status": row["job_status"],
+                            "error_code": row["error_code"],
+                            "reason": row["reason"],
+                        }
+                    )
+                    continue
+                if _resuming_already(ws, cid, job_id):
+                    continue
+                previous = job_status.get(ws, "packet", str(cid)) or {}
+                try:
+                    rewrite = None
+                    if previous.get("rewrite_id"):
+                        existing = await current_packet(db, ws, cid)
+                        rewrite = await _unrecorded_rewrite(db, ws, cid, existing, resuming=True)
+                except Exception as exc:
+                    logger.exception(
+                        "editorial.packet_redrive_lookup_failed",
+                        workspace_id=str(ws),
+                        candidate_id=str(cid),
+                    )
+                    report["failed"].append(
+                        base
+                        | {
+                            "job_status": row["job_status"],
+                            "error_code": None,
+                            "reason": type(exc).__name__,
+                        }
+                    )
+                    # PostgreSQL refuses every later statement in a transaction
+                    # that raised; the next idea starts clean.
+                    await db.rollback()
+                    continue
+                # Re-checked after the awaits above: another tick may have claimed it.
+                if _resuming_already(ws, cid, job_id):
+                    continue
+                same_job = previous.get("resumed_job_id") == str(job_id)
+                job_status.start(
+                    ws,
+                    "packet",
+                    str(cid),
+                    "Saving the script that was written after the request ended",
+                    candidate_id=str(cid),
+                    resumed_job_id=str(job_id),
+                    rewrite_id=str(rewrite[0]) if rewrite else None,
+                    rewrite_by=(rewrite[1] or "voice") if rewrite else None,
+                    redriven_by="schedule_tick",
+                    # Saves of this job that raised before, so a fault that
+                    # comes back every time stops after RESUME_FAULT_LIMIT.
+                    resume_faults=int(previous.get("resume_faults") or 0) if same_job else 0,
+                    resume_fault=previous.get("resume_fault") if same_job else None,
                 )
-                continue
-            if row["action"] == "failed":
+                claimed.append((base, cid, job_id, rewrite))
+                unsaved.add(cid)
+        # Saved once the listing's session is closed, so each save has the
+        # database to itself (SQLite allows one writer, and the listing held a
+        # reader).
+        for base, cid, job_id, rewrite in claimed:
+            if rewrite is not None:
+                await _run_packet(
+                    sm, ws, cid, job_id, rewrite_id=rewrite[0], by=rewrite[1] or "voice"
+                )
+            else:
+                await _run_packet(sm, ws, cid, job_id)
+            unsaved.discard(cid)
+            entry = job_status.get(ws, "packet", str(cid)) or {}
+            result = entry.get("result") or {}
+            if entry.get("state") == "done":
+                report["redriven"].append(base | {"packet_id": result.get("packet_id")})
+            else:
                 report["failed"].append(
                     base
                     | {
-                        "job_status": row["job_status"],
-                        "error_code": row["error_code"],
-                        "reason": row["reason"],
+                        "job_status": "succeeded",
+                        "error_code": None,
+                        "reason": str(entry.get("detail") or entry.get("current_activity") or ""),
                     }
                 )
-                continue
-            if _resuming_already(ws, cid, job_id):
-                continue
-            rewrite = None
-            carried = job_status.get(ws, "packet", str(cid))
-            if carried and carried.get("rewrite_id"):
-                existing = await current_packet(db, ws, cid)
-                rewrite = await _unrecorded_rewrite(db, ws, cid, existing, resuming=True)
-            # Re-checked after the awaits above: another tick may have claimed it.
-            if _resuming_already(ws, cid, job_id):
-                continue
-            job_status.start(
+    finally:
+        for cid in unsaved:
+            job_status.update(
                 ws,
                 "packet",
                 str(cid),
-                "Saving the script that was written after the request ended",
-                candidate_id=str(cid),
-                resumed_job_id=str(job_id),
-                rewrite_id=str(rewrite[0]) if rewrite else None,
-                rewrite_by=(rewrite[1] or "voice") if rewrite else None,
-                redriven_by="schedule_tick",
-            )
-            claimed.append((base, cid, job_id, rewrite))
-    # Saved once the listing's session is closed, so each save has the database
-    # to itself (SQLite allows one writer, and the listing held a reader).
-    for base, cid, job_id, rewrite in claimed:
-        if rewrite is not None:
-            await _run_packet(sm, ws, cid, job_id, rewrite_id=rewrite[0], by=rewrite[1] or "voice")
-        else:
-            await _run_packet(sm, ws, cid, job_id)
-        entry = job_status.get(ws, "packet", str(cid)) or {}
-        result = entry.get("result") or {}
-        if entry.get("state") == "done":
-            report["redriven"].append(base | {"packet_id": result.get("packet_id")})
-        else:
-            report["failed"].append(
-                base
-                | {
-                    "job_status": "succeeded",
-                    "error_code": None,
-                    "reason": str(entry.get("detail") or entry.get("current_activity") or ""),
-                }
+                state="failed",
+                current_activity="Not saved yet: the scheduler tick stopped before saving it",
+                detail="the scheduler tick stopped before saving it",
             )
     return report
 
@@ -865,21 +932,32 @@ async def more_packet_hooks(
             )
         ).scalar_one_or_none()
         cand = await db.get(TopicCandidate, packet.candidate_id) if packet is not None else None
+        running = packet is not None and job_status.is_running(
+            ws, "packet", str(packet.candidate_id)
+        )
+        # What is on its way comes from the record, not from this process's
+        # last word on it: a request that stopped waiting stays "waiting" here
+        # after its job fails, and refused more openings with "It saves itself"
+        # for as long as the process ran (review, 28-Sep).
+        coming = (
+            (await job_status.packet_requests(db, ws, [packet.candidate_id])).get(
+                packet.candidate_id
+            )
+            if packet is not None and not running
+            else None
+        )
     if packet is not None:
-        # A new script being written, or waiting to be finished, replaces this
-        # one when it is saved. Openings asked for now would land on the new
-        # script unasked, or be dropped with it, so none are asked for.
-        writing = job_status.get(ws, "packet", str(packet.candidate_id))
-        if writing is not None and writing.get("state") in ("running", "waiting"):
+        # A new script being written, or on its way, replaces this one when it
+        # is saved. Openings asked for now would land on the new script
+        # unasked, or be dropped with it, so none are asked for.
+        if running or (coming is not None and coming["pending"]):
             title = cand.title if cand is not None else "this topic"
-            if writing["state"] == "running":
+            if running:
                 why = f'A new script for "{title}" is being written right now.'
                 then = "Ask for more openings once it is ready (tce_jobs says when)."
             else:
-                why = f'A new script for "{title}" is waiting to be finished on the PC worker.'
-                # It saves itself when it is written (the scheduler tick finishes
-                # it), so asking for it again is no longer the way through.
-                then = "It saves itself when it is written; ask for more openings after that."
+                why = f'A new script for "{title}" is on its way. {coming["sentence"]}'
+                then = "Ask for more openings once it is saved."
             raise HTTPException(
                 status_code=409,
                 detail={

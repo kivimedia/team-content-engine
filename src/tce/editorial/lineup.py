@@ -283,7 +283,7 @@ async def taken_candidate_ids(
 
 
 async def filmed_candidate_ids(
-    db: AsyncSession, ws: uuid.UUID, ids: list[uuid.UUID]
+    db: AsyncSession, ws: uuid.UUID, ids: list[uuid.UUID], *, since: datetime | None = None
 ) -> set[uuid.UUID]:
     """Which of these topics he has filmed. The one test for it.
 
@@ -302,11 +302,17 @@ async def filmed_candidate_ids(
 
     The week, the carry into a new week, Today and the studio all ask this, so a
     filmed topic is never offered for recording again.
+
+    With `since`, filmed from then on: only takes made since count, and a
+    topic marked published does not by itself, since that mark carries no
+    time. The tick asks this before saving a new script that was asked for
+    earlier (status._filmed_since_asked).
     """
     if not ids:
         return set()
     technical = technical_candidate_ids(ws)
-    shown = _real_takes(ws, ids)
+    after = (RecordingUpload.created_at >= since,) if since is not None else ()
+    shown = (*_real_takes(ws, ids), *after)
     taken = await db.execute(
         select(RecordingUpload.candidate_id).where(
             *shown,
@@ -336,22 +342,24 @@ async def filmed_candidate_ids(
             RecordingUpload.workspace_id == ws,
             RecordingUpload.candidate_id.in_(ids),
             RecordingUpload.candidate_id.notin_(technical),
+            *after,
         )
     )
-    published = await db.execute(
-        select(TopicCandidate.id).where(
-            TopicCandidate.workspace_id == ws,
-            TopicCandidate.id.in_(ids),
-            TopicCandidate.id.notin_(technical),
-            TopicCandidate.status == "published",
+    published: set[uuid.UUID] = set()
+    if since is None:
+        published = set(
+            (
+                await db.execute(
+                    select(TopicCandidate.id).where(
+                        TopicCandidate.workspace_id == ws,
+                        TopicCandidate.id.in_(ids),
+                        TopicCandidate.id.notin_(technical),
+                        TopicCandidate.status == "published",
+                    )
+                )
+            ).scalars()
         )
-    )
-    return (
-        set(taken.scalars())
-        | made_something
-        | set(posted.scalars())
-        | set(published.scalars())
-    )
+    return set(taken.scalars()) | made_something | set(posted.scalars()) | published
 
 
 # An item that stays behind when the week turns over: marked filmed or dropped.
@@ -970,8 +978,9 @@ def _item_to_json(
         "script_state": _script_state(packet),
         # A script asked for and not saved yet (status.packet_requests). With
         # "pending" it finishes by itself, so the card says when instead of
-        # offering "Prepare the script" again (28-Sep-2026).
-        "script_request": request if packet is None else None,
+        # offering "Prepare the script" again (28-Sep-2026). Over a script he
+        # already has, only a new one on its way (status.rewrite_request).
+        "script_request": request,
         # Filmed already (`filmed_candidate_ids`). It stays in its week, so the
         # week shows what he did, and nothing offers to record it again.
         "filmed": filmed,
@@ -996,9 +1005,7 @@ async def lineup_to_json(
     filmed = await filmed_candidate_ids(db, ws, candidate_ids)
     from tce.editorial import status as job_status
 
-    requests = await job_status.packet_requests(
-        db, ws, [cid for cid in candidate_ids if cid not in packets]
-    )
+    requests = await job_status.packet_requests(db, ws, candidate_ids)
 
     rendered = [
         _item_to_json(
@@ -1006,7 +1013,11 @@ async def lineup_to_json(
             candidates.get(item.candidate_id),
             packets.get(item.candidate_id),
             filmed=item.candidate_id in filmed,
-            request=requests.get(item.candidate_id),
+            request=(
+                requests.get(item.candidate_id)
+                if item.candidate_id not in packets
+                else job_status.rewrite_request(requests.get(item.candidate_id))
+            ),
         )
         for item in items
     ]

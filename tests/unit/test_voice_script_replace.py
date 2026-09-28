@@ -385,6 +385,10 @@ async def test_undoing_a_rewrite_refuses_when_openings_were_added_since_and_keep
 async def test_more_openings_are_refused_while_a_new_script_is_written_or_waits(
     client, editorial_sessionmaker
 ):
+    from tce.editorial.common import packet_key_text
+    from tce.llm import LLMRequest
+    from tce.llm import queue as llm_queue
+
     ws = uuid.uuid4()
     cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea")
     pid = await add_packet(editorial_sessionmaker, ws, cid)
@@ -392,6 +396,24 @@ async def test_more_openings_are_refused_while_a_new_script_is_written_or_waits(
     job_status.start(ws, "packet", str(cid), "Queued packet")
     try:
         running = await client.post(more, headers=headers(ws))
+        # Waiting is what the record says, not only this process: the new
+        # script's job is on file, parked on his Claude limit, and the
+        # scheduler tick saves it when it is written.
+        async with editorial_sessionmaker() as s:
+            nonce = str(uuid.uuid4())
+            job = await llm_queue.enqueue(
+                s,
+                LLMRequest(
+                    job_type="recording_packet",
+                    agent_name="recording_packet_writer",
+                    messages=[{"role": "user", "content": f"PACKET REQUEST: {nonce}\n\nIDEA"}],
+                    workspace_id=ws,
+                    run_id=cid,
+                    idempotency_key=packet_key_text(ws, nonce),
+                ),
+            )
+            job.status, job.error_code = "waiting_capacity", "capacity"
+            await s.commit()
         job_status.update(ws, "packet", str(cid), state="waiting")
         waiting = await client.post(more, headers=headers(ws))
     finally:
