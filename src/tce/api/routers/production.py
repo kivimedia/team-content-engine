@@ -1096,7 +1096,7 @@ async def render_upload(
     return upload_json(row)
 
 
-STREAM_PART_BYTES = 4 * 1024 * 1024
+STREAM_PART_BYTES = 32 * 1024 * 1024
 
 
 def serve_video(
@@ -1112,9 +1112,12 @@ def serve_video(
 
     28-Sep: "after watching it on my app for a minute and 4 sec it got stuck". His
     phone's first request ran as one open-ended response that ended after 61.9 MB, the
-    first 63 s of a 7.8 Mbps file, and the player sat on 1:04. A player now gets at
-    most STREAM_PART_BYTES per answer and asks for the next part as it plays, so no
-    single long-lived response can strand it. A download (?download=1) is unchanged.
+    first 63 s of a 7.8 Mbps file, on a line slower than the file. The Library now
+    plays a 1.5 Mbps copy; a player gets at most STREAM_PART_BYTES per answer, so a
+    raw recording or a full edit (100-250 MB) comes in parts it can re-ask for. Small
+    parts cost a stall at every boundary on a thin line (4 MiB: 7.2 s stalled in 90 s
+    at 2.5 Mbps, one stream: 1.1 s), so the part is large enough that the phone copy
+    streams whole. A download (?download=1) is unchanged.
     """
     size = path.stat().st_size
     # No quotes or line breaks in a header value.

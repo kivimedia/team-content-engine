@@ -919,7 +919,9 @@ def _plan_words(
 
     for r in rows:
         why = reason[r[0]]
-        if why and run and (why != run_reason or r[1] - run[-1][2] > 1.0):
+        # One run per stretch the cut removes: "Which" ... 11 s ... "means that the sales
+        # call..." is one take on the card, not two, however long he paused inside it.
+        if why and run and why != run_reason:
             flush()
             run = []
         if why:

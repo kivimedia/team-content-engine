@@ -399,3 +399,15 @@ def test_a_retake_choice_that_moves_a_line_after_another_still_needs_his_eyes():
     plan = plan_edit(words, script, aside_names=DOGS)
     assert plan["meaning_check"]["status"] == "blocked"
     assert [i["kind"] for i in plan["meaning_check"]["issues"]] == ["script_order"]
+
+
+def test_a_take_split_by_a_long_pause_is_one_item_on_the_card():
+    words = (
+        said("Which", 0.0)
+        + said("means that the sales call is the first step of the transformation.", 11.0)
+        + said("Which means that the sales call is the first step in the transformation.", 19.0)
+    )
+    removed = plan_edit(words, [], aside_names=DOGS)["removed"]
+    assert [r["text"] for r in removed] == [
+        "Which means that the sales call is the first step of the transformation."
+    ]
