@@ -555,11 +555,16 @@ def _meaning_issues(
                     "kept_index": u.index,
                 }
             )
+    # He speaks freely, and the cut keeps his order: a line said once sits where he said
+    # it. Only a take chosen over an earlier take of the same line can move that line
+    # later, so only those are checked (28-Sep: the reviewed "Selling" edit was blocked
+    # because he had spoken two script points in his own order).
+    chosen = {u.superseded_by for u in units if u.dropped_reason and u.superseded_by is not None}
     last_phrase = -1
     for u in kept:
         if u.phrase is None or u.take != "full":
             continue
-        if u.phrase < last_phrase:
+        if u.phrase < last_phrase and u.index in chosen:
             issues.append(
                 {
                     "kind": "script_order",
@@ -859,9 +864,11 @@ def _plan_words(
     # The editor chose these takes reading the whole walk: a reworded take losing a word
     # the kept one lacks is a note on the card, not a block. A lost "not" still blocks.
     reviewed_ids = {u.index for u in review_units}
+    review_keepers = {u.superseded_by for u in review_units if u.superseded_by is not None}
     notes = [
         i for i in issues
-        if i.get("dropped_index") in reviewed_ids and i["kind"] in ("content_dropped", "truncated_take")
+        if (i.get("dropped_index") in reviewed_ids and i["kind"] in ("content_dropped", "truncated_take"))
+        or (i["kind"] == "script_order" and i.get("kept_index") in review_keepers)
     ]
     issues = [i for i in issues if i not in notes]
 

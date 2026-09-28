@@ -375,3 +375,27 @@ def test_the_meaning_check_still_blocks_before_turned_into_after():
     result = plan(rows, ["Call them after you pitch."])
     assert result["meaning_check"]["status"] == "blocked"
     assert any(i["kind"] == "content_dropped" for i in result["meaning_check"]["issues"])
+
+
+def test_speaking_script_points_in_his_own_order_is_not_a_reorder():
+    # 28-Sep: the reviewed "Selling" edit was blocked with "the cut would reorder the
+    # script" although nothing was cut between the two points; he just said them his way.
+    script = ["Selling is the first step.", "Every coach sees themselves as benevolent."]
+    words = said("Every coach sees themselves as benevolent.", 0.0) + said(
+        "Selling is the first step.", 3.0
+    )
+    assert plan_edit(words, script, aside_names=DOGS)["meaning_check"]["status"] == "ok"
+    removals = []
+    assert plan_edit(words, script, aside_names=DOGS, removals=removals)["meaning_check"]["status"] == "ok"
+
+
+def test_a_retake_choice_that_moves_a_line_after_another_still_needs_his_eyes():
+    script = ["Selling is the first step.", "Every coach sees themselves as benevolent."]
+    words = (
+        said("Selling is the first step.", 0.0)
+        + said("Every coach sees themselves as benevolent.", 2.0)
+        + said("Selling is the first step.", 5.0)  # said again: the rules keep the last take
+    )
+    plan = plan_edit(words, script, aside_names=DOGS)
+    assert plan["meaning_check"]["status"] == "blocked"
+    assert [i["kind"] for i in plan["meaning_check"]["issues"]] == ["script_order"]
