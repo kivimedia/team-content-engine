@@ -1073,6 +1073,49 @@ async def test_a_rewrite_asked_for_after_filming_is_saved_as_usual(sm, worker, c
     assert [p.version for p in saved] == [1, 2] and saved[1].job_id == rewrite_job
 
 
+def broken_output() -> dict:
+    """What the model sent back three times on 20-Sep: fewer beats than bullets."""
+    out = good_output()
+    out["beats"] = out["beats"][:1]
+    return out
+
+
+async def test_a_rewrite_that_came_back_broken_over_a_ready_script_is_not_a_failure(
+    sm, worker, client
+):
+    """28-Sep, the first tick after deploy listed two topics as failed scripts
+    while each had a ready script: a rewrite from 20-Sep had come back broken.
+    The week says nothing about a rewrite that stopped (the script he has
+    stands), so the tick says nothing either."""
+    ws = uuid.uuid4()
+    cid, _v1 = await scripted_topic(sm, ws)
+    await ask_and_restart(sm, ws, cid)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: broken_output())
+
+    tick = (await client.post(TICK, headers=headers(ws))).json()
+    assert tick["packets"]["failed"] == [], tick["packets"]
+    assert tick["packets"]["redriven"] == []
+    assert [p.version for p in await packets_of(sm, ws)] == [1]
+
+
+async def test_a_script_that_came_back_broken_says_so_in_plain_words(sm, worker, client):
+    """The only script asked for came back broken. The week and the tick say
+    so, in his words, not the validator's."""
+    ws = uuid.uuid4()
+    cid = await new_topic(sm, ws)
+    await ask_and_restart(sm, ws, cid)
+    await finish_jobs(sm, ws, "recording_packet", lambda _job: broken_output())
+
+    tick = (await client.post(TICK, headers=headers(ws))).json()
+    (failed,) = tick["packets"]["failed"]
+    assert failed["candidate_id"] == str(cid)
+    async with sm() as s:
+        request = (await job_status.packet_requests(s, ws, [cid]))[cid]
+    for said in (failed["reason"], request["sentence"]):
+        assert "validation" not in said and "packet" not in said.lower(), said
+        assert "Ask for a new script" in said, said
+
+
 async def test_the_week_and_the_topic_say_a_new_script_is_on_its_way(sm, worker, client):
     """The week showed the old script as ready with nothing about the new one
     coming to replace it, so he could not know that filming it now keeps the

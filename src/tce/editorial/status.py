@@ -535,7 +535,9 @@ def _packet_request(
         elif valid:
             words = "Written, but the request that asked for it is lost. Ask for a new script."
         else:
-            words = "Packet job output failed validation; request a new packet."
+            # His screen and the tick log both read this (28-Sep: it said
+            # "Packet job output failed validation; request a new packet").
+            words = "The script came back incomplete and was not saved. Ask for a new script."
         return {
             "state": "failed",
             "resumable": False,
@@ -818,7 +820,7 @@ async def unsaved_packet_requests(
     from tce.editorial.common import coerce_uuid
     from tce.editorial.packets import RECORDING_IN_PROGRESS_STATUSES
     from tce.llm.queue import utcnow
-    from tce.models.editorial import TopicCandidate
+    from tce.models.editorial import RecordingPacket, TopicCandidate
     from tce.models.recording_session import RecordingSession
 
     ws = coerce_uuid(workspace_id)
@@ -859,6 +861,21 @@ async def unsaved_packet_requests(
     }
     filmed = await _filmed_since_asked(session, ws, jobs)
     park = await capacity_park(session, now=now)
+    # A rewrite that stopped for good over a script he can record leaves that
+    # script standing, and the week says nothing about it (`rewrite_request`).
+    # 28-Sep: the first tick after deploy listed two such topics as failed.
+    usable = {
+        row[0]
+        for row in (
+            await session.execute(
+                select(RecordingPacket.candidate_id).where(
+                    RecordingPacket.workspace_id == ws,
+                    RecordingPacket.candidate_id.in_(list(jobs)),
+                    RecordingPacket.status.in_(("ready", "exported")),
+                )
+            )
+        ).all()
+    }
     out: list[dict[str, Any]] = []
     for cid, job in sorted(jobs.items(), key=lambda kv: kv[1].created_at or now):
         view = _packet_request(
@@ -883,6 +900,10 @@ async def unsaved_packet_requests(
             # would move the words he is reading out from under the take.
             action, reason = "waiting", "a take is being recorded on this script"
         if action == "failed":
+            # Only one that cannot be had: a written rewrite kept aside or not
+            # yet saved is his to take, so it is still reported.
+            if cid in usable and not view.get("resumable"):
+                continue
             reason = view.get("reason") or view["activity"]
         out.append(
             {
