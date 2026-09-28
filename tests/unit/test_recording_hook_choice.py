@@ -238,6 +238,56 @@ async def test_choice_is_refused_while_a_take_set_has_clips(client, editorial_se
     assert sorted(p["version"] for p in versions) == [1, 2]
 
 
+async def test_a_flagged_opening_cannot_open_a_take_set(client, editorial_sessionmaker):
+    """28-Sep review: choosing an opening that makes a promise now turns the script
+    draft, yet the studio opened a take set on that draft and he recorded it. A take
+    set opens only on a version the recording list would show: ready or exported."""
+    cand, original = await seed_v2(editorial_sessionmaker)
+    promise = "This course plan works every time, guaranteed."
+    async with editorial_sessionmaker() as s:
+        row = await s.get(RecordingPacket, original.id)
+        options = [dict(option) for option in row.hook_options]
+        options[1]["text"] = promise
+        row.hook_options = options
+        await s.commit()
+
+    chosen = await client.post(
+        f"/api/v1/editorial/packets/{original.id}/choose-hook",
+        json={"hook_id": "hook-2"},
+        headers=AUTH,
+    )
+    assert chosen.status_code == 200, chosen.text
+    flagged = chosen.json()
+    assert (flagged["version"], flagged["status"]) == (2, "draft")
+
+    for packet_id, why in ((flagged["id"], "not ready to record"), (str(original.id), "replaced")):
+        opened = await client.post(
+            "/api/v1/production/recording-sessions",
+            json={"candidate_id": str(cand.id), "packet_id": packet_id},
+            headers=AUTH,
+        )
+        assert opened.status_code == 422, opened.text
+        assert why in opened.json()["detail"]
+    queue = (await client.get("/api/v1/production/recording-queue", headers=AUTH)).json()
+    assert queue["count"] == 0
+
+    # A clean opening chosen on the flagged version makes it ready, and that opens.
+    fixed = await client.post(
+        f"/api/v1/editorial/packets/{flagged['id']}/choose-hook",
+        json={"hook_id": "hook-1"},
+        headers=AUTH,
+    )
+    assert fixed.status_code == 200, fixed.text
+    assert (fixed.json()["version"], fixed.json()["status"]) == (3, "ready")
+    opened = await client.post(
+        "/api/v1/production/recording-sessions",
+        json={"candidate_id": str(cand.id), "packet_id": fixed.json()["id"]},
+        headers=AUTH,
+    )
+    assert opened.status_code == 201, opened.text
+    assert opened.json()["session"]["packet_version"] == 3
+
+
 async def test_legacy_packet_offers_no_hook_choice(client, editorial_sessionmaker):
     cand, packet = await seed_v2(editorial_sessionmaker)
     async with editorial_sessionmaker() as s:

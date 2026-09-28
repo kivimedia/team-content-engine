@@ -51,7 +51,66 @@ function packetToIdea(idea, packet) {
     packet_format: packet.packet_format || idea.packet_format,
     active_session_id: null,
     active_session_status: null,
+    // The new version's own verdict. A chosen opening is scanned like any other
+    // change, so a choice can come back a draft; dropping these let the studio
+    // open a take set on a flagged script (28-Sep review).
+    packet_status: packet.status ?? null,
+    public_safety: packet.public_safety ?? null,
   };
+}
+
+// What the scan flagged, in his words: where the line is and what is wrong with it.
+const FLAG_WORDS = {
+  absolute_guarantee: "makes a promise",
+  participant_name: "names someone from a call",
+  email: "has an email address",
+  phone: "has a phone number",
+  money: "names an amount of money",
+  revenue_percentage: "gives a revenue percentage",
+  customer_quote: "quotes a customer",
+  credential: "looks like a password or key",
+  token_url: "has a private link",
+};
+
+function flaggedLines(safety) {
+  const issues = Array.isArray(safety?.issues) ? safety.issues : [];
+  const places = { facebook_post: "Facebook post", linkedin_post: "LinkedIn post", interviewer_prompt: "Interviewer prompt" };
+  const lines = new Map();
+  issues.forEach((issue) => {
+    const field = String(issue?.field || "");
+    const at = /^(script_phrases|bullets)\[(\d+)\]$/.exec(field);
+    const where = at ? `${at[1] === "bullets" ? "Point" : "Line"} ${Number(at[2]) + 1}` : places[field] || field || "The script";
+    const what = FLAG_WORDS[issue?.kind] || String(issue?.kind || "was flagged").replace(/_/g, " ");
+    const words = String(issue?.match || "").trim();
+    // One promise can match twice ("every time", "guaranteed"): he reads it once.
+    const key = `${where} ${what}`;
+    if (!lines.has(key)) lines.set(key, words ? `${key}: "${words}"` : key);
+  });
+  return [...lines.values()];
+}
+
+// The studio records only what the recording list and Today would offer: a version
+// the scan passed (ready) or one already exported. An idea from the list carries no
+// status of its own, because the list only ever holds ready scripts.
+function ideaVerdict(idea) {
+  const status = idea?.packet_status || null;
+  const recordable = !status || status === "ready" || status === "exported";
+  if (recordable) return { recordable, status, lines: [], summary: "" };
+  const version = `Script version ${idea?.packet_version ?? "?"}`;
+  const lines = flaggedLines(idea?.public_safety);
+  let summary = `${version} is not ready to record: the safety check did not pass it.`;
+  if (status === "superseded") summary = `${version} was replaced by a newer version, so it is not the one to record.`;
+  else if (lines.length) summary = `${version} is not ready to record. The check flagged ${lines.length === 1 ? "this line" : `these ${lines.length} lines`}:`;
+  return { recordable, status, lines, summary };
+}
+
+// The studio's list after a new version: in place when it can be recorded, gone
+// when it cannot (it has left /recording-queue and Today too), back when fixed.
+function rebindIdeas(ideas, next) {
+  const list = Array.isArray(ideas) ? ideas : [];
+  if (!ideaVerdict(next).recordable) return list.filter((item) => item.candidate_id !== next.candidate_id);
+  if (!list.some((item) => item.candidate_id === next.candidate_id)) return [...list, next];
+  return list.map((item) => (item.candidate_id === next.candidate_id ? next : item));
 }
 
 (() => {
@@ -432,6 +491,9 @@ function packetToIdea(idea, packet) {
   // reader, the record button). Without one shared promise they each POST and the
   // second one collides on the take-set key.
   function ensureSession() {
+    // Never a take set on a version the scan flagged (the server refuses it too).
+    const verdict = ideaVerdict(state.idea);
+    if (!verdict.recordable) return Promise.reject(new Error(verdict.summary));
     if (state.session && state.session.packet_id === state.idea.packet_id) {
       return Promise.resolve(state.session);
     }
@@ -597,13 +659,20 @@ function packetToIdea(idea, packet) {
         const packet = data.result?.packet;
         if (packet) {
           const next = packetToIdea(idea, packet);
-          state.ideas = state.ideas.map((item) => (item.candidate_id === next.candidate_id ? next : item));
+          state.ideas = rebindIdeas(state.ideas, next);
           state.idea = next;
-          const model = hookChooserModel(next, { clipCount: 0 });
-          renderHookOptions($("hookViewOptions"), model, (hookId) => {
-            markHookChosen(next);
-            applyHookChoice(hookId);
-          });
+          renderQueue();
+          // The new version is scanned on its own and can come back a draft.
+          const verdict = ideaVerdict(next);
+          if (!verdict.recordable) {
+            showFlagged(next, verdict);
+          } else {
+            const model = hookChooserModel(next, { clipCount: 0 });
+            renderHookOptions($("hookViewOptions"), model, (hookId) => {
+              markHookChosen(next);
+              applyHookChoice(hookId);
+            });
+          }
         }
         label.textContent = data.detail || "More openings are ready.";
         button.disabled = false;
@@ -641,9 +710,12 @@ function packetToIdea(idea, packet) {
     const idea = state.idea;
     if (!idea) return;
     markHookChosen(idea);
-    const buttons = [...$("hookOptions").querySelectorAll("button")];
+    // Both lists: a second tap on the step's list sent a second choice for the
+    // version the first one had just replaced.
+    const buttons = [...$("hookOptions").querySelectorAll("button"), ...$("hookViewOptions").querySelectorAll("button")];
     buttons.forEach((button) => { button.disabled = true; });
     try {
+      let next = idea;
       const currentId = idea.selected_hook_id || idea.hook_options?.[0]?.id;
       if (hookId !== currentId) {
         $("hookChooserHint").textContent = "Creating the packet version with this opening";
@@ -653,13 +725,22 @@ function packetToIdea(idea, packet) {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
-        const next = packetToIdea(idea, data);
-        state.ideas = state.ideas.map((item) => (item.candidate_id === next.candidate_id ? next : item));
+        next = packetToIdea(idea, data);
+        state.ideas = rebindIdeas(state.ideas, next);
         state.idea = next;
         renderQueue();
         // The draft session (if any) belongs to the previous version; the new
         // version gets its own take set the moment it is needed.
         state.session = null;
+      }
+      // The new version was scanned on its own (28-Sep review). A flagged one is
+      // not recorded: he stays on the choice, told which line and why.
+      const verdict = ideaVerdict(next);
+      if (!verdict.recordable) {
+        showFlagged(next, verdict);
+        return;
+      }
+      if (next !== idea) {
         renderBeats();
         setMode(state.mode);
         showNotice(`Opening changed. Packet version ${next.packet_version} is bound to this take set.`, 6000);
@@ -702,12 +783,43 @@ function packetToIdea(idea, packet) {
     $("hookView").hidden = false;
     setStudioMode(false);
     $("hookViewIdea").textContent = idea.title;
+    $("hookViewFlags").hidden = true;
     $("moreHooksState").textContent = "";
     $("moreHooksButton").disabled = false;
     renderHookOptions($("hookViewOptions"), model, (hookId) => {
       markHookChosen(idea);
       applyHookChoice(hookId);
     });
+  }
+
+  /* The version he just made cannot be recorded: back to the choice (out of the
+     studio if he chose there), on that version's openings, with the flagged lines
+     in his words and the script one tap away. No take set is opened. */
+  function showFlagged(idea, verdict) {
+    state.session = null;
+    $("hookChooser").hidden = true;
+    showHookStep(idea, hookChooserModel(idea, { clipCount: 0 }));
+    const box = $("hookViewFlags");
+    const head = document.createElement("strong");
+    head.textContent = verdict.summary;
+    box.replaceChildren(head);
+    if (verdict.lines.length) {
+      const list = document.createElement("ul");
+      verdict.lines.forEach((text) => {
+        const item = document.createElement("li");
+        item.textContent = text;
+        list.appendChild(item);
+      });
+      box.appendChild(list);
+    }
+    const next = document.createElement("p");
+    next.textContent = "Choose another opening, or fix the line in the script first.";
+    const link = document.createElement("a");
+    link.href = `${pathPrefix}/scripts/${encodeURIComponent(idea.packet_id)}`;
+    link.textContent = "Open the script";
+    box.append(next, link);
+    box.hidden = false;
+    box.scrollIntoView({ block: "start" });
   }
 
   async function enterStudio(idea, lockNote = "") {

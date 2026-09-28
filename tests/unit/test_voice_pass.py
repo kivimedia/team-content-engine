@@ -7,15 +7,18 @@ all along. This is that bar applied to the thing he actually records.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 
 import tce.llm
-from tce.editorial import packets
+from tce.editorial import changes, packets
+from tce.editorial.changes import OperationInput
 from tce.llm import LLMResult, LLMUnavailable
 from tce.models.editorial import RecordingPacket, TopicCandidate
+from tce.models.news import NewsAppraisal, NewsItem
+from tce.models.recording_session import RecordingSession
 from tests.unit.test_editorial_coverage_status import real_queue  # noqa: F401 - fixture
 
 WS = uuid.UUID("aaaaaaaa-1111-4111-8111-111111111111")
@@ -56,6 +59,8 @@ def a_packet(cand: TopicCandidate, **over) -> RecordingPacket:
         "facebook_post": "A post. Book a strategy session.",
         "linkedin_post": "A post. Book a strategy session.",
         "interviewer_prompt": "What do you check first?",
+        # Three, as the writer always leaves a script: the pass re-validates the
+        # packet like choosing an opening does, and that rule wants three or more.
         "hook_options": [
             {
                 "id": "h1",
@@ -64,7 +69,23 @@ def a_packet(cand: TopicCandidate, **over) -> RecordingPacket:
                 "payoff_phrase_id": "p004",
                 "moment_ids": [MOMENT],
                 "rationale": "curiosity",
-            }
+            },
+            {
+                "id": "h2",
+                "text": "The ads are rarely where the money leaks.",
+                "question": "Where does it leak?",
+                "payoff_phrase_id": "p004",
+                "moment_ids": [MOMENT],
+                "rationale": "a position",
+            },
+            {
+                "id": "h3",
+                "text": "Most owners fix the wrong stage first.",
+                "question": "Which stage?",
+                "payoff_phrase_id": "p005",
+                "moment_ids": [MOMENT],
+                "rationale": "a position",
+            },
         ],
         "selected_hook_id": "h1",
         "beats": [
@@ -234,6 +255,179 @@ async def test_a_pass_on_a_replaced_version_writes_nothing(editorial_sessionmake
     assert sorted(versions) == [1, 2]
 
 
+async def versions_of(sm, candidate_id) -> list[RecordingPacket]:
+    async with sm() as s:
+        return list(
+            (
+                await s.execute(
+                    select(RecordingPacket)
+                    .where(RecordingPacket.candidate_id == candidate_id)
+                    .order_by(RecordingPacket.version)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+def a_revise_answer(text: str | None = None) -> LLMResult:
+    hook = replacement() if text is None else replacement(text=text)
+    return LLMResult(
+        job_id=uuid.uuid4(),
+        text="",
+        structured={"score": 3, "verdict": "revise", "violations": [], "hook_options": [hook]},
+        model="claude-opus-5",
+    )
+
+
+async def test_an_edit_accepted_while_the_pass_ran_is_kept(editorial_sessionmaker, monkeypatch):
+    # 28-Sep review: the pass wrote its version from the row it read before the
+    # wait for the worker, which can be minutes. A line fix accepted in that wait
+    # wrote v2; the pass then wrote v3 from v1's text, so the fix was gone and v2
+    # and v3 were both current. More openings already re-reads; the pass did not.
+    sm = editorial_sessionmaker
+    cand = a_candidate()
+    packet = a_packet(cand)
+    await seed(sm, cand, packet)
+    edited = "The drop is right after the free call."
+
+    async def critic_while_he_edits(req, **_kw):
+        async with sm() as s:
+            proposal = await changes.propose(
+                s,
+                WS,
+                target_type="packet",
+                target_id=packet.id,
+                base_version=1,
+                operations=[
+                    OperationInput(op="set_field", field="script_phrases.3", after=edited)
+                ],
+                summary="fix line four",
+            )
+            await s.commit()
+        async with sm() as s:
+            await changes.apply(s, WS, proposal.id)
+            await s.commit()
+        return a_revise_answer()
+
+    monkeypatch.setattr(tce.llm, "complete", critic_while_he_edits)
+    out = await packets.voice_pass(sm, WS, packet.id)
+
+    assert out.status == "invalid", out.detail
+    assert "version 2" in out.detail
+    rows = await versions_of(sm, cand.id)
+    assert [(r.version, r.status) for r in rows] == [(1, "superseded"), (2, "ready")]
+    assert rows[1].script_phrases[3] == edited
+
+    # Run on the version it names, the pass keeps the fix and is the only current one.
+    async def plain_critic(req, **_kw):
+        return a_revise_answer()
+
+    monkeypatch.setattr(tce.llm, "complete", plain_critic)
+    again = await packets.voice_pass(sm, WS, rows[1].id)
+
+    assert again.status == "ok", again.detail
+    rows = await versions_of(sm, cand.id)
+    current = [r for r in rows if r.status != "superseded"]
+    assert [r.version for r in current] == [3]
+    assert current[0].script_phrases[3] == edited
+    assert current[0].script_phrases[0] == replacement()["text"]
+
+
+async def test_a_take_set_started_while_the_pass_ran_stops_it(editorial_sessionmaker, monkeypatch):
+    # The same wait: a take set opened on v1 and started recording. A new version
+    # now would replace the one his clips are bound to; more openings refuses this.
+    sm = editorial_sessionmaker
+    cand = a_candidate()
+    packet = a_packet(cand)
+    await seed(sm, cand, packet)
+
+    async def critic_while_he_records(req, **_kw):
+        await seed(
+            sm,
+            RecordingSession(
+                id=uuid.uuid4(),
+                workspace_id=WS,
+                candidate_id=cand.id,
+                packet_id=packet.id,
+                packet_version=1,
+                retake_index=1,
+                status="recording",
+            ),
+        )
+        return a_revise_answer()
+
+    monkeypatch.setattr(tce.llm, "complete", critic_while_he_records)
+    out = await packets.voice_pass(sm, WS, packet.id)
+
+    assert out.status == "invalid", out.detail
+    assert "take set" in out.detail and "version 1" in out.detail
+    rows = await versions_of(sm, cand.id)
+    assert [(r.version, r.status) for r in rows] == [(1, "ready")]
+
+
+def news_rows(cand: TopicCandidate) -> tuple[NewsItem, NewsAppraisal]:
+    now = datetime(2026, 9, 22, 12, 0, 0)
+    item = NewsItem(
+        id=uuid.uuid4(),
+        workspace_id=WS,
+        external_id="r1",
+        url="https://vendor.example/r/1",
+        title="Pricing moves",
+        publisher="Vendor",
+        published_at=now - timedelta(days=1),
+        source_tier="1a",
+    )
+    appraisal = NewsAppraisal(
+        id=uuid.uuid4(),
+        workspace_id=WS,
+        news_item_id=item.id,
+        verdict="publish",
+        what_happened="Per-message billing.",
+        format="changes_my_product",
+        confirmed_facts=[],
+        ziv_interpretation=["mine"],
+        predictions=["guess"],
+        expires_at=now + timedelta(days=4),
+        anchors=[],
+        scores={},
+        do_differently=[],
+    )
+    cand.news_item_id = item.id
+    return item, appraisal
+
+
+@pytest.mark.parametrize(
+    "news, opening, reason",
+    [
+        # A news idea opens with the owner's situation: no number, date or vendor.
+        (True, "Two stages leak before the ads ever matter.", "carries a number"),
+        # Any idea: the giveaway and keyword calls to action choosing refuses.
+        (False, "Comment FUNNEL and I will send you the steps.", "giveaway-style CTA"),
+    ],
+)
+async def test_a_rewritten_opening_is_validated_like_a_chosen_one(
+    editorial_sessionmaker, critic, news, opening, reason
+):
+    # 28-Sep review: the pass now writes its opening into the first spoken line,
+    # the same change as choosing one. Choosing runs the packet validator first
+    # (the news rules for a news idea); the pass did not, so v2 and its Google Doc
+    # opened with a line choosing would refuse, and the scan called it "ready".
+    sm = editorial_sessionmaker
+    cand = a_candidate()
+    rows = news_rows(cand) if news else ()
+    packet = a_packet(cand)
+    await seed(sm, *rows, cand, packet)
+    critic["answer"] = a_revise_answer(opening).structured
+
+    out = await packets.voice_pass(sm, WS, packet.id)
+
+    assert out.status == "failed", out.detail
+    assert reason in out.detail
+    stored = await versions_of(sm, cand.id)
+    assert [(r.version, r.status) for r in stored] == [(1, "ready")]
+
+
 async def test_an_opening_that_already_sounds_like_him_is_left_alone(
     editorial_sessionmaker, critic
 ):
@@ -330,8 +524,6 @@ async def test_the_critic_is_shown_his_rules_and_his_own_words(editorial_session
 
 
 async def test_a_take_set_in_progress_blocks_the_pass(editorial_sessionmaker, critic):
-    from tce.models.recording_session import RecordingSession
-
     sm = editorial_sessionmaker
     cand = a_candidate()
     packet = a_packet(cand)

@@ -19,6 +19,9 @@ from tce.production.media import ffmpeg_path, probe_media
 
 MAX_CHUNK_BYTES = 32 * 1024 * 1024
 ALLOWED_EXTENSIONS = {"webm", "mp4", "mov", "m4a"}
+# The week's "script ready" (lineup._script_state): the only versions the recording
+# list and Today offer to record.
+RECORDABLE_PACKET_STATUSES = ("ready", "exported")
 
 
 class RecordingSessionError(ValueError):
@@ -56,6 +59,21 @@ async def create_session(
     ).scalar_one_or_none()
     if packet is None or candidate is None:
         raise RecordingSessionError("packet and candidate must belong to this workspace")
+    # A take set records the script as this version has it. A chosen opening is now
+    # scanned, so a choice can turn a ready script into a draft, and the studio
+    # opened a take set on that draft and he recorded the flagged line (28-Sep
+    # review). Only a version the recording list would offer is recorded, whichever
+    # page asks.
+    if packet.status == "superseded":
+        raise RecordingSessionError(
+            f"script version {packet.version} was replaced by a newer version; "
+            "record the current version"
+        )
+    if packet.status not in RECORDABLE_PACKET_STATUSES:
+        raise RecordingSessionError(
+            f"script version {packet.version} is not ready to record: its safety check "
+            "flagged a line. Fix the line or choose another opening first"
+        )
     # An empty draft for this exact packet IS this take set. Opening the studio
     # twice (a second tap, a reload, the hook step handing over to the script) used
     # to read the same max retake index twice and collide on the unique key, which

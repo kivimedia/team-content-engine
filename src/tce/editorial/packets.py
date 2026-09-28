@@ -1490,7 +1490,62 @@ async def _apply_voice_pass(
     payload: Any,
     job_id: uuid.UUID | None,
 ) -> PacketOutcome:
-    """Turn the critic's answer into either a verdict or the next packet version."""
+    """Turn the critic's answer into either a verdict or the next packet version.
+
+    The critic judged `packet` as it was read before the wait for the worker,
+    which can be minutes. A line fix accepted in that wait wrote a newer version,
+    and the pass then wrote its own from the old text: the fix was gone and two
+    versions were current (28-Sep review). More openings builds on whatever is
+    current; the pass judged these exact openings, so it writes nothing and says
+    which version to run it on. A take set started meanwhile stops it as well.
+    """
+    current = (
+        (
+            await session.execute(
+                select(RecordingPacket)
+                .where(
+                    RecordingPacket.workspace_id == ws,
+                    RecordingPacket.candidate_id == packet.candidate_id,
+                    RecordingPacket.status != "superseded",
+                )
+                .order_by(RecordingPacket.version.desc())
+                .limit(1)
+                # The session still holds the row it read before the wait; take
+                # what the database says now.
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if current is None or current.id != packet.id:
+        now_on = f"version {current.version}" if current is not None else "a newer version"
+        return PacketOutcome(
+            status="invalid",
+            job_id=job_id,
+            detail=(
+                f"the script changed while the voice pass ran (it is on {now_on} now); "
+                f"nothing was written. Run the voice pass on {now_on}"
+            ),
+        )
+    taking = (
+        await session.execute(
+            select(RecordingSession.packet_version).where(
+                RecordingSession.workspace_id == ws,
+                RecordingSession.candidate_id == packet.candidate_id,
+                RecordingSession.status.in_(RECORDING_IN_PROGRESS_STATUSES),
+            )
+        )
+    ).first()
+    if taking is not None:
+        return PacketOutcome(
+            status="invalid",
+            job_id=job_id,
+            detail=(
+                f"a take set started on packet version {taking[0]} while the voice pass ran; "
+                "nothing was written. Finish that session and run the voice pass again"
+            ),
+        )
     data = payload if isinstance(payload, dict) else None
     if data is None:
         try:
@@ -1580,6 +1635,33 @@ async def _apply_voice_pass(
     phrases = list(packet.script_phrases or [])
     if phrases and selected is not None and str(selected.get("text") or "").strip():
         phrases[0] = str(selected["text"]).strip()
+    # That is the change choosing an opening makes, so it passes the check choosing
+    # runs first: for a news idea no number, date or vendor in the opening, and for
+    # any idea no giveaway or keyword call to action. Only the banned words were
+    # checked, so a news script and its Doc opened with a line choosing refuses,
+    # and the scan still called it "ready" (28-Sep review).
+    try:
+        validate_packet_output(
+            {
+                "bullets": list(packet.bullets or []),
+                "script_phrases": phrases,
+                "facebook_post": packet.facebook_post,
+                "linkedin_post": packet.linkedin_post,
+                "interviewer_prompt": packet.interviewer_prompt,
+                "hook_options": merged,
+                "selected_hook_id": selected_id,
+                "beats": list(packet.beats or []),
+            },
+            max_hooks=MAX_HOOK_OPTIONS,
+            news_terms=await news_terms_for(session, ws, packet.candidate_id),
+        )
+    except PacketValidationError as exc:
+        return PacketOutcome(
+            status="failed",
+            job_id=job_id,
+            detail=f"the rewritten openings were not saved: {exc}",
+            errors=violations + dropped,
+        )
     now = datetime.now(UTC).replace(tzinfo=None)
     clone = RecordingPacket(
         workspace_id=ws,

@@ -168,6 +168,13 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .secondary-button { min-height: 52px; padding: 0 18px; border: 2px solid var(--ink); border-radius: 12px; background: var(--white); font-weight: 900; }
 .secondary-button:disabled { opacity: .5; }
 .hook-view-state { color: #34435a; font-size: .9rem; line-height: 1.35; }
+/* A chosen opening the scan flagged: which line and why, below the sticky header. */
+.hook-flags { margin: 14px 0 0; padding: 12px 14px; border: 2px solid var(--signal); border-radius: 12px; background: #fff4f1; color: var(--ink); line-height: 1.4; scroll-margin-top: 84px; }
+.hook-flags strong { display: block; color: #8f1d1d; }
+.hook-flags ul { margin: 8px 0 0; padding-left: 20px; }
+.hook-flags li { margin: 0 0 4px; overflow-wrap: anywhere; }
+.hook-flags p { margin: 8px 0 6px; }
+.hook-flags a { color: var(--lake); font-weight: 800; }
 .controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; padding: 9px 9px calc(9px + env(safe-area-inset-bottom)); background: #d7dfdf; border-top: 2px solid var(--ink); }
 .control { min-height: 56px; border: 2px solid var(--ink); border-radius: 12px; background: var(--white); font-size: .74rem; font-weight: 900; padding: 5px 3px; line-height: 1.1; }
 .control small { display: block; font-size: .62rem; font-weight: 700; opacity: .75; margin-top: 2px; }

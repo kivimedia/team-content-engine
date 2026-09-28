@@ -158,7 +158,7 @@ def studio(monkeypatch, tmp_path):
     else:
         raise RuntimeError("recorder server did not start")
     try:
-        yield {"base": f"http://127.0.0.1:{port}", **seeded}
+        yield {"base": f"http://127.0.0.1:{port}", "sessionmaker": sessionmaker, **seeded}
     finally:
         server.should_exit = True
         thread.join(timeout=10)
@@ -287,6 +287,119 @@ def test_phone_hook_chooser_selects_a_new_version_and_locks_after_a_clip(studio,
     unexpected = [e for e in errors if "409" not in e]
     assert not unexpected, unexpected
     Path(tmp_path / "hook-chooser-report.json").write_text(json.dumps(layout, indent=2))
+
+
+async def _set_hook_text(sessionmaker, packet_id: str, hook_id: str, text: str) -> None:
+    async with sessionmaker() as s:
+        row = await s.get(RecordingPacket, uuid.UUID(packet_id))
+        options = [dict(option) for option in row.hook_options]
+        next(option for option in options if option["id"] == hook_id)["text"] = text
+        row.hook_options = options
+        await s.commit()
+
+
+FLAG_BOX_JS = """
+() => {
+  const box = document.getElementById('hookViewFlags');
+  const r = box.getBoundingClientRect();
+  const hit = document.elementFromPoint(r.left + 12, r.top + 12);
+  return {
+    overflowX: document.documentElement.scrollWidth > window.innerWidth + 1,
+    fits: r.left >= 0 && r.right <= window.innerWidth + 1,
+    uncovered: Boolean(hit && box.contains(hit)),
+    items: [...box.querySelectorAll('li')].map((li) => li.textContent),
+    link: box.querySelector('a') ? box.querySelector('a').getAttribute('href') : null,
+  };
+}
+"""
+
+
+def test_a_flagged_opening_keeps_the_studio_closed_and_says_why(studio, tmp_path):
+    """28-Sep review: he picked an opening that makes a promise, the new version
+    came back a draft, and the studio still said "Opening changed", opened a take
+    set on it and let him record. The studio now stays shut, names the flagged
+    line, and a clean opening chosen next opens it on the new version."""
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    promise = "This course plan works every time, guaranteed."
+    asyncio.run(_set_hook_text(studio["sessionmaker"], studio["packet_id"], "hook-2", promise))
+    with sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+            )
+        except PlaywrightError as exc:  # pragma: no cover - environment dependent
+            pytest.skip(f"Chromium is not installed for Playwright: {exc}")
+        context = browser.new_context(
+            viewport=PHONE, device_scale_factor=2, is_mobile=True, has_touch=True,
+            permissions=["camera", "microphone"],
+        )
+        page = context.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+        opened: list[str] = []
+        page.on(
+            "request",
+            lambda r: opened.append(r.url)
+            if r.method == "POST" and r.url.endswith("/recording-sessions")
+            else None,
+        )
+
+        page.goto(f"{studio['base']}/record")
+        page.wait_for_selector(".idea-card")
+        page.click(".idea-card")
+        page.locator("#hookView").wait_for(state="visible")
+        with page.expect_response(
+            lambda r: "/choose-hook" in r.url and r.request.method == "POST"
+        ) as chosen:
+            page.locator("#hookView .hook-option").nth(1).locator(".hook-use").click()
+        assert chosen.value.status == 200
+        flagged = chosen.value.json()
+        assert flagged["status"] == "draft"
+
+        # No take set on the flagged version, and he stays on the choice.
+        page.wait_for_timeout(1500)
+        assert opened == [], opened
+        assert page.locator("#studioView").is_hidden()
+        page.locator("#hookViewFlags").wait_for(state="visible", timeout=5000)
+        box = page.evaluate(FLAG_BOX_JS)
+        assert len(box["items"]) == 1 and box["items"][0].startswith(
+            "Line 1 makes a promise: "
+        ), box
+        assert box["overflowX"] is False and box["fits"] and box["uncovered"], box
+        assert box["link"].endswith(f"/scripts/{flagged['id']}"), box
+        # The choices are the new version's: the one he picked is the current one.
+        current = page.locator("#hookView .hook-option.is-current .hook-text")
+        assert current.text_content() == promise
+        page.screenshot(path=str(tmp_path / "flagged-opening-phone.png"))
+
+        # A clean opening chosen next: ready again, and the take set opens on it.
+        with page.expect_response(
+            lambda r: "/choose-hook" in r.url and r.request.method == "POST"
+        ) as fixed, page.expect_response(
+            lambda r: r.url.endswith("/recording-sessions") and r.request.method == "POST",
+            timeout=60000,
+        ) as take_set:
+            page.locator("#hookView .hook-option").first.locator(".hook-use").click()
+        assert fixed.value.status == 200
+        assert (fixed.value.json()["version"], fixed.value.json()["status"]) == (3, "ready")
+        assert take_set.value.status == 201
+        assert take_set.value.json()["session"]["packet_version"] == 3
+        page.wait_for_selector("#studioView:not([hidden])")
+        queue = page.evaluate(
+            "() => fetch('/api/v1/production/recording-queue').then((r) => r.json())"
+        )
+        assert queue["count"] == 1
+        assert queue["ideas"][0]["packet_version"] == 3
+        assert queue["ideas"][0]["active_session_status"] == "draft"
+        page.screenshot(path=str(tmp_path / "flagged-then-clean-phone.png"))
+        context.close()
+        browser.close()
+
+    assert not errors, errors
 
 
 def test_a_landscape_camera_is_previewed_and_recorded_as_a_vertical_video(studio, tmp_path):

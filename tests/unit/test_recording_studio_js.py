@@ -37,10 +37,10 @@ def _const_block(source: str, name: str) -> str:
     return source[start:end]
 
 
-def run_js(expr: str, **bindings):
+def run_js(expr: str, *, helpers=HELPERS, consts=CONSTS, **bindings):
     source = JS.read_text(encoding="utf-8")
-    script = "\n".join(_const_block(source, n) for n in CONSTS)
-    script += "\n" + "\n".join(_function(source, n) for n in HELPERS)
+    script = "\n".join(_const_block(source, n) for n in consts)
+    script += "\n" + "\n".join(_function(source, n) for n in helpers)
     for name, value in bindings.items():
         script += f"\nconst {name} = {json.dumps(value)};"
     script += f"\nprocess.stdout.write(JSON.stringify({expr}));"
@@ -218,6 +218,92 @@ def test_choose_hook_response_rebinds_the_idea_to_the_new_version():
     assert merged["candidate_id"] == "c1"
     assert merged["interviewer_prompt"] == "Ask about outcomes."
     assert merged["active_session_id"] is None and merged["active_session_status"] is None
+
+
+# 28-Sep review: a new opening is scanned on its own, so a choice can come back a
+# draft. packetToIdea dropped status and public_safety, and the studio opened a
+# take set on a version the scan had just flagged.
+VERDICT = ("flaggedLines", "ideaVerdict", "rebindIdeas")
+FLAGGED = {
+    "checked": True,
+    "status": "issues",
+    "issues": [
+        {
+            "field": "script_phrases[0]",
+            "kind": "absolute_guarantee",
+            "match": "works every time, guaranteed",
+        },
+        # The same promise matched a second time: still one line to read.
+        {"field": "script_phrases[0]", "kind": "absolute_guarantee", "match": "time, guaranteed."},
+        {"field": "bullets[2]", "kind": "participant_name", "match": "Dana"},
+    ],
+}
+
+
+def verdict_js(expr: str, **bindings):
+    return run_js(expr, helpers=HELPERS + VERDICT, consts=("FLAG_WORDS",), **bindings)
+
+
+def test_a_choice_that_came_back_draft_carries_its_verdict_into_the_studio():
+    packet = {
+        "id": "p2",
+        "version": 2,
+        "script_phrases": ["This works every time, guaranteed.", "Second line."],
+        "hook_options": idea()["hook_options"],
+        "selected_hook_id": "h2",
+        "beats": idea()["beats"],
+        "packet_format": "v2",
+        "status": "draft",
+        "public_safety": FLAGGED,
+    }
+    merged = run_js("packetToIdea(idea, packet)", idea=idea(), packet=packet)
+    assert merged["packet_status"] == "draft"
+    assert merged["public_safety"] == FLAGGED
+
+    verdict = verdict_js("ideaVerdict(packetToIdea(idea, packet))", idea=idea(), packet=packet)
+    assert verdict["recordable"] is False
+    # Where and what, in his words, with the words that were flagged.
+    assert verdict["lines"] == [
+        'Line 1 makes a promise: "works every time, guaranteed"',
+        'Point 3 names someone from a call: "Dana"',
+    ]
+    assert "version 2" in verdict["summary"] and "not ready to record" in verdict["summary"]
+
+
+@pytest.mark.parametrize(
+    "status, recordable",
+    [(None, True), ("ready", True), ("exported", True), ("draft", False), ("superseded", False)],
+)
+def test_only_a_version_the_scan_passed_is_recordable(status, recordable):
+    # A queue idea carries no status of its own: the list only holds ready scripts.
+    over = {} if status is None else {"packet_status": status}
+    verdict = verdict_js("ideaVerdict(idea)", idea=idea(**over))
+    assert verdict["recordable"] is recordable
+    assert bool(verdict["summary"]) is not recordable
+
+
+def test_a_draft_the_check_could_not_scan_still_says_why():
+    unchecked = {"checked": False, "status": "unevaluated", "issues": []}
+    verdict = verdict_js(
+        "ideaVerdict(idea)", idea=idea(packet_status="draft", public_safety=unchecked)
+    )
+    assert verdict["recordable"] is False and verdict["lines"] == []
+    assert "check" in verdict["summary"]
+
+
+def test_a_flagged_version_leaves_the_list_and_a_fixed_one_comes_back():
+    first = idea()
+    other = idea(candidate_id="c2", packet_id="q1", title="Another idea")
+    flagged = idea(packet_id="p2", packet_version=2, packet_status="draft", public_safety=FLAGGED)
+    fixed = idea(packet_id="p3", packet_version=3, packet_status="ready")
+    out = verdict_js(
+        "[rebindIdeas(ideas, flagged), rebindIdeas(rebindIdeas(ideas, flagged), fixed),"
+        " rebindIdeas(ideas, fixed)].map((list) => list.map((item) => item.packet_id))",
+        ideas=[first, other],
+        flagged=flagged,
+        fixed=fixed,
+    )
+    assert out == [["q1"], ["q1", "p3"], ["p3", "q1"]]
 
 
 # The ideas inbox, the engine-state line, the "Produce now" run words and the
