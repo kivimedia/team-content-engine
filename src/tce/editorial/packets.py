@@ -433,10 +433,12 @@ async def news_terms_for(
     return forbidden_terms_for(ref, (appraisal.anchors if appraisal else None) or [])
 
 
-async def _participants(session: AsyncSession, ws: uuid.UUID, cand: TopicCandidate) -> list[str]:
+async def _participants(
+    session: AsyncSession, ws: uuid.UUID, citations: list[dict[str, Any]]
+) -> list[str]:
     names: list[str] = []
     source_ids = set()
-    for cit in cand.citations_private or []:
+    for cit in citations:
         if cit.get("speaker"):
             names.append(cit["speaker"])
         if cit.get("source_id"):
@@ -469,12 +471,66 @@ async def _participants(session: AsyncSession, ws: uuid.UUID, cand: TopicCandida
 
 def safety_fields(packet: dict[str, Any]) -> dict[str, Any]:
     return {
-        "bullets": packet["bullets"],
-        "script_phrases": packet["script_phrases"],
-        "facebook_post": packet["facebook_post"],
-        "linkedin_post": packet["linkedin_post"],
-        "interviewer_prompt": packet["interviewer_prompt"],
+        "bullets": packet.get("bullets"),
+        "script_phrases": packet.get("script_phrases"),
+        "facebook_post": packet.get("facebook_post"),
+        "linkedin_post": packet.get("linkedin_post"),
+        "interviewer_prompt": packet.get("interviewer_prompt"),
     }
+
+
+def stored_safety_fields(packet: RecordingPacket) -> dict[str, Any]:
+    """safety_fields of a saved version, so a rescan reads what the writer scanned."""
+    return safety_fields(
+        {
+            "bullets": list(packet.bullets or []),
+            "script_phrases": list(packet.script_phrases or []),
+            "facebook_post": packet.facebook_post,
+            "linkedin_post": packet.linkedin_post,
+            "interviewer_prompt": packet.interviewer_prompt,
+        }
+    )
+
+
+async def scan_packet_safety(
+    session: AsyncSession,
+    ws: uuid.UUID,
+    fields: dict[str, Any],
+    *,
+    candidate_id: uuid.UUID,
+    citations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """The public-safety verdict for one packet version.
+
+    Every path that makes a version (the writer, an accepted edit, the rescan
+    script) calls this, so "ready" means the same thing whichever one made it.
+    The names looked for come from the idea's evidence plus the version's own copy
+    of it: an edit used to rescan with no names at all, so fixing any line could
+    have made a script that names a client "ready" (28-Sep-2026).
+    """
+    try:
+        cand = (
+            await session.execute(
+                select(TopicCandidate).where(
+                    TopicCandidate.workspace_id == ws, TopicCandidate.id == candidate_id
+                )
+            )
+        ).scalar_one_or_none()
+        cites = list((cand.citations_private if cand is not None else None) or [])
+        cites += [c for c in citations or [] if isinstance(c, dict)]
+        return scan_public_text(fields, participants=await _participants(session, ws, cites))
+    except Exception as exc:  # the scan itself broke: never report clean
+        return {
+            "checked": False,
+            "status": "unevaluated",
+            "issues": [],
+            "error": type(exc).__name__,
+        }
+
+
+def status_for_safety(safety: dict[str, Any] | None) -> str:
+    """A version is ready to record only when its own scan came back clean."""
+    return "ready" if (safety or {}).get("status") == "clean" else "draft"
 
 
 def build_packet_prompt(
@@ -664,17 +720,9 @@ async def build_packet(
                 errors=["hook moment IDs must belong to the candidate"],
             )
 
-        try:
-            safety = scan_public_text(
-                safety_fields(clean), participants=await _participants(session, ws, cand)
-            )
-        except Exception as exc:  # the scan itself broke: never report clean
-            safety = {
-                "checked": False,
-                "status": "unevaluated",
-                "issues": [],
-                "error": type(exc).__name__,
-            }
+        safety = await scan_packet_safety(
+            session, ws, safety_fields(clean), candidate_id=cand.id
+        )
         safety["model_self_check"] = clean["self_check"]
 
         # A job's output is saved once, even if two requests resumed the same job.
@@ -737,7 +785,7 @@ async def build_packet(
             beats=clean["beats"],
             citations_private=list(cand.citations_private or []),
             public_safety=safety,
-            status="ready" if safety["status"] == "clean" else "draft",
+            status=status_for_safety(safety),
             prompt_version=PROMPT_VERSION,
             job_id=llm.job_id,
             created_at=now,

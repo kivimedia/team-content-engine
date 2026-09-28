@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime
 
 import pytest
+from sqlalchemy import select
 
 from tce.editorial import briefs, changes
 from tce.editorial.changes import ChangeError, OperationInput
@@ -602,3 +603,184 @@ async def test_an_internal_moment_id_never_reaches_a_block_he_reads(editorial_se
     assert "moment" not in claims.lower()
     # The instruction itself survives intact.
     assert "paraphrase, do not quote" in claims
+
+
+# -------------------------------------------------------------- a new version's own verdict
+#
+# 28-Sep-2026: an accepted edit copied the old version's status, so a draft whose
+# flagged line had been fixed stayed a draft (and a ready script edited to carry an
+# email stayed ready). A version is ready when ITS OWN scan is clean.
+
+
+async def apply_one_edit(session, ws, packet, field, after):
+    change_set = await changes.propose(
+        session,
+        ws,
+        target_type="packet",
+        target_id=packet.id,
+        base_version=packet.version,
+        operations=[OperationInput(op="set_field", field=field, after=after)],
+        summary="Edit one line",
+    )
+    result = await changes.apply(session, ws, change_set.id)
+    await session.commit()
+    rows = await session.execute(
+        select(RecordingPacket).where(
+            RecordingPacket.workspace_id == ws,
+            RecordingPacket.candidate_id == packet.candidate_id,
+            RecordingPacket.version == result["version"],
+        )
+    )
+    return rows.scalar_one()
+
+
+async def test_a_draft_whose_flagged_line_is_fixed_becomes_ready(editorial_session):
+    ws = uuid.uuid4()
+    candidate, _ = await seeded(editorial_session, ws)
+    packet = await make_packet(
+        editorial_session,
+        ws,
+        candidate,
+        script_phrases=["Start from the problem, not the lesson.", "Email me at a@example.com."],
+        status="draft",
+        public_safety={
+            "checked": True,
+            "status": "issues",
+            "issues": [{"field": "script_phrases[1]", "kind": "email", "match": "a@example.com"}],
+        },
+    )
+    await editorial_session.commit()
+
+    fresh = await apply_one_edit(
+        editorial_session, ws, packet, "script_phrases.1", "Start with the one problem."
+    )
+
+    assert fresh.public_safety["status"] == "clean"
+    assert fresh.status == "ready"
+
+
+async def test_a_ready_script_edited_to_carry_an_email_becomes_a_draft(editorial_session):
+    ws = uuid.uuid4()
+    candidate, _ = await seeded(editorial_session, ws)
+    packet = await make_packet(editorial_session, ws, candidate)
+    await editorial_session.commit()
+
+    fresh = await apply_one_edit(
+        editorial_session, ws, packet, "facebook_post", "Email me at someone@example.com."
+    )
+
+    assert fresh.public_safety["status"] == "issues"
+    assert fresh.status == "draft"
+
+
+async def test_an_edit_still_looks_for_the_participants_names(editorial_session):
+    # The version's verdict is computed the way the writer computes it, names
+    # included: fixing one line must not turn a script that names a client ready.
+    ws = uuid.uuid4()
+    candidate = make_candidate(
+        ws,
+        citations_private=[
+            {"moment_id": str(uuid.uuid4()), "speaker": "Dana Example", "claim_type": "quoted"}
+        ],
+    )
+    editorial_session.add(candidate)
+    await editorial_session.flush()
+    packet = await make_packet(
+        editorial_session,
+        ws,
+        candidate,
+        script_phrases=["Dana asked me about pricing.", "Email me at a@example.com."],
+        status="draft",
+        public_safety={"checked": True, "status": "issues", "issues": []},
+    )
+    await editorial_session.commit()
+
+    fresh = await apply_one_edit(
+        editorial_session, ws, packet, "script_phrases.1", "Start with the one problem."
+    )
+
+    assert "participant_name" in {i["kind"] for i in fresh.public_safety["issues"]}
+    assert fresh.status == "draft"
+
+
+async def test_an_edited_export_is_a_new_unexported_version(editorial_session):
+    ws = uuid.uuid4()
+    candidate, _ = await seeded(editorial_session, ws)
+    packet = await make_packet(editorial_session, ws, candidate, status="exported")
+    await editorial_session.commit()
+
+    fresh = await apply_one_edit(
+        editorial_session, ws, packet, "script_phrases.1", "Not the one quietly losing money."
+    )
+
+    assert fresh.status == "ready"
+    await editorial_session.refresh(packet)
+    assert packet.status == "superseded"
+
+
+async def test_a_second_proposal_on_a_replaced_script_cannot_undo_the_first(editorial_session):
+    # Review, 28-Sep-2026: the workshop page and its Talk thread stay on the version
+    # they opened after an accept, so a second proposal is built on that old row.
+    # Once a new version took its status from its own scan, applying it made a
+    # live "ready" v3 from the OLD text, the edit he had just accepted was gone,
+    # and two versions were current. It must be refused as a conflict instead.
+    ws = uuid.uuid4()
+    candidate, _ = await seeded(editorial_session, ws)
+    packet = await make_packet(editorial_session, ws, candidate)
+    await editorial_session.commit()
+
+    def edit(field, after):
+        return changes.propose(
+            editorial_session,
+            ws,
+            target_type="packet",
+            target_id=packet.id,
+            base_version=1,
+            operations=[OperationInput(op="set_field", field=field, after=after)],
+            summary=f"Edit {field}",
+        )
+
+    first = await edit("script_phrases.0", "EDIT A line.")
+    second = await edit("script_phrases.1", "EDIT B line.")
+    await changes.apply(editorial_session, ws, first.id)
+    await editorial_session.commit()
+
+    with pytest.raises(ChangeError) as caught:
+        await changes.apply(editorial_session, ws, second.id)
+    assert caught.value.code == "conflict"
+    assert caught.value.extra["current_version"] == 2
+    await editorial_session.commit()
+
+    # The same holds for a proposal that names no base version at all.
+    unversioned = await changes.propose(
+        editorial_session,
+        ws,
+        target_type="packet",
+        target_id=packet.id,
+        base_version=None,
+        operations=[OperationInput(op="set_field", field="script_phrases.1", after="EDIT C.")],
+        summary="Edit without a base",
+    )
+    with pytest.raises(ChangeError) as caught_again:
+        await changes.apply(editorial_session, ws, unversioned.id)
+    assert caught_again.value.code == "conflict"
+    await editorial_session.commit()
+
+    rows = (
+        (
+            await editorial_session.execute(
+                select(RecordingPacket)
+                .where(
+                    RecordingPacket.workspace_id == ws,
+                    RecordingPacket.candidate_id == candidate.id,
+                )
+                .order_by(RecordingPacket.version)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [(row.version, row.status) for row in rows] == [(1, "superseded"), (2, "ready")]
+    assert rows[1].script_phrases[0] == "EDIT A line."
+    again = await changes.get_change_set(editorial_session, ws, second.id)
+    assert again.state == "superseded"

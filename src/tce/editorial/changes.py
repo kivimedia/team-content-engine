@@ -35,6 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.editorial import briefs
+from tce.editorial.packets import safety_fields, scan_packet_safety, status_for_safety
 from tce.editorial.safety import scan_public_text
 from tce.models.editorial import RecordingPacket, RecordingUpload, TopicCandidate
 from tce.models.editorial_workspace import (
@@ -89,6 +90,9 @@ class TargetState:
     values: dict[str, Any]
     # Set when the object may not change at all, with the reason to show.
     frozen_reason: str | None = None
+    # Set when this row is history (a packet version a newer one replaced): the
+    # version that is current now. Nothing may be written from a row like this.
+    current_version: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +189,28 @@ async def _load_packet_target(
             "Ask for a new version of the script to change it for a re-record."
         )
 
+    # A packet row's own version never changes, so a proposal made on a version an
+    # accepted edit already replaced passed the version check, and its new version
+    # was built from the OLD text. Once a new version took its status from its own
+    # scan, that made a live v3 that silently undid the edit he had just accepted
+    # (review, 28-Sep-2026). The workshop page and its Talk thread stay on the row
+    # they opened, so this is the normal second edit, not a race.
+    current_version = None
+    if packet.status == "superseded":
+        rows = await db.execute(
+            select(RecordingPacket.version, RecordingPacket.status)
+            .where(
+                RecordingPacket.workspace_id == ws,
+                RecordingPacket.candidate_id == packet.candidate_id,
+            )
+            .order_by(RecordingPacket.version.desc())
+        )
+        versions = rows.all()
+        current_version = next(
+            (row.version for row in versions if row.status != "superseded"),
+            versions[0].version if versions else packet.version,
+        )
+
     return TargetState(
         version=packet.version,
         values={
@@ -197,6 +223,7 @@ async def _load_packet_target(
             "beats": list(packet.beats or []) if packet.beats else None,
         },
         frozen_reason=frozen,
+        current_version=current_version,
     )
 
 
@@ -354,13 +381,14 @@ async def propose(
 
     base = state.version if base_version is None else base_version
     issues: list[dict[str, Any]] = []
-    if base != state.version:
+    current = state.current_version or state.version
+    if base != current:
         issues.append(
             {
                 "code": "stale_base",
                 "message": (
                     f"This was written against version {base}; the current version "
-                    f"is {state.version}."
+                    f"is {current}."
                 ),
                 "op_seq": None,
             }
@@ -502,17 +530,18 @@ async def apply(
     state = await load_target(db, ws, change_set.target_type, change_set.target_id)
     if state.frozen_reason:
         raise ChangeError("immutable", state.frozen_reason, status=409)
-    if state.version != change_set.base_version:
+    if state.current_version is not None or state.version != change_set.base_version:
+        current = state.current_version or state.version
         change_set.state = "superseded"
         await db.flush()
         raise ChangeError(
             "conflict",
             (
                 f"This was written against version {change_set.base_version} and the "
-                f"current version is {state.version}. Nothing was changed."
+                f"current version is {current}. Nothing was changed."
             ),
             status=409,
-            current_version=state.version,
+            current_version=current,
             base_version=change_set.base_version,
         )
 
@@ -647,6 +676,7 @@ async def _write_packet_version(
     )
     next_version = (highest.scalar_one_or_none() or packet.version) + 1
 
+    safety = await _rescan_packet(db, ws, packet, values)
     fresh = RecordingPacket(
         workspace_id=ws,
         candidate_id=packet.candidate_id,
@@ -662,8 +692,12 @@ async def _write_packet_version(
         selected_hook_id=values.get("selected_hook_id"),
         beats=values.get("beats"),
         citations_private=packet.citations_private,
-        public_safety=_rescan_packet(values),
-        status=packet.status if packet.status != "exported" else "ready",
+        public_safety=safety,
+        # The new version's own scan decides, never the version it was made from:
+        # copying that status kept a fixed draft a draft, and kept an edit that
+        # added an email "ready" (28-Sep-2026). A new version is never "exported"
+        # either; only the export marks the version it sent.
+        status=status_for_safety(safety),
         prompt_version=packet.prompt_version,
     )
     db.add(fresh)
@@ -674,25 +708,23 @@ async def _write_packet_version(
     return next_version
 
 
-def _rescan_packet(values: dict[str, Any]) -> dict[str, Any]:
+async def _rescan_packet(
+    db: AsyncSession, ws: uuid.UUID, packet: RecordingPacket, values: dict[str, Any]
+) -> dict[str, Any]:
     """Re-run the public scan on the merged packet, not only on the changed line.
 
     A safe sentence can be unsafe next to the one before it, and the stored
     verdict must describe the version that exists, not the edit that made it.
+    It is the writer's scan (same fields, the participants' names included), so
+    an edit cannot make "ready" by skipping a check the writer would have made.
     """
-    report = scan_public_text(
-        {
-            "bullets": list(values.get("bullets") or []),
-            "script_phrases": list(values.get("script_phrases") or []),
-            "facebook_post": values.get("facebook_post") or "",
-            "linkedin_post": values.get("linkedin_post") or "",
-        }
+    return await scan_packet_safety(
+        db,
+        ws,
+        safety_fields(values),
+        candidate_id=packet.candidate_id,
+        citations=list(packet.citations_private or []),
     )
-    return {
-        "checked": True,
-        "status": report.get("status", "clean"),
-        "issues": report.get("issues", []),
-    }
 
 
 async def _write_lineup_revision(

@@ -133,7 +133,7 @@ def good_output(**over) -> dict:
     return data
 
 
-async def make_candidate(session, ws, status="selected"):
+async def make_candidate(session, ws, status="selected", speaker="Dana Example"):
     src = EvidenceSource(
         workspace_id=ws,
         source_kind="fathom_meeting",
@@ -141,7 +141,7 @@ async def make_candidate(session, ws, status="selected"):
         version_hash="a" * 64,
         payload_private={
             "turns": [
-                {"speaker": "Dana Example", "text": "synthetic"},
+                {"speaker": speaker, "text": "synthetic"},
                 {"speaker": "Ziv Raviv", "text": "synthetic"},
             ]
         },
@@ -339,6 +339,35 @@ async def test_packet_with_participant_name_and_price_flags_issues(
     assert out.status == "issues"
     kinds = {i["kind"] for i in out.packet["public_safety"]["issues"]}
     assert {"participant_name", "money"} <= kinds
+    assert out.packet["status"] == "draft"
+
+
+async def test_a_script_with_only_false_positives_is_saved_ready(editorial_sessionmaker, fake_llm):
+    # 28-Sep-2026: three scripts were saved as drafts for a disclaimed guarantee
+    # and for "The" out of a client's company name. The writer's own scan decides.
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        c = await make_candidate(s, ws, speaker="Tim Hollis - In The Box Events")
+    phrases = good_output()["script_phrases"] + [
+        "It's not a guarantee, it's a starting point.",
+        "The same thing works for a coach.",
+    ]
+    fake_llm["output"] = good_output(script_phrases=phrases)
+    out = await packets.build_packet(editorial_sessionmaker, ws, c.id)
+    assert out.packet["public_safety"]["issues"] == []
+    assert (out.status, out.packet["status"]) == ("ready", "ready")
+
+
+async def test_the_writer_still_catches_the_participants_real_name(
+    editorial_sessionmaker, fake_llm
+):
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        c = await make_candidate(s, ws, speaker="Tim Hollis - In The Box Events")
+    phrases = ["Tim asked me where to start."] + good_output()["script_phrases"]
+    fake_llm["output"] = good_output(script_phrases=phrases)
+    out = await packets.build_packet(editorial_sessionmaker, ws, c.id)
+    assert "participant_name" in {i["kind"] for i in out.packet["public_safety"]["issues"]}
     assert out.packet["status"] == "draft"
 
 

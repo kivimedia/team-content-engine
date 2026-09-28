@@ -924,12 +924,28 @@
       closeSheet();
       toast("Saved. The previous version is in the history.");
       await render();
+      showCurrentScript();
     } catch (error) {
       button.disabled = false;
       button.textContent = "Use the new version";
       // A conflict is the one error worth keeping the sheet open for.
       toast(error.message, true);
-      if (error.status === 409) { closeSheet(); await render(); }
+      if (error.status === 409) { closeSheet(); await render(); showCurrentScript(); }
+    }
+  }
+
+  /* An accepted script edit is a new version with its own address. The page used
+     to stay on the version it opened, so the next edit was made on the old text
+     and is now refused as a conflict (review, 28-Sep-2026). Move to the current
+     version instead; History still opens the old ones. */
+  function showCurrentScript() {
+    var route = parse();
+    if (route.name !== "workshop" || !state.workshop) return;
+    var versions = state.workshop.versions || [];
+    for (var i = 0; i < versions.length; i++) {
+      if (versions[i].status === "superseded") continue;
+      if (versions[i].packet_id !== route.id) go("/scripts/" + versions[i].packet_id, true);
+      return;
     }
   }
 
