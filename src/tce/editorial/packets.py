@@ -533,6 +533,31 @@ def status_for_safety(safety: dict[str, Any] | None) -> str:
     return "ready" if (safety or {}).get("status") == "clean" else "draft"
 
 
+async def take_own_verdict(session: AsyncSession, ws: uuid.UUID, version: RecordingPacket) -> None:
+    """Give a new version, before it is saved, the verdict and status of its own scan.
+
+    Choosing an opening, more openings and the voice pass each copied the verdict
+    and status of the version they were made from. Ziv, 28-Sep-2026, asked to fix
+    "Switching a script's opening line keeps the old safety result": a ready script
+    whose new opening made a promise or named someone from a call stayed ready and
+    reached the recording list, and a draft whose only flag was the old opening
+    stayed a draft after he chose a clean one. This is the scan an accepted edit
+    gets (same fields, the participants' names included). A new version is never
+    "exported" either; only the export marks the version it sent.
+
+    Call it before `session.add(version)`: the scan reads the database, and an
+    autoflush would otherwise save the row before its verdict is set.
+    """
+    version.public_safety = await scan_packet_safety(
+        session,
+        ws,
+        stored_safety_fields(version),
+        candidate_id=version.candidate_id,
+        citations=list(version.citations_private or []),
+    )
+    version.status = status_for_safety(version.public_safety)
+
+
 def build_packet_prompt(
     strategy_text: str, cand: TopicCandidate, voice_block: str = "", post_rules: str = ""
 ) -> str:
@@ -1296,8 +1321,6 @@ async def _apply_more_hooks(
         selected_hook_id=packet.selected_hook_id,
         beats=list(packet.beats or []),
         citations_private=list(packet.citations_private or []),
-        public_safety=dict(packet.public_safety or {}),
-        status=packet.status,
         prompt_version=packet.prompt_version,
         news_block=packet.news_block,
         format=packet.format,
@@ -1305,6 +1328,10 @@ async def _apply_more_hooks(
         created_at=now,
         updated_at=now,
     )
+    # The words did not change, but the verdict carried with them could be one
+    # the scan would not give now (a name it did not look for then), and an
+    # exported script must not hand "exported" to a version nobody exported.
+    await take_own_verdict(session, ws, clone)
     session.add(clone)
     # The version it was built on stays readable; it is simply no longer current.
     packet.status = "superseded"
@@ -1357,6 +1384,17 @@ async def voice_pass(
                 detail=(
                     f"a take set is in progress on packet version {in_progress[0]}; "
                     "finish that session before rewriting the openings"
+                ),
+            )
+        if packet.status == "superseded":
+            # A pass writes its version from the one it judged. On a replaced
+            # version (or a retried call after the pass already applied) that is
+            # old text, which would come back as the current script (28-Sep-2026).
+            return PacketOutcome(
+                status="invalid",
+                detail=(
+                    f"this is script version {packet.version}, which a newer version "
+                    "replaced; run the voice pass on the current version"
                 ),
             )
         cand = (
@@ -1517,26 +1555,33 @@ async def _apply_voice_pass(
             )
         )
     ).scalar_one() or 0
+    # The first replacement becomes the one in use: it is the point of the pass.
+    # Matched by TEXT, because merge_hook_options deliberately re-ids incoming
+    # openings - selecting the model's own id left the packet pointing at an id
+    # that did not exist, and the recorder silently fell back to the old opening.
+    selected_id = _merged_id_for(merged, fresh[0]) or packet.selected_hook_id
+    selected = next((o for o in merged if str(o.get("id")) == str(selected_id)), None)
+    # The opening in use IS the first spoken line, as when he chooses one: the
+    # pass used to change only which opening was selected, so Points showed the
+    # new opening, the full script still began with the one the pass rejected,
+    # and the scan below never saw the new line (28-Sep-2026).
+    phrases = list(packet.script_phrases or [])
+    if phrases and selected is not None and str(selected.get("text") or "").strip():
+        phrases[0] = str(selected["text"]).strip()
     now = datetime.now(UTC).replace(tzinfo=None)
     clone = RecordingPacket(
         workspace_id=ws,
         candidate_id=packet.candidate_id,
         version=int(maximum) + 1,
         bullets=list(packet.bullets or []),
-        script_phrases=list(packet.script_phrases or []),
+        script_phrases=phrases,
         facebook_post=packet.facebook_post,
         linkedin_post=packet.linkedin_post,
         interviewer_prompt=packet.interviewer_prompt,
         hook_options=merged,
-        # The first replacement becomes the one in use: it is the point of the pass.
-        # Matched by TEXT, because merge_hook_options deliberately re-ids incoming
-        # openings - selecting the model's own id left the packet pointing at an id
-        # that did not exist, and the recorder silently fell back to the old opening.
-        selected_hook_id=_merged_id_for(merged, fresh[0]) or packet.selected_hook_id,
+        selected_hook_id=selected_id,
         beats=list(packet.beats or []),
         citations_private=list(packet.citations_private or []),
-        public_safety=dict(packet.public_safety or {}),
-        status=packet.status,
         prompt_version=packet.prompt_version,
         news_block=packet.news_block,
         format=packet.format,
@@ -1544,7 +1589,11 @@ async def _apply_voice_pass(
         created_at=now,
         updated_at=now,
     )
+    await take_own_verdict(session, ws, clone)
     session.add(clone)
+    # Like an accepted edit: the version it was made from stays readable but is no
+    # longer current, so a change still open on it cannot bring the old opening back.
+    packet.status = "superseded"
     await session.commit()
     return PacketOutcome(
         status="ok",
@@ -1572,6 +1621,11 @@ async def choose_hook(
     newest), so a newer version created now would hide the take set that is
     still being recorded. A draft session (opened, nothing recorded) does not
     block; the new version simply gets its own session.
+
+    The new version is scanned as its own script and takes its status from that
+    scan, like an accepted edit: the opening is the first thing he says on camera,
+    so it is the line most worth checking (28-Sep-2026). The version it was made
+    from is superseded, and only the current version can have its opening changed.
     """
     ws = coerce_uuid(workspace_id)
     original = (
@@ -1597,6 +1651,33 @@ async def choose_hook(
         raise PacketValidationError(
             f"a take set is in progress on packet version {in_progress[0]}; "
             "finish that session before changing the opening"
+        )
+    # History still opens every old version with its openings tab. Choosing there
+    # built the new version from the OLD text, which silently undid every change
+    # made after it and, once a version takes its status from its own scan, put
+    # that old text straight back on the recording list. Refused, as an accepted
+    # edit refuses a proposal made on a replaced version.
+    current = (
+        (
+            await session.execute(
+                select(RecordingPacket)
+                .where(
+                    RecordingPacket.workspace_id == ws,
+                    RecordingPacket.candidate_id == original.candidate_id,
+                    RecordingPacket.status != "superseded",
+                )
+                .order_by(RecordingPacket.version.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if current is None or current.id != original.id:
+        now_on = f"version {current.version}" if current is not None else "a newer version"
+        raise PacketValidationError(
+            f"this is script version {original.version} and the script is on {now_on} now; "
+            "nothing was changed. Choose the opening on the current version"
         )
     options = list(original.hook_options or [])
     selected = next((item for item in options if item.get("id") == hook_id), None)
@@ -1643,8 +1724,6 @@ async def choose_hook(
         selected_hook_id=clean["selected_hook_id"],
         beats=clean["beats"],
         citations_private=list(original.citations_private or []),
-        public_safety=dict(original.public_safety or {}),
-        status="ready" if (original.public_safety or {}).get("status") == "clean" else "draft",
         prompt_version=original.prompt_version,
         news_block=original.news_block,
         format=original.format,
@@ -1652,6 +1731,9 @@ async def choose_hook(
         created_at=now,
         updated_at=now,
     )
+    await take_own_verdict(session, ws, clone)
     session.add(clone)
+    # The version it was made from stays readable; it is simply no longer current.
+    original.status = "superseded"
     await session.flush()
     return clone

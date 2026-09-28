@@ -2,9 +2,10 @@
 
 The recorder shows the three ranked openings of a packet v2, and choosing one
 must (1) create a new immutable packet version whose first spoken phrase is the
-chosen opening, (2) leave the original untouched, (3) move the recording queue
-to the new version, and (4) be refused while a take set of that candidate has
-clips bound to an existing version.
+chosen opening, (2) leave the original's words untouched (it is superseded, as
+after an accepted edit), (3) move the recording queue to the new version, and
+(4) be refused while a take set of that candidate has clips bound to an
+existing version.
 """
 
 from __future__ import annotations
@@ -174,7 +175,13 @@ async def test_original_packet_is_immutable_after_a_choice(client, editorial_ses
     )
     assert r.status_code == 200
     after = (await client.get(f"/api/v1/editorial/packets/{original.id}", headers=AUTH)).json()
-    assert after == before
+    # Its words never change. Like an accepted edit, it is no longer the current
+    # version, so an edit or a choice left open on it cannot bring its text back
+    # (28-Sep-2026).
+    assert {k: v for k, v in after.items() if k != "status"} == {
+        k: v for k, v in before.items() if k != "status"
+    }
+    assert (before["status"], after["status"]) == ("ready", "superseded")
     assert after["version"] == 1 and after["selected_hook_id"] == "hook-1"
     versions = (
         await client.get(f"/api/v1/editorial/candidates/{cand.id}/packets", headers=AUTH)

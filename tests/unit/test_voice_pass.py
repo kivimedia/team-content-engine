@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 
 import pytest
+from sqlalchemy import select
 
 import tce.llm
 from tce.editorial import packets
@@ -147,6 +148,90 @@ async def test_a_curiosity_gap_opening_is_rewritten(editorial_sessionmaker, crit
     )
     assert chosen["text"] == "Most coaches blame the ads before they check the stages."
     assert "scored 3 out of 10" in out.detail
+
+
+async def test_a_rewritten_opening_is_the_first_line_and_is_scanned(editorial_sessionmaker, critic):
+    # 28-Sep-2026: the pass put its opening in use without a scan, carrying the old
+    # "ready", and left the rejected opening as the script's first line. An opening
+    # IS the first spoken line (choose_hook), so the new one is, and it is scanned.
+    sm = editorial_sessionmaker
+    cand = a_candidate()
+    packet = a_packet(cand)
+    await seed(sm, cand, packet)
+    promise = "This funnel fix works every time."
+    critic["answer"] = {
+        "score": 3,
+        "verdict": "revise",
+        "violations": [],
+        "hook_options": [replacement(text=promise)],
+    }
+
+    out = await packets.voice_pass(sm, WS, packet.id)
+
+    assert out.status == "ok", out.detail
+    assert out.packet["script_phrases"][0] == promise
+    issues = {(i["field"], i["kind"]) for i in out.packet["public_safety"]["issues"]}
+    assert ("script_phrases[0]", "absolute_guarantee") in issues
+    assert out.packet["status"] == "draft"
+    async with sm() as s:
+        assert (await s.get(RecordingPacket, packet.id)).status == "superseded"
+
+
+async def test_a_pass_on_an_exported_script_makes_a_ready_version(editorial_sessionmaker, critic):
+    sm = editorial_sessionmaker
+    cand = a_candidate()
+    packet = a_packet(cand, status="exported")
+    await seed(sm, cand, packet)
+    critic["answer"] = {
+        "score": 3,
+        "verdict": "revise",
+        "violations": [],
+        "hook_options": [replacement()],
+    }
+
+    out = await packets.voice_pass(sm, WS, packet.id)
+
+    assert out.status == "ok", out.detail
+    assert out.packet["script_phrases"][0] == replacement()["text"]
+    assert out.packet["public_safety"]["status"] == "clean"
+    assert out.packet["status"] == "ready"
+    async with sm() as s:
+        assert (await s.get(RecordingPacket, packet.id)).status == "superseded"
+
+
+async def test_a_pass_on_a_replaced_version_writes_nothing(editorial_sessionmaker, critic):
+    # A retried call after the pass applied, or a pass on an old version: its
+    # version would be built from the old text and become the current script.
+    sm = editorial_sessionmaker
+    cand = a_candidate()
+    packet = a_packet(cand)
+    await seed(sm, cand, packet)
+    critic["answer"] = {
+        "score": 3,
+        "verdict": "revise",
+        "violations": [],
+        "hook_options": [replacement()],
+    }
+    first = await packets.voice_pass(sm, WS, packet.id)
+    assert first.status == "ok", first.detail
+    paid = len(critic["requests"])
+
+    again = await packets.voice_pass(sm, WS, packet.id)
+
+    assert again.status == "invalid"
+    assert "version 1" in again.detail
+    assert len(critic["requests"]) == paid
+    async with sm() as s:
+        versions = (
+            (
+                await s.execute(
+                    select(RecordingPacket.version).where(RecordingPacket.candidate_id == cand.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert sorted(versions) == [1, 2]
 
 
 async def test_an_opening_that_already_sounds_like_him_is_left_alone(

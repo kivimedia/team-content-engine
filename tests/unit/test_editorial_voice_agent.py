@@ -305,6 +305,46 @@ async def test_choosing_an_opening_by_number_also_changes_the_opening_line(
     assert script["hooks"][0]["chosen"] is True
 
 
+async def test_an_opening_chosen_by_voice_takes_the_new_scripts_own_verdict(
+    client, editorial_sessionmaker
+):
+    # 28-Sep-2026: choosing an opening in the studio kept the old verdict. The
+    # spoken choice is an accepted edit (the opening line changes with it), whose
+    # own scan decides; this pins that it stays that way.
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea")
+    promise = "This check works every time."
+    async with editorial_sessionmaker() as s:
+        s.add(
+            RecordingPacket(
+                workspace_id=ws,
+                candidate_id=cid,
+                version=1,
+                bullets=["First point.", "Second point.", "Third point."],
+                script_phrases=["Your AI said done. Was it?", "Line two.", "Line three."],
+                hook_options=[HOOKS[0], {**HOOKS[1], "text": promise}],
+                selected_hook_id="h1",
+                status="ready",
+                citations_private=[],
+                public_safety={"checked": True, "status": "clean", "issues": []},
+            )
+        )
+        await s.commit()
+
+    response = await change(
+        client, ws, cid, "script", [{"op": "choose_hook", "after": "2", "expect": promise}]
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["warnings"]
+    async with editorial_sessionmaker() as s:
+        current = await voice_agent.current_packet(s, ws, cid)
+    assert current.script_phrases[0] == promise
+    kinds = {(i["field"], i["kind"]) for i in current.public_safety["issues"]}
+    assert ("script_phrases[0]", "absolute_guarantee") in kinds
+    assert current.status == "draft"
+
+
 async def test_a_script_being_recorded_is_left_alone(client, editorial_sessionmaker):
     ws = uuid.uuid4()
     cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea")

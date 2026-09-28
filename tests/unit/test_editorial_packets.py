@@ -412,6 +412,192 @@ async def test_choose_hook_creates_immutable_packet_version(editorial_sessionmak
     assert rows[1].script_phrases[0] == "The best course outline does not begin with lessons."
 
 
+# ------------------------------------------------------------ a new version's own verdict
+#
+# Ziv, 28-Sep-2026, asked to fix "Switching a script's opening line keeps the old
+# safety result". choose_hook copied the old version's scan and status, so a ready
+# script whose new opening made a promise stayed ready and reached the recording
+# list, and a draft whose only flag was the old opening stayed a draft after he
+# chose a clean one. More openings and the voice pass copied them the same way.
+
+
+def with_opening(index: int, text: str, **over) -> dict:
+    data = good_output(**over)
+    data["hook_options"][index]["text"] = text
+    return data
+
+
+async def choose(sm, ws, packet_id, hook_id):
+    async with sm() as s:
+        clone = await packets.choose_hook(s, ws, packet_id, hook_id)
+        await s.commit()
+        return clone
+
+
+async def stored_versions(sm, ws):
+    async with sm() as s:
+        return list(
+            (
+                await s.execute(
+                    select(RecordingPacket)
+                    .where(RecordingPacket.workspace_id == ws)
+                    .order_by(RecordingPacket.version)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+def flags(safety) -> set[tuple[str, str]]:
+    return {(issue["field"], issue["kind"]) for issue in (safety or {}).get("issues") or []}
+
+
+async def test_choosing_an_opening_that_makes_a_promise_turns_a_ready_script_draft(
+    editorial_sessionmaker, fake_llm
+):
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        c = await make_candidate(s, ws)
+    fake_llm["output"] = with_opening(1, "This course plan works every time, guaranteed.")
+    built = await packets.build_packet(editorial_sessionmaker, ws, c.id)
+    assert built.packet["status"] == "ready"
+
+    await choose(editorial_sessionmaker, ws, uuid.UUID(built.packet["id"]), "hook-2")
+
+    rows = await stored_versions(editorial_sessionmaker, ws)
+    assert rows[1].script_phrases[0] == "This course plan works every time, guaranteed."
+    assert ("script_phrases[0]", "absolute_guarantee") in flags(rows[1].public_safety)
+    assert rows[1].public_safety["status"] == "issues"
+    assert rows[1].status == "draft"
+
+
+async def test_choosing_a_clean_opening_turns_a_draft_ready(editorial_sessionmaker, fake_llm):
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        c = await make_candidate(s, ws)
+    phrases = good_output()["script_phrases"]
+    fake_llm["output"] = good_output(
+        script_phrases=["I guarantee this fixes your course.", *phrases[1:]]
+    )
+    built = await packets.build_packet(editorial_sessionmaker, ws, c.id)
+    # The only flag is on the opening he is about to replace.
+    assert built.packet["status"] == "draft"
+    assert {f for f, _ in flags(built.packet["public_safety"])} == {"script_phrases[0]"}
+
+    await choose(editorial_sessionmaker, ws, uuid.UUID(built.packet["id"]), "hook-2")
+
+    rows = await stored_versions(editorial_sessionmaker, ws)
+    assert rows[1].script_phrases[0] == "The best course outline does not begin with lessons."
+    assert rows[1].public_safety["status"] == "clean"
+    assert rows[1].status == "ready"
+
+
+async def test_choosing_an_opening_on_an_exported_script_follows_an_accepted_edit(
+    editorial_sessionmaker, fake_llm
+):
+    # The rule an accepted edit follows: the new version is ready (never
+    # "exported"; only the export marks the version it sent), and the version it
+    # was made from is superseded.
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        c = await make_candidate(s, ws)
+    built = await packets.build_packet(editorial_sessionmaker, ws, c.id)
+    async with editorial_sessionmaker() as s:
+        row = await s.get(RecordingPacket, uuid.UUID(built.packet["id"]))
+        row.status = "exported"
+        await s.commit()
+
+    await choose(editorial_sessionmaker, ws, uuid.UUID(built.packet["id"]), "hook-2")
+
+    rows = await stored_versions(editorial_sessionmaker, ws)
+    assert [(r.version, r.status) for r in rows] == [(1, "superseded"), (2, "ready")]
+
+
+async def test_an_opening_that_names_a_meeting_participant_is_caught(
+    editorial_sessionmaker, fake_llm
+):
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        c = await make_candidate(s, ws, speaker="Dana Example")
+    fake_llm["output"] = with_opening(1, "Dana asked me where a course should start.")
+    built = await packets.build_packet(editorial_sessionmaker, ws, c.id)
+    assert built.packet["status"] == "ready"
+
+    await choose(editorial_sessionmaker, ws, uuid.UUID(built.packet["id"]), "hook-2")
+
+    rows = await stored_versions(editorial_sessionmaker, ws)
+    assert ("script_phrases[0]", "participant_name") in flags(rows[1].public_safety)
+    assert rows[1].status == "draft"
+
+
+async def test_an_opening_chosen_on_a_replaced_version_writes_nothing(
+    editorial_sessionmaker, fake_llm
+):
+    # History still opens old versions, and each has its openings tab. Choosing
+    # there built the new version from the OLD text: it silently undid everything
+    # after that version and, scanned clean, went straight to the recording list.
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        c = await make_candidate(s, ws)
+    built = await packets.build_packet(editorial_sessionmaker, ws, c.id)
+    first = uuid.UUID(built.packet["id"])
+    await choose(editorial_sessionmaker, ws, first, "hook-2")
+
+    with pytest.raises(packets.PacketValidationError, match="version 2"):
+        await choose(editorial_sessionmaker, ws, first, "hook-3")
+
+    rows = await stored_versions(editorial_sessionmaker, ws)
+    assert [(r.version, r.status, r.selected_hook_id) for r in rows] == [
+        (1, "superseded", "hook-1"),
+        (2, "ready", "hook-2"),
+    ]
+
+
+async def test_an_edit_left_open_on_the_old_version_cannot_bring_the_old_opening_back(
+    editorial_sessionmaker, fake_llm
+):
+    # Why choosing an opening marks the version it was made from superseded, as an
+    # accepted edit does: the workshop and its Talk thread stay on the row they
+    # opened, and an accepted edit refuses a proposal only when its row is marked
+    # replaced. Left "ready", a line fix proposed before the choice went through
+    # after it and wrote a newer version from the OLD text: the chosen opening was
+    # gone, and the scan made that version ready (28-Sep-2026).
+    from tce.editorial import changes
+    from tce.editorial.changes import ChangeError, OperationInput
+
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        c = await make_candidate(s, ws)
+    built = await packets.build_packet(editorial_sessionmaker, ws, c.id)
+    first = uuid.UUID(built.packet["id"])
+    async with editorial_sessionmaker() as s:
+        proposal = await changes.propose(
+            s,
+            ws,
+            target_type="packet",
+            target_id=first,
+            base_version=1,
+            operations=[
+                OperationInput(op="set_field", field="script_phrases.3", after="Name them first.")
+            ],
+            summary="Fix one line",
+        )
+        await s.commit()
+
+    await choose(editorial_sessionmaker, ws, first, "hook-2")
+
+    async with editorial_sessionmaker() as s:
+        with pytest.raises(ChangeError) as caught:
+            await changes.apply(s, ws, proposal.id)
+        await s.commit()
+    assert caught.value.code == "conflict"
+    rows = await stored_versions(editorial_sessionmaker, ws)
+    assert [(r.version, r.status) for r in rows] == [(1, "superseded"), (2, "ready")]
+    assert rows[1].selected_hook_id == "hook-2"
+    assert rows[1].script_phrases[0] == "The best course outline does not begin with lessons."
+
+
 async def test_invalid_output_and_unavailable_persist_nothing(editorial_sessionmaker, fake_llm):
     ws = uuid.uuid4()
     async with editorial_sessionmaker() as s:
@@ -568,6 +754,65 @@ async def test_more_hooks_adds_a_version_and_keeps_the_opening_in_use(
     assert packet["selected_hook_id"] == first.packet["selected_hook_id"]
     assert packet["script_phrases"] == first.packet["script_phrases"]
     assert packet["bullets"] == first.packet["bullets"]
+
+
+def one_more_opening() -> dict:
+    return {
+        "hook_options": [
+            {
+                "id": "whatever",
+                "text": "Nobody tells a coach the sale is the first lesson.",
+                "question": "Why would the sale teach anything?",
+                "payoff_phrase_id": "p004",
+                "moment_ids": ["11111111-1111-1111-1111-111111111111"],
+                "rationale": "Starts on the belief, not the tactic.",
+            }
+        ]
+    }
+
+
+async def test_more_openings_on_an_exported_script_make_a_ready_version(
+    editorial_sessionmaker, fake_llm
+):
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as session:
+        cand = await make_candidate(session, ws)
+    first = await packets.build_packet(editorial_sessionmaker, ws, cand.id)
+    async with editorial_sessionmaker() as s:
+        row = await s.get(RecordingPacket, uuid.UUID(first.packet["id"]))
+        row.status = "exported"
+        await s.commit()
+    fake_llm["output"] = one_more_opening()
+
+    outcome = await packets.more_hook_options(editorial_sessionmaker, ws, first.packet["id"])
+
+    assert outcome.status == "ok", outcome.detail
+    rows = await stored_versions(editorial_sessionmaker, ws)
+    assert [(r.version, r.status) for r in rows] == [(1, "superseded"), (2, "ready")]
+
+
+async def test_more_openings_rescan_the_script_instead_of_carrying_its_old_verdict(
+    editorial_sessionmaker, fake_llm
+):
+    # A verdict stored before the scan looked for names says "clean" over a line
+    # that names a participant. Carrying it to the next version kept it "ready".
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as session:
+        cand = await make_candidate(session, ws, speaker="Dana Example")
+    first = await packets.build_packet(editorial_sessionmaker, ws, cand.id)
+    async with editorial_sessionmaker() as s:
+        row = await s.get(RecordingPacket, uuid.UUID(first.packet["id"]))
+        phrases = list(row.script_phrases)
+        phrases[3] = "Dana asked me the same thing."
+        row.script_phrases = phrases
+        await s.commit()
+    fake_llm["output"] = one_more_opening()
+
+    outcome = await packets.more_hook_options(editorial_sessionmaker, ws, first.packet["id"])
+
+    assert outcome.status == "ok", outcome.detail
+    assert ("script_phrases[3]", "participant_name") in flags(outcome.packet["public_safety"])
+    assert outcome.packet["status"] == "draft"
 
 
 async def test_more_hooks_refuses_evidence_from_another_idea(editorial_sessionmaker, fake_llm):
