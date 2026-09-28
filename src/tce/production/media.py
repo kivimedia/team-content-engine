@@ -244,6 +244,24 @@ async def probe_video_size(path: str | Path) -> tuple[int, int] | None:
         return None
 
 
+FPS = 30  # every edit is cut and encoded on this frame grid
+SAMPLE_RATE = 48000
+FADE_S = 0.006  # a click-proof edge on every cut
+# 28-Sep: the old edit was 7.8 Mbps; his phone stalled at 1:04 when the first 61.9 MB
+# ran out, and his later requests ran at 1.5-2.5 Mbps. The master stays sharp for the
+# platforms (about 5-6 Mbps); the preview (about 1.5 Mbps) plays on a walking signal.
+MASTER_VIDEO = ["-c:v", "libx264", "-preset", "fast", "-crf", "21", "-maxrate", "6M",
+                "-bufsize", "12M", "-g", str(2 * FPS), "-pix_fmt", "yuv420p"]
+PREVIEW_VIDEO = ["-vf", "scale='min(720,iw)':-2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "27",
+                 "-maxrate", "1400k", "-bufsize", "2800k", "-g", str(2 * FPS), "-pix_fmt", "yuv420p"]
+
+
+def preview_path(edited: str | Path) -> Path:
+    """The light copy the Library player streams, beside the edit."""
+    p = Path(edited)
+    return p.with_name(f"{p.stem}-preview{p.suffix}")
+
+
 async def render_edit(
     src: str | Path,
     keep: list[list[float]],
@@ -252,13 +270,21 @@ async def render_edit(
     on_status: StatusCallback,
     ass_text: str | None = None,
     srt_text: str | None = None,
-    overlays: list[dict[str, Any]] | None = None,
+    caption_band: dict[str, Any] | None = None,
+    make_preview: bool = False,
 ) -> Path:
     """Cut the kept ranges into `out_path` (MP4 when captions are given).
 
-    `ass_text` is burned into the picture; `srt_text` is muxed as a soft subtitle
-    track. The output is written to a temporary name and only renamed into place when
-    ffmpeg succeeds, so a crash or restart never leaves a half file under the real name.
+    Video is put on a 30 fps grid first and every range is trimmed by frame number,
+    audio by sample number, so each piece's picture and sound are exactly as long as
+    each other and the joins never drift or pad silence. Each audio piece fades in and
+    out over 6 ms, so a cut never clicks.
+
+    `caption_band` ({"list": ffconcat, "y": top}) is his word-box captions, laid over
+    once; `ass_text` is the plain fallback burned in; `srt_text` is muxed as a soft
+    subtitle track. The output is written to a temporary name and only renamed into
+    place when ffmpeg succeeds, so a crash or restart never leaves a half file under
+    the real name.
     """
     ff = ffmpeg_path()
     if not ff:
@@ -269,15 +295,33 @@ async def render_edit(
     out = Path(out_path).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     audio_only = src.suffix.lower() in AUDIO_EXTS
-    captioned = ass_text is not None or srt_text is not None or bool(overlays)
+    captioned = ass_text is not None or srt_text is not None or bool(caption_band)
+    frames = [(round(s * FPS), round(e * FPS)) for s, e in keep]
+    frames = [(a, b) for a, b in frames if b > a]
+    if not frames:
+        raise RuntimeError("Nothing to render: every kept range is shorter than a frame")
+    n = len(frames)
+    total = sum(b - a for a, b in frames) / FPS
+    per_frame = SAMPLE_RATE // FPS
     parts: list[str] = []
     labels: list[str] = []
-    n = len(keep)
-    total = sum(e - s for s, e in keep)
-    for i, (s, e) in enumerate(keep):
+    if not audio_only:
+        parts.append(
+            f"[0:v]fps={FPS}:start_time=0,split={n}" + "".join(f"[vs{i}]" for i in range(n))
+        )
+    parts.append(
+        f"[0:a]aresample={SAMPLE_RATE}:first_pts=0,asplit={n}" + "".join(f"[as{i}]" for i in range(n))
+    )
+    for i, (a, b) in enumerate(frames):
+        dur = (b - a) / FPS
+        fade = min(FADE_S, dur / 4)
         if not audio_only:
-            parts.append(f"[0:v]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS[v{i}]")
-        parts.append(f"[0:a]atrim=start={s:.3f}:end={e:.3f},asetpts=PTS-STARTPTS[a{i}]")
+            parts.append(f"[vs{i}]trim=start_frame={a}:end_frame={b},setpts=PTS-STARTPTS[v{i}]")
+        parts.append(
+            f"[as{i}]atrim=start_sample={a * per_frame}:end_sample={b * per_frame},"
+            f"asetpts=PTS-STARTPTS,afade=t=in:d={fade:.4f},"
+            f"afade=t=out:st={dur - fade:.4f}:d={fade:.4f}[a{i}]"
+        )
         labels.append(f"[a{i}]" if audio_only else f"[v{i}][a{i}]")
     inputs = ["-i", str(src)]
     if audio_only:
@@ -285,7 +329,7 @@ async def render_edit(
         video = None
         if captioned:
             w, h = AUDIO_ONLY_CANVAS
-            inputs += ["-f", "lavfi", "-i", f"color=c=0x101418:s={w}x{h}:r=25:d={total:.3f}"]
+            inputs += ["-f", "lavfi", "-i", f"color=c=0x101418:s={w}x{h}:r={FPS}:d={total:.3f}"]
             video = "[1:v]"
     else:
         parts.append("".join(labels) + f"concat=n={n}:v=1:a=1[outv][outa]")
@@ -295,30 +339,28 @@ async def render_edit(
     burn = out.parent / f"{tmp_tag}.ass"
     soft = out.parent / f"{tmp_tag}.srt"
     part = out.parent / f"{tmp_tag}{out.suffix}"
+    graph = out.parent / f"{tmp_tag}.graph"
     try:
         maps: list[str] = []
-        if video is not None and ass_text is not None:
+        if video is not None and ass_text is not None and not caption_band:
             burn.write_text(ass_text, encoding="utf-8")
             # Relative name + cwd: no drive-letter colons to escape inside the filtergraph.
             parts.append(f"{video}ass=filename={burn.name}[capv]")
             video = "[capv]"
-        if video is not None and overlays:
-            # Pill captions: each line is a still PNG shown between its times.
-            for k, item in enumerate(overlays):
-                index = inputs.count("-i")
-                inputs += ["-i", str(Path(item["path"]).resolve())]
-                parts.append(
-                    f"{video}[{index}:v]overlay=x={int(item['x'])}:y={int(item['y'])}:"
-                    f"enable='between(t,{item['start']:.3f},{item['end']:.3f})'[pill{k}]"
-                )
-                video = f"[pill{k}]"
+        if video is not None and caption_band:
+            index = inputs.count("-i")
+            inputs += ["-f", "concat", "-safe", "0", "-i", str(Path(caption_band["list"]).resolve())]
+            parts.append(
+                f"[{index}:v]format=rgba[band];"
+                f"{video}[band]overlay=x=0:y={int(caption_band['y'])}:format=auto[capv]"
+            )
+            video = "[capv]"
         if video is not None:
             maps += ["-map", video]
         maps += ["-map", "[outa]"]
         codecs: list[str] = []
         if captioned:
-            codecs += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
-            codecs += ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k"]
+            codecs += MASTER_VIDEO + ["-c:a", "aac", "-b:a", "160k", "-ar", str(SAMPLE_RATE)]
             codecs += ["-movflags", "+faststart"]
         if srt_text is not None and video is not None:
             soft.write_text(srt_text, encoding="utf-8")
@@ -330,25 +372,38 @@ async def render_edit(
             f"Cutting {n} kept range{'s' if n != 1 else ''} with ffmpeg"
             + (" and burning in captions" if captioned else "")
         )
-        proc = await asyncio.create_subprocess_exec(
-            ff,
-            "-y",
-            *inputs,
-            "-filter_complex",
-            ";".join(parts),
-            *maps,
-            *codecs,
-            str(part),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(out.parent),
+        # A graph with a hundred cuts is longer than a Windows command line allows.
+        graph.write_text(";\n".join(parts), encoding="utf-8")
+        await _ffmpeg(
+            ff, ["-y", *inputs, "-filter_complex_script", graph.name, *maps, *codecs, str(part)],
+            cwd=out.parent,
         )
-        _, err = await proc.communicate()
-        if proc.returncode != 0:
-            tail = err.decode(errors="replace").strip().splitlines()[-1:] or ["no output"]
-            raise RuntimeError(f"ffmpeg exited {proc.returncode}: {tail[0][:200]}")
         os.replace(part, out)
+        if make_preview and not audio_only:
+            await on_status("Making the light copy your phone plays")
+            light = preview_path(out)
+            light_part = out.parent / f"{tmp_tag}-preview{out.suffix}"
+            try:
+                await _ffmpeg(
+                    ff,
+                    ["-y", "-i", str(out), "-map", "0:v:0", "-map", "0:a:0", *PREVIEW_VIDEO,
+                     "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(light_part)],
+                    cwd=out.parent,
+                )
+                os.replace(light_part, light)
+            finally:
+                light_part.unlink(missing_ok=True)
     finally:
-        for f in (burn, soft, part):
+        for f in (burn, soft, part, graph):
             f.unlink(missing_ok=True)
     return out
+
+
+async def _ffmpeg(ff: str, args: list[str], *, cwd: Path) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        ff, *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(cwd)
+    )
+    _, err = await proc.communicate()
+    if proc.returncode != 0:
+        tail = err.decode(errors="replace").strip().splitlines()[-1:] or ["no output"]
+        raise RuntimeError(f"ffmpeg exited {proc.returncode}: {tail[0][:200]}")

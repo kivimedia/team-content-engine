@@ -643,3 +643,36 @@ async def test_receipt_rejects_a_packet_from_another_idea(client, editorial_sess
         f"/api/v1/production/candidates/{theirs.id}/publications", headers=AUTH, json=body
     )
     assert ok.status_code == 201 and ok.json()["publication"]["packet_id"] == str(other_packet.id)
+
+
+async def test_a_player_gets_the_video_in_short_parts_and_the_phone_plays_the_light_copy(
+    client, editorial_sessionmaker, monkeypatch, tmp_path
+):
+    """28-Sep: his phone sat on 1:04 when one open-ended answer ended after 61.9 MB."""
+    monkeypatch.setattr(prod, "STREAM_PART_BYTES", 1000)
+    cand = _candidate()
+    await _seed(editorial_sessionmaker, cand)
+    r = await client.post(
+        f"/api/v1/production/candidates/{cand.id}/recording", headers=AUTH, files=_file(b"v" * 5000)
+    )
+    up = r.json()
+    edited = tmp_path / "walk-edited.mp4"
+    edited.write_bytes(b"e" * 5000)
+    light = edited.with_name("walk-edited-preview.mp4")
+    light.write_bytes(b"p" * 3000)
+    async with editorial_sessionmaker() as s:
+        row = await s.get(prod.RecordingUpload, uuid.UUID(up["id"]))
+        row.edited_path = str(edited)
+        await s.commit()
+    url = f"/api/v1/production/uploads/{up['id']}/edited"
+    part = await client.get(url, headers={**AUTH, "Range": "bytes=0-"})
+    assert part.status_code == 206
+    assert part.headers["content-range"] == "bytes 0-999/5000" and len(part.content) == 1000
+    nxt = await client.get(url, headers={**AUTH, "Range": "bytes=1000-"})
+    assert nxt.headers["content-range"] == "bytes 1000-1999/5000"
+    # A download is never cut short.
+    whole = await client.get(url + "?download=1", headers={**AUTH, "Range": "bytes=0-"})
+    assert whole.headers["content-range"] == "bytes 0-4999/5000"
+    # The Library's player asks for the light copy.
+    phone = await client.get(url + "?preview=1", headers={**AUTH, "Range": "bytes=0-"})
+    assert phone.headers["content-range"] == "bytes 0-999/3000" and phone.content == b"p" * 1000

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import Select, select
@@ -135,6 +136,9 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
     if upload.transcript:
         actions.append({"key": "transcript", "label": "Transcript"})
     actions.append({"key": "request_edit", "label": "Request an editing change"})
+    if upload.edited_path and upload.transcript and upload.status not in _LIVE_STATUSES:
+        # 28-Sep: the tight cut and the word-box captions, for an edit made before them.
+        actions.append({"key": "edit_again", "label": "Edit it again"})
     if open_requests:
         actions.append(
             {
@@ -177,6 +181,40 @@ def _publishing_json(pubs: dict[str, VideoPublication]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _has_preview(upload: RecordingUpload) -> bool:
+    """The light copy the player streams exists and is not older than the edit."""
+    if not upload.edited_path:
+        return False
+    edited = Path(upload.edited_path)
+    light = edited.with_name(f"{edited.stem}-preview{edited.suffix}")
+    try:
+        return light.exists() and light.stat().st_mtime >= edited.stat().st_mtime
+    except OSError:
+        return False
+
+
+REVIEW_SENTENCES = {
+    "waiting": "Your editor has not answered yet, so this edit used the rules. "
+    "It edits itself again when the review lands.",
+    "unavailable": "Your editor could not review this one, so the rules decided what to cut.",
+    "rules": "Your editor's answer was not usable, so the rules decided what to cut.",
+}
+
+
+def _removed(upload: RecordingUpload) -> list[dict[str, Any]]:
+    """What the edit took out besides pauses, so nothing disappears unseen (28-Sep)."""
+    plan = upload.edit_plan or {}
+    return [
+        {
+            "start": r.get("start"),
+            "text": str(r.get("text") or "")[:160],
+            "reason": r.get("reason"),
+            "why": r.get("why"),
+        }
+        for r in (plan.get("removed") or [])[:30]
+    ]
 
 
 def _issues(upload: RecordingUpload) -> list[str]:
@@ -316,6 +354,11 @@ async def list_library(
                 ),
                 # What the subscription proofread changed, so no word moves unseen.
                 "proofread": list((upload.edit_plan or {}).get("proofread") or []),
+                "removed": _removed(upload),
+                "review_note": REVIEW_SENTENCES.get(
+                    str(((upload.edit_plan or {}).get("review") or {}).get("state") or "")
+                ),
+                "has_preview": _has_preview(upload),
                 "publishing": _publishing_json(pubs_by_upload.get(upload.id, {})),
                 "last_request": (
                     edit_request_to_json(last_by_upload[upload.id])

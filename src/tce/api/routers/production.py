@@ -50,12 +50,13 @@ from tce.models.editorial import (
 )
 from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingClip, RecordingSession
-from tce.production import autoedit, media, pills, publishing
+from tce.production import autoedit, media, publishing, tightcut, wordbox
 from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
 from tce.production.retakes import (
     build_cues,
     fmt_ts,
+    is_word_level,
     plan_edit,
     to_ass,
     to_srt,
@@ -795,11 +796,50 @@ async def plan_edit_route(
     return upload_json(row)
 
 
+def aside_names() -> list[str]:
+    return [n.strip() for n in settings.production_aside_names.split(",") if n.strip()]
+
+
+async def _speech_activity(path: str | Path | None) -> tightcut.Activity | None:
+    """Where he speaks in the recording, from a 10 ms level reading (28-Sep).
+
+    Read once per file (about 5 s for a 10-minute walk) and kept beside it, keyed
+    by size and time, so re-planning after an editing request is instant. None when
+    the audio cannot be read: the plan then falls back to the padded cut.
+    """
+    ff = media.ffmpeg_path()
+    src = Path(path) if path else None
+    if not ff or src is None or not src.exists():
+        return None
+    cache = src.with_name(f".{src.stem}-levels.txt")
+    stat = src.stat()
+    key = f"{stat.st_size}:{int(stat.st_mtime)}"
+    levels: list[float] | None = None
+    try:
+        if cache.exists():
+            head, _, body = cache.read_text(encoding="utf-8").partition("\n")
+            if head == key:
+                levels = [float(x) for x in body.split()]
+    except (OSError, ValueError):
+        levels = None
+    if levels is None:
+        try:
+            levels = await tightcut.measure_levels(str(src), ff)
+        except RuntimeError:
+            return None
+        try:
+            cache.write_text(key + "\n" + " ".join(f"{v:.1f}" for v in levels), encoding="utf-8")
+        except OSError:
+            pass
+    return tightcut.find_activity(levels) if levels else None
+
+
 async def _compute_plan(
     db: AsyncSession, ws: uuid.UUID, row: RecordingUpload, *, pause_threshold_s: float | None = None
 ) -> None:
     """Plan the cut from the transcript. Cuts and restores an editing request made
-    (edit_plan.overrides) and the proofread record survive every re-plan."""
+    (edit_plan.overrides), the editor's review and the proofread record survive every
+    re-plan. Word timings are cut tight on the audio (28-Sep)."""
     previous = dict(row.edit_plan or {})
     phrases: list[str] = []
     if row.packet_id:
@@ -812,15 +852,28 @@ async def _compute_plan(
         ).scalar_one_or_none()
         if packet is not None:
             phrases = list(packet.script_phrases or [])
+    review = previous.get("review") or {}
+    word_level = is_word_level(row.transcript or [])
+    activity = await _speech_activity(row.storage_path) if word_level else None
     plan = plan_edit(
         row.transcript,
         phrases,
         pause_threshold_s=pause_threshold_s or settings.production_pause_threshold_s,
         duration_s=row.duration_s,
+        activity=activity,
+        removals=review.get("removals") if review.get("state") == "done" else None,
+        overrides=previous.get("overrides"),
+        aside_names=aside_names(),
     )
-    plan = autoedit.apply_overrides(plan, previous.get("overrides"))
+    if word_level:
+        if previous.get("overrides"):
+            plan["overrides"] = previous["overrides"]
+    else:
+        plan = autoedit.apply_overrides(plan, previous.get("overrides"))
     if previous.get("proofread") is not None:
         plan["proofread"] = previous["proofread"]
+    if review:
+        plan["review"] = review
     row.edit_plan = plan
     mc = plan["meaning_check"]
     drops = [d for d in plan["dropped"] if d["reason"] != "pause"]
@@ -883,25 +936,38 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             raise RuntimeError("could not read the video frame size with ffprobe")
         srt_text = to_srt(cues)
         out = src.with_name(f"{src.stem}-edited.mp4")
-        # His walking-video look (orange/cyan pills) when every word has its own
-        # timing and can be drawn in Outfit; the plain captions otherwise.
-        pill_dir = src.with_name(f".{src.stem}-pills")
-        overlays = None
-        if not audio_only and pills.usable(words):
-            await report("Drawing the orange and cyan caption pills")
-            overlays = pills.overlays(pills.phrases(words, keep), size[0], size[1], pill_dir)
+        # TJ's look (28-Sep): the word being said on an orange box, when every caption
+        # word has its own timing and Roboto can draw it; the plain captions otherwise.
+        band_dir = src.with_name(f".{src.stem}-captions")
+        band = None
+        if mode == "uncut":  # every word he said, on the recording's own clock
+            spoken = [
+                {"text": w["text"], "start": float(w["start_s"]), "end": float(w["end_s"])}
+                for w in words
+            ] if is_word_level(words) else []
+        else:
+            spoken = list(plan.get("words") or [])
+        on_edit = wordbox.on_edit_timeline(spoken, keep)
+        if not audio_only and on_edit and wordbox.usable(on_edit):
+            await report(f"Drawing {len(on_edit)} caption words, each boxed while you say it")
+            # Hundreds of images: drawn off the event loop so the API keeps answering.
+            band = await asyncio.to_thread(
+                wordbox.render_band,
+                wordbox.pages(on_edit), size[0], size[1], band_dir, sum(e - s for s, e in keep),
+            )
         try:
             await media.render_edit(
                 src,
                 keep,
                 out,
                 on_status=report,
-                ass_text=None if overlays else to_ass(cues, *size),
+                ass_text=None if band else to_ass(cues, *size),
                 srt_text=srt_text,
-                overlays=overlays,
+                caption_band=band,
+                make_preview=not audio_only,
             )
         finally:
-            shutil.rmtree(pill_dir, ignore_errors=True)
+            shutil.rmtree(band_dir, ignore_errors=True)
         srt = src.with_name(f"{src.stem}-edited.srt")
         srt.write_text(srt_text, encoding="utf-8")
         src.with_name(f"{src.stem}-edited.vtt").write_text(to_vtt(cues), encoding="utf-8")
@@ -918,9 +984,12 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
                 if mode == "uncut"
                 else f"Captioned MP4 ready: {len(keep)} ranges"
             )
+            pauses = (plan.get("stats") or {}).get("pauses") or {}
             row.status_detail = (
-                f"{what}, {fmt_ts(kept_s)} long, {len(cues)} captions burned in and "
-                "as a subtitle track, plus SRT and VTT sidecars"
+                f"{what}, {fmt_ts(kept_s)} long"
+                + (f", longest pause {pauses['max_pause_s']:.2f} s" if pauses and mode != "uncut" else "")
+                + (", word-box captions" if band else f", {len(cues)} captions burned in")
+                + ", plus a subtitle track and SRT and VTT sidecars"
             )
             row.job_ids = _with_lease(row.job_ids, None)
             await s.commit()
@@ -935,6 +1004,34 @@ class RenderRequest(BaseModel):
     override_meaning_check: bool = False
     # "uncut" keeps the whole recording and only adds captions; it never needs an override
     mode: Literal["cut", "uncut"] = "cut"
+
+
+@router.post("/uploads/{upload_id}/auto-edit", status_code=202)
+async def auto_edit_again(
+    upload_id: uuid.UUID,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit a recording again the way a finished session is edited: the editor's
+    review, the tight cut, the captions. The transcript and his editing requests
+    stay; the review is reused only while the words and the editor's brief are
+    unchanged."""
+    await reconcile_interrupted_uploads(db, ws)
+    row = await _upload(db, ws, upload_id)
+    if row.status in BUSY_STATUSES or AUTO_MARK in (row.job_ids or []):
+        return upload_json(row)
+    if not row.storage_path or not Path(row.storage_path).exists():
+        raise HTTPException(status_code=409, detail="The recording is not on this server")
+    plan = dict(row.edit_plan or {})
+    if plan.pop("review", None) is not None:
+        row.edit_plan = plan
+    # A live status straight away, so the Library keeps refreshing the card.
+    row.status = "proofreading"
+    row.status_detail = "Editing it again: your editor's review, then the cut and the captions"
+    await db.commit()
+    await db.refresh(row)
+    _spawn(auto_edit(row.id, ws))
+    return upload_json(row)
 
 
 @router.post("/uploads/{upload_id}/render", status_code=202)
@@ -993,6 +1090,9 @@ async def render_upload(
     return upload_json(row)
 
 
+STREAM_PART_BYTES = 4 * 1024 * 1024
+
+
 def serve_video(
     request: Request, path: Path, media_type: str, filename: str, *, download: bool
 ) -> Response:
@@ -1003,6 +1103,12 @@ def serve_video(
     video", 23-Sep). And the server's Starlette (0.38) answers no Range
     requests, so an in-page player could not seek. This answers both: inline or
     attachment by choice, and byte ranges for scrubbing.
+
+    28-Sep: "after watching it on my app for a minute and 4 sec it got stuck". His
+    phone's first request ran as one open-ended response that ended after 61.9 MB, the
+    first 63 s of a 7.8 Mbps file, and the player sat on 1:04. A player now gets at
+    most STREAM_PART_BYTES per answer and asks for the next part as it plays, so no
+    single long-lived response can strand it. A download (?download=1) is unchanged.
     """
     size = path.stat().st_size
     # No quotes or line breaks in a header value.
@@ -1026,6 +1132,8 @@ def serve_video(
     end = min(end, size - 1)
     if start > end or start >= size:
         return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+    if not download:
+        end = min(end, start + STREAM_PART_BYTES - 1)
 
     def body(start: int = start, end: int = end):
         with path.open("rb") as handle:
@@ -1078,13 +1186,20 @@ async def edited_file(
     upload_id: uuid.UUID,
     request: Request,
     download: bool = False,
+    preview: bool = False,
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
+    """The edit. ?preview=1 is the light 720p copy the Library plays on his phone
+    (about 1.5 Mbps instead of 5-6); the full edit is what gets downloaded and
+    posted. An edit rendered before the preview existed plays in full."""
     row = await _upload(db, ws, upload_id)
     if not row.edited_path or not Path(row.edited_path).exists():
         raise HTTPException(status_code=404, detail="No edited file yet")
     edited = Path(row.edited_path)
+    light = media.preview_path(edited)
+    if preview and not download and light.exists() and light.stat().st_mtime >= edited.stat().st_mtime:
+        edited = light
     return serve_video(request, edited, "video/mp4", edited.name, download=download)
 
 
@@ -1536,7 +1651,18 @@ async def _script_context(s: AsyncSession, ws: uuid.UUID, row: RecordingUpload) 
     return autoedit.script_context(packet, title)
 
 
-async def _ask(kind: str, prompt: str, system: str, schema: dict[str, Any], ws: uuid.UUID, key: str):
+async def _ask(
+    kind: str,
+    prompt: str,
+    system: str,
+    schema: dict[str, Any],
+    ws: uuid.UUID,
+    key: str,
+    *,
+    wait_timeout_s: float | None = None,
+    prompt_version: str = autoedit.PROMPT_VERSION,
+    max_tokens: int = 2000,
+):
     from tce.llm import LLMRequest
     from tce.llm import provider as llm
 
@@ -1546,55 +1672,185 @@ async def _ask(kind: str, prompt: str, system: str, schema: dict[str, Any], ws: 
         messages=[{"role": "user", "content": prompt}],
         system=system,
         output_schema=schema,
-        max_tokens=2000,
-        prompt_version=autoedit.PROMPT_VERSION,
+        max_tokens=max_tokens,
+        prompt_version=prompt_version,
         workspace_id=ws,
         idempotency_key=key,
     )
-    return await llm.complete(request, sessionmaker=session_factory())
+    return await llm.complete(request, sessionmaker=session_factory(), wait_timeout_s=wait_timeout_s)
 
 
-async def _proofread(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
+# 28-Sep: the proofread was queued at 07:31 and the worker answered at 11:08; the edit
+# had rendered unproofread at 07:52 and the late answer was never used. The review now
+# waits REVIEW_FIRST_WAIT_S, the edit goes out on the rules if it must, and a waiter
+# re-edits with the review when it lands.
+REVIEW_FIRST_WAIT_S = 600.0
+
+
+def _review_key(upload_id: uuid.UUID, words: list[dict[str, Any]]) -> str:
+    said = " ".join(str(w.get("text") or "") for w in words)
+    digest = hashlib.sha256(said.encode()).hexdigest()[:16]
+    return f"edit-review:{autoedit.REVIEW_PROMPT_VERSION}:{upload_id}:{digest}"
+
+
+async def _save_review(upload_id: uuid.UUID, ws: uuid.UUID, review: dict[str, Any], detail: str | None) -> None:
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        plan = dict(row.edit_plan or {})
+        plan["review"] = review
+        row.edit_plan = plan
+        if detail:
+            row.status_detail = detail[:500]
+        await s.commit()
+
+
+async def _apply_review(
+    upload_id: uuid.UUID, ws: uuid.UUID, words: list[dict[str, Any]], answer: Any
+) -> dict[str, Any]:
+    """Store what the editor decided. Removals are kept as time ranges, so the word
+    fixes applied beside them cannot shift what they point at."""
+    out = answer.structured or {}
+    removals, notes = autoedit.validate_removals(words, out.get("removals") or [])
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        current = list(row.transcript or [])
+        applied: list[dict[str, Any]] = []
+        if [w.get("text") for w in current] == [w.get("text") for w in words]:
+            fixed, applied = autoedit.apply_corrections(current, out.get("corrections") or [])
+            row.transcript = fixed
+        plan = dict(row.edit_plan or {})
+        plan["proofread"] = [
+            {"heard": c["heard"], "replacement": c["replacement"], "why": str(c.get("why") or "")[:200]}
+            for c in applied
+        ]
+        review = {
+            "state": "done" if removals is not None else "rules",
+            "removals": removals or [],
+            "notes": notes,
+            "model": answer.model,
+            "at": _utcnow().isoformat(),
+        }
+        plan["review"] = review
+        row.edit_plan = plan
+        took = len(removals or [])
+        row.status_detail = (
+            f"Your editor marked {took} thing{'s' if took != 1 else ''} to take out and fixed "
+            f"{len(applied)} misheard word{'s' if len(applied) != 1 else ''}"
+            if removals is not None
+            else f"Your editor's review was not usable ({'; '.join(notes)[:200]}); cutting with the rules"
+        )
+        await s.commit()
+    return review
+
+
+async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float | None) -> str:
+    """The editor's review on the subscription: misheard words, retakes (the complete
+    take stays), talk to the dogs, recogniser junk. Returns its state."""
     from tce.llm import LLMUnavailable
 
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
         words = list(row.transcript or [])
         context = await _script_context(s, ws, row)
-        row.status = "proofreading"
-        row.status_detail = f"Proofreading {len(words)} words against your script on the subscription"
-        await s.commit()
-    if not words:
-        return
+        if words and is_word_level(words):
+            row.status = "proofreading"
+            row.status_detail = (
+                f"Your editor is reading {len(words)} words on the subscription: misheard words, "
+                "lines said twice, talk to the dogs"
+            )
+            await s.commit()
+    if not words or not is_word_level(words):
+        return "skipped"
+    key = _review_key(upload_id, words)
     try:
         answer = await _ask(
-            autoedit.PROOFREAD_JOB,
-            autoedit.proofread_prompt(words, context),
-            autoedit.PROOFREAD_SYSTEM,
-            autoedit.PROOFREAD_SCHEMA,
+            autoedit.REVIEW_JOB,
+            autoedit.review_prompt(words, context),
+            autoedit.review_system(aside_names()),
+            autoedit.REVIEW_SCHEMA,
             ws,
-            f"proofread:{upload_id}:{len(words)}",
+            key,
+            wait_timeout_s=wait_timeout_s,
+            prompt_version=autoedit.REVIEW_PROMPT_VERSION,
+            max_tokens=4000,
         )
     except LLMUnavailable as exc:
-        await _note(upload_id, ws, None, f"Proofread skipped ({exc.status}); cutting the transcript as heard")
+        waiting = exc.status in ("timeout", "waiting_capacity")
+        await _save_review(
+            upload_id,
+            ws,
+            {"state": "waiting" if waiting else "unavailable", "key": key,
+             "since": _utcnow().isoformat(), "detail": str(exc)[:300]},
+            (
+                "Your editor has not answered yet, so this edit uses the rules; it re-edits "
+                "by itself when the review lands"
+                if waiting
+                else f"Your editor could not review this one ({exc.status}); cutting with the rules"
+            ),
+        )
+        return "waiting" if waiting else "unavailable"
+    await _apply_review(upload_id, ws, words, answer)
+    return "done"
+
+
+async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
+    """Keep waiting for a review the edit went out without, then re-edit with it.
+
+    Restart-safe: the review's state and job key live on the plan, and startup
+    resumes every waiter. It gives up after production_review_wait_h, when he changed
+    the words himself meanwhile (the review read other words), or once a post of this
+    video went out (the edit he posted stays the edit he sees).
+    """
+    from tce.llm import LLMUnavailable
+
+    deadline = _utcnow() + timedelta(hours=settings.production_review_wait_h)
+    while _utcnow() < deadline:
+        async with session_factory()() as s:
+            row = await _load(s, upload_id, ws)
+            review = dict((row.edit_plan or {}).get("review") or {})
+            if review.get("state") != "waiting":
+                return
+            words = list(row.transcript or [])
+            context = await _script_context(s, ws, row)
+        key = str(review.get("key") or "")
+        if key != _review_key(upload_id, words):
+            await _save_review(upload_id, ws, {**review, "state": "stale"}, None)
+            return
+        try:
+            answer = await _ask(
+                autoedit.REVIEW_JOB,
+                autoedit.review_prompt(words, context),
+                autoedit.review_system(aside_names()),
+                autoedit.REVIEW_SCHEMA,
+                ws,
+                key,
+                prompt_version=autoedit.REVIEW_PROMPT_VERSION,
+                max_tokens=4000,
+            )
+        except LLMUnavailable as exc:
+            if exc.status in ("timeout", "waiting_capacity"):
+                await asyncio.sleep(30)
+                continue
+            await _save_review(upload_id, ws, {**review, "state": "unavailable", "detail": str(exc)[:300]}, None)
+            return
+        async with session_factory()() as s:
+            out = await _publications(s, ws, upload_id)
+        if any(p.status in ("posting", "scheduled", "posted") for p in out.values()):
+            await _apply_review(upload_id, ws, words, answer)
+            await _note(
+                upload_id, ws, None,
+                "Your editor's review arrived after this video was posted; the posted edit stays",
+            )
+            return
+        await _apply_review(upload_id, ws, words, answer)
+        await _plan_and_render(upload_id, ws)
         return
-    corrections = (answer.structured or {}).get("corrections") or []
-    fixed, applied = autoedit.apply_corrections(words, corrections)
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
-        row.transcript = fixed
-        plan = dict(row.edit_plan or {})
-        plan["proofread"] = [
-            {"heard": c["heard"], "replacement": c["replacement"], "why": str(c.get("why") or "")[:200]}
-            for c in applied
-        ]
-        row.edit_plan = plan
-        row.status_detail = (
-            f"Proofread: fixed {len(applied)} misheard {'word' if len(applied) == 1 else 'words'}"
-            if applied
-            else "Proofread: nothing misheard"
-        )
-        await s.commit()
+        review = dict((row.edit_plan or {}).get("review") or {})
+    if review.get("state") == "waiting":
+        await _save_review(upload_id, ws, {**review, "state": "unavailable",
+                                           "detail": "no answer in time"}, None)
 
 
 async def _plan_and_render(upload_id: uuid.UUID, ws: uuid.UUID) -> RecordingUpload:
@@ -1616,7 +1872,8 @@ async def _plan_and_render(upload_id: uuid.UUID, ws: uuid.UUID) -> RecordingUplo
 
 
 async def auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
-    """Transcribe -> proofread -> plan -> render, for a session he just finished."""
+    """Transcribe -> the editor's review -> plan -> render, for a session he just finished."""
+    review_state = "skipped"
     try:
         async with session_factory()() as s:
             row = await _load(s, upload_id, ws)
@@ -1633,7 +1890,7 @@ async def auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             )
             if row.status != "transcribed":
                 return  # failed / unavailable: the row already says why
-        await _proofread(upload_id, ws)
+        review_state = await _review(upload_id, ws, wait_timeout_s=REVIEW_FIRST_WAIT_S)
         row = await _plan_and_render(upload_id, ws)
         if row.status == "edited":
             start_draft_posts(upload_id, ws)
@@ -1644,6 +1901,8 @@ async def auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             row = await _load(s, upload_id, ws)
             row.job_ids = [j for j in row.job_ids or [] if j != AUTO_MARK]
             await s.commit()
+    if review_state == "waiting":
+        _spawn(_await_review(upload_id, ws))
 
 
 def start_auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
@@ -1687,6 +1946,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             upload_id = row.id
             words = list(row.transcript or [])
             keep = [list(r) for r in (row.edit_plan or {}).get("keep") or []]
+            kept = list((row.edit_plan or {}).get("words") or [])
             context = await _script_context(s, ws, row)
             text, scope, start_s, end_s = req.request, req.scope, req.start_s, req.end_s
         if not words or not keep:
@@ -1697,7 +1957,8 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             answer = await _ask(
                 autoedit.EDIT_REQUEST_JOB,
                 autoedit.edit_request_prompt(
-                    words, keep, context, text, scope=scope, start_s=start_s, end_s=end_s
+                    words, keep, context, text, scope=scope, start_s=start_s, end_s=end_s,
+                    kept=kept,
                 ),
                 autoedit.EDIT_REQUEST_SYSTEM,
                 autoedit.EDIT_REQUEST_SCHEMA,
@@ -1770,12 +2031,20 @@ async def resume_auto_work() -> None:
         async with session_factory()() as s:
             rows = (await s.execute(select(RecordingUpload))).scalars().all()
             marked = [(r.id, r.workspace_id) for r in rows if AUTO_MARK in (r.job_ids or [])]
+            late = [
+                (r.id, r.workspace_id)
+                for r in rows
+                if AUTO_MARK not in (r.job_ids or [])
+                and ((r.edit_plan or {}).get("review") or {}).get("state") == "waiting"
+            ]
             reqs = (
                 await s.execute(select(EditingRequest).where(EditingRequest.state == "in_progress"))
             ).scalars().all()
             pending = [(r.id, r.workspace_id) for r in reqs]
         for upload_id, ws in marked:
             _spawn(auto_edit(upload_id, ws))
+        for upload_id, ws in late:
+            _spawn(_await_review(upload_id, ws))
         for request_id, ws in pending:
             _spawn(run_edit_request(request_id, ws))
         # 27-Sep: a deploy restarted TCE a minute after he tapped Post, and all four posts
@@ -1800,8 +2069,8 @@ async def resume_auto_work() -> None:
         for (upload_id, ws), platforms in resume.items():
             _spawn(publish_video(upload_id, ws, platforms, None))
             log.info("production.publish_resumed", upload=str(upload_id), platforms=platforms)
-        if marked or pending:
-            log.info("production.auto_resumed", uploads=len(marked), requests=len(pending))
+        if marked or pending or late:
+            log.info("production.auto_resumed", uploads=len(marked), requests=len(pending), reviews=len(late))
     except Exception:
         log.warning("production.auto_resume_failed", exc_info=True)
 
@@ -1865,7 +2134,7 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
             if packet is not None:
                 script_posts = {"facebook": packet.facebook_post or "", "linkedin": packet.linkedin_post or ""}
         candidate_id = row.candidate_id
-        spoken = publishing.spoken_text(words, keep)
+        spoken = publishing.spoken_text(words, keep, (row.edit_plan or {}).get("words"))
         from tce.editorial import lineup as lineup_service
 
         rules = await lineup_service.post_rules(s, ws)
@@ -1913,6 +2182,7 @@ async def revise_posts(upload_id: uuid.UUID, ws: uuid.UUID, request: str) -> Non
         pubs = await _publications(s, ws, upload_id)
         words = list(row.transcript or [])
         keep = [list(r) for r in (row.edit_plan or {}).get("keep") or []]
+        kept_words = (row.edit_plan or {}).get("words")
         title = ""
         if row.candidate_id:
             cand = await s.get(TopicCandidate, row.candidate_id)
@@ -1920,7 +2190,7 @@ async def revise_posts(upload_id: uuid.UUID, ws: uuid.UUID, request: str) -> Non
         rules = await lineup_service.post_rules(s, ws)
         current = {p: dict(pub.copy or {}) for p, pub in pubs.items()}
         locked = [p for p, pub in pubs.items() if pub.status in ("posted", "scheduled", "posting")]
-    spoken = publishing.spoken_text(words, keep)
+    spoken = publishing.spoken_text(words, keep, kept_words)
 
     async def finish(detail: str | None, copies: dict[str, dict[str, Any]] | None) -> None:
         async with session_factory()() as s:

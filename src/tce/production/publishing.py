@@ -50,8 +50,17 @@ SKILLS = {
 _DASHES = re.compile("[–—]")
 
 
-def spoken_text(words: list[dict[str, Any]], keep: list[list[float]]) -> str:
-    """What he actually says in the edited video, in order."""
+def spoken_text(
+    words: list[dict[str, Any]], keep: list[list[float]], kept: list[dict[str, Any]] | None = None
+) -> str:
+    """What he actually says in the edited video, in order.
+
+    `kept` is the plan's own list of kept words (28-Sep): the cut follows the audio, so
+    a kept word's recogniser midpoint can sit in trimmed silence and must not be lost.
+    """
+    if kept:
+        indices = {int(w["index"]) for w in kept if "index" in w}
+        return " ".join(str(w["text"]) for i, w in enumerate(words) if i in indices)
     out = []
     for w in words:
         mid = (float(w["start_s"]) + float(w["end_s"])) / 2

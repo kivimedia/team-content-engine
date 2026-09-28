@@ -1,12 +1,14 @@
-"""TCE edits by itself, on the subscription (25-Sep): proofreading and editing requests.
+"""TCE edits by itself, on the subscription (25-Sep): the editor's review and editing requests.
 
 "allow tce to do editing by itself on subscription". Two subscription jobs, both run
 by the PC worker on the policy model (never a metered API):
 
-- `video_proofread`: after transcription, fix words the recogniser clearly misheard.
-  On 24-Sep it heard "Not after you've finished your service" where Ziv said no "not",
-  flipping his point. Conservative by design: a correction must quote the exact words
-  it replaces by index, or it is dropped.
+- `video_edit_review` (28-Sep, replaced the 25-Sep proofread): after transcription,
+  fix words the recogniser clearly misheard (it heard "Not after you've finished your
+  service" where Ziv said no "not", flipping his point) and decide what the viewer
+  should not hear - retakes (the complete take stays), talk to the dogs, recogniser
+  junk. Conservative by design: every correction and every removal must quote the
+  exact words by index, or it is dropped.
 - `video_edit_request`: carry out what he typed in "Request an editing change" -
   word fixes, cuts, restores - or come back with one question.
 
@@ -21,7 +23,6 @@ from typing import Any
 
 from tce.production.retakes import map_to_edit
 
-PROOFREAD_JOB = "video_proofread"
 EDIT_REQUEST_JOB = "video_edit_request"
 AGENT_NAME = "video_editor"
 PROMPT_VERSION = "autoedit-v1"
@@ -44,19 +45,24 @@ def _clock(seconds: float) -> str:
 
 
 def numbered_transcript(
-    words: list[dict[str, Any]], keep: list[list[float]] | None = None
+    words: list[dict[str, Any]],
+    keep: list[list[float]] | None = None,
+    kept: list[dict[str, Any]] | None = None,
 ) -> str:
     """One sentence a line, every word tagged with its index.
 
     With a plan, each line starts with where it lands in the EDITED video (that is the
     clock he watches), and words the edit removed are wrapped in ~~ so a request can
-    bring them back.
+    bring them back. `kept` is the plan's own kept words with their times on the
+    speech (28-Sep): the cut follows the audio, so the recogniser's clock alone would
+    call some kept words cut.
     """
+    timed = {int(w["index"]): float(w["start"]) for w in kept or [] if "index" in w}
     lines: list[str] = []
     cur: list[str] = []
     stamp = ""
     for i, w in enumerate(words):
-        start = float(w["start_s"])
+        start = timed.get(i, float(w["start_s"]))
         if not cur:
             if keep is None:
                 stamp = f"[{_clock(start)}] "
@@ -64,7 +70,9 @@ def numbered_transcript(
                 edited = map_to_edit(start, keep)
                 stamp = f"[{_clock(edited)} in the edit] " if edited is not None else "[cut] "
         token = f"{i}:{w['text']}"
-        if keep is not None and map_to_edit((start + float(w['end_s'])) / 2, keep) is None:
+        if keep is not None and (
+            i not in timed if timed else map_to_edit((start + float(w["end_s"])) / 2, keep) is None
+        ):
             token = f"~~{token}~~"
         cur.append(token)
         if str(w["text"])[-1:] in ".?!" or len(cur) >= 24:
@@ -88,23 +96,6 @@ def script_context(packet: Any | None, title: str | None) -> str:
     return "\n\n".join(parts) or "(no script for this recording)"
 
 
-PROOFREAD_SYSTEM = (
-    "You proofread an automatic speech-recognition transcript of a walking video by "
-    "Ziv Raviv (English, Israeli accent, outdoors). The recogniser sometimes mishears a "
-    "word, and a misheard word can flip his meaning - e.g. it once heard 'Not after "
-    "you've finished your service' where he said 'After you've finished your service', "
-    "contradicting his own point.\n"
-    "Fix ONLY words that are clearly misheard: they contradict what he is plainly saying, "
-    "are nonsense in context, or garble a name or term from his script. Never rephrase, "
-    "never improve grammar, never remove filler, never tidy his spoken style. When unsure, "
-    "leave it: a wrong 'fix' puts words in his mouth. Most transcripts need zero or one "
-    "correction.\n"
-    "Each correction names the first and last word index it replaces, quotes those words "
-    "exactly as heard, and gives the replacement text (empty string to delete). Include a "
-    "neighbouring word when its capitalisation must change (e.g. heard 'Not after', "
-    "replacement 'After')."
-)
-
 _CORRECTION = {
     "type": "object",
     "properties": {
@@ -122,19 +113,169 @@ _RANGE = {
     "required": ["first", "last"],
 }
 
-PROOFREAD_SCHEMA = {
+# ---------------------------------------------------------------------------
+# The editor's review (28-Sep): proofread and decide what the viewer should not hear,
+# in one subscription job. "when I repeat a line twice (even partially) the editor is
+# supposed to choose one that is full. If I call my dogs maple, rain bou (בואו) that
+# needs to be edited out. if I say no no no rain that needs to be taken out."
+
+REVIEW_JOB = "video_edit_review"
+REVIEW_PROMPT_VERSION = "edit-review-v1"
+REMOVAL_KINDS = ("retake", "false_start", "aside", "junk")
+# Talk to a dog is a few words; a take said again can be a long sentence.
+MAX_REMOVAL_WORDS = {"retake": 80, "false_start": 80, "aside": 30, "junk": 40}
+MAX_REMOVED_SHARE = 0.6
+
+
+def review_system(dog_names: list[str]) -> str:
+    dogs = " and ".join(dog_names) if dog_names else "his dogs"
+    return (
+        "You edit Ziv Raviv's walking videos. He films himself on his phone while he walks, "
+        f"often with his two dogs, {dogs}, and speaks English with an Israeli accent. You get "
+        "the speech-recognition transcript, every word tagged with its index, and the script "
+        "he had. Decide what the viewer should NOT hear, and fix words the recogniser clearly "
+        "misheard.\n\n"
+        "REMOVE:\n"
+        "1. Retakes. When he says a line more than once - fully or partly, word for word or "
+        "reworded - keep exactly one take: the complete one; if more than one is complete, the "
+        "last complete one. Remove every other take, including a start he abandoned and said "
+        "again (\"Which ... Which means that the sales call is the first step\"), even when "
+        "other words or a long pause sit between the takes. Remove whole takes; never cut words "
+        "out of the take you keep.\n"
+        "2. Asides: anything said to the dogs, to people around him, or to himself rather than "
+        f"to the viewer - the dogs' names ({dogs}), 'come', 'come here', 'this way', 'good boy', "
+        "'no, no, no' said to a dog or to reject what he just said, 'wait', 'let me say that "
+        "again'. He calls the dogs in Hebrew too (for example בואו, 'come'), "
+        "which the recogniser writes as 'boy', 'bo' or 'bow', or translates into English "
+        "('from here', 'we're here'). An aside often sits between two takes of a line.\n"
+        "3. Junk: words the recogniser invented - many words inside a fraction of a second, or "
+        "words that make no sense where they stand, most often at the very end.\n"
+        "Keep everything else, in order. Never remove a sentence that makes a point he does not "
+        "make in a take you keep. When unsure whether something is an aside or part of his "
+        "point, keep it.\n\n"
+        "FIX (corrections): only words that are clearly misheard - they contradict what he "
+        "plainly says, are nonsense in context, or garble a name or term from his script. A "
+        "misheard word can flip his point: it once heard 'Not after you've finished your "
+        "service' where he said 'After you've finished your service'. Never rephrase, never "
+        "tidy his spoken style; when unsure, leave it, because a wrong fix puts words in his "
+        "mouth. Most transcripts need zero or one correction. Include a neighbouring word when "
+        "its capitalisation must change (heard 'Not after', replacement 'After').\n\n"
+        "Every removal gives the first and last word index, quotes those words exactly as heard, "
+        "names its kind, and for a retake or false_start gives kept_from: the index of the first "
+        "word of the take you keep (-1 otherwise). Every correction quotes the exact words it "
+        "replaces by index; replacement '' deletes."
+    )
+
+
+REVIEW_SCHEMA = {
     "type": "object",
-    "properties": {"corrections": {"type": "array", "items": _CORRECTION}},
-    "required": ["corrections"],
+    "properties": {
+        "removals": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "first": {"type": "integer"},
+                    "last": {"type": "integer"},
+                    "heard": {"type": "string"},
+                    "kind": {"type": "string", "enum": list(REMOVAL_KINDS)},
+                    "kept_from": {"type": "integer"},
+                    "why": {"type": "string"},
+                },
+                "required": ["first", "last", "heard", "kind", "kept_from", "why"],
+            },
+        },
+        "corrections": {"type": "array", "items": _CORRECTION},
+    },
+    "required": ["removals", "corrections"],
 }
 
 
-def proofread_prompt(words: list[dict[str, Any]], context: str) -> str:
+def review_transcript(words: list[dict[str, Any]]) -> str:
+    """One utterance a line with its clock, and the pauses between them: a retake shows
+    as the same words again after a pause, an aside as a short line among long ones."""
+    lines: list[str] = []
+    cur: list[str] = []
+    stamp = ""
+    prev_end: float | None = None
+    for i, w in enumerate(words):
+        start, end = float(w["start_s"]), float(w["end_s"])
+        gap = start - prev_end if prev_end is not None else 0.0
+        if cur and (gap >= 1.0 or len(cur) >= 24):
+            lines.append(stamp + " ".join(cur))
+            cur = []
+        if gap >= 1.5:
+            lines.append(f"(pause {gap:.1f} s)")
+        if not cur:
+            stamp = f"[{_clock(start)}] "
+        cur.append(f"{i}:{w['text']}")
+        if str(w["text"])[-1:] in ".?!":
+            lines.append(stamp + " ".join(cur))
+            cur = []
+        prev_end = end
+    if cur:
+        lines.append(stamp + " ".join(cur))
+    return "\n".join(lines)
+
+
+def review_prompt(words: list[dict[str, Any]], context: str) -> str:
     return (
-        f"{context}\n\nTranscript (index:word):\n{numbered_transcript(words)}\n\n"
-        f"Return the clearly misheard words to fix, at most {MAX_CORRECTIONS}. An empty "
-        "list is the normal answer for a clean transcript."
+        f"{context}\n\nTranscript (index:word):\n{review_transcript(words)}\n\n"
+        "Return the removals (retakes, asides, junk) and the clearly misheard words to fix. "
+        f"At most {MAX_CORRECTIONS} corrections. Empty lists are a normal answer."
     )
+
+
+def validate_removals(
+    words: list[dict[str, Any]], removals: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]] | None, list[str]]:
+    """Removals as time ranges, each proven by quoting the words at its indices.
+
+    A misquote, an overlap, an index outside the transcript or a span longer than its
+    kind allows (MAX_REMOVAL_WORDS) is dropped. If what is left would remove more than
+    MAX_REMOVED_SHARE of the words, None: that is not an edit, it is a
+    misunderstanding, and the rules decide instead.
+    """
+    valid: list[dict[str, Any]] = []
+    notes: list[str] = []
+    taken: set[int] = set()
+    for r in removals or []:
+        try:
+            first, last = int(r["first"]), int(r["last"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        kind = str(r.get("kind") or "")
+        if kind not in REMOVAL_KINDS:
+            continue
+        if first < 0 or last < first or last >= len(words) or last - first + 1 > MAX_REMOVAL_WORDS[kind]:
+            notes.append(f"skipped a removal at {first}-{last}: outside the transcript or too long")
+            continue
+        span = set(range(first, last + 1))
+        if taken & span:
+            continue
+        heard = " ".join(str(w["text"]) for w in words[first : last + 1])
+        if _norm(heard) != _norm(str(r.get("heard") or "")):
+            notes.append(f'skipped a removal at {first}-{last}: it quoted "{r.get("heard")}"')
+            continue
+        taken |= span
+        item = {
+            "start": float(words[first]["start_s"]),
+            "end": float(words[last]["end_s"]),
+            "text": heard,
+            "kind": kind,
+            "why": str(r.get("why") or "")[:200],
+        }
+        kept_from = r.get("kept_from")
+        if kind in ("retake", "false_start") and isinstance(kept_from, int) and 0 <= kept_from < len(words):
+            if kept_from not in span:
+                item["keeper_start"] = float(words[kept_from]["start_s"])
+        valid.append(item)
+    if words and len(taken) > MAX_REMOVED_SHARE * len(words):
+        notes.append(
+            f"the review wanted to remove {len(taken)} of {len(words)} words; used the rules instead"
+        )
+        return None, notes
+    return sorted(valid, key=lambda v: v["start"]), notes
 
 
 EDIT_REQUEST_SYSTEM = (
@@ -174,6 +315,7 @@ def edit_request_prompt(
     scope: str,
     start_s: float | None,
     end_s: float | None,
+    kept: list[dict[str, Any]] | None = None,
 ) -> str:
     where = ""
     if scope == "timestamp" and start_s is not None and end_s is not None:
@@ -181,7 +323,7 @@ def edit_request_prompt(
     return (
         f"{context}\n\nHis request:\n{request.strip()}{where}\n\n"
         f"Transcript (index:word; ~~cut~~ words are not in the edit):\n"
-        f"{numbered_transcript(words, keep)}"
+        f"{numbered_transcript(words, keep, kept)}"
     )
 
 

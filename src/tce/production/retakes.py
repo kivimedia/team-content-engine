@@ -26,15 +26,26 @@ Rules:
   cut safely stays in (and is captioned), silences between segments are not
   detectable so no pauses are trimmed, and every cut that does happen blocks the
   plan for a listen. The editor can always render uncut instead.
+
+Word timings (28-Sep, "the editor is supposed to choose one that is full"): the
+decisions are made per word, on sentences rebuilt from fragments ("A" ... "coach is
+a person" is one sentence, not a false start). A line said twice keeps its complete
+take; talk to the dogs ("Hey, Maple Rain, boy!", "No, no, no, no.") and recogniser
+junk are cut; fillers go. The subscription editor's review, when it answered, decides
+retakes and asides instead of these rules. With the audio's speech regions, the cut
+is tight (tightcut.py); without them, the padded cut below.
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
+
+from tce.production.tightcut import Activity, pause_stats, retime, tight_keep
 
 EN_NEGATIONS = frozenset(
     {
@@ -135,7 +146,8 @@ EN_STOPWORDS = frozenset(
     "it its this that these those i me my we our you your he she they them their his her "
     "do does did done have has had will would can could should just very really then than "
     "also about into over up out if what when where who how which there here all any each "
-    "every some more most much many one yes ok okay um uh like well".split()
+    "every some more most much many one yes ok okay um uh like well until while because "
+    "after before again still even only too being going gonna actually basically".split()
 )
 HE_STOPWORDS = frozenset("של את על עם זה זו גם כי אם או הוא היא הם אני אנחנו אתם יש מה".split())
 
@@ -194,6 +206,7 @@ class Unit:
     score: float = 0.0
     dropped_reason: str | None = None
     superseded_by: int | None = None
+    words: list[int] = field(default_factory=list)  # transcript indices (word timings)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -290,6 +303,14 @@ def timing_precision(timings: list[dict[str, Any]]) -> str:
     return PRECISION_AS_PROVIDED
 
 
+def is_word_level(timings: list[dict[str, Any]], precision: str | None = None) -> bool:
+    """One word a row, with its own times (not whole-second segment starts)."""
+    if (precision or timing_precision(timings)) == PRECISION_WHOLE_SECOND:
+        return False
+    rows = _coerce_timings(timings)
+    return bool(rows) and sum(len(r[2].split()) for r in rows) / len(rows) < 2
+
+
 def plan_edit(
     timings: list[dict[str, Any]],
     script_phrases: list[str] | None,
@@ -298,42 +319,31 @@ def plan_edit(
     pad_s: float = 0.2,
     duration_s: float | None = None,
     precision: str | None = None,
+    activity: Activity | None = None,
+    removals: list[dict[str, Any]] | None = None,
+    overrides: dict[str, Any] | None = None,
+    aside_names: Sequence[str] = (),
 ) -> dict[str, Any]:
     precision = precision or timing_precision(timings)
+    if is_word_level(timings, precision):
+        return _plan_words(
+            timings,
+            script_phrases,
+            pause_threshold_s=pause_threshold_s,
+            pad_s=pad_s,
+            duration_s=duration_s,
+            precision=precision,
+            activity=activity,
+            removals=removals,
+            overrides=overrides,
+            aside_names=aside_names,
+        )
     coarse = precision == PRECISION_WHOLE_SECOND
     phrases = [sim_tokens(p) for p in (script_phrases or [])]
     units = group_units(timings)
     for u in units:
         _match_phrase(u, phrases)
-
-    # 1. Script retakes: keep the last complete take of each phrase.
-    by_phrase: dict[int, list[Unit]] = {}
-    for u in units:
-        if u.phrase is not None:
-            by_phrase.setdefault(u.phrase, []).append(u)
-    for takes in by_phrase.values():
-        if len(takes) < 2:
-            continue
-        complete = [t for t in takes if t.take == "full"]
-        keeper = complete[-1] if complete else max(takes, key=lambda t: (len(t.tokens), t.index))
-        for t in takes:
-            if t is keeper:
-                continue
-            t.dropped_reason = "false_start" if t.take == "partial" else "retake"
-            t.superseded_by = keeper.index
-
-    # 2. Neighbour restarts (also catches off-script repeats of the same sentence).
-    for i, u in enumerate(units):
-        if u.dropped_reason:
-            continue
-        for j in range(i + 1, min(i + 3, len(units))):
-            nxt = units[j]
-            if nxt.dropped_reason:
-                continue
-            if _is_restart_of(u, nxt) and (u.phrase is None or u.phrase == nxt.phrase):
-                u.dropped_reason = "false_start" if len(u.tokens) < len(nxt.tokens) else "retake"
-                u.superseded_by = nxt.index
-                break
+    _script_retakes(units)
 
     end_bound = (
         duration_s if duration_s is not None else (max((u.end for u in units), default=0.0) + pad_s)
@@ -344,86 +354,7 @@ def plan_edit(
         coarse_cuts = _coarse_cuts(units, end_bound, notes)
 
     kept = [u for u in units if u.dropped_reason is None]
-    issues: list[dict[str, Any]] = []
-
-    # 3. Meaning check.
-    for u in units:
-        if u.dropped_reason is None or u.superseded_by is None:
-            continue
-        keeper = units[u.superseded_by]
-        lost = [n for n in negations_in(u.text) if n not in negations_in(keeper.text)]
-        if lost:
-            issues.append(
-                {
-                    "kind": "negation_dropped",
-                    "detail": (
-                        f'Dropped take at {fmt_ts(u.start)} says "{u.text}" with '
-                        f'"{", ".join(sorted(set(lost)))}" but the kept take at '
-                        f'{fmt_ts(keeper.start)} says "{keeper.text}"'
-                    ),
-                    "dropped_index": u.index,
-                    "kept_index": keeper.index,
-                }
-            )
-        missing = lost_content_words(u.text, keeper.text)
-        if missing:
-            issues.append(
-                {
-                    "kind": "content_dropped",
-                    "detail": (
-                        f'Dropped take at {fmt_ts(u.start)} ("{u.text}") says '
-                        f'"{", ".join(missing)}", which the kept take at '
-                        f'{fmt_ts(keeper.start)} ("{keeper.text}") does not; '
-                        "it may be a different idea, not a retake"
-                    ),
-                    "dropped_index": u.index,
-                    "kept_index": keeper.index,
-                }
-            )
-        if len(u.tokens) >= len(keeper.tokens) + 2 and _covered(keeper.tokens, u.tokens) >= 0.9:
-            issues.append(
-                {
-                    "kind": "truncated_take",
-                    "detail": (
-                        f'Kept take at {fmt_ts(keeper.start)} ("{keeper.text}") is shorter than '
-                        f'the earlier take at {fmt_ts(u.start)} ("{u.text}")'
-                    ),
-                    "dropped_index": u.index,
-                    "kept_index": keeper.index,
-                }
-            )
-    for u in kept:
-        if u.phrase is None:
-            continue
-        said = sorted(set(negations_in(u.text)))
-        scripted = sorted(set(negations_in(script_phrases[u.phrase])))
-        if said != scripted:
-            issues.append(
-                {
-                    "kind": "negation_differs_from_script",
-                    "detail": (
-                        f'Kept take at {fmt_ts(u.start)} ("{u.text}") and script phrase '
-                        f'{u.phrase + 1} ("{script_phrases[u.phrase]}") differ on negation'
-                    ),
-                    "kept_index": u.index,
-                }
-            )
-    last_phrase = -1
-    for u in kept:
-        if u.phrase is None or u.take != "full":
-            continue
-        if u.phrase < last_phrase:
-            issues.append(
-                {
-                    "kind": "script_order",
-                    "detail": (
-                        f"Kept take at {fmt_ts(u.start)} is script phrase {u.phrase + 1} but comes "
-                        f"after phrase {last_phrase + 1}; the cut would reorder the script"
-                    ),
-                    "kept_index": u.index,
-                }
-            )
-        last_phrase = max(last_phrase, u.phrase)
+    issues = _meaning_issues(units, kept, script_phrases or [])
     full_neg = len(negations_in(" ".join(u.text for u in units)))
     kept_neg = len(negations_in(" ".join(u.text for u in kept)))
 
@@ -523,6 +454,516 @@ def plan_edit(
     }
 
 
+def _script_retakes(units: list[Unit]) -> None:
+    """Script phrases said more than once keep their last complete take; a unit that
+    repeats or restarts one of the next two units is dropped as a retake of it."""
+    by_phrase: dict[int, list[Unit]] = {}
+    for u in units:
+        if u.phrase is not None and u.dropped_reason is None:
+            by_phrase.setdefault(u.phrase, []).append(u)
+    for takes in by_phrase.values():
+        if len(takes) < 2:
+            continue
+        complete = [t for t in takes if t.take == "full"]
+        keeper = complete[-1] if complete else max(takes, key=lambda t: (len(t.tokens), t.index))
+        for t in takes:
+            if t is keeper:
+                continue
+            t.dropped_reason = "false_start" if t.take == "partial" else "retake"
+            t.superseded_by = keeper.index
+
+    for i, u in enumerate(units):
+        if u.dropped_reason:
+            continue
+        for j in range(i + 1, min(i + 3, len(units))):
+            nxt = units[j]
+            if nxt.dropped_reason:
+                continue
+            if _is_restart_of(u, nxt) and (u.phrase is None or u.phrase == nxt.phrase):
+                u.dropped_reason = "false_start" if len(u.tokens) < len(nxt.tokens) else "retake"
+                u.superseded_by = nxt.index
+                break
+
+
+def _meaning_issues(
+    units: list[Unit], kept: list[Unit], script_phrases: list[str]
+) -> list[dict[str, Any]]:
+    """A dropped take that says something its kept take does not (a negation, a
+    content word, more words) blocks the plan, as do kept script takes whose
+    negation differs from the script or that come out of script order."""
+    issues: list[dict[str, Any]] = []
+    by_index = {u.index: u for u in units}
+    for u in units:
+        if u.dropped_reason is None or u.superseded_by is None:
+            continue
+        keeper = by_index.get(u.superseded_by)
+        if keeper is None:
+            continue
+        lost = [n for n in negations_in(u.text) if n not in negations_in(keeper.text)]
+        if lost:
+            issues.append(
+                {
+                    "kind": "negation_dropped",
+                    "detail": (
+                        f'Dropped take at {fmt_ts(u.start)} says "{u.text}" with '
+                        f'"{", ".join(sorted(set(lost)))}" but the kept take at '
+                        f'{fmt_ts(keeper.start)} says "{keeper.text}"'
+                    ),
+                    "dropped_index": u.index,
+                    "kept_index": keeper.index,
+                }
+            )
+        missing = lost_content_words(u.text, keeper.text)
+        if missing:
+            issues.append(
+                {
+                    "kind": "content_dropped",
+                    "detail": (
+                        f'Dropped take at {fmt_ts(u.start)} ("{u.text}") says '
+                        f'"{", ".join(missing)}", which the kept take at '
+                        f'{fmt_ts(keeper.start)} ("{keeper.text}") does not; '
+                        "it may be a different idea, not a retake"
+                    ),
+                    "dropped_index": u.index,
+                    "kept_index": keeper.index,
+                }
+            )
+        if len(u.tokens) >= len(keeper.tokens) + 2 and _covered(keeper.tokens, u.tokens) >= 0.9:
+            issues.append(
+                {
+                    "kind": "truncated_take",
+                    "detail": (
+                        f'Kept take at {fmt_ts(keeper.start)} ("{keeper.text}") is shorter than '
+                        f'the earlier take at {fmt_ts(u.start)} ("{u.text}")'
+                    ),
+                    "dropped_index": u.index,
+                    "kept_index": keeper.index,
+                }
+            )
+    for u in kept:
+        if u.phrase is None:
+            continue
+        said = sorted(set(negations_in(u.text)))
+        scripted = sorted(set(negations_in(script_phrases[u.phrase])))
+        if said != scripted:
+            issues.append(
+                {
+                    "kind": "negation_differs_from_script",
+                    "detail": (
+                        f'Kept take at {fmt_ts(u.start)} ("{u.text}") and script phrase '
+                        f'{u.phrase + 1} ("{script_phrases[u.phrase]}") differ on negation'
+                    ),
+                    "kept_index": u.index,
+                }
+            )
+    last_phrase = -1
+    for u in kept:
+        if u.phrase is None or u.take != "full":
+            continue
+        if u.phrase < last_phrase:
+            issues.append(
+                {
+                    "kind": "script_order",
+                    "detail": (
+                        f"Kept take at {fmt_ts(u.start)} is script phrase {u.phrase + 1} but comes "
+                        f"after phrase {last_phrase + 1}; the cut would reorder the script"
+                    ),
+                    "kept_index": u.index,
+                }
+            )
+        last_phrase = max(last_phrase, u.phrase)
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Word timings: decisions per word, cut tight on the audio (28-Sep)
+
+FILLERS = frozenset({"um", "uh", "ah", "er", "erm", "hmm", "mm", "umm", "uhh", "ehh", "uhm"})
+# Said to the dogs around a name ("Boy, from here!" is his Hebrew "בואו מפה" as heard).
+ASIDE_CALL_WORDS = frozenset(
+    "boy bo bou bow come here there from were we go good girl no hey stop wait lets let "
+    "this way over sit stay okay ok yes yeah on out".split()
+)
+ASIDE_NAME_MAX_TOKENS = 8
+ASIDE_NEIGHBOUR_S = 8.0
+ASIDE_NEIGHBOUR_MAX_TOKENS = 4
+JUNK_WORD_S = 0.05  # the recogniser's invented words last a frame or two
+JUNK_RUN = 3
+JUNK_RATE_WPS = 8.0
+PREFIX_RETAKE_TOKENS = 5
+PREFIX_RETAKE_GAP_S = 15.0
+CONTINUATION_GAP_S = 12.0
+_I_FORMS = frozenset({"i", "i'm", "i've", "i'll", "i'd", "im", "ive"})
+
+REASON_WORDS = {
+    "retake": "an earlier take of a line you said again",
+    "false_start": "a start you said again",
+    "aside": "said to the dogs or off camera",
+    "junk": "recognition noise, not speech",
+    "filler": "filler",
+    "requested_cut": "you asked to cut it",
+}
+
+
+def _complete(text: str) -> bool:
+    t = str(text).rstrip().rstrip("\"')]")
+    return t.endswith((".", "?", "!")) and not t.endswith(("...", "…"))
+
+
+def _continues(a: Unit, b: Unit) -> bool:
+    """`b` carries on the sentence `a` left open ("A" ... "coach is a person")."""
+    tail = a.text.rstrip()
+    if tail[-1:] in ".?!…" or b.start - a.end > CONTINUATION_GAP_S:
+        return False
+    first = b.text.lstrip()
+    head = raw_tokens(first)[:1]
+    return bool(first) and (first[0].islower() or (head and head[0] in _I_FORMS))
+
+
+def _word_units(rows: list[tuple[int, float, float, str]]) -> list[Unit]:
+    """Utterances (split at a 0.35 s gap or a sentence end), then sentences rebuilt
+    from fragments a pause split apart."""
+    units: list[Unit] = []
+    cur: list[tuple[int, float, float, str]] = []
+
+    def close() -> None:
+        text = " ".join(r[3] for r in cur)
+        units.append(
+            Unit(len(units), cur[0][1], cur[-1][2], text, sim_tokens(text), words=[r[0] for r in cur])
+        )
+
+    for row in rows:
+        if cur and (row[1] - cur[-1][2] >= WORD_GROUP_GAP_S or cur[-1][3].rstrip()[-1:] in ".?!"):
+            close()
+            cur = []
+        cur.append(row)
+    if cur:
+        close()
+    sentences: list[Unit] = []
+    for u in units:
+        if sentences and _continues(sentences[-1], u):
+            prev = sentences[-1]
+            text = f"{prev.text} {u.text}"
+            sentences[-1] = Unit(
+                prev.index, prev.start, u.end, text, sim_tokens(text), words=prev.words + u.words
+            )
+        else:
+            sentences.append(Unit(len(sentences), u.start, u.end, u.text, u.tokens, words=u.words))
+    return sentences
+
+
+def _shared_prefix(a: list[str], b: list[str]) -> int:
+    n = 0
+    for x, y in zip(a, b, strict=False):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _prefix_retakes(sentences: list[Unit]) -> None:
+    """A line he starts the same way twice ("So go and work for free until you do." /
+    "So go and work for free for a while.") keeps one take: the complete one, and of
+    two complete takes the later."""
+    live = [s for s in sentences if s.dropped_reason is None]
+    for a, b in zip(live, live[1:], strict=False):
+        if a.dropped_reason or b.dropped_reason or b.start - a.end > PREFIX_RETAKE_GAP_S:
+            continue
+        if _shared_prefix(a.tokens, b.tokens) < PREFIX_RETAKE_TOKENS:
+            continue
+        if _complete(b.text) or not _complete(a.text):
+            a.dropped_reason = "retake" if _complete(a.text) else "false_start"
+            a.superseded_by = b.index
+        else:
+            b.dropped_reason = "false_start"
+            b.superseded_by = a.index
+
+
+def _asides(sentences: list[Unit], names: Sequence[str]) -> None:
+    """Talk that is not for the viewer: a short line with a dog's name in it, the
+    call words around it, and a run of "no, no, no"."""
+    name_tokens = {t for n in names for t in sim_tokens(n)}
+    marked: list[Unit] = []
+    for s in sentences:
+        if s.dropped_reason:
+            continue
+        toks = s.tokens
+        if toks and len(toks) >= 2 and all(t == "no" for t in toks):
+            s.dropped_reason = "aside"
+        elif name_tokens and len(toks) <= ASIDE_NAME_MAX_TOKENS and name_tokens & set(toks):
+            s.dropped_reason = "aside"
+            marked.append(s)
+    for s in sentences:
+        if s.dropped_reason or not s.tokens or len(s.tokens) > ASIDE_NEIGHBOUR_MAX_TOKENS:
+            continue
+        if not set(s.tokens) <= ASIDE_CALL_WORDS:
+            continue
+        if any(
+            -ASIDE_NEIGHBOUR_S <= s.start - m.end <= ASIDE_NEIGHBOUR_S
+            or -ASIDE_NEIGHBOUR_S <= m.start - s.end <= ASIDE_NEIGHBOUR_S
+            for m in marked
+        ):
+            s.dropped_reason = "aside"
+    # A call word next to a call word next to a name: "Boy," then "we're here".
+    changed = True
+    while changed:
+        changed = False
+        asides = [s for s in sentences if s.dropped_reason == "aside"]
+        for s in sentences:
+            if s.dropped_reason or not s.tokens or len(s.tokens) > ASIDE_NEIGHBOUR_MAX_TOKENS:
+                continue
+            if set(s.tokens) <= ASIDE_CALL_WORDS and any(
+                abs(s.start - m.end) <= 3.0 or abs(m.start - s.end) <= 3.0 for m in asides
+            ):
+                s.dropped_reason = "aside"
+                changed = True
+
+
+def _junk_words(rows: list[tuple[int, float, float, str]]) -> set[int]:
+    """Words the recogniser invented: runs of words a frame or two long, or an
+    utterance faster than anyone speaks (the 28-Sep walk ended with "don't want
+    your sales don't need" in 0.14 s)."""
+    junk: set[int] = set()
+    run: list[int] = []
+    for idx, s, e, _text in rows + [(-1, 0.0, 1.0, "")]:
+        if idx >= 0 and e - s <= JUNK_WORD_S:
+            run.append(idx)
+            continue
+        if len(run) >= JUNK_RUN:
+            junk.update(run)
+        run = []
+    return junk
+
+
+def _removal_units(
+    removals: list[dict[str, Any]],
+    rows: list[tuple[int, float, float, str]],
+    sentences: list[Unit],
+    start_index: int,
+) -> tuple[dict[int, str], list[Unit]]:
+    """The editor review's removals as word reasons, plus a unit per removed take so
+    the meaning check can compare it with the take he kept."""
+    reasons: dict[int, str] = {}
+    units: list[Unit] = []
+    for k, r in enumerate(removals):
+        s, e = float(r["start"]), float(r["end"])
+        kind = str(r.get("kind") or "retake")
+        idx = [i for i, ws, we, _t in rows if s - 0.01 <= (ws + we) / 2 <= e + 0.01]
+        if not idx:
+            continue
+        for i in idx:
+            reasons[i] = kind
+        keeper_at = r.get("keeper_start")
+        if kind in ("retake", "false_start") and keeper_at is not None:
+            keeper = next(
+                (u for u in sentences if u.start - 0.05 <= float(keeper_at) <= u.end + 0.05), None
+            )
+            text = " ".join(t for i, _s, _e, t in rows if i in set(idx))
+            units.append(
+                Unit(start_index + k, s, e, text, sim_tokens(text), dropped_reason=kind,
+                     superseded_by=keeper.index if keeper else None, words=idx)
+            )
+    return reasons, units
+
+
+def _plan_words(
+    timings: list[dict[str, Any]],
+    script_phrases: list[str] | None,
+    *,
+    pause_threshold_s: float,
+    pad_s: float,
+    duration_s: float | None,
+    precision: str,
+    activity: Activity | None,
+    removals: list[dict[str, Any]] | None,
+    overrides: dict[str, Any] | None,
+    aside_names: Sequence[str],
+) -> dict[str, Any]:
+    rows: list[tuple[int, float, float, str]] = []
+    for i, t in enumerate(timings or []):
+        text = str(t.get("text") or t.get("word") or "").strip()
+        start, end = t.get("start_s", t.get("start")), t.get("end_s", t.get("end"))
+        if start is None or end is None or not text:
+            continue
+        s, e = float(start), float(end)
+        rows.append((i, min(s, e), max(s, e), text))
+    rows.sort(key=lambda r: (r[1], r[2], r[0]))
+    phrases = [sim_tokens(p) for p in (script_phrases or [])]
+    sentences = _word_units(rows)
+    for u in sentences:
+        _match_phrase(u, phrases)
+
+    reviewed = removals is not None
+    review_units: list[Unit] = []
+    reason: dict[int, str | None] = {r[0]: None for r in rows}
+    if reviewed:
+        # The subscription editor read the whole take and decided retakes and asides.
+        by_word, review_units = _removal_units(removals or [], rows, sentences, len(sentences))
+        reason.update(by_word)
+    else:
+        _script_retakes(sentences)
+        _prefix_retakes(sentences)
+        _asides(sentences, aside_names)
+        for u in sentences:
+            if u.dropped_reason:
+                for i in u.words:
+                    reason[i] = u.dropped_reason
+    # Mechanical, whoever decided the rest.
+    for i in _junk_words(rows):
+        reason[i] = reason[i] or "junk"
+    for u in sentences:
+        dur = max(0.01, u.end - u.start)
+        if len(u.words) >= JUNK_RUN and len(u.words) / dur > JUNK_RATE_WPS:
+            for i in u.words:
+                reason[i] = reason[i] or "junk"
+    for i, _s, _e, text in rows:
+        if re.sub(r"[^\w']+", "", text).lower() in FILLERS:
+            reason[i] = reason[i] or "filler"
+    # His editing requests win over every rule above.
+    for key, value in (("cut", "requested_cut"), ("restore", None)):
+        for a, b in (overrides or {}).get(key) or []:
+            for i, ws, we, _t in rows:
+                if float(a) - 0.01 <= (ws + we) / 2 <= float(b) + 0.01:
+                    reason[i] = value
+
+    kept_flags = [reason[r[0]] is None for r in rows]
+    for u in sentences:
+        live = [i for i in u.words if reason[i] is None]
+        if not live:
+            u.dropped_reason = u.dropped_reason or next(
+                (reason[i] for i in u.words if reason[i]), "retake"
+            )
+        elif u.dropped_reason and not reviewed:
+            u.dropped_reason = None  # a restore brought part of it back
+            u.superseded_by = None
+    kept_units = [u for u in sentences if u.dropped_reason is None]
+    issues = _meaning_issues(sentences + review_units, kept_units, script_phrases or [])
+
+    words_sorted = [
+        {"start_s": s, "end_s": e, "text": t, "index": i} for i, s, e, t in rows
+    ]
+    # Never short of the last word: a stale or wrong duration must not invert a range.
+    end_bound = max(duration_s or 0.0, max((r[2] for r in rows), default=0.0) + pad_s)
+    if activity is not None:
+        audible = [reason[r[0]] != "junk" for r in rows]
+        keep, timed = tight_keep(words_sorted, kept_flags, activity, end_bound, audible)
+    else:
+        # No audio to go by: pad each kept word and join what is closer than a pause.
+        keep = []
+        previous_kept = True
+        for (_i, ws, we, _t), k in zip(rows, kept_flags, strict=True):
+            if not k:
+                previous_kept = False
+                continue
+            s = max(0.0, ws - pad_s)
+            e = min(end_bound, we + pad_s) if end_bound else we + pad_s
+            joinable = previous_kept and keep and s - keep[-1][1] <= max(0.0, pause_threshold_s - 2 * pad_s)
+            if joinable or (keep and s <= keep[-1][1]):
+                keep[-1][1] = max(keep[-1][1], e)
+            else:
+                keep.append([s, e])
+            previous_kept = True
+        keep = [[round(s, 3), round(e, 3)] for s, e in keep]
+        timed = retime(words_sorted, kept_flags, keep, [])
+    for w in timed:
+        w["index"] = rows[w["index"]][0]  # position in `rows` -> index in the transcript
+
+    # What was taken out, in runs, and the pauses between kept ranges.
+    dropped: list[dict[str, Any]] = []
+    run: list[tuple[int, float, float, str]] = []
+    run_reason: str | None = None
+
+    def flush() -> None:
+        if run:
+            dropped.append(
+                {
+                    "start": round(run[0][1], 3),
+                    "end": round(run[-1][2], 3),
+                    "text": " ".join(r[3] for r in run),
+                    "reason": run_reason,
+                }
+            )
+
+    for r in rows:
+        why = reason[r[0]]
+        if why and run and (why != run_reason or r[1] - run[-1][2] > 1.0):
+            flush()
+            run = []
+        if why:
+            run_reason = why
+            run.append(r)
+        elif run:
+            flush()
+            run = []
+    flush()
+    cursor = 0.0
+    for s, e in keep:
+        if s - cursor >= 0.05 and not _inside_dropped(cursor, s, dropped):
+            dropped.append({"start": round(cursor, 3), "end": s, "text": "", "reason": "pause"})
+        cursor = e
+    if end_bound and end_bound - cursor >= 0.05 and keep:
+        dropped.append({"start": round(cursor, 3), "end": round(end_bound, 3), "text": "", "reason": "pause"})
+    dropped.sort(key=lambda d: d["start"])
+    removed = [
+        {**d, "why": REASON_WORDS.get(str(d["reason"]), str(d["reason"]))}
+        for d in dropped
+        if d["reason"] not in ("pause", "filler") and d["text"]
+    ]
+
+    units_out = []
+    for u in sentences:
+        item = u.as_dict()
+        item["kept"] = u.dropped_reason is None
+        units_out.append(item)
+    tight = activity is not None
+    stats = {
+        "units": len(sentences),
+        "kept_units": len(kept_units),
+        "ranges": len(keep),
+        "kept_seconds": round(sum(e - s for s, e in keep), 3),
+        "script_phrases": len(phrases),
+        "script_phrases_covered": len({u.phrase for u in kept_units if u.phrase is not None}),
+        "pause_threshold_s": pause_threshold_s,
+        "removed": len(removed),
+        "fillers": sum(1 for r in rows if reason[r[0]] == "filler"),
+    }
+    if tight:
+        stats["pauses"] = pause_stats(keep, activity)
+    kept_text = " ".join(r[3] for r, k in zip(rows, kept_flags, strict=True) if k)
+    return {
+        "keep": keep,
+        "dropped": dropped,
+        "removed": removed,
+        "words": timed,
+        "meaning_check": {
+            "status": "blocked" if issues else "ok",
+            "issues": issues,
+            "negations_full": len(negations_in(" ".join(r[3] for r in rows))),
+            "negations_kept": len(negations_in(kept_text)),
+            "notes": [],
+        },
+        "timing": {
+            "precision": precision,
+            "exact_cuts": False,
+            "word_level": True,
+            "snapped_to_audio": tight,
+            "speech": activity.as_dict() if activity is not None else None,
+            "boundary_uncertainty_s": None,
+            "pauses_trimmed": True,
+            "summary": (
+                "Cuts snapped to where the speech starts and stops in the audio; pauses over "
+                "0.2 s cut to a breath"
+                if tight
+                else "Cuts follow the supplied timings, which are not verified; listen before use"
+            ),
+        },
+        "decided_by": "editor_review" if reviewed else "rules",
+        "units": units_out,
+        "stats": stats,
+        "kept_text": kept_text,
+    }
+
+
 def _coarse_cuts(
     units: list[Unit], end_bound: float, notes: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -590,7 +1031,8 @@ def uncut_plan(plan: dict[str, Any], duration_s: float | None) -> dict[str, Any]
     """The whole recording with every spoken unit captioned. Nothing is removed."""
     units = [dict(u, kept=True, reason=None) for u in plan.get("units") or []]
     end = duration_s or max((u["end"] for u in units), default=0.0)
-    return {**plan, "keep": [[0.0, round(end, 3)]] if end else [], "units": units}
+    # Captions come from the units then: every word he said, not the cut's words.
+    return {**plan, "keep": [[0.0, round(end, 3)]] if end else [], "units": units, "words": None}
 
 
 def _inside_dropped(s: float, e: float, dropped: list[dict[str, Any]]) -> bool:
@@ -639,8 +1081,47 @@ def _wrap(text: str, width: int = MAX_CAPTION_LINE) -> list[str]:
     return lines
 
 
+def _cues_from_words(words: list[dict[str, Any]], keep: list[list[float]]) -> list[dict[str, Any]]:
+    """Subtitle cues from the kept words (fillers and cut words never appear)."""
+    timed = []
+    for w in words:
+        s, e = map_to_edit(float(w["start"]), keep), map_to_edit(float(w["end"]), keep)
+        if s is not None and e is not None and e > s:
+            timed.append((s, e, str(w["text"])))
+    cues: list[dict[str, Any]] = []
+    cur: list[tuple[float, float, str]] = []
+
+    def close() -> None:
+        lines = _wrap(" ".join(t for _s, _e, t in cur))
+        cues.append({"start": cur[0][0], "end": cur[-1][1] + 0.3, "lines": lines[:2]})
+
+    for item in timed:
+        if cur:
+            text = " ".join(t for _s, _e, t in cur + [item])
+            if (
+                len(_wrap(text)) > 2
+                or item[0] - cur[-1][1] > 0.8
+                or item[1] - cur[0][0] > 5.0
+                or (len(cur) >= 3 and cur[-1][2].rstrip()[-1:] in ".?!")
+            ):
+                close()
+                cur = []
+        cur.append(item)
+    if cur:
+        close()
+    for a, b in zip(cues, cues[1:], strict=False):
+        a["end"] = min(a["end"], b["start"])
+    return [
+        {"start": round(c["start"], 3), "end": round(c["end"], 3), "lines": c["lines"]}
+        for c in cues
+        if c["end"] - c["start"] > 0.01 and c["lines"]
+    ]
+
+
 def build_cues(plan: dict[str, Any]) -> list[dict[str, Any]]:
     keep = plan.get("keep") or []
+    if plan.get("words"):
+        return _cues_from_words(plan["words"], keep)
     cues: list[dict[str, Any]] = []
     for unit in plan.get("units") or []:
         if not unit.get("kept"):

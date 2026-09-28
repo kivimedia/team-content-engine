@@ -262,6 +262,12 @@ main { width: min(100%, 860px); margin: 0 auto; }
 .notice.is-bad { border-left-color: var(--signal); background: #fdeeee; color: #6d1b1b; }
 .notice.is-good { border-left-color: var(--moss); background: #eef6ef; color: #1f3d2a; }
 
+/* What the editor took out of a video (28-Sep), folded so the card stays short. */
+.removed { margin: 0 0 14px; border-left: 5px solid var(--line); padding: 8px 12px; color: var(--ink); font-size: .9rem; line-height: 1.4; }
+.removed summary { cursor: pointer; font-weight: 800; padding: 6px 0; }
+.removed ul { margin: 6px 0 4px; padding-left: 18px; }
+.removed li { margin: 4px 0; }
+
 .empty {
   margin-top: 22px; border: 2px dashed var(--line); border-radius: 14px;
   padding: 26px 18px; text-align: center; color: var(--body); line-height: 1.5;

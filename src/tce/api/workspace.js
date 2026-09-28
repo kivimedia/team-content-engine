@@ -1434,6 +1434,19 @@
       html += '<p class="notice">Proofread fixed: \u201c' + esc(fix.heard) + '\u201d \u2192 \u201c'
            + esc(fix.replacement || "(removed)") + '\u201d</p>';
     });
+    if (item.review_note) html += '<p class="notice">' + esc(item.review_note) + "</p>";
+    // 28-Sep: what the editor took out (lines said twice, talk to the dogs), so
+    // nothing disappears unseen. Bringing one back is an editing request.
+    var removed = item.removed || [];
+    if (removed.length) {
+      html += '<details class="removed"><summary>Took out ' + removed.length + " "
+           + plural(removed.length, "thing") + "</summary><ul>";
+      removed.forEach(function (r) {
+        html += "<li><span class=\"source\">" + esc(clock(r.start || 0)) + "</span> \u201c"
+             + esc(r.text) + "\u201d <span class=\"source\">" + esc(r.why || r.reason || "") + "</span></li>";
+      });
+      html += '</ul><p class="source">To bring one back, use Request an editing change.</p></details>';
+    }
     var last = item.last_request;
     if (last) {
       var res = last.result || {};
@@ -1455,14 +1468,18 @@
       if (action.key === "watch_raw" || action.key === "watch_edit") {
         var file = apiV1 + "/production/uploads/" + esc(item.upload_id)
                  + (action.key === "watch_edit" ? "/edited" : "/video");
+        // 28-Sep: the phone plays the light 720p copy; the full edit is the download.
+        var play = action.key === "watch_edit" && item.has_preview ? file + "?preview=1" : file;
         html += '<button class="btn' + (action.key === "watch_edit" ? " primary" : "")
-             + '" type="button" data-watch="' + file + '">' + esc(action.label) + "</button>";
+             + '" type="button" data-watch="' + play + '">' + esc(action.label) + "</button>";
         html += '<a class="btn quiet" href="' + file + '?download=1" download>'
              + (action.key === "watch_edit" ? "Download the edit" : "Download") + "</a>";
       } else if (action.key === "captions") {
         html += '<a class="btn quiet" href="' + apiV1 + "/production/uploads/" + esc(item.upload_id) + '/captions.srt">' + esc(action.label) + "</a>";
       } else if (action.key === "request_edit") {
         html += '<button class="btn" type="button" data-edit-request="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
+      } else if (action.key === "edit_again") {
+        html += '<button class="btn quiet" type="button" data-edit-again="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "re_record" && item.candidate_id) {
         // To this topic, not to the list: the studio lists only what is left to
         // film, so a topic he filmed is reached by name (28-Sep review).
@@ -1583,6 +1600,17 @@
         method: "POST", body: { platforms: picked, at: at }
       });
       toast(schedule ? "Scheduling. The card shows each one as it is booked." : "Posting. The card shows each link as it goes live.");
+      renderLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function editAgain(uploadId) {
+    if (!window.confirm("Edit this video again with the tight cut and the new captions? The current edit is replaced when the new one is ready.")) return;
+    try {
+      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/auto-edit", { method: "POST" });
+      toast("Editing it again. The card shows each step as it happens.");
       renderLibrary();
     } catch (error) {
       toast(error.message, true);
@@ -1865,7 +1893,7 @@
     "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
     "watch", "watch-close", "voice-undo", "voice-restore",
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise",
-    "save-rules", "archive", "unarchive"
+    "save-rules", "archive", "unarchive", "edit-again"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -1891,6 +1919,7 @@
     if (d.saveRules !== undefined) { saveRules(); return; }
     if (d.archive !== undefined) { archiveRecording(d.archive, true); return; }
     if (d.unarchive !== undefined) { archiveRecording(d.unarchive, false); return; }
+    if (d.editAgain !== undefined) { editAgain(d.editAgain); return; }
     if (d.filter !== undefined) { state.topicFilter = d.filter; render(); return; }
     if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; render(); return; }
     if (d.wtab !== undefined) { state.workshopTab = d.wtab; render(); return; }

@@ -71,3 +71,17 @@ def test_the_request_prompt_speaks_in_edited_time_and_marks_cut_words():
     text = autoedit.numbered_transcript(w, keep)
     assert "~~2:drop~~" in text and "~~3:this.~~" in text
     assert text.splitlines()[-1].startswith("[0:02 in the edit]")
+
+
+def test_a_kept_word_whose_recogniser_time_sits_in_trimmed_silence_is_not_called_cut():
+    # 28-Sep: the cut follows the audio; "It" is stamped 106.96-107.88 but said by 107.35.
+    w = words("It reminds them.", step=1.0)
+    keep = [[0.0, 0.4], [1.0, 3.0]]  # the recogniser's middle of "It" (0.45) is in the cut
+    kept = [{"index": 0, "text": "It", "start": 0.0, "end": 0.35},
+            {"index": 1, "text": "reminds", "start": 1.0, "end": 1.9},
+            {"index": 2, "text": "them.", "start": 2.0, "end": 2.9}]
+    assert "~~0:It~~" in autoedit.numbered_transcript(w, keep)
+    assert "~~" not in autoedit.numbered_transcript(w, keep, kept)
+    from tce.production import publishing
+
+    assert publishing.spoken_text(w, keep, kept) == "It reminds them."

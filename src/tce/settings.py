@@ -173,6 +173,11 @@ class Settings(BaseSettings):
     # 25-Sep: a finished session edits itself and editing requests run themselves,
     # on the subscription worker. Off = the old click-each-step flow.
     production_auto_edit: bool = True
+    # 28-Sep: his dogs. A short line with their name in it is talk to them, not to the
+    # viewer, and is cut ("If I call my dogs maple, rain ... that needs to be edited out").
+    production_aside_names: str = "Maple,Rain"
+    # How long a late editor review is still waited for after the edit rendered without it.
+    production_review_wait_h: float = 12.0
     # 26-Sep: TCE publishes the edited video through the schedule-* skills on this box.
     production_skills_dir: str = "/home/ziv/skills"
     production_linkedin_env_file: str = "/home/ziv/.kmboards-li.env"
