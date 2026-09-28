@@ -36,23 +36,32 @@ from tce.models.editorial_workspace import (
 )
 
 # Library filters, in the order the chips are shown. Each maps to upload states.
+# 28-Sep: "Still to do" is the list the page opens on - everything not yet out and
+# not archived - and published videos have their own chip instead of crowding it.
 LIBRARY_FILTERS: dict[str, tuple[str, ...]] = {
-    "all": (),
+    "todo": (),
     "uploading": ("uploaded",),
     "editing": ("transcribing", "transcribed", "proofreading", "planned", "rendering"),
     "needs_review": ("needs_review",),
     "ready": ("edited",),
+    "published": (),
+    "all": (),
     "archived": (),
 }
+
+# A post in one of these states has gone out, or will without anyone touching it.
+_OUT_STATUSES = ("posted", "scheduled")
 
 _LIVE_STATUSES = ("transcribing", "transcribed", "proofreading", "planned", "rendering")
 
 FILTER_LABELS = {
-    "all": "Everything",
+    "todo": "Still to do",
     "uploading": "Uploading",
     "editing": "Being edited",
     "needs_review": "Needs your review",
     "ready": "Ready",
+    "published": "Published",
+    "all": "Everything",
     "archived": "Archived",
 }
 
@@ -218,6 +227,17 @@ async def list_library(
             )
         )
         titles = {row[0]: row[1] for row in rows.all()}
+        # A topic he recorded a receipt for by hand is out, whichever take it was.
+        rows = await db.execute(
+            select(TopicCandidate.id).where(
+                TopicCandidate.workspace_id == ws,
+                TopicCandidate.id.in_(candidate_ids),
+                TopicCandidate.status == "published",
+            )
+        )
+        out_candidates = {row[0] for row in rows.all()}
+    else:
+        out_candidates = set()
 
     packet_ids = [u.packet_id for u in uploads if u.packet_id]
     packet_versions: dict[uuid.UUID, int] = {}
@@ -247,6 +267,19 @@ async def list_library(
     for pub in pubs.scalars().all():
         pubs_by_upload.setdefault(pub.upload_id, {})[pub.platform] = pub
 
+    # 28-Sep: a video is published once any of its posts went out or is scheduled.
+    # The other takes of that topic are finished with it, so they leave "Still to do"
+    # too rather than sitting there for ever.
+    out_uploads = {
+        upload_id
+        for upload_id, by_platform in pubs_by_upload.items()
+        if any(p.status in _OUT_STATUSES for p in by_platform.values())
+    }
+    out_candidates |= {u.candidate_id for u in uploads if u.id in out_uploads and u.candidate_id}
+
+    def is_published(upload: RecordingUpload) -> bool:
+        return upload.id in out_uploads or upload.candidate_id in out_candidates
+
     wanted = LIBRARY_FILTERS[filter_key]
     # "I need a way to find the edited video" (25-Sep): a replaced take is kept on
     # the server for history, never shown, and an edit sits above the raw takes.
@@ -260,6 +293,11 @@ async def list_library(
     items: list[dict[str, Any]] = []
     for upload in uploads:
         if wanted and upload.status not in wanted:
+            continue
+        published = is_published(upload)
+        if filter_key == "published" and not published:
+            continue
+        if published and filter_key not in ("published", "all", "archived"):
             continue
         open_count = open_by_upload.get(upload.id, 0)
         items.append(
@@ -288,6 +326,7 @@ async def list_library(
                 "packet_version": packet_versions.get(upload.packet_id),
                 "has_edit": bool(upload.edited_path),
                 "archived": upload.archived_at is not None,
+                "published": published,
                 "has_captions": bool(upload.captions_path),
                 "has_transcript": bool(upload.transcript),
                 "issues": _issues(upload),

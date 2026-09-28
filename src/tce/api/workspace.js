@@ -32,7 +32,7 @@
     workshop: null,
     workshopTab: "outline",
     library: null,
-    libraryFilter: "all",
+    libraryFilter: "todo",
     pending: null,     // a change set awaiting his yes or no
     thread: null,      // the open conversation
     talkMode: "discuss",
@@ -1347,7 +1347,7 @@
 
     var html = '<div class="page">';
     html += '<div class="page-head"><p class="kicker">Editorial workspace</p><h1>Library</h1>';
-    html += '<p class="lede">Everything you have recorded, and what happened to it.</p></div>';
+    html += '<p class="lede">' + esc(LIBRARY_LEDE[data.filter] || LIBRARY_LEDE.all) + "</p></div>";
 
     html += '<div class="chips" role="group" aria-label="Filter recordings">';
     (data.filters || []).forEach(function (f) {
@@ -1357,7 +1357,13 @@
     html += "</div>";
 
     var items = data.items || [];
-    if (!items.length) {
+    if (!items.length && data.filter === "todo") {
+      html += '<div class="empty"><strong>Nothing waiting on you</strong>'
+            + "Everything you recorded has gone out. Published videos are under Published.</div>";
+    } else if (!items.length && data.filter === "published") {
+      html += '<div class="empty"><strong>Nothing published yet</strong>'
+            + "A video moves here once one of its posts goes out or is scheduled.</div>";
+    } else if (!items.length) {
       html += '<div class="empty"><strong>Nothing recorded yet</strong>'
             + "Recordings appear here as soon as the studio finishes uploading them.</div>";
     } else {
@@ -1370,6 +1376,14 @@
     status(items.length + " " + plural(items.length, "recording"));
     scheduleLibraryPoll(items);
   }
+
+  /* 28-Sep: the Library opens on what still needs pushing through; what went out
+     has its own chip. The line under the heading says which list this is. */
+  var LIBRARY_LEDE = {
+    todo: "What still needs you: recorded, being edited, or waiting to go out.",
+    published: "Videos that have gone out, or are scheduled to.",
+    all: "Everything you have recorded, and what happened to it."
+  };
 
   /* TCE edits by itself now (25-Sep), so a card changes while he looks at it. While
      anything is being edited, re-read quietly every 8 s and redraw only when

@@ -1339,6 +1339,68 @@ async def test_the_edited_video_is_first_and_replaced_takes_are_gone(
     assert body["items"][0]["has_edit"] is True
 
 
+async def test_published_videos_have_their_own_tab_and_leave_the_to_do_list(
+    client, editorial_sessionmaker
+):
+    """28-Sep, on a call: published videos get their own tab, and the view he opens
+    to shows only what still needs pushing through (recorded, being edited, waiting
+    to go out). A video counts as out once any post went out or is scheduled, or
+    its topic was marked published; the other takes of that topic go with it."""
+    ws = uuid.uuid4()
+    posted = await add_candidate(editorial_sessionmaker, ws, "Posted on Instagram")
+    marked = await add_candidate(editorial_sessionmaker, ws, "Marked published", status="published")
+    waiting = await add_candidate(editorial_sessionmaker, ws, "Edited, not out")
+    drafted = await add_candidate(editorial_sessionmaker, ws, "Posts drafted only")
+    raw = await add_candidate(editorial_sessionmaker, ws, "Just recorded")
+    async with editorial_sessionmaker() as s:
+        rows = {}
+        for cid, digest, status in (
+            (posted, "1", "edited"), (posted, "2", "uploaded"), (marked, "3", "edited"),
+            (waiting, "4", "edited"), (drafted, "5", "edited"), (raw, "6", "uploaded"),
+        ):
+            row = RecordingUpload(
+                workspace_id=ws, candidate_id=cid, original_filename=f"{digest}.mp4",
+                storage_path="/tmp/take.mp4", sha256=digest * 64, status=status,
+                edited_path="/tmp/edit.mp4" if status == "edited" else None,
+            )
+            s.add(row)
+            rows[digest] = row
+        await s.flush()
+        s.add(VideoPublication(workspace_id=ws, upload_id=rows["1"].id, candidate_id=posted,
+                               platform="instagram", status="posted"))
+        s.add(VideoPublication(workspace_id=ws, upload_id=rows["1"].id, candidate_id=posted,
+                               platform="linkedin", status="draft"))
+        s.add(VideoPublication(workspace_id=ws, upload_id=rows["5"].id, candidate_id=drafted,
+                               platform="facebook", status="draft"))
+        await s.commit()
+
+    lib = "/api/v1/production/library"
+
+    async def titles(key):
+        body = (await client.get(f"{lib}?filter={key}", headers=headers(ws))).json()
+        assert "items" in body, body
+        return body, sorted({i["title"] for i in body["items"]})
+
+    body, todo = await titles("todo")
+    assert todo == ["Edited, not out", "Just recorded", "Posts drafted only"]
+    assert body["filters"][0] == {"key": "todo", "label": "Still to do"}
+    assert "published" in [f["key"] for f in body["filters"]]
+    _, out = await titles("published")
+    assert out == ["Marked published", "Posted on Instagram"]
+    _, ready = await titles("ready")
+    assert ready == ["Edited, not out", "Posts drafted only"]
+    body, everything = await titles("all")
+    assert len(body["items"]) == 6
+    assert {i["title"] for i in body["items"] if i["published"]} == set(out)
+
+
+def test_the_library_opens_on_the_to_do_list():
+    from pathlib import Path
+
+    js = (Path(__file__).parents[2] / "src/tce/api/workspace.js").read_text()
+    assert 'libraryFilter: "todo"' in js
+
+
 async def test_an_editing_request_is_recorded_against_the_recording(
     client, editorial_sessionmaker
 ):
