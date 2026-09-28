@@ -20,7 +20,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.editorial.common import ORIGIN_TECHNICAL_VALIDATION
@@ -76,6 +76,19 @@ class LibraryError(Exception):
         self.code = code
         self.message = message
         self.status = status
+
+
+def technical_candidate_ids(ws: uuid.UUID) -> Select[tuple[uuid.UUID]]:
+    """The topics of synthetic takes that prove the pipeline works, as a subquery.
+
+    Not something he recorded, so it never sits in his library, and nothing that
+    counts his recordings (Today's "being edited", whether a topic is filmed) may
+    count it either. One definition, so those counts cannot drift from the list.
+    """
+    return select(TopicCandidate.id).where(
+        TopicCandidate.workspace_id == ws,
+        TopicCandidate.origin == ORIGIN_TECHNICAL_VALIDATION,
+    )
 
 
 async def _get_upload(
@@ -178,15 +191,11 @@ async def list_library(
     # and it must not sit in his library looking like one. The older /recorded
     # endpoint has always excluded these; the library is the surface replacing it,
     # so it has to agree rather than quietly re-introduce the artifact.
-    technical = select(TopicCandidate.id).where(
-        TopicCandidate.workspace_id == ws,
-        TopicCandidate.origin == ORIGIN_TECHNICAL_VALIDATION,
-    )
     result = await db.execute(
         select(RecordingUpload)
         .where(
             RecordingUpload.workspace_id == ws,
-            RecordingUpload.candidate_id.notin_(technical),
+            RecordingUpload.candidate_id.notin_(technical_candidate_ids(ws)),
         )
         .order_by(RecordingUpload.created_at.desc())
     )

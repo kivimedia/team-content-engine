@@ -35,7 +35,7 @@ from tce.editorial.common import (
     ORIGIN_SELECTOR_REJECTED,
     ORIGIN_TECHNICAL_VALIDATION,
 )
-from tce.editorial.lineup import LANE_LABELS, lane_for
+from tce.editorial.lineup import LANE_LABELS, filmed_candidate_ids, lane_for
 from tce.models.editorial import RecordingPacket, TopicCandidate
 from tce.models.editorial_workspace import TOPIC_DECISIONS, TopicDecision
 
@@ -262,7 +262,7 @@ async def list_topics(
         select(TopicCandidate)
         .where(
             TopicCandidate.workspace_id == ws,
-            TopicCandidate.status.notin_(("rejected", "recorded", "published")),
+            TopicCandidate.status.notin_(("rejected", "published")),
             TopicCandidate.origin.notin_(HIDDEN_ORIGINS),
         )
         .order_by(
@@ -272,6 +272,12 @@ async def list_topics(
         )
     )
     candidates = list(result.scalars().all())
+    # What he has filmed is done and lives in the Library. Asked the way the week
+    # asks it (28-Sep review): any upload marks a topic "recorded", even a take
+    # resting on the server, so that status dropped a topic Today still lists to
+    # film, and one he saved for later landed in no list at all.
+    filmed = await filmed_candidate_ids(db, ws, [c.id for c in candidates])
+    candidates = [c for c in candidates if c.id not in filmed]
     ids = [c.id for c in candidates]
     decisions = await _decisions_for(db, ws, ids)
     stored = await _briefs_for(db, ws, ids)
@@ -364,7 +370,12 @@ async def decide(
         raise InboxError("bad_decision", f"unknown decision {decision}", status=400)
 
     candidate = await get_candidate(db, ws, candidate_id)
-    if candidate.status == "recorded" and decision == "away":
+    # Filmed, by the week's own test (28-Sep review). The topic's "recorded"
+    # status comes from any upload, even a take resting on the server, and
+    # refused "put it away" for a topic Today still lists to film.
+    if decision == "away" and candidate.id in await filmed_candidate_ids(
+        db, ws, [candidate.id]
+    ):
         raise InboxError("recorded", "that one is already recorded", status=409)
 
     row = await get_decision(db, ws, candidate_id)

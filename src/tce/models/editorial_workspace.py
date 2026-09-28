@@ -255,6 +255,13 @@ class WeeklyLineup(_PrivateWorkspaceMixin, Base):
     primary_slots: Mapped[int] = mapped_column(Integer, default=3)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # 28-Sep: a new week keeps what he chose and has not recorded (migration 055).
+    # `carried_at` is when that copy ran for this week, once; null means it has
+    # not run yet. `carried_from_lineup_id` is the week it copied from.
+    carried_from_lineup_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    carried_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class EditorialSettings(_PrivateWorkspaceMixin, Base):

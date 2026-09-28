@@ -151,7 +151,20 @@
     var full = prefix + path;
     if (replace) window.history.replaceState({}, "", full);
     else window.history.pushState({}, "", full);
+    takeFilterFromUrl();
     render();
+  }
+
+  /* A link can name the list it opens: Today's "being edited" card goes to
+     /library?filter=editing, the list it counted (28-Sep), not to Everything.
+     Read when the page is reached (a tap, Back, or the link opened directly),
+     not on every render, so a chip tapped afterwards still changes the list. */
+  function takeFilterFromUrl() {
+    var wanted = new URLSearchParams(window.location.search).get("filter");
+    if (!wanted) return;
+    var name = parse().name;
+    if (name === "library") state.libraryFilter = wanted;
+    else if (name === "topics") state.topicFilter = wanted;
   }
 
   function setChrome(route) {
@@ -203,7 +216,7 @@
     html += '<div class="counts">';
     html += countCard(counts.waiting, "need a decision", "/topics");
     html += countCard(counts.scripts_ready, "scripts ready", "/week");
-    html += countCard(counts.editing, "being edited", "/library");
+    html += countCard(counts.editing, "being edited", "/library?filter=editing");
     html += countCard(counts.pending_reviews, "changes to review", "/topics");
     html += "</div>";
 
@@ -226,7 +239,7 @@
         html += weekCard(item, index, false);
       });
       html += "</div>";
-      var readyFirst = primary.filter(function (i) { return i.script_state === "ready"; })[0];
+      var readyFirst = primary.filter(toFilmNow)[0];
       if (readyFirst) {
         html += '<div class="actions"><a class="btn primary" href="' + prefix
              + "/record?candidate=" + esc(readyFirst.candidate_id)
@@ -468,7 +481,18 @@
     }
     html += "</div>";
     view.innerHTML = html;
-    status(data.ready_count + " of " + primary.length + " scripts ready");
+    // A filmed topic stays on the list but its script is used: "ready" counts
+    // only what is still to film, and the filmed ones are named apart.
+    var filmed = primary.filter(function (i) { return i.filmed; }).length;
+    status(data.ready_count + " of " + (primary.length - filmed) + " scripts ready"
+           + (filmed ? ", " + filmed + " filmed" : ""));
+  }
+
+  /* A topic he can start filming now: its script is ready and he has not filmed
+     it yet. 28-Sep: a filmed topic stays in its week, and must never say
+     "Start recording" again. */
+  function toFilmNow(item) {
+    return item.script_state === "ready" && !item.filmed;
   }
 
   function weekCard(item, index, controls, total, isReserve) {
@@ -477,8 +501,12 @@
     html += "<h3>" + esc(item.title) + "</h3></div>";
     if (item.reason) html += '<p class="why">' + esc(item.reason) + "</p>";
     if (item.lane_label) html += '<span class="tag is-lane">' + esc(item.lane_label) + "</span>";
-    html += '<span class="tag' + (item.script_state === "ready" ? " is-ready" : "") + '">'
-         + esc(scriptSentence(item.script_state)) + "</span>";
+    if (item.filmed) {
+      html += '<span class="tag is-ready">Filmed</span>';
+    } else {
+      html += '<span class="tag' + (item.script_state === "ready" ? " is-ready" : "") + '">'
+           + esc(scriptSentence(item.script_state)) + "</span>";
+    }
 
     if (controls) {
       html += '<div class="order-controls">';
@@ -499,7 +527,12 @@
 
     html += '<div class="actions">';
     html += '<button class="btn" type="button" data-open-room="' + esc(item.candidate_id) + '">Open the topic</button>';
-    if (item.packet_id && item.script_state === "ready") {
+    if (item.filmed) {
+      // Done: the script is still his to read, but nothing asks him to film it.
+      if (item.packet_id) {
+        html += '<button class="btn" type="button" data-open-script="' + esc(item.packet_id) + '">Open the script</button>';
+      }
+    } else if (item.packet_id && item.script_state === "ready") {
       html += '<a class="btn primary" href="' + prefix + "/record?candidate="
            + esc(item.candidate_id) + '">Record this one</a>';
       html += '<button class="btn" type="button" data-open-script="' + esc(item.packet_id) + '">Open the script</button>';
@@ -1401,7 +1434,10 @@
       } else if (action.key === "request_edit") {
         html += '<button class="btn" type="button" data-edit-request="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "re_record" && item.candidate_id) {
-        html += '<a class="btn quiet" href="' + prefix + '/record">' + esc(action.label) + "</a>";
+        // To this topic, not to the list: the studio lists only what is left to
+        // film, so a topic he filmed is reached by name (28-Sep review).
+        html += '<a class="btn quiet" href="' + prefix + "/record?candidate="
+             + esc(item.candidate_id) + '">' + esc(action.label) + "</a>";
       }
     });
     // 27-Sep: "need to be able to archive". Kept on the server; Archived brings it back.
@@ -1911,7 +1947,7 @@
   $("readerSmaller").addEventListener("click", function () { stepReader(-1); });
   $("readerBigger").addEventListener("click", function () { stepReader(1); });
 
-  window.addEventListener("popstate", function () { render(); });
+  window.addEventListener("popstate", function () { takeFilterFromUrl(); render(); });
 
   // ------------------------------------------------------------------ boot
 
@@ -2017,9 +2053,7 @@
   function firstReadyThisWeek() {
     var week = (state.route === "today" && state.today) ? state.today.week : state.week;
     if (!week) return null;
-    return (week.primary || []).filter(function (item) {
-      return item.script_state === "ready";
-    })[0] || null;
+    return (week.primary || []).filter(toFilmNow)[0] || null;
   }
 
   async function render() {
@@ -2055,5 +2089,6 @@
 
   TALK_FOOTER = $("talkSheet").querySelector(".sheet-foot").innerHTML;
 
+  takeFilterFromUrl();
   render();
 })();

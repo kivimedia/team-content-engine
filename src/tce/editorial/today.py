@@ -27,11 +27,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.editorial import inbox
 from tce.editorial import lineup as lineup_service
+from tce.editorial.library import LIBRARY_FILTERS, technical_candidate_ids
 from tce.models.editorial import RecordingUpload
 from tce.models.editorial_workspace import EditorialChangeSet
-
-# Upload states that mean "the machine still owes me something".
-IN_FLIGHT_UPLOADS = ("uploaded", "transcribing", "planned")
 
 
 async def _waiting_count(db: AsyncSession, ws: uuid.UUID) -> int:
@@ -45,10 +43,20 @@ async def _waiting_count(db: AsyncSession, ws: uuid.UUID) -> int:
 
 
 async def _editing_count(db: AsyncSession, ws: uuid.UUID) -> int:
+    """The number the Library shows under "Being edited", counted the way that list is.
+
+    28-Sep: Today said 12 being edited while nothing was. It counted "uploaded", a
+    take resting on the server with nothing run on it (the Library lists those
+    under Uploading), and archived and synthetic takes the Library never shows.
+    The card opens that list, so it counts that list: its states, read from the
+    Library itself, without archived takes or the pipeline's own test takes.
+    """
     result = await db.execute(
         select(func.count(RecordingUpload.id)).where(
             RecordingUpload.workspace_id == ws,
-            RecordingUpload.status.in_(IN_FLIGHT_UPLOADS),
+            RecordingUpload.status.in_(LIBRARY_FILTERS["editing"]),
+            RecordingUpload.archived_at.is_(None),
+            RecordingUpload.candidate_id.notin_(technical_candidate_ids(ws)),
         )
     )
     return int(result.scalar_one() or 0)
@@ -71,7 +79,10 @@ def _next_action(
     waiting: int,
     pending_reviews: int,
 ) -> dict[str, Any]:
-    primary = week.get("primary") or []
+    # A topic he has filmed stays in the week, so the week shows what he did, but
+    # it is done (28-Sep): never offered for recording again, and never counted
+    # as still needing a script.
+    primary = [row for row in week.get("primary") or [] if not row.get("filmed")]
     ready = [row for row in primary if row.get("script_state") == "ready"]
 
     if pending_reviews:
@@ -126,28 +137,9 @@ async def build(db: AsyncSession, ws: uuid.UUID, *, sessionmaker: Any = None) ->
     "ask for a script and wait two minutes" and "ask for a script and wait until
     the desktop wakes up", and hiding that turns a slow answer into a broken one.
     """
-    week_start = lineup_service.week_start_for(None)
-    lineup = await lineup_service.get_lineup(db, ws, week_start)
-    week = (
-        await lineup_service.lineup_to_json(db, ws, lineup)
-        if lineup is not None
-        else {
-            "lineup_id": None,
-            "week_start": week_start.date().isoformat(),
-            "revision": 0,
-            "primary": [],
-            "reserve": [],
-            "mix": "",
-            "ready_count": 0,
-            "primary_slots": await lineup_service.videos_per_week(db, ws),
-            "status": "draft",
-        }
-    )
-
-    waiting = await _waiting_count(db, ws)
-    editing = await _editing_count(db, ws)
-    pending_reviews = await _pending_reviews(db, ws)
-
+    # The probe opens a session of its own. It runs before this session writes
+    # anything below: where both share one connection (the in-memory test
+    # database) its close would roll back the week's first read.
     worker: dict[str, Any] = {}
     if sessionmaker is not None:
         try:
@@ -156,6 +148,16 @@ async def build(db: AsyncSession, ws: uuid.UUID, *, sessionmaker: Any = None) ->
             worker = await worker_availability(sessionmaker)
         except Exception:  # pragma: no cover - never let a status probe break Today
             worker = {}
+
+    # 28-Sep: "0 scripts ready" on the Monday the week turned over, with eight
+    # chosen topics not filmed yet. This week's list is read the one way that
+    # brings last week's unrecorded topics into it; the caller commits that.
+    lineup = await lineup_service.current_lineup(db, ws)
+    week = await lineup_service.lineup_to_json(db, ws, lineup)
+
+    waiting = await _waiting_count(db, ws)
+    editing = await _editing_count(db, ws)
+    pending_reviews = await _pending_reviews(db, ws)
 
     return {
         "week": week,

@@ -239,7 +239,11 @@ function packetToIdea(idea, packet) {
 
   async function loadQueue() {
     try {
-      const data = await api("/recording-queue");
+      // The list is what he has still to film. A topic named in the link ("Record
+      // it again", "Start recording" in the topic room) is asked for by name, so
+      // the server adds it even when he filmed it already (28-Sep review).
+      const named = new URLSearchParams(window.location.search).get("candidate");
+      const data = await api("/recording-queue" + (named ? `?candidate=${encodeURIComponent(named)}` : ""));
       state.ideas = data.ideas || [];
       renderQueue();
       $("syncState").textContent = `${state.ideas.length} ready script${state.ideas.length === 1 ? "" : "s"}`;

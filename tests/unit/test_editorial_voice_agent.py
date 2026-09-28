@@ -1115,6 +1115,42 @@ async def test_undoing_an_approval_after_the_week_rolled_over_takes_it_off_that_
     assert await decision_of(editorial_sessionmaker, cid) is None
 
 
+async def test_undoing_an_approval_the_new_week_already_carried_takes_it_off_both_lists(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """28-Sep: the new week carries what he chose and did not record. An approval
+    from last week that he takes back after the new week opened must not stay on
+    the new week's list with no decision behind it."""
+    from datetime import timedelta
+
+    from tce.editorial import common as common_service
+    from tce.editorial import lineup as lineup_service
+    from tce.models.editorial_workspace import WeeklyLineup, WeeklyLineupItem
+
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Invoices nobody opens")
+    this_week = common_service.current_week_start()
+    monkeypatch.setattr(lineup_service, "current_week_start", lambda today=None: this_week)
+    approve = (await decide(client, ws, cid, "this_week", by="voice")).json()["change_id"]
+    next_week = this_week + timedelta(days=7)
+    monkeypatch.setattr(lineup_service, "current_week_start", lambda today=None: next_week)
+    assert await week_ids(client, ws) == [str(cid)], "the new week carried it"
+
+    undone = await undo_decision(client, ws, cid, approve)
+    assert undone.status_code == 200, undone.text
+    async with editorial_sessionmaker() as s:
+        left = (
+            await s.execute(
+                select(WeeklyLineup.week_start)
+                .join(WeeklyLineupItem, WeeklyLineupItem.lineup_id == WeeklyLineup.id)
+                .where(WeeklyLineupItem.candidate_id == cid)
+            )
+        ).all()
+    assert left == [], "off the week it was added to and off the week that carried it"
+    assert await week_ids(client, ws) == []
+    assert await decision_of(editorial_sessionmaker, cid) is None
+
+
 async def test_undo_decision_needs_a_change_id_it_knows(client, editorial_sessionmaker):
     ws = uuid.uuid4()
     cid = await add_candidate(editorial_sessionmaker, ws, "Invoices nobody opens")
@@ -1452,10 +1488,41 @@ async def test_voice_away_on_a_withdrawn_idea_still_chosen_and_listed_takes_it_o
     assert "brought back" not in said, "it was never brought back, so it is not put away again"
 
 
-async def test_voice_away_on_a_withdrawn_idea_chosen_for_a_week_it_is_not_listed_in_is_already_away(
+async def test_voice_away_on_a_withdrawn_idea_chosen_but_taken_out_of_the_week_is_already_away(
+    client, editorial_sessionmaker
+):
+    """Chosen for this week, taken out of the week by hand (that keeps the decision),
+    then withdrawn: not on this week's list, so away already, nothing written."""
+    ws = uuid.uuid4()
+    cid = await add_candidate(editorial_sessionmaker, ws, "Invoices nobody opens")
+    assert (await decide(client, ws, cid, "this_week")).status_code == 200
+    week = (
+        await client.get("/api/v1/editorial/weeks/current/lineup", headers=headers(ws))
+    ).json()
+    out = await client.patch(
+        "/api/v1/editorial/weeks/current/lineup",
+        json={
+            "move": {"candidate_id": str(cid), "action": "remove"},
+            "expected_revision": week["revision"],
+        },
+        headers=headers(ws),
+    )
+    assert out.status_code == 200, out.text
+    await set_status(editorial_sessionmaker, cid, "withdrawn")
+
+    away = await decide(client, ws, cid, "away", by="voice")
+    assert away.status_code == 409, away.text
+    assert away.json()["detail"]["code"] == "already"
+    assert await decision_of(editorial_sessionmaker, cid) == "this_week"
+    assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
+
+
+async def test_voice_away_on_a_withdrawn_idea_chosen_last_week_takes_it_off_the_new_week(
     client, editorial_sessionmaker, monkeypatch
 ):
-    """Chosen for last week, not on this week's list, withdrawn: away already, nothing written."""
+    """28-Sep: a topic he chose and has not filmed comes into the new week even when the
+    engine withdrew it (his choice outranks the engine's), so on the new week it is
+    chosen and listed, and putting it away takes it off that list, undoably."""
     from datetime import timedelta
 
     from tce.editorial import common as common_service
@@ -1472,9 +1539,11 @@ async def test_voice_away_on_a_withdrawn_idea_chosen_for_a_week_it_is_not_listed
     )
 
     away = await decide(client, ws, cid, "away", by="voice")
-    assert away.status_code == 409, away.text
-    assert away.json()["detail"]["code"] == "already"
-    assert await decision_of(editorial_sessionmaker, cid) == "this_week"
+    assert away.status_code == 200, away.text
+    assert away.json()["change_id"]
+    assert away.json()["removed_from_week"] == {"slot": "primary", "rank": 1}
+    assert await week_ids(client, ws) == []
+    assert await decision_of(editorial_sessionmaker, cid) == "away"
     assert await status_of(editorial_sessionmaker, cid) == "withdrawn"
 
 

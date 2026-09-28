@@ -341,9 +341,9 @@ def _score(needle: str, title: str) -> float:
 
 
 async def _week_ids(db: AsyncSession, ws: uuid.UUID) -> set[str]:
-    lineup = await lineup_service.get_lineup(db, ws, lineup_service.week_start_for(None))
-    if lineup is None:
-        return set()
+    # Through `current_lineup` (28-Sep): on the Monday a week turns over, the call
+    # must see the topics carried from last week, not an empty list.
+    lineup = await lineup_service.current_lineup(db, ws)
     return {str(i.candidate_id) for i in await lineup_service.list_items(db, ws, lineup.id)}
 
 
@@ -725,7 +725,7 @@ async def apply_change(
         _refuse_while_writing(ws, candidate)
         target_type, target_id = "packet", packet.id
     elif target == "week":
-        lineup = await lineup_service.ensure_lineup(db, ws, lineup_service.week_start_for(None))
+        lineup = await lineup_service.current_lineup(db, ws)
         target_type, target_id = "lineup", lineup.id
     else:
         raise VoiceError("bad_target", f"unknown target {target}", status=400)
@@ -1881,6 +1881,12 @@ async def undo_decision(
                 # before this one ("later, approve, undo, undo") puts it back at
                 # this place, not at the end.
                 row.week_place = dict(off)
+        if back != "this_week":
+            # 28-Sep: a new week carries what he chose and did not record, so an
+            # approval from last week can sit on this week's list too. Taken back,
+            # it comes off that one as well; a chosen-for-nothing topic on the
+            # list is the incoherence the decision rule exists to prevent.
+            await lineup_service.follow_decision(db, ws, candidate, row, by=actor)
     elif back != "this_week" or week.get("removed"):
         # Back to this week puts it back at the place the write took it from;
         # anything else takes it off the list if it is somehow on it.

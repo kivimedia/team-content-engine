@@ -21,15 +21,21 @@ phone in his pocket and the tab on his desk are the same week.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.editorial.common import current_week_start, week_bounds
-from tce.models.editorial import RecordingPacket, TopicCandidate
+from tce.editorial.library import technical_candidate_ids
+from tce.models.editorial import (
+    RecordingPacket,
+    RecordingUpload,
+    TopicCandidate,
+    VideoPublication,
+)
 from tce.models.editorial_workspace import (
     LINEUP_SLOTS,
     EditorialSettings,
@@ -209,16 +215,266 @@ async def ensure_lineup(
         revision=1,
         primary_slots=await videos_per_week(db, ws),
     )
-    db.add(row)
     try:
-        await db.flush()
+        # A savepoint, so losing the race undoes this insert and nothing else.
+        # 28-Sep review: every reader of this week creates its row now (the voice
+        # lookups, the typed conversation), and a full rollback here threw away
+        # what the caller had already done: a brief seeded a moment before was
+        # lost, and the next read of a topic it had loaded raised MissingGreenlet.
+        async with db.begin_nested():
+            db.add(row)
+            await db.flush()
     except IntegrityError:
-        await db.rollback()
+        if row in db:
+            db.expunge(row)
         again = await get_lineup(db, ws, week_start)
         if again is None:  # pragma: no cover
             raise
         return again
     return row
+
+
+# Take states that do not make a topic filmed. 28-Sep: a take only resting on the
+# server ("uploaded", nothing run on it) is one he counts as "didn't film them
+# yet"; a superseded one was replaced by a newer take and no longer says how far
+# it got. Every state from transcribing to edited means he filmed it and the
+# pipeline took it up.
+_TAKE_NOT_FILMED = ("uploaded", "superseded")
+# A step that stopped: it threw, the PC worker was away, the server restarted.
+# The name says how the last step ended, not how far the take got (28-Sep
+# review): a re-render of a finished edit that throws leaves "failed" on a take
+# that still holds its transcript, its cut and its edited video. So a stopped
+# take is filmed when the pipeline made something of it, and not when it
+# stopped before a word was heard.
+_TAKE_STOPPED = ("failed", "unavailable", "interrupted")
+
+
+async def filmed_candidate_ids(
+    db: AsyncSession, ws: uuid.UUID, ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Which of these topics he has filmed. The one test for it.
+
+    28-Sep: nothing marks a lineup item "recorded", and any upload marks the topic
+    "recorded", even a take resting on the server, so neither status could say it.
+    On the live week one topic had its captioned edit made and was still listed as
+    planned, and another had only a resting take and was not filmed by his own
+    word. Filmed means one of:
+
+    - a take the Library still shows (not archived, not a synthetic pipeline
+      test) that has moved past resting: transcribed, cut, in review or edited,
+      or stopped on a step after the pipeline made something of it (a
+      transcript, a cut, an edited video);
+    - a take whose posts were written or went out, archived or not;
+    - a topic marked published, which a post can only follow.
+
+    The week, the carry into a new week, Today and the studio all ask this, so a
+    filmed topic is never offered for recording again.
+    """
+    if not ids:
+        return set()
+    technical = technical_candidate_ids(ws)
+    shown = (
+        RecordingUpload.workspace_id == ws,
+        RecordingUpload.candidate_id.in_(ids),
+        RecordingUpload.candidate_id.notin_(technical),
+        RecordingUpload.archived_at.is_(None),
+    )
+    taken = await db.execute(
+        select(RecordingUpload.candidate_id).where(
+            *shown,
+            RecordingUpload.status.notin_(_TAKE_NOT_FILMED + _TAKE_STOPPED),
+        )
+    )
+    # Read in Python, not as IS NOT NULL: a JSON column can hold a JSON null,
+    # and an empty transcript means nothing was heard. Stopped takes are few.
+    stopped = await db.execute(
+        select(
+            RecordingUpload.candidate_id,
+            RecordingUpload.transcript,
+            RecordingUpload.edit_plan,
+            RecordingUpload.edited_path,
+        ).where(*shown, RecordingUpload.status.in_(_TAKE_STOPPED))
+    )
+    made_something = {
+        row.candidate_id
+        for row in stopped
+        if row.transcript or row.edit_plan or row.edited_path
+    }
+    posted = await db.execute(
+        select(RecordingUpload.candidate_id)
+        .join(VideoPublication, VideoPublication.upload_id == RecordingUpload.id)
+        .where(
+            VideoPublication.workspace_id == ws,
+            RecordingUpload.workspace_id == ws,
+            RecordingUpload.candidate_id.in_(ids),
+            RecordingUpload.candidate_id.notin_(technical),
+        )
+    )
+    published = await db.execute(
+        select(TopicCandidate.id).where(
+            TopicCandidate.workspace_id == ws,
+            TopicCandidate.id.in_(ids),
+            TopicCandidate.id.notin_(technical),
+            TopicCandidate.status == "published",
+        )
+    )
+    return (
+        set(taken.scalars())
+        | made_something
+        | set(posted.scalars())
+        | set(published.scalars())
+    )
+
+
+# An item that stays behind when the week turns over: marked filmed or dropped.
+_ITEM_STAYS_BEHIND = ("recorded", "dropped")
+
+
+async def carry_forward(db: AsyncSession, ws: uuid.UUID, lineup: WeeklyLineup) -> int:
+    """Bring the topics he chose and has not recorded into the week that just started.
+
+    28-Sep: "tce is showing 0 scripts ready despite the fact that I has around 8
+    topics chosen for this week and didnt film them yet". The week key is Monday
+    in Israel time, so at 00:00 on Monday "this week" became a new, empty list,
+    and Today, the week page, the studio and the voice call all read that list.
+    A topic he chose is his until he records it or changes his mind; the calendar
+    turning over is neither.
+
+    Runs once per week (`carried_at` is the marker), and only into the week that
+    is current now: a week he opens ahead of time is filled when it arrives, and
+    an old week is history. The source is the most recent earlier week that was
+    a real week, which itself carried from the one before, so a topic follows him
+    week after week. Any read of a week's list creates its row, so an old week
+    looked at by date is an empty row that says nothing; a real week has topics,
+    or ran its own carry (then an empty one is a week he emptied himself, and the
+    week before it must not come back through it).
+
+    What comes over: every item not marked filmed or dropped, whose topic he has
+    not filmed (`filmed_candidate_ids`: a take resting on the server is not
+    filming), and that is still chosen for this week (or was listed before
+    decisions were kept). A rejected topic stays behind. A topic the engine
+    withdrew (a re-run of the week's selection, a stale news idea) comes over
+    when he chose it for this week: his choice outranks the engine's, as in
+    `voice_agent.chosen_and_listed`; one he put away himself is no longer chosen.
+    Slot and order are kept, after anything already in the new week. The old
+    week is not touched. One revision for the whole carry.
+
+    Returns how many topics came over.
+    """
+    if lineup.carried_at is not None:
+        return 0
+    if lineup.week_start != week_start_for(None):
+        return 0
+
+    # Today and the studio can open together on Monday morning. Lock the week's
+    # row and read the marker again, so the second read waits for the first and
+    # then finds it done instead of copying the same topics twice. SQLite ignores
+    # FOR UPDATE; the unique (lineup, topic) key is the backstop there.
+    await db.execute(
+        select(WeeklyLineup)
+        .where(WeeklyLineup.workspace_id == ws, WeeklyLineup.id == lineup.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if lineup.carried_at is not None:
+        return 0
+
+    has_topics = (
+        select(WeeklyLineupItem.id)
+        .where(
+            WeeklyLineupItem.workspace_id == ws,
+            WeeklyLineupItem.lineup_id == WeeklyLineup.id,
+        )
+        .exists()
+    )
+    source = (
+        await db.execute(
+            select(WeeklyLineup)
+            .where(
+                WeeklyLineup.workspace_id == ws,
+                WeeklyLineup.week_start < lineup.week_start,
+                or_(has_topics, WeeklyLineup.carried_at.is_not(None)),
+            )
+            .order_by(WeeklyLineup.week_start.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    lineup.carried_at = datetime.now(UTC).replace(tzinfo=None)
+    lineup.carried_from_lineup_id = source.id if source is not None else None
+    if source is None:
+        await db.flush()
+        return 0
+
+    old = await list_items(db, ws, source.id)
+    here = await list_items(db, ws, lineup.id)
+    listed = {i.candidate_id for i in here}
+    next_rank = {slot: sum(1 for i in here if i.slot == slot) for slot in LINEUP_SLOTS}
+    ids = [i.candidate_id for i in old]
+    candidates = await _candidates_by_id(db, ws, ids)
+    decisions: dict[uuid.UUID, str | None] = {}
+    if ids:
+        rows = await db.execute(
+            select(TopicDecision).where(
+                TopicDecision.workspace_id == ws, TopicDecision.candidate_id.in_(ids)
+            )
+        )
+        decisions = {d.candidate_id: d.decision for d in rows.scalars()}
+    filmed = await filmed_candidate_ids(db, ws, ids)
+
+    carried = 0
+    for item in old:  # already in slot, then rank, order
+        candidate = candidates.get(item.candidate_id)
+        if (
+            item.candidate_id in listed
+            or item.slot not in LINEUP_SLOTS
+            or item.status in _ITEM_STAYS_BEHIND
+            or candidate is None
+            or candidate.status == "rejected"
+            or item.candidate_id in filmed
+            # Taken back, saved for later, marked to think about or put away since.
+            or decisions.get(item.candidate_id, "this_week") != "this_week"
+            # Withdrawn and never chosen in his own words: nothing outranks it.
+            or (candidate.status == "withdrawn" and item.candidate_id not in decisions)
+        ):
+            continue
+        next_rank[item.slot] += 1
+        rank = next_rank[item.slot]
+        db.add(
+            WeeklyLineupItem(
+                workspace_id=ws,
+                lineup_id=lineup.id,
+                candidate_id=item.candidate_id,
+                packet_id=item.packet_id,
+                rank=rank,
+                slot=item.slot,
+                lane=item.lane,
+                # Written for its new place: "Record first because" belongs to
+                # whichever topic is first in this week, not the one that was.
+                reason=reason_for(candidate, rank=rank, slot=item.slot),
+                status=item.status,
+                added_by=item.added_by,
+            )
+        )
+        listed.add(item.candidate_id)
+        carried += 1
+    if carried:
+        lineup.revision += 1
+        lineup.updated_by = "carried"
+    await db.flush()
+    return carried
+
+
+async def current_lineup(db: AsyncSession, ws: uuid.UUID) -> WeeklyLineup:
+    """This week's list, with last week's unrecorded topics in it.
+
+    The one way to read "this week": Today, the week page, the studio queue, the
+    voice call and the typed conversation all come through here, so none of them
+    can show an empty week that the others would have filled. It writes on the
+    first read of a new week, so a caller that only reads still commits.
+    """
+    lineup = await ensure_lineup(db, ws, week_start_for(None))
+    await carry_forward(db, ws, lineup)
+    return lineup
 
 
 async def list_items(
@@ -268,6 +524,18 @@ async def _latest_packets(
             continue
         newest[packet.candidate_id] = packet
     return newest
+
+
+async def ready_script(
+    db: AsyncSession, ws: uuid.UUID, candidate_id: uuid.UUID
+) -> RecordingPacket | None:
+    """The topic's current script when it is ready to record, whatever week it is in.
+
+    The same test the week uses for "script ready", for a topic he names from
+    outside the week (the studio opens a topic he asks for by name).
+    """
+    packet = (await _latest_packets(db, ws, [candidate_id])).get(candidate_id)
+    return packet if _script_state(packet) == "ready" else None
 
 
 # ---------------------------------------------------------------------------
@@ -589,13 +857,19 @@ async def follow_decision(
     "removed": {slot, rank} | None, "week_start": the week's date as text,
     "lineup_id": the list it changed or None}, so a caller that records the write
     can say later which week's list it touched.
+
+    The week is read through `current_lineup`, so on the Monday a week turns over
+    a topic still chosen from last week is found on the new list (and choosing it
+    again is not an addition). A caller that changes the decision first should
+    read the week before it does (the decide route does), or the topic it is
+    taking off was never carried and its place is lost.
     """
     week_start = week_start_for(None)
     week_label = week_start.date().isoformat()
     now = decision.decision if decision is not None else None
 
     if now == "this_week":
-        lineup = await ensure_lineup(db, ws, week_start)
+        lineup = await current_lineup(db, ws)
         listed = {i.candidate_id for i in await list_items(db, ws, lineup.id)}
         place = dict((decision.week_place if decision is not None else None) or {})
         here = place.get("week_start") == week_label
@@ -624,6 +898,7 @@ async def follow_decision(
     lineup = await get_lineup(db, ws, week_start)
     if lineup is None:
         return untouched
+    await carry_forward(db, ws, lineup)
     item = next(
         (i for i in await list_items(db, ws, lineup.id) if i.candidate_id == candidate.id),
         None,
@@ -647,6 +922,8 @@ def _item_to_json(
     item: WeeklyLineupItem,
     candidate: TopicCandidate | None,
     packet: RecordingPacket | None,
+    *,
+    filmed: bool = False,
 ) -> dict[str, Any]:
     return {
         "candidate_id": str(item.candidate_id),
@@ -662,6 +939,9 @@ def _item_to_json(
         "status": item.status,
         # The one thing the week has to be honest about: is there a script yet.
         "script_state": _script_state(packet),
+        # Filmed already (`filmed_candidate_ids`). It stays in its week, so the
+        # week shows what he did, and nothing offers to record it again.
+        "filmed": filmed,
     }
 
 
@@ -680,9 +960,15 @@ async def lineup_to_json(
     candidate_ids = [i.candidate_id for i in items]
     candidates = await _candidates_by_id(db, ws, candidate_ids)
     packets = await _latest_packets(db, ws, candidate_ids)
+    filmed = await filmed_candidate_ids(db, ws, candidate_ids)
 
     rendered = [
-        _item_to_json(item, candidates.get(item.candidate_id), packets.get(item.candidate_id))
+        _item_to_json(
+            item,
+            candidates.get(item.candidate_id),
+            packets.get(item.candidate_id),
+            filmed=item.candidate_id in filmed,
+        )
         for item in items
     ]
     primary = [r for r in rendered if r["slot"] == "primary"]
@@ -707,5 +993,8 @@ async def lineup_to_json(
         "reserve": reserve,
         # Information, not a rule. An unbalanced week is visible and allowed.
         "mix": mix,
-        "ready_count": sum(1 for r in primary if r["script_state"] == "ready"),
+        # Scripts waiting to be filmed: a filmed topic's script is used (28-Sep).
+        "ready_count": sum(
+            1 for r in primary if r["script_state"] == "ready" and not r["filmed"]
+        ),
     }

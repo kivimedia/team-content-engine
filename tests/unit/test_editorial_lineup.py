@@ -11,10 +11,12 @@ import uuid
 from datetime import datetime
 
 import pytest
+from sqlalchemy import select
 
 from tce.editorial import lineup as lineup_service
 from tce.editorial.lineup import LineupError
 from tce.models.editorial import TopicCandidate
+from tce.models.editorial_workspace import TopicDecision, WeeklyLineup
 
 WEEK = lineup_service.week_start_for(datetime(2026, 9, 21))
 
@@ -78,9 +80,14 @@ async def test_a_good_week_takes_a_fourth_video_straight_into_the_week(editorial
     assert payload["primary_slots"] == 3 and payload["over_by"] == 1
 
 
-async def test_videos_a_week_is_his_setting_for_this_week_and_new_weeks(editorial_session):
+async def test_videos_a_week_is_his_setting_for_this_week_and_new_weeks(
+    editorial_session, monkeypatch
+):
     """26-Sep: "a setting page that allows me to promote more than 3 videos a week
     (choose how many videos)"."""
+    # WEEK is "this week" here. Read from the real clock, this test broke at
+    # 00:00 on Monday 28-Sep, when WEEK became last week.
+    monkeypatch.setattr(lineup_service, "current_week_start", lambda today=None: WEEK.date())
     ws = uuid.uuid4()
     this_week = await lineup_service.ensure_lineup(editorial_session, ws, WEEK)
     assert await lineup_service.videos_per_week(editorial_session, ws) == 3
@@ -119,6 +126,61 @@ async def test_the_week_is_created_once_even_when_opened_twice(editorial_session
     second = await lineup_service.ensure_lineup(editorial_session, ws, WEEK)
     await editorial_session.commit()
     assert first.id == second.id
+
+
+async def test_losing_the_race_to_create_the_week_undoes_only_that_insert(
+    editorial_sessionmaker, monkeypatch
+):
+    """28-Sep review: the voice lookups and the typed conversation now read this
+    week through `current_lineup`, which creates the week's row, so two first
+    reads on a Monday can race to insert it. The loser rolled back its whole
+    transaction: a brief it had seeded a moment before was lost, everything it
+    had loaded expired, and the next read of it raised MissingGreenlet (a 500 on
+    a voice lookup, a typed turn left "queued" for good)."""
+    monkeypatch.setattr(lineup_service, "current_week_start", lambda today=None: WEEK.date())
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        candidate_id = (await add_candidate(s, ws, "Loaded before the week")).id
+        await s.commit()
+    # Today opened the new week first and committed it.
+    async with editorial_sessionmaker() as s:
+        winner_id = (await lineup_service.ensure_lineup(s, ws, WEEK)).id
+        await s.commit()
+
+    real_get_lineup = lineup_service.get_lineup
+    looks: list[datetime] = []
+
+    async def looked_before_today_committed(db, ws_, week_start):
+        looks.append(week_start)
+        return None if len(looks) == 1 else await real_get_lineup(db, ws_, week_start)
+
+    monkeypatch.setattr(lineup_service, "get_lineup", looked_before_today_committed)
+    async with editorial_sessionmaker() as s:
+        loaded = await s.get(TopicCandidate, candidate_id)
+        s.add(
+            TopicDecision(
+                workspace_id=ws,
+                candidate_id=candidate_id,
+                decision="this_week",
+                decided_by="voice",
+                decided_at=datetime(2026, 9, 28, 8),
+            )
+        )
+        await s.flush()
+
+        week = await lineup_service.current_lineup(s, ws)
+
+        assert week.id == winner_id
+        assert loaded.title == "Loaded before the week", "what it loaded is still loaded"
+        await s.commit()
+
+    async with editorial_sessionmaker() as s:
+        kept = await s.execute(
+            select(TopicDecision).where(TopicDecision.candidate_id == candidate_id)
+        )
+        assert kept.scalar_one().decision == "this_week", "what it wrote is kept"
+        weeks = await s.execute(select(WeeklyLineup).where(WeeklyLineup.workspace_id == ws))
+        assert [w.id for w in weeks.scalars()] == [winner_id]
 
 
 # --------------------------------------------------------------- ordering

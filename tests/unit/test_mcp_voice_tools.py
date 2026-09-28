@@ -281,6 +281,66 @@ def test_the_week_says_the_order_the_script_states_and_what_needs_deciding():
     assert "Next: Start recording." in text
 
 
+def test_the_week_says_a_filmed_topic_is_filmed_not_script_ready():
+    """28-Sep review: Today tags a topic he filmed "Filmed" and leaves it out of
+    "scripts ready", but the call read it as "script ready" and dropped `filmed`
+    from what the model sees, so the call counted one more script to film than
+    the screen in his hand."""
+    out = run(
+        {
+            "steps": [step("tce_week")],
+            "responses": {
+                "GET /editorial/today": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "week": {
+                            "primary": [
+                                {
+                                    "candidate_id": CID,
+                                    "title": "Filmed on Sunday",
+                                    "script_state": "ready",
+                                    "filmed": True,
+                                    "rank": 1,
+                                },
+                                {
+                                    "candidate_id": "22222222-0000-0000-0000-000000000000",
+                                    "title": "Next to film",
+                                    "script_state": "ready",
+                                    "filmed": False,
+                                    "rank": 2,
+                                },
+                            ],
+                            "reserve": [
+                                {
+                                    "candidate_id": "33333333-0000-0000-0000-000000000000",
+                                    "title": "Spare, filmed too",
+                                    "script_state": "none",
+                                    "filmed": True,
+                                },
+                            ],
+                        },
+                        "attention": {"waiting": 0, "pending_reviews": 0, "scripts_ready": 1},
+                        "next_action": {
+                            "label": "Start recording",
+                            "detail": "Next to film is first.",
+                        },
+                    },
+                },
+                "GET /editorial/topics": {"ok": True, "status": 200, "data": {"topics": []}},
+            },
+        }
+    )
+    text = out["texts"][0]
+    assert "1. Filmed on Sunday - filmed already (id 11111111)" in text
+    assert "2. Next to film - script ready (id 22222222)" in text
+    assert text.count("script ready") == 1, "the same count as Today's scripts ready"
+    assert "- Spare, filmed too - filmed already (id 33333333)" in text
+    data = json.loads(out["seen"][0])["data"]
+    assert [row["filmed"] for row in data["week"]] == [True, False]
+    assert [row["filmed"] for row in data["reserve"]] == [True]
+
+
 def test_a_topic_reads_its_opening_points_and_numbered_options():
     out = run(
         {

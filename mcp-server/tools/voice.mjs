@@ -369,7 +369,8 @@ export function register(server, call, { reply, failure, shortId }) {
 
   server.tool(
     'tce_week',
-    'This week at a glance: the recording list in order with each script\'s state, and the ideas '
+    'This week at a glance: the recording list in order with each script\'s state (or that he '
+      + 'filmed it already: never offer to record a filmed one again), and the ideas '
       + 'still waiting for a decision, each with its id. Read-only. Start here when he says "the week"; '
       + 'a change to one of them takes the id listed here.',
     { type: 'object', properties: {} },
@@ -380,10 +381,15 @@ export function register(server, call, { reply, failure, shortId }) {
       const week = today.data.week || {};
       const primary = week.primary || [];
       const lines = [];
+      // 28-Sep review: a topic he filmed stays in its week, and Today counts it out
+      // of "scripts ready". Said as filmed here too, or the call counts one more
+      // script to film than the screen in his hand.
+      const filmedNote = (t) => (t.filmed ? ' - filmed already' : '');
       if (primary.length) {
         lines.push(`This week has ${primary.length} topic${primary.length === 1 ? '' : 's'}:`);
         primary.forEach((t, n) => {
-          lines.push(`${n + 1}. ${t.title} - ${SCRIPT_WORDS[t.script_state] || t.script_state} (id ${shortId(t.candidate_id)})`);
+          const state = t.filmed ? 'filmed already' : (SCRIPT_WORDS[t.script_state] || t.script_state);
+          lines.push(`${n + 1}. ${t.title} - ${state} (id ${shortId(t.candidate_id)})`);
         });
       } else {
         lines.push('Nothing is in this week yet.');
@@ -391,7 +397,7 @@ export function register(server, call, { reply, failure, shortId }) {
       const reserve = week.reserve || [];
       if (reserve.length) {
         lines.push(`${reserve.length} more in reserve:`);
-        reserve.forEach((t) => lines.push(`- ${t.title} (id ${shortId(t.candidate_id)})`));
+        reserve.forEach((t) => lines.push(`- ${t.title}${filmedNote(t)} (id ${shortId(t.candidate_id)})`));
       }
       const topics = (waiting.ok ? waiting.data.topics : []) || [];
       const undecided = topics.filter((t) => !t.decision);
@@ -406,8 +412,8 @@ export function register(server, call, { reply, failure, shortId }) {
       if (reviews) lines.push(`${reviews} proposed change${reviews === 1 ? ' is' : 's are'} waiting for a yes or no.`);
       if (today.data.next_action?.label) lines.push(`Next: ${today.data.next_action.label}. ${today.data.next_action.detail || ''}`.trim());
       return reply(lines.join('\n'), {
-        week: primary.map((t) => ({ candidate_id: t.candidate_id, title: t.title, rank: t.rank, script_state: t.script_state, packet_id: t.packet_id })),
-        reserve: reserve.map((t) => ({ candidate_id: t.candidate_id, title: t.title })),
+        week: primary.map((t) => ({ candidate_id: t.candidate_id, title: t.title, rank: t.rank, script_state: t.script_state, packet_id: t.packet_id, filmed: Boolean(t.filmed) })),
+        reserve: reserve.map((t) => ({ candidate_id: t.candidate_id, title: t.title, filmed: Boolean(t.filmed) })),
         needs_decision: undecided.map((t) => ({ candidate_id: t.candidate_id, title: t.title })),
         attention: today.data.attention,
       });

@@ -173,7 +173,11 @@ async def get_today(
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
     async with open_session(sm) as db:
-        return await today_service.build(db, ws, sessionmaker=sm)
+        payload = await today_service.build(db, ws, sessionmaker=sm)
+        # The first read of a new week carries last week's unrecorded topics in;
+        # without the commit that copy would be rolled back and redone every time.
+        await db.commit()
+        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +259,11 @@ async def decide_topic(
             candidate = await voice_agent.topic_by_id(db, ws, candidate_id)
             cid = candidate.id
             status_before = candidate.status
+            # Read this week before the decision moves (28-Sep): on the Monday a
+            # week turns over, the list is filled from last week on its first
+            # read, and it has to be filled with this topic still chosen, or
+            # "later" finds nothing to take off and its place is lost.
+            await lineup_service.current_lineup(db, ws)
             existing = await inbox_service.get_decision(db, ws, cid)
             before = existing.decision if existing is not None else None
             if body.decision == voice_agent.UNDECIDED:
@@ -344,6 +353,15 @@ async def decide_topic(
 # ---------------------------------------------------------------------------
 
 
+async def _week_lineup(db: Any, ws: uuid.UUID, start: Any) -> Any:
+    """The week asked for. This week, named either way ("current" or its date),
+    is read through `current_lineup` so it carries last week's unrecorded topics
+    (28-Sep); any other week is read as it stands."""
+    if start == lineup_service.week_start_for(None):
+        return await lineup_service.current_lineup(db, ws)
+    return await lineup_service.ensure_lineup(db, ws, start)
+
+
 @router.get("/weeks/{week}/lineup")
 async def get_lineup(
     week: str,
@@ -352,7 +370,7 @@ async def get_lineup(
 ) -> dict[str, Any]:
     start = lineup_service.week_start_for(None if week in ("current", "this") else week)
     async with open_session(sm) as db:
-        row = await lineup_service.ensure_lineup(db, ws, start)
+        row = await _week_lineup(db, ws, start)
         payload = await lineup_service.lineup_to_json(db, ws, row)
         await db.commit()
         return payload
@@ -370,7 +388,7 @@ async def add_to_lineup(
     async with open_session(sm) as db:
         try:
             candidate = await inbox_service.get_candidate(db, ws, cid)
-            row = await lineup_service.ensure_lineup(db, ws, start)
+            row = await _week_lineup(db, ws, start)
             listed = {i.candidate_id for i in await lineup_service.list_items(db, ws, row.id)}
             existing = await inbox_service.get_decision(db, ws, cid)
             item = await lineup_service.add_topic(
@@ -415,7 +433,7 @@ async def patch_lineup(
     start = lineup_service.week_start_for(None if week in ("current", "this") else week)
     async with open_session(sm) as db:
         try:
-            row = await lineup_service.ensure_lineup(db, ws, start)
+            row = await _week_lineup(db, ws, start)
             if body.move is not None:
                 await lineup_service.move(
                     db,

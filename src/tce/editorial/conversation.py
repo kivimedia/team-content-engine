@@ -315,20 +315,32 @@ async def _packet_context(
 
 
 async def _week_context(db: AsyncSession, ws: uuid.UUID) -> str:
-    week_start = lineup_service.week_start_for(None)
-    row = await lineup_service.get_lineup(db, ws, week_start)
-    if row is None:
-        return "He has not chosen anything for this week yet."
+    # Through `current_lineup` (28-Sep): on the Monday a week turns over, the
+    # conversation must see the topics carried from last week, not an empty list.
+    row = await lineup_service.current_lineup(db, ws)
     payload = await lineup_service.lineup_to_json(db, ws, row)
+    if not payload["primary"] and not payload["reserve"]:
+        return "He has not chosen anything for this week yet."
+    # A filmed topic stays on the list, so it is marked (28-Sep review): unmarked,
+    # the model read it as still to record and could tell him to record #1 again
+    # while Today and the week showed it as Filmed.
+    def done(item: dict[str, Any]) -> str:
+        return " - filmed already" if item.get("filmed") else ""
+
     lines = ["This is his recording list for the week.", ""]
     for item in payload["primary"]:
-        lines.append(f"{item['rank']}. {item['title']} ({item['lane_label']})")
+        lines.append(f"{item['rank']}. {item['title']} ({item['lane_label']}){done(item)}")
     if payload["reserve"]:
         lines.append("")
         lines.append("In reserve:")
         for item in payload["reserve"]:
-            lines.append(f"- {item['title']} ({item['lane_label']})")
+            lines.append(f"- {item['title']} ({item['lane_label']}){done(item)}")
     lines.append("")
+    if any(item.get("filmed") for item in payload["primary"] + payload["reserve"]):
+        lines.append(
+            'Topics marked "filmed already" are done: he has filmed them, so never '
+            "suggest recording one of those again."
+        )
     lines.append(
         "You cannot reorder this yourself. If the order is wrong, say which one "
         "you would record first and why."

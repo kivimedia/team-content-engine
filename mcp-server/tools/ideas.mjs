@@ -9,6 +9,14 @@ export const FAMILY = 'ideas';
 
 const HOOK_LIMIT = 3;
 
+// The week's script states, in words (the same ones the voice call says).
+const SCRIPT_STATE = {
+  none: 'not written yet',
+  draft: 'in draft',
+  issues: 'waiting on issues to check',
+  ready: 'ready but could not be read just now',
+};
+
 export function register(server, call, { reply, failure, shortId }) {
   server.tool(
     'tce_ideas',
@@ -67,19 +75,41 @@ export function register(server, call, { reply, failure, shortId }) {
       if (!queue.ok) return failure(queue, 'read the recording queue');
       const ideas = queue.data.ideas || [];
       const needle = (candidate_id || '').toLowerCase();
-      const found = ideas.find((i) => (needle && String(i.candidate_id).toLowerCase().startsWith(needle))
-        || (title && (i.title || '').toLowerCase().includes(title.toLowerCase())));
+      const matches = (i) => (needle && String(i.candidate_id).toLowerCase().startsWith(needle))
+        || (title && (i.title || '').toLowerCase().includes(title.toLowerCase()));
+      let found = ideas.find(matches);
+      let filmed = false;
       if (!found) {
-        return reply(
-          'That script is not in the recording queue. Only approved ideas are there; '
-            + 'tce_ideas shows the proposed ones and tce_approve moves one in.',
-          { found: false, queue: ideas.map((i) => ({ title: i.title, candidate_id: i.candidate_id })) },
-        );
+        // 28-Sep review: the queue is the studio's list, what he has still to
+        // film. A topic he filmed this week is not in it, but its script is still
+        // his to read, so look for the topic in the week and ask for it by name.
+        const week = await call('GET', '/editorial/weeks/current/lineup');
+        const rows = week.ok ? [...(week.data.primary || []), ...(week.data.reserve || [])] : [];
+        const row = rows.find(matches);
+        if (row && row.script_state === 'ready') {
+          const named = await call('GET', `/production/recording-queue?candidate=${encodeURIComponent(row.candidate_id)}`);
+          found = named.ok ? (named.data.ideas || []).find((i) => i.candidate_id === row.candidate_id) : null;
+          filmed = Boolean(row.filmed);
+        }
+        if (!found) {
+          const queued = ideas.map((i) => ({ title: i.title, candidate_id: i.candidate_id }));
+          if (row) {
+            return reply(
+              `"${row.title}" is in this week's list, but its script is ${SCRIPT_STATE[row.script_state] || row.script_state}.`,
+              { found: false, candidate_id: row.candidate_id, script_state: row.script_state, queue: queued },
+            );
+          }
+          return reply(
+            'That script is not in this week\'s list, so there is no script of it to read. '
+              + 'tce_ideas shows the ideas proposed for a week.',
+            { found: false, queue: queued },
+          );
+        }
       }
       const hooks = (found.hook_options || []).slice(0, HOOK_LIMIT);
       const selected = hooks.find((h) => h.id === found.selected_hook_id) || hooks[0];
       const lines = [
-        found.title,
+        filmed ? `${found.title} (filmed already: read it, do not offer to record it again)` : found.title,
         found.big_idea ? `\n${found.big_idea}` : '',
         selected ? `\nOpening in use: "${selected.text}"\n  viewer question: ${selected.question}` : '',
       ];
@@ -91,6 +121,7 @@ export function register(server, call, { reply, failure, shortId }) {
       lines.push(`\n${(found.script_phrases || []).length} spoken phrases, packet v${found.packet_version}.`);
       return reply(lines.filter(Boolean).join('\n'), {
         candidate_id: found.candidate_id,
+        filmed,
         packet_id: found.packet_id,
         packet_version: found.packet_version,
         hook_options: found.hook_options,

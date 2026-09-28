@@ -1227,6 +1227,7 @@ async def patch_publication(
 
 @router.get("/recording-queue")
 async def recording_queue(
+    candidate: uuid.UUID | None = None,
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -1237,16 +1238,36 @@ async def recording_queue(
     week's idea, a technical test and one already recorded) while missing the
     one Today meant. One source now: this week's lineup, primary slots, in the
     lineup's order, script ready. The same rows `today.build` counts.
+
+    Read through `current_lineup`, like Today (28-Sep): on the Monday a week
+    turns over it brings last week's unrecorded topics in, so the studio does
+    not open empty while he has scripts waiting. `get_db` commits that copy.
+    A topic he has filmed stays in the week but not here: the studio is for
+    what he has still to film.
+
+    A topic he names (`?candidate=`: "Record it again" in the Library, "Start
+    recording" in the topic room) is in the list as well when its script is
+    ready, filmed or not, in this week or not. The studio can only open what its
+    list holds, so without it those buttons answered "That script is not ready
+    to record yet" for every topic he had filmed (28-Sep review). A named topic
+    whose script is not ready is left out, and then that answer is true.
     """
     from tce.editorial import lineup as lineup_service
 
-    lineup = await lineup_service.get_lineup(db, ws, lineup_service.week_start_for(None))
-    week = await lineup_service.lineup_to_json(db, ws, lineup) if lineup is not None else {}
+    lineup = await lineup_service.current_lineup(db, ws)
+    week = await lineup_service.lineup_to_json(db, ws, lineup)
+    named = str(candidate) if candidate is not None else None
     wanted = [
         (uuid.UUID(r["candidate_id"]), uuid.UUID(r["packet_id"]))
         for r in week.get("primary") or []
-        if r.get("script_state") == "ready" and r.get("packet_id")
+        if r.get("script_state") == "ready"
+        and r.get("packet_id")
+        and (not r.get("filmed") or r["candidate_id"] == named)
     ]
+    if candidate is not None and candidate not in {cid for cid, _ in wanted}:
+        packet = await lineup_service.ready_script(db, ws, candidate)
+        if packet is not None:
+            wanted.append((candidate, packet.id))
     rows = []
     for candidate_id, packet_id in wanted:
         candidate = await db.get(TopicCandidate, candidate_id)

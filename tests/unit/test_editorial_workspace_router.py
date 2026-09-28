@@ -8,7 +8,7 @@ and see a recorded video in the library with no dead buttons on it.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 import httpx
 import pytest
@@ -17,7 +17,17 @@ from pydantic import SecretStr
 
 from tce.api.routers import editorial as editorial_router
 from tce.api.routers import editorial_workspace as workspace_router
-from tce.models.editorial import RecordingPacket, RecordingUpload, TopicCandidate
+from tce.api.routers import production as prod
+from tce.editorial import conversation
+from tce.editorial import lineup as lineup_service
+from tce.editorial import today as today_service
+from tce.models.editorial import (
+    RecordingPacket,
+    RecordingUpload,
+    TopicCandidate,
+    VideoPublication,
+)
+from tce.models.editorial_workspace import TopicDecision, WeeklyLineup, WeeklyLineupItem
 from tce.settings import settings
 
 KEY = "synthetic-test-key"
@@ -342,6 +352,764 @@ async def test_a_concurrent_week_edit_is_a_reviewable_conflict_not_an_overwrite(
     assert detail["code"] == "conflict"
     # The newer state comes back so the client can show a review path.
     assert detail["current_revision"] > stale
+
+
+# ---------------------------------------------------- the week turns over
+# 28-Sep: "tce is showing 0 scripts ready despite the fact that I has around 8
+# topics chosen for this week and didnt film them yet". The week key is Monday in
+# Israel time, so at 00:00 on Monday 28-Sep "this week" became a new, empty list
+# and nothing brought the unrecorded topics over from the week before.
+
+LAST_WEEK = date(2026, 9, 21)
+THIS_WEEK = date(2026, 9, 28)
+
+
+def on_week(monkeypatch, monday: date) -> None:
+    """Which Monday the server believes 'this week' starts on."""
+    monkeypatch.setattr(lineup_service, "current_week_start", lambda today=None: monday)
+
+
+async def seed_week(
+    sm, ws, monday: date, items: list[dict], *, revision: int = 1, carried: bool = False
+):
+    """A week's list as the database holds it, one dict per topic.
+
+    title, slot (primary), script ("ready" | "draft" | absent), status of the
+    topic (proposed), decision ("this_week", "later", None for one taken back,
+    or "no_row" for an item listed before decisions were kept), takes (upload
+    states, oldest first; none by default; a dict gives a take its status and
+    what the pipeline made of it: transcript, edit_plan, edited_path), archived
+    (its takes were archived), posted (its last take has its posts written).
+    `carried` marks a week that already ran its own carry, as a week read while
+    it was current has.
+    """
+    ids: dict[str, uuid.UUID] = {}
+    for spec in items:
+        ids[spec["title"]] = await add_candidate(
+            sm, ws, spec["title"], status=spec.get("status", "proposed")
+        )
+    async with sm() as s:
+        lineup = WeeklyLineup(
+            workspace_id=ws,
+            week_start=datetime(monday.year, monday.month, monday.day),
+            revision=revision,
+            primary_slots=3,
+            carried_at=datetime(monday.year, monday.month, monday.day, 7) if carried else None,
+        )
+        s.add(lineup)
+        await s.flush()
+        ranks = {"primary": 0, "reserve": 0}
+        for spec in items:
+            cid = ids[spec["title"]]
+            slot = spec.get("slot", "primary")
+            ranks[slot] += 1
+            s.add(
+                WeeklyLineupItem(
+                    workspace_id=ws,
+                    lineup_id=lineup.id,
+                    candidate_id=cid,
+                    rank=ranks[slot],
+                    slot=slot,
+                    lane="coaching",
+                    reason="In this week's list.",
+                    status="planned",
+                    added_by="ziv",
+                )
+            )
+            decision = spec.get("decision", "this_week")
+            if decision != "no_row":
+                s.add(
+                    TopicDecision(
+                        workspace_id=ws,
+                        candidate_id=cid,
+                        decision=decision,
+                        decided_by="ziv",
+                        decided_at=datetime(2026, 9, 22),
+                    )
+                )
+            if spec.get("script"):
+                s.add(
+                    RecordingPacket(
+                        workspace_id=ws,
+                        candidate_id=cid,
+                        version=1,
+                        bullets=["First point."],
+                        script_phrases=["First line."],
+                        status=spec["script"],
+                        citations_private=[],
+                        public_safety={},
+                    )
+                )
+            take = None
+            for state in spec.get("takes", []):
+                made = state if isinstance(state, dict) else {"status": state}
+                take = RecordingUpload(
+                    workspace_id=ws,
+                    candidate_id=cid,
+                    original_filename="take.mp4",
+                    storage_path="/tmp/take.mp4",
+                    sha256=uuid.uuid4().hex * 2,
+                    duration_s=160.0,
+                    archived_at=datetime(2026, 9, 27) if spec.get("archived") else None,
+                    **made,
+                )
+                s.add(take)
+            if spec.get("posted") and take is not None:
+                await s.flush()
+                s.add(
+                    VideoPublication(
+                        workspace_id=ws,
+                        upload_id=take.id,
+                        candidate_id=cid,
+                        platform="instagram",
+                        status="posted",
+                        copy={"caption": "Out."},
+                    )
+                )
+        await s.commit()
+        return lineup.id, ids
+
+
+async def current_week(client, ws) -> dict:
+    return (
+        await client.get("/api/v1/editorial/weeks/current/lineup", headers=headers(ws))
+    ).json()
+
+
+def titles(week: dict, slot: str = "primary") -> list[str]:
+    return [row["title"] for row in week[slot]]
+
+
+async def test_a_new_week_keeps_the_topics_he_chose_and_has_not_recorded(
+    client, editorial_sessionmaker, monkeypatch
+):
+    ws = uuid.uuid4()
+    on_week(monkeypatch, LAST_WEEK)
+    last_id, ids = await seed_week(
+        editorial_sessionmaker,
+        ws,
+        LAST_WEEK,
+        [
+            {"title": "Invoices nobody opens", "script": "ready"},
+            {
+                "title": "Already filmed",
+                "script": "ready",
+                "status": "recorded",
+                "takes": ["edited"],
+            },
+            {"title": "Receptionist at night", "script": "ready"},
+            {"title": "Rejected since", "script": "ready", "status": "rejected"},
+            {"title": "Still being written", "script": "draft"},
+            {"title": "Moved to later", "script": "ready", "decision": "later"},
+            {"title": "Funnel leaks", "script": "ready"},
+            {"title": "Decision taken back", "script": "ready", "decision": None},
+            {"title": "Listed before decisions were kept", "script": "ready", "decision": "no_row"},
+            {"title": "No script asked for yet"},
+            {"title": "Spare with a script", "slot": "reserve", "script": "ready"},
+            {"title": "Spare without one", "slot": "reserve"},
+        ],
+        revision=23,
+    )
+    on_week(monkeypatch, THIS_WEEK)
+
+    today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+
+    week = today["week"]
+    assert week["week_start"] == "2026-09-28"
+    carried = [
+        "Invoices nobody opens",
+        "Receptionist at night",
+        "Still being written",
+        "Funnel leaks",
+        "Listed before decisions were kept",
+        "No script asked for yet",
+    ]
+    assert titles(week) == carried, "same order; filmed, rejected and un-chosen stay behind"
+    assert [row["rank"] for row in week["primary"]] == [1, 2, 3, 4, 5, 6]
+    assert titles(week, "reserve") == ["Spare with a script", "Spare without one"]
+    assert week["ready_count"] == 4
+    assert today["attention"]["scripts_ready"] == 4
+    assert today["next_action"]["key"] == "record"
+    assert today["next_action"]["href"] == f"/record?candidate={ids['Invoices nobody opens']}"
+    assert week["revision"] == 2, "one revision for the whole carry"
+
+    # The week page and the studio read the same list.
+    assert titles(await current_week(client, ws)) == carried
+    async with editorial_sessionmaker() as s:
+        queue = await prod.recording_queue(ws=ws, db=s)
+    assert [i["title"] for i in queue["ideas"]] == [
+        "Invoices nobody opens",
+        "Receptionist at night",
+        "Funnel leaks",
+        "Listed before decisions were kept",
+    ]
+
+    # Last week is history: left exactly as it was.
+    async with editorial_sessionmaker() as s:
+        last = await s.get(WeeklyLineup, last_id)
+        assert last.revision == 23
+        assert len(await lineup_service.list_items(s, ws, last_id)) == 12
+
+
+async def test_the_carry_runs_once_so_a_topic_he_takes_out_stays_out(
+    client, editorial_sessionmaker, monkeypatch
+):
+    ws = uuid.uuid4()
+    on_week(monkeypatch, LAST_WEEK)
+    _, ids = await seed_week(
+        editorial_sessionmaker,
+        ws,
+        LAST_WEEK,
+        [
+            {"title": "Invoices nobody opens", "script": "ready"},
+            {"title": "Receptionist at night", "script": "ready"},
+            {"title": "Funnel leaks", "script": "draft"},
+        ],
+    )
+    on_week(monkeypatch, THIS_WEEK)
+
+    first = await current_week(client, ws)
+    assert titles(first) == ["Invoices nobody opens", "Receptionist at night", "Funnel leaks"]
+    out = await client.patch(
+        "/api/v1/editorial/weeks/current/lineup",
+        json={
+            "move": {"candidate_id": str(ids["Receptionist at night"]), "action": "remove"},
+            "expected_revision": first["revision"],
+        },
+        headers=headers(ws),
+    )
+    assert out.status_code == 200, out.text
+
+    again = await current_week(client, ws)
+    assert titles(again) == ["Invoices nobody opens", "Funnel leaks"]
+    assert again["revision"] == out.json()["revision"], "reading again writes nothing"
+    today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+    assert titles(today["week"]) == ["Invoices nobody opens", "Funnel leaks"]
+    assert today["attention"]["scripts_ready"] == 1
+
+
+async def test_an_empty_week_that_already_exists_is_filled_on_its_first_read(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """The live state on 28-Sep: the new week's list was created empty (revision 1)
+    before this fix, so the carry has to fill a list that exists, not only a new one."""
+    ws = uuid.uuid4()
+    on_week(monkeypatch, LAST_WEEK)
+    await seed_week(
+        editorial_sessionmaker,
+        ws,
+        LAST_WEEK,
+        [
+            {"title": "Invoices nobody opens", "script": "ready"},
+            {"title": "Receptionist at night", "script": "ready"},
+        ],
+        revision=23,
+    )
+    empty_id, _ = await seed_week(editorial_sessionmaker, ws, THIS_WEEK, [])
+    on_week(monkeypatch, THIS_WEEK)
+
+    today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+
+    assert today["week"]["lineup_id"] == str(empty_id)
+    assert titles(today["week"]) == ["Invoices nobody opens", "Receptionist at night"]
+    assert today["attention"]["scripts_ready"] == 2
+    assert today["week"]["revision"] == 2
+    async with editorial_sessionmaker() as s:
+        row = await s.get(WeeklyLineup, empty_id)
+        assert row.carried_at is not None, "Today's read is kept, not rolled back"
+        assert row.carried_from_lineup_id is not None
+
+
+async def test_only_the_current_week_is_filled_and_only_from_an_earlier_one(
+    client, editorial_sessionmaker, monkeypatch
+):
+    ws = uuid.uuid4()
+    on_week(monkeypatch, LAST_WEEK)
+    await seed_week(
+        editorial_sessionmaker,
+        ws,
+        LAST_WEEK,
+        [{"title": "Invoices nobody opens", "script": "ready"}],
+    )
+
+    # Looking ahead at next week while this one is still running copies nothing.
+    ahead = await client.get("/api/v1/editorial/weeks/2026-09-28/lineup", headers=headers(ws))
+    assert ahead.json()["primary"] == []
+    assert titles(await current_week(client, ws)) == ["Invoices nobody opens"]
+    # An older week is history, never filled from one older still. The week before
+    # it has a topic, so a carry into a past week would have something to copy:
+    # the live diagnostic GET of 14-Sep would otherwise fill it and make it a
+    # carry source for the weeks after.
+    await seed_week(
+        editorial_sessionmaker,
+        ws,
+        date(2026, 9, 7),
+        [{"title": "Older still", "script": "ready"}],
+    )
+    older = await client.get("/api/v1/editorial/weeks/2026-09-14/lineup", headers=headers(ws))
+    assert older.json()["primary"] == []
+    async with editorial_sessionmaker() as s:
+        row = await s.get(WeeklyLineup, uuid.UUID(older.json()["lineup_id"]))
+        assert row.carried_at is None, "a past week never runs the carry"
+
+    # When that week arrives, the list he opened ahead of time is filled then.
+    on_week(monkeypatch, THIS_WEEK)
+    assert titles(await current_week(client, ws)) == ["Invoices nobody opens"]
+
+
+async def test_a_decision_on_monday_morning_keeps_the_place_it_took_the_topic_from(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """'Later' as the first thing he does in the new week: the topic comes off the
+    carried list at its place, so taking that back puts it back there."""
+    ws = uuid.uuid4()
+    on_week(monkeypatch, LAST_WEEK)
+    _, ids = await seed_week(
+        editorial_sessionmaker,
+        ws,
+        LAST_WEEK,
+        [
+            {"title": "Invoices nobody opens", "script": "ready"},
+            {"title": "Receptionist at night", "script": "ready"},
+            {"title": "Funnel leaks", "script": "ready"},
+        ],
+    )
+    on_week(monkeypatch, THIS_WEEK)
+    middle = ids["Receptionist at night"]
+
+    later = await client.post(
+        f"/api/v1/editorial/topics/{middle}/decide",
+        json={"decision": "later", "by": "voice"},
+        headers=headers(ws),
+    )
+    assert later.status_code == 200, later.text
+    assert later.json()["removed_from_week"] == {"slot": "primary", "rank": 2}
+    assert titles(await current_week(client, ws)) == ["Invoices nobody opens", "Funnel leaks"]
+
+    back = await client.post(
+        f"/api/v1/editorial/topics/{middle}/decide",
+        json={"decision": "this_week", "by": "voice"},
+        headers=headers(ws),
+    )
+    assert back.json()["placed"]["rank"] == 2
+    assert titles(await current_week(client, ws)) == [
+        "Invoices nobody opens",
+        "Receptionist at night",
+        "Funnel leaks",
+    ]
+
+
+async def test_a_filmed_topic_stays_behind_and_a_resting_take_does_not_count(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """28-Sep, the live week: one topic had its captioned edit made and was still
+    listed as planned (nothing marks a lineup item recorded), another had only a
+    take resting on the server, which he counts as "didn't film them yet". Any
+    upload marks the topic "recorded", so that status cannot tell the two apart;
+    how far the take got can."""
+    ws = uuid.uuid4()
+    on_week(monkeypatch, LAST_WEEK)
+    filmed = {"script": "ready", "status": "recorded"}
+    await seed_week(
+        editorial_sessionmaker,
+        ws,
+        LAST_WEEK,
+        [
+            {"title": "Edited and captioned", "takes": ["edited"], **filmed},
+            {"title": "Resting take only", "takes": ["uploaded"], **filmed},
+            {"title": "Being transcribed", "takes": ["transcribing"], **filmed},
+            {"title": "Waiting for his review", "takes": ["needs_review"], **filmed},
+            {"title": "Edit archived", "takes": ["edited"], "archived": True, **filmed},
+            {"title": "Take failed", "takes": ["failed"], **filmed},
+            {"title": "Two resting takes", "takes": ["superseded", "uploaded"], **filmed},
+            {
+                "title": "Posted, then archived",
+                "takes": ["edited"],
+                "archived": True,
+                "posted": True,
+                **filmed,
+            },
+            {"title": "Marked published by hand", "script": "ready", "status": "published"},
+            {"title": "Not filmed at all", "script": "ready"},
+        ],
+    )
+    on_week(monkeypatch, THIS_WEEK)
+
+    week = await current_week(client, ws)
+
+    assert titles(week) == [
+        "Resting take only",
+        "Edit archived",
+        "Take failed",
+        "Two resting takes",
+        "Not filmed at all",
+    ]
+    assert all(row["filmed"] is False for row in week["primary"])
+
+
+async def test_a_filmed_topic_in_the_week_is_shown_but_never_offered_for_recording(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """A topic he filmed stays in its week, so the week shows what he did, but it
+    is not "Start recording" again: not on Today, not in the count, not in the
+    studio."""
+    ws = uuid.uuid4()
+    on_week(monkeypatch, THIS_WEEK)
+    _, ids = await seed_week(
+        editorial_sessionmaker,
+        ws,
+        THIS_WEEK,
+        [
+            {"title": "Filmed on Sunday", "script": "ready", "takes": ["edited"]},
+            {"title": "Next to film", "script": "ready"},
+            {"title": "Still being written", "script": "draft"},
+        ],
+    )
+
+    today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+
+    week = today["week"]
+    assert titles(week) == ["Filmed on Sunday", "Next to film", "Still being written"]
+    assert [row["filmed"] for row in week["primary"]] == [True, False, False]
+    assert week["ready_count"] == 1
+    assert today["attention"]["scripts_ready"] == 1
+    assert today["next_action"]["key"] == "record"
+    assert today["next_action"]["href"] == f"/record?candidate={ids['Next to film']}"
+    async with editorial_sessionmaker() as s:
+        queue = await prod.recording_queue(ws=ws, db=s)
+    assert [i["title"] for i in queue["ideas"]] == ["Next to film"]
+
+
+async def test_a_take_is_filmed_by_what_the_pipeline_made_of_it_not_by_how_it_stopped(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """28-Sep review: a re-render of a finished edit that threw left the take
+    "failed" with its transcript, cut and edited video still on it, and the topic
+    went back to "Record this one", into the studio and into next week's carry.
+    A take cut off before anything came of it ("unavailable" with the worker
+    away, "interrupted" by a restart) counted as filmed. How a step stopped says
+    nothing about whether he filmed it; what the pipeline made of the take does."""
+    ws = uuid.uuid4()
+    on_week(monkeypatch, THIS_WEEK)
+    heard = [{"start_s": 0.0, "end_s": 1.0, "text": "Nobody opens the invoice."}]
+    cut = {"keep": [[0.0, 1.0]], "dropped": []}
+    _, ids = await seed_week(
+        editorial_sessionmaker,
+        ws,
+        THIS_WEEK,
+        [
+            {
+                "title": "Re-render failed after the edit",
+                "script": "ready",
+                "takes": [
+                    {
+                        "status": "failed",
+                        "transcript": heard,
+                        "edit_plan": cut,
+                        "edited_path": "/tmp/take-edited.mp4",
+                    }
+                ],
+            },
+            {
+                "title": "Cut, then the worker went away",
+                "script": "ready",
+                "takes": [{"status": "unavailable", "transcript": heard, "edit_plan": cut}],
+            },
+            {
+                "title": "Transcribed, then a restart",
+                "script": "ready",
+                "takes": [{"status": "interrupted", "transcript": heard}],
+            },
+            {"title": "Failed before a word was heard", "script": "ready", "takes": ["failed"]},
+            {"title": "Worker away before a word", "script": "ready", "takes": ["unavailable"]},
+            {"title": "Restart before a word", "script": "ready", "takes": ["interrupted"]},
+        ],
+    )
+
+    today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+
+    assert {row["title"]: row["filmed"] for row in today["week"]["primary"]} == {
+        "Re-render failed after the edit": True,
+        "Cut, then the worker went away": True,
+        "Transcribed, then a restart": True,
+        "Failed before a word was heard": False,
+        "Worker away before a word": False,
+        "Restart before a word": False,
+    }
+    assert today["attention"]["scripts_ready"] == 3
+    assert (
+        today["next_action"]["href"]
+        == f"/record?candidate={ids['Failed before a word was heard']}"
+    )
+
+
+def test_a_week_whose_topics_are_all_filmed_asks_for_no_recording_and_no_script():
+    week = {
+        "primary": [
+            {"title": "Filmed", "candidate_id": "c1", "script_state": "ready", "filmed": True},
+            {"title": "Filmed too", "candidate_id": "c2", "script_state": "none", "filmed": True},
+        ]
+    }
+
+    action = today_service._next_action(week=week, waiting=4, pending_reviews=0)
+
+    assert action["key"] == "choose_week"
+
+
+async def test_the_carry_comes_from_the_last_week_with_topics_not_an_empty_look(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """Any read of a week's list creates it, so an old week looked at by date is
+    an empty row. Last week being one of those must not hide the week before."""
+    ws = uuid.uuid4()
+    source_id, _ = await seed_week(
+        editorial_sessionmaker,
+        ws,
+        date(2026, 9, 14),
+        [
+            {"title": "Invoices nobody opens", "script": "ready"},
+            {"title": "Funnel leaks", "script": "draft"},
+        ],
+    )
+    await seed_week(editorial_sessionmaker, ws, LAST_WEEK, [])
+    on_week(monkeypatch, THIS_WEEK)
+
+    week = await current_week(client, ws)
+
+    assert titles(week) == ["Invoices nobody opens", "Funnel leaks"]
+    async with editorial_sessionmaker() as s:
+        row = await s.get(WeeklyLineup, uuid.UUID(week["lineup_id"]))
+        assert row.carried_from_lineup_id == source_id
+
+
+async def test_a_week_he_emptied_himself_is_not_skipped_for_an_older_one(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """A week that ran its own carry was a real week: if he took everything out of
+    it, the week before must not come back through it."""
+    ws = uuid.uuid4()
+    await seed_week(
+        editorial_sessionmaker,
+        ws,
+        date(2026, 9, 14),
+        [{"title": "Invoices nobody opens", "script": "ready"}],
+    )
+    await seed_week(editorial_sessionmaker, ws, LAST_WEEK, [], carried=True)
+    on_week(monkeypatch, THIS_WEEK)
+
+    assert (await current_week(client, ws))["primary"] == []
+
+
+async def test_a_topic_he_chose_comes_over_even_when_the_engine_withdrew_it(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """His choice outranks the engine's withdrawal (a re-run of the week's
+    selection, a stale news idea), the rule `chosen_and_listed` already keeps.
+    What he put away, never chose, or rejected stays behind."""
+    ws = uuid.uuid4()
+    on_week(monkeypatch, LAST_WEEK)
+    await seed_week(
+        editorial_sessionmaker,
+        ws,
+        LAST_WEEK,
+        [
+            {"title": "Invoices nobody opens", "script": "ready"},
+            {"title": "Engine set it aside", "script": "ready", "status": "withdrawn"},
+            {
+                "title": "Set aside, never decided",
+                "status": "withdrawn",
+                "decision": "no_row",
+            },
+            {"title": "Put away by him", "status": "withdrawn", "decision": "away"},
+            {"title": "Rejected since", "script": "ready", "status": "rejected"},
+        ],
+    )
+    on_week(monkeypatch, THIS_WEEK)
+
+    week = await current_week(client, ws)
+
+    assert titles(week) == ["Invoices nobody opens", "Engine set it aside"]
+    assert week["ready_count"] == 2
+
+
+async def test_todays_being_edited_count_is_the_librarys_being_edited_list(
+    client, editorial_sessionmaker
+):
+    """28-Sep: Today said 12 being edited while nothing was: it counted takes
+    resting on the server ("uploaded", nothing run on them), which the Library
+    lists under Uploading. The card opens the Library's "Being edited" list, so it
+    counts that list: no resting, archived or synthetic takes."""
+    ws = uuid.uuid4()
+    real = await add_candidate(editorial_sessionmaker, ws, "A real topic")
+    synthetic = await add_candidate(
+        editorial_sessionmaker, ws, "SYNTHETIC TECHNICAL TEST", origin="technical_validation"
+    )
+    takes = [
+        (real, "uploaded", None),
+        (real, "uploaded", None),
+        (real, "transcribing", None),
+        (real, "transcribed", None),
+        (real, "proofreading", None),
+        (real, "planned", None),
+        (real, "rendering", None),
+        (real, "needs_review", None),
+        (real, "edited", None),
+        (real, "failed", None),
+        (real, "superseded", None),
+        (real, "transcribing", datetime(2026, 9, 27)),
+        (synthetic, "transcribing", None),
+    ]
+    async with editorial_sessionmaker() as s:
+        for cid, state, archived in takes:
+            s.add(
+                RecordingUpload(
+                    workspace_id=ws,
+                    candidate_id=cid,
+                    original_filename="take.mp4",
+                    storage_path="/tmp/take.mp4",
+                    sha256=uuid.uuid4().hex * 2,
+                    status=state,
+                    archived_at=archived,
+                )
+            )
+        await s.commit()
+
+    today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+    editing = (
+        await client.get("/api/v1/production/library?filter=editing", headers=headers(ws))
+    ).json()
+
+    assert editing["total"] == 5
+    assert today["attention"]["editing"] == editing["total"]
+
+
+async def test_a_topic_he_names_opens_in_the_studio_even_when_he_filmed_it(
+    editorial_sessionmaker, monkeypatch
+):
+    """28-Sep review: the studio lists what he has still to film, and it opens only
+    an idea in its list, so "Record it again" in the Library and "Start recording"
+    in the topic room led to "That script is not ready to record yet" for every
+    topic he had filmed: a false sentence behind a button that went nowhere. A
+    topic he names is opened when its script is ready, filmed or not, in this
+    week or not. The list itself is still only what is left to film."""
+    ws = uuid.uuid4()
+    on_week(monkeypatch, LAST_WEEK)
+    _, last = await seed_week(
+        editorial_sessionmaker,
+        ws,
+        LAST_WEEK,
+        [{"title": "Filmed last week", "script": "ready", "takes": ["edited"]}],
+    )
+    on_week(monkeypatch, THIS_WEEK)
+    _, ids = await seed_week(
+        editorial_sessionmaker,
+        ws,
+        THIS_WEEK,
+        [
+            {"title": "Filmed on Sunday", "script": "ready", "takes": ["edited"]},
+            {"title": "Next to film", "script": "ready"},
+            {"title": "Still being written", "script": "draft", "takes": ["edited"]},
+        ],
+    )
+
+    async def studio(candidate=None) -> list[str]:
+        async with editorial_sessionmaker() as s:
+            queue = await prod.recording_queue(ws=ws, db=s, candidate=candidate)
+        return [i["title"] for i in queue["ideas"]]
+
+    assert await studio() == ["Next to film"]
+    assert await studio(ids["Filmed on Sunday"]) == ["Filmed on Sunday", "Next to film"]
+    assert await studio(last["Filmed last week"]) == ["Next to film", "Filmed last week"]
+    # Named or not, a script that is not ready is not opened: that notice is true.
+    assert await studio(ids["Still being written"]) == ["Next to film"]
+    assert await studio(uuid.uuid4()) == ["Next to film"]
+
+
+async def test_a_topic_with_only_a_resting_take_can_still_be_put_away_or_saved_for_later(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """28-Sep review: any upload marks a topic "recorded", even a take resting on
+    the server, and the Topics list and "put away" read that status. So "put that
+    one away" was refused "already recorded" for a topic Today lists as still to
+    film, and "later" took it off the week into no list at all. Both now ask what
+    the week asks: has he filmed it."""
+    ws = uuid.uuid4()
+    on_week(monkeypatch, THIS_WEEK)
+    resting = {"script": "ready", "status": "recorded", "takes": ["uploaded"]}
+    _, ids = await seed_week(
+        editorial_sessionmaker,
+        ws,
+        THIS_WEEK,
+        [
+            {"title": "Resting, put away", **resting},
+            {"title": "Resting, saved for later", **resting},
+            {
+                "title": "Filmed on Sunday",
+                "script": "ready",
+                "status": "recorded",
+                "takes": ["edited"],
+            },
+        ],
+    )
+
+    async def decide(title: str, decision: str, by: str = "voice"):
+        return await client.post(
+            f"/api/v1/editorial/topics/{ids[title]}/decide",
+            json={"decision": decision, "by": by},
+            headers=headers(ws),
+        )
+
+    async def listed(filter_key: str) -> list[str]:
+        body = (
+            await client.get(f"/api/v1/editorial/topics?filter={filter_key}", headers=headers(ws))
+        ).json()
+        return [t["title"] for t in body["topics"]]
+
+    away = await decide("Resting, put away", "away")
+    assert away.status_code == 200, away.text
+    assert await listed("away") == ["Resting, put away"]
+
+    later = await decide("Resting, saved for later", "later", by="ziv")
+    assert later.status_code == 200, later.text
+    assert later.json()["removed_from_week"]["slot"] == "primary"
+    assert await listed("later") == ["Resting, saved for later"]
+
+    # What he has filmed is done: it lives in the Library, not in Put away.
+    filmed = await decide("Filmed on Sunday", "away")
+    assert filmed.status_code == 409
+    assert filmed.json()["detail"]["code"] == "recorded"
+    assert titles(await current_week(client, ws)) == ["Filmed on Sunday"]
+
+
+async def test_the_typed_conversation_knows_which_topics_he_has_filmed(
+    editorial_sessionmaker, monkeypatch
+):
+    """28-Sep review: the Talk sheet told the model "this is his recording list"
+    and asked which one to record first, with no word of the topics Today and the
+    week show as Filmed, so it could tell him to record #1 again."""
+    ws = uuid.uuid4()
+    on_week(monkeypatch, THIS_WEEK)
+    await seed_week(
+        editorial_sessionmaker,
+        ws,
+        THIS_WEEK,
+        [
+            {"title": "Filmed on Sunday", "script": "ready", "takes": ["edited"]},
+            {"title": "Next to film", "script": "ready"},
+            {"title": "Spare, filmed too", "slot": "reserve", "takes": ["needs_review"]},
+            {"title": "Spare to film", "slot": "reserve"},
+        ],
+    )
+
+    async with editorial_sessionmaker() as s:
+        text = await conversation._week_context(s, ws)
+
+    lines = text.splitlines()
+    assert "1. Filmed on Sunday (Coaching) - filmed already" in lines
+    assert "2. Next to film (Coaching)" in lines
+    assert "- Spare, filmed too (Coaching) - filmed already" in lines
+    assert "- Spare to film (Coaching)" in lines
+    assert "never suggest recording one of those again" in text
 
 
 # -------------------------------------------------------------- changes
