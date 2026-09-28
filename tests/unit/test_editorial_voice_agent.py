@@ -26,6 +26,7 @@ from tce.models.editorial import (
     EvidenceMoment,
     EvidenceSource,
     RecordingPacket,
+    RecordingUpload,
     TopicCandidate,
 )
 from tce.models.editorial_workspace import EditorialChangeSet, IdeaResearch, TopicDecision
@@ -1180,6 +1181,145 @@ async def test_voice_decisions_are_listed_by_their_change_id(client, editorial_s
     decisions = [i for i in items if i["kind"] == "decision"]
     assert [d["id"] for d in decisions] == [approve], "one write, one entry"
     assert decisions[0]["undone"] is True and decisions[0]["can_undo"] is False
+
+
+# ------------------------- where a topic he has a take of really is, in words
+# 28-Sep review: an undecided (or "think about it") topic he has a take of is
+# in no list of ideas waiting for a decision, and not in Today's count. Restore
+# and undo still told him it was "back with the ideas waiting for a decision",
+# so the call contradicted the Topics page in his hand.
+
+
+async def add_take(sm, ws, cid) -> None:
+    """A take resting on the server, as the upload leaves it: the topic is marked
+    "recorded" and nothing has run on the take yet."""
+    async with sm() as s:
+        s.add(
+            RecordingUpload(
+                workspace_id=ws,
+                candidate_id=cid,
+                original_filename="take.mp4",
+                storage_path="/tmp/take.mp4",
+                sha256=uuid.uuid4().hex * 2,
+                duration_s=160.0,
+                status="uploaded",
+            )
+        )
+        row = await s.get(TopicCandidate, cid)
+        row.status = "recorded"
+        await s.commit()
+
+
+async def waiting_titles(client, ws) -> list[str]:
+    """Best matches, the list Today's "need a decision" counts."""
+    body = (await client.get("/api/v1/editorial/topics", headers=headers(ws))).json()
+    count = (await today(client, ws))["attention"]["waiting"]
+    assert count == body["total"], "Today and Best matches must agree"
+    return [t["title"] for t in body["topics"]]
+
+
+TAKE_NOTE = (
+    "You already have a take of it in the Library, so it is not among the ideas "
+    "waiting for a decision."
+)
+
+
+async def test_restoring_a_topic_he_has_a_take_of_says_it_is_not_waiting_for_a_decision(
+    client, editorial_sessionmaker
+):
+    """The web Restore button (by "ziv") toasts `said`, and the call speaks it."""
+    sm = editorial_sessionmaker
+    ws = uuid.uuid4()
+    undecided = await add_candidate(sm, ws, "Resting take, undecided")
+    await add_take(sm, ws, undecided)
+    thinking = await add_candidate(sm, ws, "Resting take, to think about")
+    await add_take(sm, ws, thinking)
+    assert (await decide(client, ws, thinking, "discuss")).status_code == 200
+    plain = await add_candidate(sm, ws, "No take yet")
+    for cid in (undecided, thinking, plain):
+        assert (await decide(client, ws, cid, "away", by="voice")).status_code == 200
+
+    said = {}
+    for cid in (undecided, thinking, plain):
+        response = await client.post(
+            f"/api/v1/editorial/topics/{cid}/restore", json={"by": "ziv"}, headers=headers(ws)
+        )
+        assert response.status_code == 200, response.text
+        said[cid] = response.json()["said"]
+
+    # Only the one without a take is waiting, and only it is said to be.
+    assert await waiting_titles(client, ws) == ["No take yet"]
+    assert said[plain] == '"No take yet" is back with the ideas waiting for a decision.'
+    assert said[undecided] == f'"Resting take, undecided" is no longer put away. {TAKE_NOTE}'
+    assert said[thinking] == (
+        f'"Resting take, to think about" is back, marked to think about. {TAKE_NOTE}'
+    )
+
+
+async def test_undoing_a_choice_of_a_topic_he_has_a_take_of_says_it_is_not_waiting(
+    client, editorial_sessionmaker
+):
+    """Chosen on the call, a resting take recorded, then "undo": it is off the week
+    and undecided, but it is not waiting for a decision, and the reply says so."""
+    sm = editorial_sessionmaker
+    ws = uuid.uuid4()
+    cid = await add_candidate(sm, ws, "Chosen on the call")
+    approved = await decide(client, ws, cid, "this_week", by="voice")
+    await add_take(sm, ws, cid)
+
+    undone = await undo_decision(client, ws, cid, approved.json()["change_id"])
+
+    assert undone.status_code == 200, undone.text
+    assert await week_ids(client, ws) == []
+    assert await decision_of(sm, cid) is None
+    assert await waiting_titles(client, ws) == []
+    assert undone.json()["said"] == (
+        f'"Chosen on the call" is undecided again, and off this week\'s list. {TAKE_NOTE}'
+    )
+
+
+async def test_a_refused_undo_does_not_say_a_topic_with_a_take_is_waiting(
+    client, editorial_sessionmaker
+):
+    sm = editorial_sessionmaker
+    ws = uuid.uuid4()
+    cid = await add_candidate(sm, ws, "Resting take, taken back")
+    await add_take(sm, ws, cid)
+    later = await decide(client, ws, cid, "later", by="voice")
+    # Then he took it back to undecided himself.
+    assert (await decide(client, ws, cid, "undecided")).status_code == 200
+
+    undone = await undo_decision(client, ws, cid, later.json()["change_id"])
+
+    assert undone.status_code == 409, undone.text
+    message = undone.json()["detail"]["message"]
+    assert "waiting for a decision" not in message
+    assert "(it is now undecided)" in message
+    assert await waiting_titles(client, ws) == []
+
+
+async def test_the_activity_line_for_a_topic_with_a_take_does_not_say_it_is_waiting(
+    client, editorial_sessionmaker
+):
+    sm = editorial_sessionmaker
+    ws = uuid.uuid4()
+    taken = await add_candidate(sm, ws, "Resting take")
+    await add_take(sm, ws, taken)
+    plain = await add_candidate(sm, ws, "No take yet")
+    for cid in (taken, plain):
+        assert (await decide(client, ws, cid, "later", by="voice")).status_code == 200
+        assert (await decide(client, ws, cid, "undecided", by="voice")).status_code == 200
+
+    items = (await client.get("/api/v1/editorial/voice/activity", headers=headers(ws))).json()[
+        "items"
+    ]
+    lines = [i["lines"][0] for i in items if i["kind"] == "decision" and i["decision"] is None]
+    assert sorted(lines) == [
+        'Put "No take yet" back with the ideas waiting for a decision.',
+        'Took "Resting take" back to undecided. You have a take of it in the Library, '
+        "so it is not waiting for a decision.",
+    ]
+    assert await waiting_titles(client, ws) == ["No take yet"]
 
 
 # --------------------- an idea the engine withdrew, with no 'put away' decision

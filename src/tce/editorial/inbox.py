@@ -173,6 +173,29 @@ def effective_decision(candidate: TopicCandidate, decision: TopicDecision | None
     return None
 
 
+# The decisions under which a topic is still an idea waiting for him: none yet,
+# or "think about it", which has no list of its own and sits under Best matches.
+STILL_WAITING = (None, "discuss")
+
+
+def set_aside_by_a_take(decided: str | None, has_take: bool) -> bool:
+    """A topic he has a take of is not waiting for a decision, when that is all it
+    would be doing.
+
+    28-Sep, Ziv asked for this side effect to be fixed: "Your 'need a decision'
+    count may go up a little. Topics with only an unedited take now show there
+    too." A take, even one resting on the server, is a decision made: he stood in
+    front of the camera for it. So an undecided topic with one is in no list of
+    ideas waiting for him and not in Today's count, and neither is one marked to
+    think about (review, same day: marking a chosen topic with a take to think
+    about raised the count by one, and the call said "1 idea needs a decision"
+    and named none). A topic chosen, saved for later or put away keeps its place
+    in that decision's list, take or not. Restore and undo say this in words, so
+    the reply matches the lists he can check.
+    """
+    return has_take and decided in STILL_WAITING
+
+
 def _matches(
     filter_key: str,
     candidate: TopicCandidate,
@@ -296,11 +319,12 @@ async def list_topics(
         # 28-Sep, Ziv asked for this side effect to be fixed: "Your 'need a
         # decision' count may go up a little. Topics with only an unedited take
         # now show there too." A take, even one resting on the server, is a
-        # decision made, so an undecided topic with one is not waiting for him:
-        # not in Best matches, not in any undecided view, not in Today's count,
-        # and not among the ideas held back either. A topic he did decide on
-        # keeps its place in that decision's list, take or not.
-        if effective_decision(candidate, decision) is None and candidate.id in taken:
+        # decision made, so an undecided topic with one, or one marked to think
+        # about, is not waiting for him: not in Best matches, not in any
+        # undecided view, not in Today's count, and not among the ideas held
+        # back either. A topic chosen, saved or put away keeps its place in that
+        # decision's list, take or not.
+        if set_aside_by_a_take(effective_decision(candidate, decision), candidate.id in taken):
             continue
         # A stored brief wins: he may have written the connection himself.
         brief = stored.get(candidate.id) or briefs.seed_brief(candidate)

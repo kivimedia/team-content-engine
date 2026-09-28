@@ -1212,8 +1212,10 @@ async def test_a_topic_with_a_take_stays_in_the_list_he_put_it_in(
     client, editorial_sessionmaker, monkeypatch
 ):
     """What 0ae1787 fixed stays fixed: a topic with only a resting take that he
-    chose, saved, marked to think about or put away is in that list, and taking
-    the decision back does not put it among the ideas waiting for one."""
+    chose, saved or put away is in that list, and taking the decision back does
+    not put it among the ideas waiting for one. "Think about it" has no list of
+    its own: it sits under Best matches, the list Today counts, so a take ends
+    that wait too."""
     sm = editorial_sessionmaker
     ws = uuid.uuid4()
     on_week(monkeypatch, THIS_WEEK)
@@ -1246,18 +1248,58 @@ async def test_a_topic_with_a_take_stays_in_the_list_he_put_it_in(
     assert titles(await current_week(client, ws)) == ["Resting, chosen for this week"]
     assert await listed_titles(client, ws, "later") == ["Resting, saved for later"]
     assert await listed_titles(client, ws, "away") == ["Resting, put away"]
-    # Marked to think about is a decision, and it sits under Best matches as
-    # it did before: only the undecided are held out.
-    assert await listed_titles(client, ws, "best") == ["Resting, to think about"]
+    # Marked to think about is still an idea waiting for him (it sits under
+    # Best matches), and a take means he already chose to film it: before
+    # 0ae1787 it was hidden, and Today's count did not rise for it.
+    assert await listed_titles(client, ws, "best") == []
     today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
-    assert today["attention"]["waiting"] == 1
+    assert today["attention"]["waiting"] == 0
 
     await decide("Resting, saved for later", "undecided")
 
     assert await listed_titles(client, ws, "later") == []
-    assert await listed_titles(client, ws, "best") == ["Resting, to think about"]
+    assert await listed_titles(client, ws, "best") == []
     today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
-    assert today["attention"]["waiting"] == 1
+    assert today["attention"]["waiting"] == 0
+    # The room still says what he decided.
+    room = (
+        await client.get(
+            f"/api/v1/editorial/topics/{ids['Resting, to think about']}/room",
+            headers=headers(ws),
+        )
+    ).json()
+    assert room["decision"] == "discuss"
+
+
+async def test_marking_a_chosen_topic_with_a_take_to_think_about_does_not_raise_the_count(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """The review's walk-through: he chooses a topic for this week and records a
+    resting take (Today: 0 need a decision). Then he marks it to think about,
+    which takes it off the week. It was counted as one more idea needing a
+    decision, and the voice call said "1 idea needs a decision" and named none.
+    A topic with no take marked to think about still waits, as before."""
+    sm = editorial_sessionmaker
+    ws = uuid.uuid4()
+    on_week(monkeypatch, THIS_WEEK)
+    taken = await add_candidate(sm, ws, "Chosen, resting take", rank=1, status="recorded")
+    await add_take(sm, ws, taken)
+    plain = await add_candidate(sm, ws, "Chosen, no take yet", rank=2)
+
+    for cid in (taken, plain):
+        for decision in ("this_week", "discuss"):
+            response = await client.post(
+                f"/api/v1/editorial/topics/{cid}/decide",
+                json={"decision": decision, "by": "voice"},
+                headers=headers(ws),
+            )
+            assert response.status_code == 200, response.text
+
+    assert titles(await current_week(client, ws)) == []
+    today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+    best = (await client.get("/api/v1/editorial/topics", headers=headers(ws))).json()
+    assert [t["title"] for t in best["topics"]] == ["Chosen, no take yet"]
+    assert today["attention"]["waiting"] == best["total"] == 1
 
 
 async def test_a_real_take_is_one_the_library_keeps_of_a_real_topic(editorial_sessionmaker):

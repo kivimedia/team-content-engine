@@ -1655,6 +1655,19 @@ async def restore_topic(
         "discuss": "back, marked to think about",
         "later": "back in saved for later",
     }.get(back_to or "", "back with the ideas waiting for a decision")
+    said = f'"{candidate.title}" is {where}.'
+    if inbox_service.set_aside_by_a_take(
+        inbox_service.effective_decision(candidate, decision),
+        await _has_take(db, ws, candidate.id),
+    ):
+        # 28-Sep review: the web Restore button toasted "back with the ideas
+        # waiting for a decision" for a topic he has a take of, and Best
+        # matches, Later and Put away were all empty. Say where it really is.
+        said = (
+            f'"{candidate.title}" is back, marked to think about. {_TAKE_NOTE}'
+            if back_to == "discuss"
+            else f'"{candidate.title}" is no longer put away. {_TAKE_NOTE}'
+        )
     return {
         "candidate_id": str(candidate.id),
         "title": candidate.title,
@@ -1662,7 +1675,7 @@ async def restore_topic(
         "decision": back_to,
         "placed": placed,
         "change_id": str(change.id) if change is not None else None,
-        "said": f'"{candidate.title}" is {where}.',
+        "said": said,
     }
 
 
@@ -1674,8 +1687,23 @@ _DECISION_WORDS = {
     UNDECIDED: "waiting for a decision",
 }
 
+# Where a topic he has a take of is when it ends up undecided or marked to think
+# about (inbox.set_aside_by_a_take): not in any list of ideas waiting for him.
+_TAKE_NOTE = (
+    "You already have a take of it in the Library, so it is not among the ideas "
+    "waiting for a decision."
+)
 
-def _decision_words(value: str | None) -> str:
+
+async def _has_take(db: AsyncSession, ws: uuid.UUID, candidate_id: uuid.UUID) -> bool:
+    return candidate_id in await lineup_service.taken_candidate_ids(db, ws, [candidate_id])
+
+
+def _decision_words(value: str | None, *, taken: bool = False) -> str:
+    if taken and _no_decision(value) is None:
+        # An undecided topic he has a take of is in no list of ideas waiting for
+        # a decision (28-Sep review), so the words must not send him there.
+        return "undecided"
     return _DECISION_WORDS.get(value or UNDECIDED, value or UNDECIDED)
 
 
@@ -1787,24 +1815,26 @@ async def undo_decision(
     )
     row = await inbox_service.get_decision(db, ws, candidate.id)
     now = row.decision if row is not None else None
+    taken = await _has_take(db, ws, candidate.id)
     if later or now != entry.after:
         his = [c for c in later if c.decided_by != "voice"]
         newest = later[-1] if later else None
+        words = _decision_words(now, taken=taken)
         if his:
             message = (
                 f'"{title}" was changed after that by Ziv himself (it is now '
-                f"{_decision_words(now)}), so taking the call's decision back would undo "
+                f"{words}), so taking the call's decision back would undo "
                 "his. Nothing was changed."
             )
         elif newest is not None:
             message = (
                 f'"{title}" was decided again after that in the call (it is now '
-                f"{_decision_words(now)}; change {str(newest.id)[:8]}). Undo that one first "
+                f"{words}; change {str(newest.id)[:8]}). Undo that one first "
                 "to go further back. Nothing was changed."
             )
         else:
             message = (
-                f'"{title}" was changed since (it is now {_decision_words(now)}), so taking '
+                f'"{title}" was changed since (it is now {words}), so taking '
                 "that decision back would lose the newer one. Nothing was changed."
             )
         raise VoiceError(
@@ -1933,9 +1963,15 @@ async def undo_decision(
         else:
             said = f'"{title}" is back where it was (chosen for this week).'
     else:
-        said = f'"{title}" is {_decision_words(back)} again' + (
+        said = f'"{title}" is {_decision_words(back, taken=taken)} again' + (
             f", and off {_list_words(off['week_start'])}." if off else "."
         )
+        if inbox_service.set_aside_by_a_take(
+            inbox_service.effective_decision(candidate, row), taken
+        ):
+            # 28-Sep review: "waiting for a decision again" for a topic he has a
+            # take of, while Best matches did not list it. Say where it is.
+            said += f" {_TAKE_NOTE}"
     if withdrawn_again:
         said += " It is put away again (withdrawn, as it was before it was brought back)."
     elif still_withdrawn:
@@ -2030,6 +2066,12 @@ async def activity(db: AsyncSession, ws: uuid.UUID, *, hours: int = 24) -> dict[
             titles[str(c.id)] = c.title
             statuses[str(c.id)] = c.status
 
+    # Which of the topics decided on he has a take of now: one taken back to
+    # undecided is in no list of ideas waiting for a decision (28-Sep review).
+    taken = await lineup_service.taken_candidate_ids(
+        db, ws, list({d.candidate_id for d in decisions})
+    )
+
     items: list[dict[str, Any]] = []
     for cs in sets:
         if cs.target_type == "candidate_brief":
@@ -2073,6 +2115,11 @@ async def activity(db: AsyncSession, ws: uuid.UUID, *, hours: int = 24) -> dict[
             "away": f'Put "{title}" away.',
             None: f'Put "{title}" back with the ideas waiting for a decision.',
         }.get(d.after, f'Decided "{title}": {d.after}.')
+        if d.after is None and d.candidate_id in taken:
+            words = (
+                f'Took "{title}" back to undecided. You have a take of it in the Library, '
+                "so it is not waiting for a decision."
+            )
         if d.before == WITHDRAWN:
             # A restore of an idea the engine withdrew: only its status changed.
             words = f'Brought "{title}" back from the withdrawn ideas.'
