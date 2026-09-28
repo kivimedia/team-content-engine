@@ -35,7 +35,12 @@ from tce.editorial.common import (
     ORIGIN_SELECTOR_REJECTED,
     ORIGIN_TECHNICAL_VALIDATION,
 )
-from tce.editorial.lineup import LANE_LABELS, filmed_candidate_ids, lane_for
+from tce.editorial.lineup import (
+    LANE_LABELS,
+    filmed_candidate_ids,
+    lane_for,
+    taken_candidate_ids,
+)
 from tce.models.editorial import RecordingPacket, TopicCandidate
 from tce.models.editorial_workspace import TOPIC_DECISIONS, TopicDecision
 
@@ -282,11 +287,21 @@ async def list_topics(
     decisions = await _decisions_for(db, ws, ids)
     stored = await _briefs_for(db, ws, ids)
     counts = await _packet_counts(db, ws, ids)
+    taken = await taken_candidate_ids(db, ws, ids)
 
     rows: list[dict[str, Any]] = []
     withheld = 0
     for candidate in candidates:
         decision = decisions.get(candidate.id)
+        # 28-Sep, Ziv asked for this side effect to be fixed: "Your 'need a
+        # decision' count may go up a little. Topics with only an unedited take
+        # now show there too." A take, even one resting on the server, is a
+        # decision made, so an undecided topic with one is not waiting for him:
+        # not in Best matches, not in any undecided view, not in Today's count,
+        # and not among the ideas held back either. A topic he did decide on
+        # keeps its place in that decision's list, take or not.
+        if effective_decision(candidate, decision) is None and candidate.id in taken:
+            continue
         # A stored brief wins: he may have written the connection himself.
         brief = stored.get(candidate.id) or briefs.seed_brief(candidate)
         if not briefs.is_inbox_eligible(brief) and (

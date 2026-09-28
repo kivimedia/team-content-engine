@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.editorial import briefs
 from tce.editorial import changes as change_service
+from tce.editorial import inbox as inbox_service
 from tce.editorial import lineup as lineup_service
 from tce.llm import LLMRequest, LLMUnavailable
 from tce.llm import provider as _llm
@@ -351,16 +352,11 @@ async def _week_context(db: AsyncSession, ws: uuid.UUID) -> str:
 async def _room_context(db: AsyncSession, ws: uuid.UUID) -> str:
     """The editorial room: the week plus what is still waiting, in outline."""
     week = await _week_context(db, ws)
-    waiting = await db.execute(
-        select(TopicCandidate.title)
-        .where(
-            TopicCandidate.workspace_id == ws,
-            TopicCandidate.status == "proposed",
-        )
-        .order_by(TopicCandidate.rank.asc())
-        .limit(15)
-    )
-    titles = [t[0] for t in waiting.all()]
+    # The Topics page's Best matches, the list Today counts (28-Sep). Read by
+    # status "proposed" it named topics already chosen for this week, and a topic
+    # he had a take of once it came back from Put away, as still waiting.
+    waiting = await inbox_service.list_topics(db, ws, filter_key="best", limit=15)
+    titles = [t["title"] for t in waiting["topics"]]
     lines = [week, "", "Ideas still waiting for a decision:"]
     lines += [f"- {t}" for t in titles] or ["- (none)"]
     lines.append("")

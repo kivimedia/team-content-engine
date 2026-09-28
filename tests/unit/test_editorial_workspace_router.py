@@ -1112,6 +1112,210 @@ async def test_the_typed_conversation_knows_which_topics_he_has_filmed(
     assert "never suggest recording one of those again" in text
 
 
+# ------------------------------------------------ a topic he has a take of
+# 28-Sep: the Topics list stopped dropping every topic with an upload (any upload
+# marks it "recorded", even a take resting on the server) so that one chosen for
+# this week or saved for later with only a resting take still shows in its own
+# list. The side effect: an UNDECIDED topic he already recorded a take of came
+# back under Best matches and into Today's "need a decision" count, and Ziv
+# asked for that to be fixed ("Topics with only an unedited take now show there
+# too").
+
+
+async def add_take(sm, ws, cid, *, status: str = "uploaded", archived: bool = False) -> None:
+    async with sm() as s:
+        s.add(
+            RecordingUpload(
+                workspace_id=ws,
+                candidate_id=cid,
+                original_filename="take.mp4",
+                storage_path="/tmp/take.mp4",
+                sha256=uuid.uuid4().hex * 2,
+                duration_s=160.0,
+                status=status,
+                archived_at=datetime(2026, 9, 27) if archived else None,
+            )
+        )
+        await s.commit()
+
+
+async def listed_titles(client, ws, filter_key: str) -> list[str]:
+    body = (
+        await client.get(f"/api/v1/editorial/topics?filter={filter_key}", headers=headers(ws))
+    ).json()
+    return [t["title"] for t in body["topics"]]
+
+
+async def test_an_undecided_topic_he_has_a_take_of_is_not_waiting_for_a_decision(
+    client, editorial_sessionmaker
+):
+    """A take of it, even one resting on the server with nothing run on it, means
+    he already decided to film it. It is not an idea waiting for him: not under
+    Best matches or any view of the undecided, and not in Today's count. A take
+    he archived, or none at all, leaves the idea waiting as before."""
+    sm = editorial_sessionmaker
+    ws = uuid.uuid4()
+    await add_candidate(sm, ws, "Nothing filmed yet", rank=1)
+    resting = await add_candidate(sm, ws, "Resting take, undecided", rank=2, status="recorded")
+    await add_take(sm, ws, resting)
+    replaced = await add_candidate(sm, ws, "Two takes, one replaced", rank=3, status="recorded")
+    await add_take(sm, ws, replaced, status="superseded")
+    await add_take(sm, ws, replaced, status="uploaded")
+    cleared = await add_candidate(sm, ws, "Taken back after a take", rank=4, status="recorded")
+    await add_take(sm, ws, cleared)
+    archived = await add_candidate(sm, ws, "Only take archived", rank=5, status="recorded")
+    await add_take(sm, ws, archived, archived=True)
+    timely = await add_candidate(
+        sm, ws, "Timely, with a take", rank=6, status="recorded", freshness_role="news"
+    )
+    await add_take(sm, ws, timely)
+    code = await add_candidate(
+        sm,
+        ws,
+        "From code, with a take",
+        rank=7,
+        status="recorded",
+        citations_private=[
+            {"moment_id": str(uuid.uuid4()), "source_kind": "github_commit_group", "title": "repo"}
+        ],
+    )
+    await add_take(sm, ws, code)
+    # Chosen, then taken back to undecided: the row stays with no decision on it.
+    async with sm() as s:
+        s.add(
+            TopicDecision(
+                workspace_id=ws,
+                candidate_id=cleared,
+                decision=None,
+                previous_decision="this_week",
+                decided_by="ziv",
+                decided_at=datetime(2026, 9, 27),
+            )
+        )
+        await s.commit()
+
+    today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+    best = (await client.get("/api/v1/editorial/topics", headers=headers(ws))).json()
+
+    waiting = ["Nothing filmed yet", "Only take archived"]
+    assert [t["title"] for t in best["topics"]] == waiting
+    assert best["withheld"] == 0
+    assert today["attention"]["waiting"] == best["total"] == 2
+    assert today["next_action"]["detail"] == "2 ideas are waiting for a decision."
+    assert await listed_titles(client, ws, "calls") == waiting
+    assert await listed_titles(client, ws, "evergreen") == waiting
+    assert await listed_titles(client, ws, "news") == []
+    assert await listed_titles(client, ws, "code") == []
+
+
+async def test_a_topic_with_a_take_stays_in_the_list_he_put_it_in(
+    client, editorial_sessionmaker, monkeypatch
+):
+    """What 0ae1787 fixed stays fixed: a topic with only a resting take that he
+    chose, saved, marked to think about or put away is in that list, and taking
+    the decision back does not put it among the ideas waiting for one."""
+    sm = editorial_sessionmaker
+    ws = uuid.uuid4()
+    on_week(monkeypatch, THIS_WEEK)
+    ids = {}
+    for rank, title in enumerate(
+        (
+            "Resting, chosen for this week",
+            "Resting, saved for later",
+            "Resting, to think about",
+            "Resting, put away",
+        ),
+        start=1,
+    ):
+        ids[title] = await add_candidate(sm, ws, title, rank=rank, status="recorded")
+        await add_take(sm, ws, ids[title])
+
+    async def decide(title: str, decision: str):
+        response = await client.post(
+            f"/api/v1/editorial/topics/{ids[title]}/decide",
+            json={"decision": decision, "by": "ziv"},
+            headers=headers(ws),
+        )
+        assert response.status_code == 200, response.text
+
+    await decide("Resting, chosen for this week", "this_week")
+    await decide("Resting, saved for later", "later")
+    await decide("Resting, to think about", "discuss")
+    await decide("Resting, put away", "away")
+
+    assert titles(await current_week(client, ws)) == ["Resting, chosen for this week"]
+    assert await listed_titles(client, ws, "later") == ["Resting, saved for later"]
+    assert await listed_titles(client, ws, "away") == ["Resting, put away"]
+    # Marked to think about is a decision, and it sits under Best matches as
+    # it did before: only the undecided are held out.
+    assert await listed_titles(client, ws, "best") == ["Resting, to think about"]
+    today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+    assert today["attention"]["waiting"] == 1
+
+    await decide("Resting, saved for later", "undecided")
+
+    assert await listed_titles(client, ws, "later") == []
+    assert await listed_titles(client, ws, "best") == ["Resting, to think about"]
+    today = (await client.get("/api/v1/editorial/today", headers=headers(ws))).json()
+    assert today["attention"]["waiting"] == 1
+
+
+async def test_a_real_take_is_one_the_library_keeps_of_a_real_topic(editorial_sessionmaker):
+    """The one test for "he has a take of it", next to the one for "he filmed it":
+    any state, resting included, but not a take he archived and not the
+    pipeline's own synthetic test take."""
+    sm = editorial_sessionmaker
+    ws = uuid.uuid4()
+    resting = await add_candidate(sm, ws, "Resting take", status="recorded")
+    await add_take(sm, ws, resting)
+    edited = await add_candidate(sm, ws, "Edited take", status="recorded")
+    await add_take(sm, ws, edited, status="edited")
+    failed = await add_candidate(sm, ws, "Take that failed", status="recorded")
+    await add_take(sm, ws, failed, status="failed")
+    archived = await add_candidate(sm, ws, "Archived take", status="recorded")
+    await add_take(sm, ws, archived, status="edited", archived=True)
+    synthetic = await add_candidate(
+        sm, ws, "SYNTHETIC TECHNICAL TEST", status="recorded", origin="technical_validation"
+    )
+    await add_take(sm, ws, synthetic)
+    untouched = await add_candidate(sm, ws, "No take at all")
+    other_ws = uuid.uuid4()
+    elsewhere = await add_candidate(sm, other_ws, "Another workspace's take")
+    await add_take(sm, other_ws, elsewhere)
+
+    every = [resting, edited, failed, archived, synthetic, untouched, elsewhere]
+    async with sm() as s:
+        taken = await lineup_service.taken_candidate_ids(s, ws, every)
+        assert await lineup_service.taken_candidate_ids(s, ws, []) == set()
+
+    assert taken == {resting, edited, failed}
+
+
+async def test_the_typed_conversation_lists_the_ideas_the_topics_page_says_are_waiting(
+    editorial_sessionmaker, monkeypatch
+):
+    """The Talk sheet's "Ideas still waiting for a decision" read every topic in
+    status "proposed": a topic chosen for this week was listed as waiting, and so
+    was one he had a take of once it came back from Put away (which sets the
+    status to "proposed" again). It is the Best matches list now, the one Today
+    counts."""
+    sm = editorial_sessionmaker
+    ws = uuid.uuid4()
+    on_week(monkeypatch, THIS_WEEK)
+    await seed_week(sm, ws, THIS_WEEK, [{"title": "Chosen for this week", "script": "ready"}])
+    await add_candidate(sm, ws, "Nothing filmed yet", rank=2)
+    brought_back = await add_candidate(sm, ws, "Take, brought back", rank=3)
+    await add_take(sm, ws, brought_back)
+
+    async with sm() as s:
+        text = await conversation._room_context(s, ws)
+
+    waiting = text.split("Ideas still waiting for a decision:", 1)[1].splitlines()
+    assert "- Nothing filmed yet" in waiting
+    assert "- Take, brought back" not in waiting
+    assert "- Chosen for this week" not in waiting
+
+
 # -------------------------------------------------------------- changes
 
 

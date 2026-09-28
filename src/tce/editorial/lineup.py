@@ -249,6 +249,39 @@ _TAKE_NOT_FILMED = ("uploaded", "superseded")
 _TAKE_STOPPED = ("failed", "unavailable", "interrupted")
 
 
+def _real_takes(ws: uuid.UUID, ids: list[uuid.UUID]) -> tuple[Any, ...]:
+    """A take of his: one the Library still shows (not archived) of a topic that
+    is not the pipeline's own synthetic test. "He has a take of it" and "he filmed
+    it" both start from here, so the two can never disagree on what a take is."""
+    return (
+        RecordingUpload.workspace_id == ws,
+        RecordingUpload.candidate_id.in_(ids),
+        RecordingUpload.candidate_id.notin_(technical_candidate_ids(ws)),
+        RecordingUpload.archived_at.is_(None),
+    )
+
+
+async def taken_candidate_ids(
+    db: AsyncSession, ws: uuid.UUID, ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Which of these topics he has a take of, in any state, resting included.
+
+    28-Sep, Ziv asked for this to be fixed: "Your 'need a decision' count may go
+    up a little. Topics with only an unedited take now show there too." A take
+    resting on the server is not filmed (the week still offers it for
+    recording), but it is a decision already made: he stood in front of the
+    camera for it. So an undecided topic with a take is not waiting for him. An
+    archived take is one he set aside, and a synthetic test take was never his,
+    so neither counts.
+    """
+    if not ids:
+        return set()
+    result = await db.execute(
+        select(RecordingUpload.candidate_id).where(*_real_takes(ws, ids)).distinct()
+    )
+    return set(result.scalars())
+
+
 async def filmed_candidate_ids(
     db: AsyncSession, ws: uuid.UUID, ids: list[uuid.UUID]
 ) -> set[uuid.UUID]:
@@ -273,12 +306,7 @@ async def filmed_candidate_ids(
     if not ids:
         return set()
     technical = technical_candidate_ids(ws)
-    shown = (
-        RecordingUpload.workspace_id == ws,
-        RecordingUpload.candidate_id.in_(ids),
-        RecordingUpload.candidate_id.notin_(technical),
-        RecordingUpload.archived_at.is_(None),
-    )
+    shown = _real_takes(ws, ids)
     taken = await db.execute(
         select(RecordingUpload.candidate_id).where(
             *shown,
