@@ -532,14 +532,16 @@ async def test_packet_status_survives_restart_and_resume_saves_once(
     assert out.status == "timeout"
     job_status.clear()
 
+    # The scheduler tick saves such a job when it is written (28-Sep-2026), so it
+    # is waiting, not interrupted, and a retry still resumes it.
     async with sm() as s:
         view = await job_status.latest_packet_job(s, ws, cand.id)
-    assert view["state"] == "interrupted" and view["resumable"] is True
+    assert view["state"] == "waiting" and view["resumable"] is True
 
     await finish_jobs(sm, ws, "recording_packet", lambda job: good_output())
     async with sm() as s:
         view = await job_status.latest_packet_job(s, ws, cand.id)
-    assert view["state"] == "interrupted" and "never saved" in view["current_activity"]
+    assert view["state"] == "waiting" and "saved within five minutes" in view["current_activity"]
 
     job_id = uuid.UUID(view["job_ids"][0])
     first = await packets.build_packet(sm, ws, cand.id, resume_job_id=job_id)

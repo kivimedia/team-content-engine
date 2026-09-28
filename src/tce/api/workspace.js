@@ -501,8 +501,16 @@
     html += "<h3>" + esc(item.title) + "</h3></div>";
     if (item.reason) html += '<p class="why">' + esc(item.reason) + "</p>";
     if (item.lane_label) html += '<span class="tag is-lane">' + esc(item.lane_label) + "</span>";
+    /* 28-Sep: a script asked for while his Claude limit was used up waited two
+       days, and the card said "No script yet" with "Prepare the script" all
+       along. A script on its way says when it comes, and is not offered again. */
+    var request = !item.packet_id ? item.script_request : null;
+    var coming = !!(request && request.pending);
     if (item.filmed) {
       html += '<span class="tag is-ready">Filmed</span>';
+    } else if (request) {
+      html += '<span class="tag">' + esc(request.label) + "</span>";
+      html += '<p class="section-hint">' + esc(request.sentence) + "</p>";
     } else {
       html += '<span class="tag' + (item.script_state === "ready" ? " is-ready" : "") + '">'
            + esc(scriptSentence(item.script_state)) + "</span>";
@@ -536,7 +544,7 @@
       html += '<a class="btn primary" href="' + prefix + "/record?candidate="
            + esc(item.candidate_id) + '">Record this one</a>';
       html += '<button class="btn" type="button" data-open-script="' + esc(item.packet_id) + '">Open the script</button>';
-    } else if (!item.packet_id) {
+    } else if (!item.packet_id && !coming) {
       html += '<button class="btn primary" type="button" data-ask-script="' + esc(item.candidate_id) + '">Prepare the script</button>';
     }
     html += "</div></article>";
@@ -602,8 +610,11 @@
            + esc(data.script.packet_id) + '">Read and change the script</button></div>';
     } else {
       html += '<p class="section-hint">' + esc(data.script_note) + "</p>";
-      html += '<div class="actions"><button class="btn primary" type="button" data-ask-script="'
-           + esc(data.candidate_id) + '">Prepare the script</button></div>';
+      // A script already on its way saves itself; asking again changes nothing.
+      if (!(data.script_request && data.script_request.pending)) {
+        html += '<div class="actions"><button class="btn primary" type="button" data-ask-script="'
+             + esc(data.candidate_id) + '">Prepare the script</button></div>';
+      }
     }
 
     if ((data.history || []).length > 1) {
@@ -1873,8 +1884,19 @@
 
   async function askForScript(candidateId) {
     try {
-      await api("/editorial/candidates/" + encodeURIComponent(candidateId) + "/packet", { method: "POST" });
-      toast("Asked. The script is written on your PC worker; it takes a few minutes.");
+      var asked = await api("/editorial/candidates/" + encodeURIComponent(candidateId) + "/packet", { method: "POST" });
+      // The server says when it comes: "a few minutes" was wrong for two days
+      // while his Claude limit was used up (28-Sep).
+      var said = (asked && asked.said) || "Asked. The script is written on your PC worker; it takes a few minutes.";
+      toast(said);
+      // The button is done: it becomes what was said, in place, so the list
+      // does not jump back to the top on his phone.
+      document.querySelectorAll('[data-ask-script="' + candidateId + '"]').forEach(function (button) {
+        var note = document.createElement("p");
+        note.className = "section-hint";
+        note.textContent = said;
+        button.replaceWith(note);
+      });
     } catch (error) {
       toast(error.message, true);
     }

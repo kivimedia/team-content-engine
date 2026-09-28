@@ -7,7 +7,9 @@
 # whether an occurrence is due; occurrence keys live in PostgreSQL, so a repeat
 # tick, a concurrent tick, a restart or a missed hour create nothing twice and
 # catch up within the schedule's catch-up window. The same tick re-drives runs
-# that are waiting for a worker once the desktop worker has checked in.
+# that are waiting for a worker once the desktop worker has checked in, and
+# saves scripts whose request ended before their job was written (the line's
+# scripts_saved / scripts_waiting / scripts_failed).
 #
 # Crontab line (install once as ziv):
 #   */5 * * * * /home/ziv/scripts/run-watched.sh tce-schedule-tick -- \
@@ -49,8 +51,13 @@ except Exception as e:
     print(f"unreadable response: {e}"); raise SystemExit
 occ = ", ".join(f"{o.get('schedule')}:{o.get('status')}:{o.get('occurrence_key')}" for o in d.get("occurrences", []))
 red = ", ".join(f"{r['run_id'][:8]}@{r['stage']}" for r in d.get("redriven", []))
+p = d.get("packets") or {}
+saved = ", ".join(r["candidate_id"][:8] for r in p.get("redriven", []))
+waiting = ", ".join(f"{r['candidate_id'][:8]}@{r.get('job_status')}" for r in p.get("waiting", []))
+failed = ", ".join(f"{r['candidate_id'][:8]}@{r.get('job_status')}" for r in p.get("failed", []))
+fault = f" scripts_error=({p['error']})" if p.get("error") else ""
 w = d.get("worker", {})
-print(f"status={d.get('status')} occurrences=[{occ}] redriven=[{red}] worker_online={w.get('online')} ({w.get('detail')})")
+print(f"status={d.get('status')} occurrences=[{occ}] redriven=[{red}] scripts_saved=[{saved}] scripts_waiting=[{waiting}] scripts_failed=[{failed}]{fault} worker_online={w.get('online')} ({w.get('detail')})")
 PY
 )"
 rm -f "$BODY"

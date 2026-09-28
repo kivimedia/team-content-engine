@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -32,6 +33,7 @@ from tce.models.editorial import (
 )
 
 JERUSALEM = ZoneInfo("Asia/Jerusalem")
+logger = structlog.get_logger()
 
 router = APIRouter(prefix="/content-runs", tags=["content-runs"])
 
@@ -1059,8 +1061,9 @@ async def tick_weekly_schedule(
     Creates every due occurrence exactly once (durable keys), then re-drives
     active runs nobody is coordinating: a run parked on "waiting for worker"
     moves the moment a worker checks in, a run whose coordinator died with the
-    process picks up at its expired lease. Repeated and concurrent ticks are
-    safe; the response says what happened so the cron log is readable.
+    process picks up at its expired lease. It also saves scripts whose request
+    ended before their job finished (`packets`). Repeated and concurrent ticks
+    are safe; the response says what happened so the cron log is readable.
     """
     results = await tick_due_schedules(sm, workspace_id=ws)
     queued_ids = {r["run_id"] for r in results if r["status"] == "queued"}
@@ -1077,9 +1080,26 @@ async def tick_weekly_schedule(
                 continue
             redriven.append({"run_id": str(run.id), "state": run.state, "stage": run.current_stage})
             background.add_task(coordinate_content_run, sm, ws, run.id)
+    # Scripts he asked for whose request ended before the job did (28-Sep-2026:
+    # asked during a capacity park, written two hours later, never saved). Saving
+    # a written one needs no worker, so this does not wait for one to be online.
+    # A fault here is reported on the cron line and never stops the runs above
+    # from being re-driven.
+    from tce.api.routers.editorial import redrive_packet_requests
+
+    try:
+        packets: dict[str, Any] = await redrive_packet_requests(sm, ws)
+    except Exception as exc:
+        logger.exception("content_runs.packet_redrive_failed", workspace_id=str(ws))
+        packets = {
+            "redriven": [],
+            "waiting": [],
+            "failed": [],
+            "error": f"{type(exc).__name__}: {exc}"[:300],
+        }
     if queued_ids:
         status = "queued"
-    elif redriven:
+    elif redriven or packets["redriven"]:
         status = "redriven"
     else:
         status = "disabled_or_not_due"
@@ -1087,6 +1107,7 @@ async def tick_weekly_schedule(
         "status": status,
         "occurrences": results,
         "redriven": redriven,
+        "packets": packets,
         "worker": worker_summary(worker),
     }
 

@@ -952,6 +952,7 @@ def _item_to_json(
     packet: RecordingPacket | None,
     *,
     filmed: bool = False,
+    request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "candidate_id": str(item.candidate_id),
@@ -967,6 +968,10 @@ def _item_to_json(
         "status": item.status,
         # The one thing the week has to be honest about: is there a script yet.
         "script_state": _script_state(packet),
+        # A script asked for and not saved yet (status.packet_requests). With
+        # "pending" it finishes by itself, so the card says when instead of
+        # offering "Prepare the script" again (28-Sep-2026).
+        "script_request": request if packet is None else None,
         # Filmed already (`filmed_candidate_ids`). It stays in its week, so the
         # week shows what he did, and nothing offers to record it again.
         "filmed": filmed,
@@ -989,6 +994,11 @@ async def lineup_to_json(
     candidates = await _candidates_by_id(db, ws, candidate_ids)
     packets = await _latest_packets(db, ws, candidate_ids)
     filmed = await filmed_candidate_ids(db, ws, candidate_ids)
+    from tce.editorial import status as job_status
+
+    requests = await job_status.packet_requests(
+        db, ws, [cid for cid in candidate_ids if cid not in packets]
+    )
 
     rendered = [
         _item_to_json(
@@ -996,6 +1006,7 @@ async def lineup_to_json(
             candidates.get(item.candidate_id),
             packets.get(item.candidate_id),
             filmed=item.candidate_id in filmed,
+            request=requests.get(item.candidate_id),
         )
         for item in items
     ]

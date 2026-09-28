@@ -309,90 +309,425 @@ async def latest_selection_run(
     }
 
 
-async def latest_packet_job(
-    session: Any, workspace_id: uuid.UUID | str, candidate_id: uuid.UUID | str
-) -> dict[str, Any] | None:
-    """The newest packet job on record for a candidate, with an honest state."""
+# ---------------------------------------------------------------------------
+# Packet requests: what became of a script he asked for
+# ---------------------------------------------------------------------------
+# 28-Sep-2026: he asked for a script while the worker group was parked on its
+# weekly limit. The request gave up at once, the job was written when capacity
+# came back, and nothing saved it: the topic said "no script" until someone
+# asked again. The scheduler tick now saves such a job by itself (see
+# `unsaved_packet_requests`), so everything he is told here says so, and never
+# "interrupted, retry" for work that finishes on its own.
+
+# How far back the tick looks for a request whose job finished after it ended.
+# A weekly limit can park a job for up to a week.
+REDRIVE_LOOKBACK_DAYS = 8
+WRITING_WORDS = "Asked for. It is written on your PC worker and saves itself when it is done."
+SAVING_WORDS = "Written. It is saved within five minutes, without a new model call."
+
+
+def israel_time(moment: datetime) -> str:
+    """A naive UTC instant as he reads it: "Wed 30-Sep at 07:00", his clock."""
+    from zoneinfo import ZoneInfo
+
+    from tce.editorial.common import WEEK_TIMEZONE
+
+    local = moment.replace(tzinfo=UTC).astimezone(ZoneInfo(WEEK_TIMEZONE))
+    return f"{local:%a} {local.day}-{local:%b} at {local:%H:%M}"
+
+
+def capacity_words(retry_at: datetime | None) -> str:
+    when = f" on {israel_time(retry_at)}" if retry_at else ""
+    return (
+        f"Waiting for your Claude limit to reset{when}. The script is written then and "
+        "saves itself; nothing to ask again."
+    )
+
+
+def packet_wait_words(outcome_status: str, retry_at: datetime | None) -> tuple[str, str]:
+    """(current_activity, detail) for a request that stopped waiting on its job.
+
+    Both ways a request stops waiting leave the job to finish later, and the tick
+    saves it then: "waiting_capacity" (the weekly or five-hour limit) and
+    "timeout" (still queued when the request's wait ran out).
+    """
+    if outcome_status == "waiting_capacity":
+        return "Waiting for your Claude limit to reset", capacity_words(retry_at)
+    return "Waiting for the PC worker", WRITING_WORDS
+
+
+async def capacity_park(session: Any, *, now: datetime | None = None) -> datetime | None:
+    """When the subscription worker group is parked on its usage limit, until when.
+
+    While it is parked no new job is leased, so a job can sit "queued" for days
+    without being at fault: it is waiting for capacity like its parked sibling.
+    """
     from sqlalchemy import select
 
-    from tce.editorial.common import coerce_uuid, job_prompt_text, parse_packet_header
-    from tce.editorial.packets import PacketValidationError, validate_packet_output
-    from tce.models.editorial import RecordingPacket
-    from tce.models.llm_job import LLMJob
+    from tce.llm.queue import WORKER_GROUP_KEY, utcnow
+    from tce.models.content_run import WorkerGroupState
 
-    ws = coerce_uuid(workspace_id)
-    cid = coerce_uuid(candidate_id)
-    job = (
-        (
-            await session.execute(
-                select(LLMJob)
-                .where(
-                    LLMJob.workspace_id == ws,
-                    LLMJob.job_type == PACKET_JOB_TYPE,
-                    LLMJob.run_id == cid,
-                )
-                .order_by(LLMJob.created_at.desc())
-                .limit(1)
-            )
-        )
-        .scalars()
-        .first()
-    )
-    if job is None:
-        return None
-    packet = (
+    group = (
         await session.execute(
-            select(RecordingPacket.id, RecordingPacket.version).where(
-                RecordingPacket.workspace_id == ws,
-                RecordingPacket.candidate_id == cid,
-                RecordingPacket.job_id == job.id,
-            )
+            select(WorkerGroupState).where(WorkerGroupState.group_key == WORKER_GROUP_KEY)
         )
-    ).first()
-    replayable = parse_packet_header(job_prompt_text(job.request_json)) is not None
+    ).scalar_one_or_none()
+    now = now or utcnow()
+    if group is None or group.state != "waiting_capacity" or not group.retry_at:
+        return None
+    return group.retry_at if group.retry_at > now else None
 
-    if packet is not None:
-        state, resumable = "done", False
-        activity = f"Packet v{packet.version} saved"
-    elif job.status in IN_FLIGHT:
-        state = "waiting" if job.status == "waiting_capacity" else "interrupted"
-        resumable = replayable
-        activity = (
-            f"Packet job {job.status}"
-            + (f" until {_iso_naive(job.retry_at)}" if job.retry_at else "")
-            + ". No request is waiting to save it in this process: "
-            + ("retry resumes the same job." if replayable else "request a new packet.")
-        )
-    elif job.status == "succeeded":
+
+def _packet_request(
+    job: Any,
+    *,
+    saved_version: int | None,
+    park: datetime | None,
+    failed_resume: str | None = None,
+) -> dict[str, Any]:
+    """One packet job's honest state, for the status route, the week and the tick.
+
+    state/resumable/activity are the status route's durable view; `request` is
+    what the week, Today and the topic show ("pending" means it finishes by
+    itself, so nothing offers to ask for it again); `action` is the tick's.
+    """
+    from tce.editorial.common import job_prompt_text, parse_packet_header
+    from tce.editorial.packets import PacketValidationError, validate_packet_output
+    from tce.llm.queue import utcnow
+
+    replayable = parse_packet_header(job_prompt_text(job.request_json)) is not None
+    # A parked job whose retry time has passed is leasable again: it is not
+    # waiting for capacity any more, only for the worker to take it.
+    retry_at = (
+        job.retry_at
+        if job.status == "waiting_capacity" and job.retry_at and job.retry_at > utcnow()
+        else None
+    )
+    # A job not yet taken waits on the parked group too. A leased one is being
+    # written right now, and saying it waits for the limit would be wrong.
+    if job.status in ("queued", "waiting_capacity") and park is not None:
+        retry_at = retry_at or park
+
+    def request(kind: str, label: str, sentence: str, pending: bool) -> dict[str, Any]:
+        return {
+            "state": kind,
+            "pending": pending,
+            "label": label,
+            "sentence": sentence,
+            "retry_at": _iso_naive(retry_at),
+            "job_id": str(job.id),
+        }
+
+    if saved_version is not None:
+        return {
+            "state": "done",
+            "resumable": False,
+            "activity": f"Packet v{saved_version} saved",
+            "request": None,
+            "action": "saved",
+        }
+    if job.status in IN_FLIGHT and replayable:
+        parked = retry_at is not None
+        words = capacity_words(retry_at) if parked else WRITING_WORDS
+        return {
+            "state": "waiting",
+            "resumable": True,
+            "activity": words,
+            "request": request(
+                "waiting_capacity" if parked else "writing",
+                "Script waiting for your Claude limit" if parked else "Script asked for",
+                words,
+                True,
+            ),
+            "action": "waiting",
+        }
+    if job.status == "succeeded":
         try:
             validate_packet_output(job.result_json)
             valid = True
         except PacketValidationError:
             valid = False
-        if valid:
-            state, resumable = "interrupted", replayable
-            activity = "Packet written but never saved (the request ended first). " + (
-                "Retry saves it without a new model call."
-                if replayable
-                else "Request a new packet."
-            )
+        if valid and replayable and failed_resume is None:
+            return {
+                "state": "waiting",
+                "resumable": True,
+                "activity": SAVING_WORDS,
+                "request": request("saving", "Script written, saving it", SAVING_WORDS, True),
+                "action": "resume",
+            }
+        if valid and replayable:
+            words = f"Written, but it could not be saved ({failed_resume}). Ask for a new script."
+        elif valid:
+            words = "Written, but the request that asked for it is lost. Ask for a new script."
         else:
-            state, resumable = "failed", False
-            activity = "Packet job output failed validation; request a new packet."
-    else:
-        state, resumable = "failed", False
-        activity = f"Packet job {job.status}: {job.error_code or ''}".strip()
+            words = "Packet job output failed validation; request a new packet."
+        return {
+            "state": "failed",
+            "resumable": False,
+            "activity": words,
+            "request": request("failed", "Script not saved", words, False),
+            "action": "failed",
+        }
+    if job.status in IN_FLIGHT:
+        words = (
+            f"Packet job {job.status}, but the request that asked for it is lost and it "
+            "cannot be picked up again. Ask for a new script."
+        )
+        return {
+            "state": "interrupted",
+            "resumable": False,
+            "activity": words,
+            "request": request("failed", "Script request lost", words, False),
+            "action": "failed",
+        }
+    words = f"Packet job {job.status}: {job.error_code or ''}".strip()
+    return {
+        "state": "failed",
+        "resumable": False,
+        "activity": words,
+        "request": request(
+            "failed", "Script request stopped", f"The last try stopped ({words}). Ask again.", False
+        ),
+        "action": "failed",
+    }
+
+
+def _failed_resume(
+    workspace_id: uuid.UUID, candidate_id: uuid.UUID, job_id: uuid.UUID
+) -> str | None:
+    """Why a resume of this very job ended failed in this process, if it did.
+
+    Saving a written job cannot fail by waiting; when it fails (a stricter check
+    at save time, the idea withdrawn) it fails the same way every time, so the
+    tick must not try again every five minutes, and nothing may promise it.
+    """
+    entry = get(workspace_id, "packet", str(candidate_id))
+    if entry and entry.get("resumed_job_id") == str(job_id) and entry.get("state") == "failed":
+        return str(entry.get("detail") or entry.get("current_activity") or "it failed")
+    return None
+
+
+async def _newest_packet_jobs(
+    session: Any,
+    ws: uuid.UUID,
+    *,
+    candidate_ids: list[uuid.UUID] | None = None,
+    since: datetime | None = None,
+) -> dict[uuid.UUID, Any]:
+    """The newest packet job per idea: a later ask replaces an earlier one."""
+    from sqlalchemy import select
+
+    from tce.models.llm_job import LLMJob
+
+    stmt = (
+        select(LLMJob)
+        .where(
+            LLMJob.workspace_id == ws,
+            LLMJob.job_type == PACKET_JOB_TYPE,
+            LLMJob.run_id.is_not(None),
+        )
+        .order_by(LLMJob.created_at.desc())
+    )
+    if candidate_ids is not None:
+        if not candidate_ids:
+            return {}
+        stmt = stmt.where(LLMJob.run_id.in_(candidate_ids))
+    if since is not None:
+        stmt = stmt.where(LLMJob.created_at >= since)
+    newest: dict[uuid.UUID, Any] = {}
+    for job in (await session.execute(stmt)).scalars():
+        newest.setdefault(job.run_id, job)
+    return newest
+
+
+async def _saved_versions(
+    session: Any, ws: uuid.UUID, jobs: dict[uuid.UUID, Any]
+) -> dict[uuid.UUID, int]:
+    """Which of these jobs a packet was saved from, by idea, with the version."""
+    from sqlalchemy import select
+
+    from tce.models.editorial import RecordingPacket
+
+    if not jobs:
+        return {}
+    rows = await session.execute(
+        select(RecordingPacket.candidate_id, RecordingPacket.job_id, RecordingPacket.version).where(
+            RecordingPacket.workspace_id == ws,
+            RecordingPacket.job_id.in_([job.id for job in jobs.values()]),
+        )
+    )
+    saved: dict[uuid.UUID, int] = {}
+    for candidate_id, job_id, version in rows.all():
+        job = jobs.get(candidate_id)
+        if job is not None and job.id == job_id:
+            saved[candidate_id] = min(version, saved.get(candidate_id, version))
+    return saved
+
+
+async def latest_packet_job(
+    session: Any, workspace_id: uuid.UUID | str, candidate_id: uuid.UUID | str
+) -> dict[str, Any] | None:
+    """The newest packet job on record for a candidate, with an honest state."""
+    from tce.editorial.common import coerce_uuid
+
+    ws = coerce_uuid(workspace_id)
+    cid = coerce_uuid(candidate_id)
+    job = (await _newest_packet_jobs(session, ws, candidate_ids=[cid])).get(cid)
+    if job is None:
+        return None
+    saved = (await _saved_versions(session, ws, {cid: job})).get(cid)
+    view = _packet_request(
+        job,
+        saved_version=saved,
+        park=await capacity_park(session),
+        failed_resume=_failed_resume(ws, cid, job.id),
+    )
+    packet_id = None
+    if saved is not None:
+        from sqlalchemy import select
+
+        from tce.models.editorial import RecordingPacket
+
+        packet_id = (
+            await session.execute(
+                select(RecordingPacket.id).where(
+                    RecordingPacket.workspace_id == ws,
+                    RecordingPacket.candidate_id == cid,
+                    RecordingPacket.job_id == job.id,
+                    RecordingPacket.version == saved,
+                )
+            )
+        ).scalar_one_or_none()
 
     return {
         "source": "durable",
         "candidate_id": str(cid),
-        "state": state,
-        "resumable": resumable,
-        "packet_id": str(packet.id) if packet is not None else None,
-        "current_activity": activity,
+        "state": view["state"],
+        "resumable": view["resumable"],
+        "packet_id": str(packet_id) if packet_id is not None else None,
+        "current_activity": view["activity"],
         "job_ids": [str(job.id)],
         "job": _job_brief(job),
     }
+
+
+async def packet_requests(
+    session: Any, workspace_id: uuid.UUID | str, candidate_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """What became of the script asked for on each of these ideas, if anything.
+
+    Only ideas whose newest ask is not saved are in the answer. The week, Today
+    and the topic read it so a script on its way is never offered again as if
+    nothing had been asked (28-Sep: "Prepare the script" said "a few minutes"
+    while the worker was parked for two days).
+    """
+    from tce.editorial.common import coerce_uuid
+
+    ws = coerce_uuid(workspace_id)
+    jobs = await _newest_packet_jobs(session, ws, candidate_ids=list(candidate_ids))
+    saved = await _saved_versions(session, ws, jobs)
+    park = await capacity_park(session) if jobs else None
+    out: dict[uuid.UUID, dict[str, Any]] = {}
+    for cid, job in jobs.items():
+        if cid in saved:
+            continue
+        view = _packet_request(
+            job, saved_version=None, park=park, failed_resume=_failed_resume(ws, cid, job.id)
+        )
+        if view["request"] is not None:
+            out[cid] = view["request"]
+    return out
+
+
+async def unsaved_packet_requests(
+    session: Any, workspace_id: uuid.UUID | str, *, now: datetime | None = None
+) -> list[dict[str, Any]]:
+    """Script requests that ended before their job did, for the scheduler tick.
+
+    Each row's `action`:
+    - "resume": the job succeeded and nothing saved it. Resuming it replays the
+      stored request, which finds the finished job, so the save costs no model call.
+    - "waiting": the job is still queued, leased or parked, or a take is being
+      recorded on the script it would replace. Left alone; a later tick sees it.
+    - "failed": the job failed or was cancelled, or its answer cannot be saved.
+      Left as it is: re-queueing a failed job is his call, not the clock's.
+    Ideas he took away or rejected are not listed: the ask no longer stands.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from tce.editorial.common import coerce_uuid
+    from tce.editorial.packets import RECORDING_IN_PROGRESS_STATUSES
+    from tce.llm.queue import utcnow
+    from tce.models.editorial import TopicCandidate
+    from tce.models.recording_session import RecordingSession
+
+    ws = coerce_uuid(workspace_id)
+    now = now or utcnow()
+    jobs = await _newest_packet_jobs(session, ws, since=now - timedelta(days=REDRIVE_LOOKBACK_DAYS))
+    saved = await _saved_versions(session, ws, jobs)
+    jobs = {cid: job for cid, job in jobs.items() if cid not in saved}
+    if not jobs:
+        return []
+    standing = {
+        row[0]
+        for row in (
+            await session.execute(
+                select(TopicCandidate.id).where(
+                    TopicCandidate.workspace_id == ws,
+                    TopicCandidate.id.in_(list(jobs)),
+                    TopicCandidate.status.notin_(("rejected", "withdrawn")),
+                )
+            )
+        ).all()
+    }
+    recording = {
+        row[0]
+        for row in (
+            await session.execute(
+                select(RecordingSession.candidate_id).where(
+                    RecordingSession.workspace_id == ws,
+                    RecordingSession.candidate_id.in_(list(jobs)),
+                    RecordingSession.status.in_(RECORDING_IN_PROGRESS_STATUSES),
+                )
+            )
+        ).all()
+    }
+    park = await capacity_park(session, now=now)
+    out: list[dict[str, Any]] = []
+    for cid, job in sorted(jobs.items(), key=lambda kv: kv[1].created_at or now):
+        if cid not in standing:
+            continue
+        failed_resume = _failed_resume(ws, cid, job.id)
+        view = _packet_request(job, saved_version=None, park=park, failed_resume=failed_resume)
+        action = view["action"]
+        request = view["request"] or {}
+        reason = {
+            "queued": "queued for the PC worker",
+            "leased": "being written",
+            "waiting_capacity": "waiting for capacity",
+        }.get(job.status, "")
+        if action == "waiting" and request.get("state") == "waiting_capacity":
+            reason = "waiting for capacity"
+        if action == "resume" and cid in recording:
+            # The newest script is what the studio shows; saving a new one now
+            # would move the words he is reading out from under the take.
+            action, reason = "waiting", "a take is being recorded on this script"
+        if action == "failed":
+            reason = failed_resume or view["activity"]
+        out.append(
+            {
+                "candidate_id": cid,
+                "job_id": job.id,
+                "job_status": job.status,
+                "retry_at": request.get("retry_at"),
+                "error_code": job.error_code,
+                "action": action,
+                "reason": reason,
+            }
+        )
+    return out
 
 
 async def unattended_jobs(session: Any, workspace_id: uuid.UUID | str) -> list[dict[str, Any]]:

@@ -470,6 +470,13 @@ async def topic_room(
     packet_rows = list(packets.scalars().all())
     current = next((p for p in packet_rows if p.status != "superseded"), None)
     lane = lane_for(candidate)
+    # A script asked for and not saved yet says when it comes, and the room
+    # stops offering to ask for it again (28-Sep-2026).
+    request = None
+    if current is None:
+        from tce.editorial import status as job_status
+
+        request = (await job_status.packet_requests(db, ws, [candidate.id])).get(candidate.id)
 
     return {
         "candidate_id": str(candidate.id),
@@ -503,10 +510,13 @@ async def topic_room(
             if current
             else None
         ),
+        "script_request": request,
         # The room never hides that asking for a script costs a worker job.
         "script_note": (
-            "The script is written on your PC worker and takes a few minutes."
-            if current is None
-            else ""
+            ""
+            if current is not None
+            else request["sentence"]
+            if request is not None
+            else "The script is written on your PC worker and takes a few minutes."
         ),
     }

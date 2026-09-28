@@ -10,6 +10,7 @@ week backwards from the thing closest to a finished video:
 
     1. a script is ready and the week has a first slot  -> record it
     2. the week is chosen but has no script yet         -> ask for the script
+       (every missing one already asked for             -> say when they come)
     3. the week is empty and topics are waiting         -> choose this week
     4. nothing is waiting                               -> find more ideas
 
@@ -20,6 +21,7 @@ offered is always one he can actually take right now.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -28,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce.editorial import inbox
 from tce.editorial import lineup as lineup_service
 from tce.editorial.library import LIBRARY_FILTERS, technical_candidate_ids
+from tce.editorial.status import israel_time
 from tce.models.editorial import RecordingUpload
 from tce.models.editorial_workspace import EditorialChangeSet
 
@@ -105,14 +108,55 @@ def _next_action(
             "href": f"/record?candidate={ready[0]['candidate_id']}",
         }
     if primary:
-        missing = len(primary) - len(ready)
+        # A script already asked for finishes by itself (28-Sep-2026: asked
+        # during his Claude limit, it said "prepare" while it waited two days).
+        coming = [
+            row
+            for row in primary
+            if row.get("script_state") != "ready"
+            and (row.get("script_request") or {}).get("pending")
+        ]
+        missing = len(primary) - len(ready) - len(coming)
+        one = len(coming) == 1
+        if missing:
+            return {
+                "key": "prepare_scripts",
+                "label": "Prepare this week's scripts",
+                "detail": (
+                    f"{missing} of your {len(primary)} topics still needs a script. "
+                    + (
+                        f"{len(coming)} more {'is' if one else 'are'} on the way and "
+                        f"{'saves itself' if one else 'save themselves'}. "
+                        if coming
+                        else ""
+                    )
+                    + "Each one is written on your PC worker."
+                ),
+                "href": "/week",
+            }
+        resets = [
+            datetime.fromisoformat(row["script_request"]["retry_at"].rstrip("Z"))
+            for row in coming
+            if row["script_request"].get("state") == "waiting_capacity"
+            and row["script_request"].get("retry_at")
+        ]
+        if resets:
+            detail = (
+                f"{'Your script waits' if one else f'{len(coming)} scripts wait'} for your "
+                f"Claude limit to reset on {israel_time(max(resets))}. "
+                f"{'It is' if one else 'They are'} written then and "
+                f"{'saves itself' if one else 'save themselves'}; nothing to ask again."
+            )
+        else:
+            detail = (
+                f"{'Your script is' if one else f'{len(coming)} scripts are'} being written on "
+                f"your PC worker and {'saves itself' if one else 'save themselves'}; "
+                "nothing to do until then."
+            )
         return {
-            "key": "prepare_scripts",
-            "label": "Prepare this week's scripts",
-            "detail": (
-                f"{missing} of your {len(primary)} topics still needs a script. "
-                "Each one is written on your PC worker."
-            ),
+            "key": "scripts_coming",
+            "label": "Your script is on the way" if one else "Your scripts are on the way",
+            "detail": detail,
             "href": "/week",
         }
     if waiting:

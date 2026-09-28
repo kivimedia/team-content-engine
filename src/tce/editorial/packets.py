@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
@@ -751,6 +751,18 @@ async def build_packet(
         safety["model_self_check"] = clean["self_check"]
 
         # A job's output is saved once, even if two requests resumed the same job.
+        # The check below only held when the two took turns: arriving together
+        # (the scheduler tick and his own "Prepare the script", 28-Sep-2026) both
+        # read "not saved" and both wrote a version. Writing to the idea's row
+        # first makes the second wait for the first to commit (a row lock on
+        # PostgreSQL, the write lock on SQLite), and then it finds that save. It
+        # writes the value the row already has, so nothing about the idea changes.
+        await session.execute(
+            update(TopicCandidate)
+            .where(TopicCandidate.workspace_id == ws, TopicCandidate.id == cand.id)
+            .values(updated_at=TopicCandidate.updated_at)
+            .execution_options(synchronize_session=False)
+        )
         already = (
             await session.execute(
                 select(RecordingPacket).where(

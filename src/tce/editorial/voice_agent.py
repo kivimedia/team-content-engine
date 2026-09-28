@@ -1459,6 +1459,20 @@ async def undo_rewrite(
                 previous_version=previous,
                 asked_version=replaced_version,
             )
+        # A rewrite whose request stopped waiting is saved by the scheduler tick
+        # once it is written (28-Sep-2026), so "never saved, nothing to undo"
+        # would be followed by the new script arriving anyway.
+        from tce.editorial import status as job_status
+
+        coming = (await job_status.packet_requests(db, ws, [candidate.id])).get(candidate.id)
+        if coming is not None and coming["pending"]:
+            raise VoiceError(
+                "still_writing",
+                f'The new script for "{candidate.title}" is not saved yet. '
+                f"{coming['sentence']} When it is saved it replaces the current one; undo it "
+                "after that.",
+                status=409,
+            )
         raise VoiceError(
             "not_saved",
             f'The new script for "{candidate.title}" was never saved (it stopped before it '

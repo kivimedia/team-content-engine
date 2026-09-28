@@ -10690,7 +10690,7 @@ function edPacketAction(job, hasPacket) {
   if (job && job.source === 'durable' && job.resumable) {
     const st = (job.job && job.job.status) || '';
     if (ED_IN_FLIGHT.includes(st)) return { label: 'Resume packet job (' + edHuman(st) + ')', disabled: false, resume: true, note: 'Re-attaches to the same job and saves the packet when it finishes. No new job.' };
-    return { label: 'Resume: save the written packet', disabled: false, resume: true, note: 'The packet was written but never saved; this saves it without a new model call.' };
+    return { label: 'Resume: save the written packet', disabled: false, resume: true, note: 'Written; the scheduler saves it within five minutes. This saves it now, without a new model call.' };
   }
   return { label: hasPacket ? 'Rebuild recording packet' : 'Build recording packet', disabled: false, resume: false, note: '' };
 }
