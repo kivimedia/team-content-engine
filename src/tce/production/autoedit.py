@@ -120,7 +120,7 @@ _RANGE = {
 # needs to be edited out. if I say no no no rain that needs to be taken out."
 
 REVIEW_JOB = "video_edit_review"
-REVIEW_PROMPT_VERSION = "edit-review-v1"
+REVIEW_PROMPT_VERSION = "edit-review-v2"
 REMOVAL_KINDS = ("retake", "false_start", "aside", "junk")
 # Talk to a dog is a few words; a take said again can be a long sentence.
 MAX_REMOVAL_WORDS = {"retake": 80, "false_start": 80, "aside": 30, "junk": 40}
@@ -150,6 +150,11 @@ def review_system(dog_names: list[str]) -> str:
         "('from here', 'we're here'). An aside often sits between two takes of a line.\n"
         "3. Junk: words the recogniser invented - many words inside a fraction of a second, or "
         "words that make no sense where they stand, most often at the very end.\n"
+        "A line marked NOT ENGLISH was heard as another language when listened to again on its "
+        "own: that is Hebrew he says to the dogs or to himself, and the English words on it are "
+        "the recogniser's guess. Remove it as an aside unless the English on it plainly belongs to "
+        "his point. [sound] is speech the recogniser could not make into words (a false start); it "
+        "is cut on its own, leave it out of your removals.\n"
         "Keep everything else, in order. Never remove a sentence that makes a point he does not "
         "make in a take you keep. When unsure whether something is an aside or part of his "
         "point, keep it.\n\n"
@@ -193,21 +198,31 @@ REVIEW_SCHEMA = {
 
 def review_transcript(words: list[dict[str, Any]]) -> str:
     """One utterance a line with its clock, and the pauses between them: a retake shows
-    as the same words again after a pause, an aside as a short line among long ones."""
+    as the same words again after a pause, an aside as a short line among long ones.
+
+    A stretch the second listen heard as another language gets its own line saying so,
+    with what it sounds like in Hebrew; "[sound]" is speech it could not make into words.
+    """
     lines: list[str] = []
     cur: list[str] = []
     stamp = ""
     prev_end: float | None = None
+    prev_lang: str | None = None
     for i, w in enumerate(words):
         start, end = float(w["start_s"]), float(w["end_s"])
         gap = start - prev_end if prev_end is not None else 0.0
-        if cur and (gap >= 1.0 or len(cur) >= 24):
+        lang = w.get("lang") or None
+        if cur and (gap >= 1.0 or len(cur) >= 24 or lang != prev_lang):
             lines.append(stamp + " ".join(cur))
             cur = []
         if gap >= 1.5:
             lines.append(f"(pause {gap:.1f} s)")
         if not cur:
             stamp = f"[{_clock(start)}] "
+            if lang:
+                heard = f'; in Hebrew it sounds like "{w["heard_as"]}"' if w.get("heard_as") else ""
+                stamp += f"(NOT ENGLISH - heard as '{lang}'{heard}) "
+        prev_lang = lang
         cur.append(f"{i}:{w['text']}")
         if str(w["text"])[-1:] in ".?!":
             lines.append(stamp + " ".join(cur))

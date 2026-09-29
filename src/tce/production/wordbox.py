@@ -59,6 +59,16 @@ _BARE = re.compile(r"[^\w']+")
 _LATIN = re.compile(r"^[\x00-\xff\u2018-\u201f\u2026]*$")
 
 
+def shown(text: str) -> str:
+    """A caption word as it is drawn: no period at its end (29-Sep, "It looks odd when you
+    add them"). Commas, question and exclamation marks stay; so does a period inside a
+    word ("5.5"), and the last one of an abbreviation that has another ("U.S.", "a.m.")."""
+    trimmed = re.sub(r"(?:\.|…)+$", "", text)
+    if "." in trimmed and text.endswith(".") and not text.endswith(".."):
+        return text  # an abbreviation: "U.S" would read as a typo
+    return trimmed or text
+
+
 def usable(words: list[dict[str, Any]]) -> bool:
     """Every caption word has its own timing and can be drawn in Roboto."""
     return bool(words) and all(_LATIN.match(str(w.get("text") or "")) for w in words)
@@ -99,7 +109,8 @@ def pages(words: list[dict[str, Any]]) -> list[Page]:
             cur = Page(item["start"], item["end"], [[item]])
             continue
         line = cur.lines[-1]
-        if len(" ".join([x["text"] for x in line] + [text])) <= MAX_LINE_CHARS:
+        # Measured as drawn: "through that." fits once its period is gone.
+        if len(" ".join([shown(x["text"]) for x in line] + [shown(text)])) <= MAX_LINE_CHARS:
             line.append(item)
         elif len(cur.lines) < 2:
             cur.lines.append([item])
@@ -181,7 +192,7 @@ class _Layout:
             font = self.font(size)
             space = font.getlength(" ")
             widths = [
-                sum(font.getlength(w["text"]) for w in line) + space * (len(line) - 1)
+                sum(font.getlength(shown(w["text"])) for w in line) + space * (len(line) - 1)
                 for line in page.lines
             ]
             if max(widths) <= self.w * MAX_LINE_WIDTH or size <= self.size * 0.6:
@@ -195,7 +206,7 @@ class _Layout:
             x = (self.w - width) / 2
             for w in line:
                 placed.append((x, baseline, w))
-                x += font.getlength(w["text"]) + space
+                x += font.getlength(shown(w["text"])) + space
         return size, placed
 
     def draw(self, page: Page, boxed: int | None, path: Path) -> None:
@@ -208,20 +219,20 @@ class _Layout:
         sd = ImageDraw.Draw(shadow)
         dy = SHADOW_DY_EM * size
         for x, y, w in placed:
-            sd.text((x, y + dy), w["text"], font=font, fill=SHADOW, anchor="ls")
+            sd.text((x, y + dy), shown(w["text"]), font=font, fill=SHADOW, anchor="ls")
         image.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(SHADOW_BLUR_EM * size)))
         draw = ImageDraw.Draw(image)
         if boxed is not None:
             x, y, w = placed[boxed]
             pad = BOX_PAD_EM * size
             draw.rounded_rectangle(
-                (x - pad, y - BOX_UP_EM * size, x + font.getlength(w["text"]) + pad,
+                (x - pad, y - BOX_UP_EM * size, x + font.getlength(shown(w["text"])) + pad,
                  y + BOX_DOWN_EM * size),
                 radius=BOX_RADIUS_EM * size,
                 fill=ORANGE,
             )
         for x, y, w in placed:
-            draw.text((x, y), w["text"], font=font, fill=WHITE, anchor="ls")
+            draw.text((x, y), shown(w["text"]), font=font, fill=WHITE, anchor="ls")
         image.save(path, compress_level=1)
 
 

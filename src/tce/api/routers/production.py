@@ -50,7 +50,7 @@ from tce.models.editorial import (
 )
 from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingClip, RecordingSession
-from tce.production import autoedit, media, publishing, tightcut, wordbox
+from tce.production import autoedit, media, publishing, relisten, tightcut, wordbox
 from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
 from tce.production.retakes import (
@@ -706,7 +706,7 @@ async def _run_transcription(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str) 
             row = await _load(s, upload_id, ws)
             if not _owns(row, attempt):
                 return  # superseded by a retry; its result is the one that counts
-            row.transcript = timings
+            _new_transcript(row, timings)
             row.status = "transcribed"
             precise = bool(timings) and all(item.get("precision") == "word" for item in timings)
             row.status_detail = (
@@ -771,6 +771,15 @@ async def transcribe_upload(
     return upload_json(row)
 
 
+def _new_transcript(row: RecordingUpload, words: list[dict[str, Any]]) -> None:
+    """A transcript from the recogniser or from outside: not heard a second time yet."""
+    row.transcript = words
+    if (row.edit_plan or {}).get("second_listen"):
+        plan = dict(row.edit_plan)
+        plan.pop("second_listen")
+        row.edit_plan = plan
+
+
 class PlanEditRequest(BaseModel):
     # Optional externally produced timings [{start_s, end_s, text}] (e.g. a manual transcript)
     transcript: list[dict[str, Any]] | None = None
@@ -787,7 +796,7 @@ async def plan_edit_route(
     row = await _upload(db, ws, upload_id)
     body = body or PlanEditRequest()
     if body.transcript is not None:
-        row.transcript = body.transcript
+        _new_transcript(row, body.transcript)
     if not row.transcript:
         raise HTTPException(
             status_code=409, detail="No transcript yet. Transcribe the recording first."
@@ -880,6 +889,10 @@ async def _compute_plan(
         plan["proofread"] = previous["proofread"]
     if review:
         plan["review"] = review
+    if previous.get("second_listen"):
+        # Once per transcript: a re-plan must not send every stretch to be heard again
+        # (and undo a correction he asked for on the words it would hear).
+        plan["second_listen"] = previous["second_listen"]
     row.edit_plan = plan
     mc = plan["meaning_check"]
     drops = [d for d in plan["dropped"] if d["reason"] != "pause"]
@@ -1958,6 +1971,116 @@ async def _plan_and_render_locked(
     )
 
 
+async def _second_listen(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
+    """Hear again the stretches the first transcription may have got wrong (29-Sep).
+
+    "and then that question, and then that question" came out once, Hebrew to the dogs
+    came out as an English "A", and a false start vanished inside "Bring": the editor
+    cannot remove what the transcript does not hold. Once per transcript; the words it
+    changes are listed on the plan. A worker that does not answer leaves the transcript
+    as it was (the edit goes on)."""
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        words = list(row.transcript or [])
+        done = ((row.edit_plan or {}).get("second_listen") or {}).get("state") == "done"
+        src = row.storage_path
+    url = settings.production_transcribe_ws_url
+    if done or not url or not words or not is_word_level(words) or not src or not Path(src).exists():
+        return
+    latin = sum(1 for w in words if wordbox.usable([{"text": w.get("text")}]))
+    main_language = "en" if latin >= 0.8 * len(words) else "other"
+    wins = relisten.windows(words)
+    heard: list[dict[str, Any] | None] = []
+    failures = 0
+
+    def said(res: dict[str, Any]) -> str:
+        return " ".join(str(w.get("word") or "") for w in res.get("words") or []).strip()
+
+    for n, win in enumerate(wins, 1):
+        await _note(
+            upload_id, ws, "proofreading",
+            f"Listening again to stretch {n} of {len(wins)} the first pass may have misheard "
+            f"({win.why[0]})",
+        )
+        if failures >= 3:
+            heard.append(None)  # the worker is not answering: leave the rest as heard
+            continue
+        try:
+            res = await media.transcribe_clip(src, win.start, win.end, ws_url=url)
+            if main_language == "en" and not relisten.english(res):
+                he = await media.transcribe_clip(src, win.start, win.end, ws_url=url, language="he")
+                res["hebrew"] = said(he)
+                if len(win.utts) > 1:
+                    # One verdict for the stretch would take English lines with the aside.
+                    parts: list[dict[str, Any] | None] = []
+                    for k, (a, b) in enumerate(relisten.utterance_clips(words, win), 1):
+                        await _note(
+                            upload_id, ws, "proofreading",
+                            f"Stretch {n} is not all English: hearing its line {k} of {len(win.utts)} "
+                            "on its own for which language it is",
+                        )
+                        try:
+                            part = await media.transcribe_clip(src, a, b, ws_url=url)
+                            if not relisten.english(part):
+                                part["hebrew"] = said(
+                                    await media.transcribe_clip(src, a, b, ws_url=url, language="he")
+                                )
+                            parts.append(part)
+                        except Exception:  # noqa: BLE001 - that line stays as first heard
+                            failures += 1
+                            parts.append(None)
+                    res["parts"] = parts
+            heard.append(res)
+        except Exception:  # noqa: BLE001 - a second listen is a bonus, never a stop
+            failures += 1
+            heard.append(None)
+    activity = await _speech_activity(src)
+    new_words, report = relisten.merge(
+        words, wins, heard, main_language=main_language,
+        regions=activity.regions if activity is not None else None,
+    )
+    sounds: list[dict[str, Any]] = []
+    if activity is not None and main_language == "en":
+        leads = relisten.lead_candidates(
+            new_words, activity.levels, activity.low_db, activity.high_db, activity.regions
+        )
+
+        async def hear(a: float, b: float, why: str) -> dict[str, Any] | None:
+            nonlocal failures
+            await _note(upload_id, ws, "proofreading", why)
+            if failures >= 3:
+                return None
+            try:
+                return await media.transcribe_clip(src, a, b, ws_url=url, language="en")
+            except Exception:  # noqa: BLE001 - a second listen is a bonus, never a stop
+                failures += 1
+                return None
+
+        cuts = await relisten.find_cuts(new_words, leads, hear)
+        new_words, sounds = relisten.split_leading_sounds(new_words, cuts)
+    changes = [r for r in report if r.get("result") != "same"]
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        if [w.get("text") for w in row.transcript or []] != [w.get("text") for w in words]:
+            return  # he changed the words meanwhile; his version stands
+        row.transcript = new_words
+        plan = dict(row.edit_plan or {})
+        # A worker that heard nothing leaves it to be tried again on the next edit.
+        plan["second_listen"] = {
+            "state": "done" if not wins or any(heard) else "unheard",
+            "windows": len(wins), "heard": sum(1 for h in heard if h),
+            "changes": changes, "sounds": sounds, "at": _utcnow().isoformat(),
+        }
+        row.edit_plan = plan
+        row.status_detail = (
+            f"Listened again to {sum(1 for h in heard if h)} of {len(wins)} stretches: "
+            f"{sum(1 for c in changes if c['result'] == 'more words')} came back with words the "
+            f"first pass dropped, {sum(1 for c in changes if c['result'] == 'not English')} were not "
+            f"English, {len(sounds)} sound{'s' if len(sounds) != 1 else ''} split off"
+        )[:500]
+        await s.commit()
+
+
 async def auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
     """Transcribe -> the editor's review -> plan -> render, for a session he just finished."""
     review_state = "skipped"
@@ -1977,6 +2100,7 @@ async def auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             )
             if row.status != "transcribed":
                 return  # failed / unavailable: the row already says why
+        await _second_listen(upload_id, ws)
         review_state = await _review(upload_id, ws, wait_timeout_s=REVIEW_FIRST_WAIT_S)
         row = await _plan_and_render(upload_id, ws)
         if row.status == "edited":

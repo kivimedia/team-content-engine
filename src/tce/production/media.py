@@ -218,6 +218,61 @@ async def transcribe_local(
     raise RuntimeError("Local transcription worker closed the connection without a transcript")
 
 
+async def transcribe_clip(
+    path: str | Path,
+    start: float,
+    end: float,
+    *,
+    ws_url: str,
+    language: str | None = None,
+    timeout_s: float = 240.0,
+) -> dict[str, Any]:
+    """One short stretch of a recording heard again on its own (29-Sep, the second
+    listen). Returns the worker's answer: words with times from the stretch's start,
+    "language" and "language_probability" for just this stretch.
+
+    The whole exchange is bounded by `timeout_s` (the worker may first finish another
+    recording's transcription): a worker that takes the audio and never answers raises
+    TimeoutError instead of holding the automatic edit forever."""
+    if end <= start:
+        raise ValueError(f"an empty stretch: {start:.2f} to {end:.2f} s")
+    return await asyncio.wait_for(_transcribe_clip(path, start, end, ws_url, language), timeout_s)
+
+
+async def _transcribe_clip(
+    path: str | Path, start: float, end: float, ws_url: str, language: str | None
+) -> dict[str, Any]:
+    ff = ffmpeg_path()
+    if not ws_url or not ff:
+        raise StepUnavailableError("No transcription worker or ffmpeg for a second listen")
+    import aiohttp
+
+    proc = await asyncio.create_subprocess_exec(
+        ff, "-v", "error", "-ss", f"{max(0.0, start):.3f}", "-to", f"{end:.3f}", "-i", str(path),
+        "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    audio, err = await proc.communicate()
+    if proc.returncode != 0 or not audio:
+        raise RuntimeError(f"could not cut the stretch at {start:.1f} s: {err.decode(errors='replace')[-160:]}")
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(ws_url, max_msg_size=0) as ws:
+            await ws.send_str(json.dumps({
+                "lesson_id": f"clip-{start:.2f}", "title": "", "filename": "clip.wav",
+                "video_seconds": end - start, "language": language, "clip": True,
+            }))
+            await ws.send_bytes(audio)
+            async for msg in ws:
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    continue
+                data = json.loads(msg.data)
+                if data.get("status") == "complete":
+                    return data
+                if data.get("status") == "error":
+                    raise RuntimeError(f"second listen failed: {data.get('message')}")
+    raise RuntimeError("the transcription worker closed without an answer")
+
+
 async def probe_video_size(path: str | Path) -> tuple[int, int] | None:
     probe = ffprobe_path()
     if not probe:

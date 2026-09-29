@@ -997,7 +997,10 @@ function rebindIdeas(ideas, next) {
      (camera report, 22-Sep). Each attempt is now measured and CLOSED, and only the
      winner is opened again at the end. */
   async function openCamera() {
-    const audio = { echoCancellation: true, noiseSuppression: true };
+    // 29-Sep, his pick: no echo cancellation. Nothing plays from the speaker while he
+    // records, and on Android it put the mic in call mode, which cut it to digital
+    // silence between words (53 % of the 28-Sep walk). Noise suppression stays for wind.
+    const audio = { echoCancellation: false, noiseSuppression: true };
     const open = (attempt) => navigator.mediaDevices.getUserMedia({
       video: { facingMode: "user", ...attempt }, audio,
     }).then(measure);

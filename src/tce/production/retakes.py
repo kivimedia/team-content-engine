@@ -604,6 +604,7 @@ REASON_WORDS = {
     "false_start": "a start you said again",
     "aside": "said to the dogs or off camera",
     "junk": "recognition noise, not speech",
+    "sound": "a sound with no words (a false start), heard on a second listen",
     "filler": "filler",
     "requested_cut": "you asked to cut it",
 }
@@ -624,9 +625,12 @@ def _continues(a: Unit, b: Unit) -> bool:
     return bool(first) and (first[0].islower() or (head and head[0] in _I_FORMS))
 
 
-def _word_units(rows: list[tuple[int, float, float, str]]) -> list[Unit]:
+def _word_units(
+    rows: list[tuple[int, float, float, str]], other_lang: frozenset[int] | set[int] = frozenset()
+) -> list[Unit]:
     """Utterances (split at a 0.35 s gap or a sentence end), then sentences rebuilt
-    from fragments a pause split apart."""
+    from fragments a pause split apart. Words heard as another language (Hebrew to the
+    dogs, 29-Sep) are their own utterance and never join an English sentence."""
     units: list[Unit] = []
     cur: list[tuple[int, float, float, str]] = []
 
@@ -637,22 +641,45 @@ def _word_units(rows: list[tuple[int, float, float, str]]) -> list[Unit]:
         )
 
     for row in rows:
-        if cur and (row[1] - cur[-1][2] >= WORD_GROUP_GAP_S or cur[-1][3].rstrip()[-1:] in ".?!"):
+        if cur and (
+            row[1] - cur[-1][2] >= WORD_GROUP_GAP_S
+            or cur[-1][3].rstrip()[-1:] in ".?!"
+            or (row[0] in other_lang) != (cur[-1][0] in other_lang)
+        ):
             close()
             cur = []
         cur.append(row)
     if cur:
         close()
-    sentences: list[Unit] = []
+
+    def foreign(u: Unit) -> bool:
+        return any(i in other_lang for i in u.words)
+
+    def joined(parts: list[Unit]) -> Unit:
+        text = " ".join(p.text for p in parts)
+        return Unit(0, parts[0].start, parts[-1].end, text, sim_tokens(text),
+                    words=[i for p in parts for i in p.words])
+
+    # A fragment that says again the one before it ("and then that question," /
+    # "and then that question stopped me cold.", 29-Sep) starts its own sentence, and
+    # the one it restarts leaves the sentence it was glued to: the retake rules then
+    # see the pair and keep the complete one.
+    groups: list[list[Unit]] = []
     for u in units:
-        if sentences and _continues(sentences[-1], u):
-            prev = sentences[-1]
-            text = f"{prev.text} {u.text}"
-            sentences[-1] = Unit(
-                prev.index, prev.start, u.end, text, sim_tokens(text), words=prev.words + u.words
-            )
+        if groups and _continues(joined(groups[-1]), u) and not (foreign(joined(groups[-1])) or foreign(u)):
+            if _is_restart_of(groups[-1][-1], u):
+                if len(groups[-1]) > 1:
+                    groups.append([groups[-1].pop()])
+                groups.append([u])
+            else:
+                groups[-1].append(u)
         else:
-            sentences.append(Unit(len(sentences), u.start, u.end, u.text, u.tokens, words=u.words))
+            groups.append([u])
+    sentences: list[Unit] = []
+    for parts in groups:
+        s = joined(parts)
+        s.index = len(sentences)
+        sentences.append(s)
     return sentences
 
 
@@ -811,8 +838,14 @@ def _plan_words(
         s, e = float(start), float(end)
         rows.append((i, min(s, e), max(s, e), text))
     rows.sort(key=lambda r: (r[1], r[2], r[0]))
+    # The second listen (29-Sep): stretches heard as another language, and sounds the
+    # recogniser folded into a word ("make" inside "Bring") split off as "[sound]".
+    other_lang = {i for i, t in enumerate(timings or []) if t.get("lang")}
+    sounds = {i for i, t in enumerate(timings or []) if t.get("sound")}
     phrases = [sim_tokens(p) for p in (script_phrases or [])]
-    sentences = _word_units(rows)
+    # A sound is cut whoever decides; left in a sentence it would hide the restart it
+    # marks from the retake rules and show "[sound]" in unit captions.
+    sentences = _word_units([r for r in rows if r[0] not in sounds], other_lang)
     for u in sentences:
         _match_phrase(u, phrases)
 
@@ -828,10 +861,22 @@ def _plan_words(
         _prefix_retakes(sentences)
         _asides(sentences, aside_names)
         for u in sentences:
+            # A short line heard as another language is talk to the dogs; a long one
+            # may be English the recogniser doubted, and stays for the editor to judge.
+            if (
+                not u.dropped_reason
+                and u.words
+                and all(i in other_lang for i in u.words)
+                and len(u.tokens) <= ASIDE_NAME_MAX_TOKENS
+            ):
+                u.dropped_reason = "aside"
+        for u in sentences:
             if u.dropped_reason:
                 for i in u.words:
                     reason[i] = u.dropped_reason
     # Mechanical, whoever decided the rest.
+    for i in sounds:
+        reason[i] = reason[i] or "sound"
     for i in _junk_words(rows):
         reason[i] = reason[i] or "junk"
     for u in sentences:
@@ -964,7 +1009,7 @@ def _plan_words(
     }
     if tight:
         stats["pauses"] = pause_stats(keep, activity)
-    kept_text = " ".join(r[3] for r, k in zip(rows, kept_flags, strict=True) if k)
+    kept_text = " ".join(r[3] for r, k in zip(rows, kept_flags, strict=True) if k and r[0] not in sounds)
     return {
         "keep": keep,
         "dropped": dropped,
@@ -1130,6 +1175,8 @@ def words_on_edit(words: list[dict[str, Any]], keep: list[list[float]]) -> list[
         offsets.append(acc)
         acc += e - s
     for w in words:
+        if str(w.get("text") or "") == "[sound]":
+            continue  # a restored sound is heard, never captioned
         ws, we = float(w["start"]), float(w["end"])
         mid = (ws + we) / 2
         for (rs, re_), off in zip(keep, offsets, strict=True):

@@ -36,6 +36,8 @@ MAX_NATURAL_GAP_S = 0.2  # a pause up to this stays whole; longer ones are cut d
 SEARCH_S = 0.35  # how far from the recogniser's time an edge may move
 SEARCH_FAR_S = 0.6  # ... when the next thing said is a pause away (it was 0.4 s late on "A")
 NEAR_S = 1.0  # a dropped word closer than this shares a boundary with the kept one
+TOUCH_GAP_S = 0.08  # the recogniser has two words touching when they are this close
+TOUCH_SLACK_S = 0.04  # ... and its boundary is trusted to within this
 WORD_REACH_S = 0.25  # speech this close to a kept word belongs to it
 MERGE_REGIONS_S = 0.08
 MIN_REGION_S = 0.05
@@ -154,13 +156,9 @@ def _ends_sentence(text: str) -> bool:
 
 
 def _dip(levels: list[float], t0: float, t1: float, prefer: float, hop: float = HOP_S) -> float:
-    """The cut point between two words that run into each other: among the quietest
-    frames in [t0, t1] (within 6 dB of the quietest), the one nearest `prefer` (the
-    recogniser's boundary), snapped to the frame grid.
-
-    28-Sep: "coached." ran straight into a dropped "Which"; cutting on the recogniser's
-    boundary left "Whi-" in the edit, while the audio had a 20 ms dip 0.2 s earlier.
-    """
+    """The cut point between two words: among the quietest frames in [t0, t1] (within
+    6 dB of the quietest), the one nearest `prefer` (the recogniser's boundary),
+    snapped to the frame grid."""
     a, b = max(0, int(t0 / hop)), min(len(levels), int(math.ceil(t1 / hop)))
     if b <= a:
         return round(prefer * FPS) / FPS
@@ -191,9 +189,17 @@ def _edges(
     def middle(k: int) -> float:
         return (float(words[k]["start_s"]) + float(words[k]["end_s"])) / 2
 
-    # The dip is looked for only between the middles of the two words: reaching further
-    # found the silence on the far side of a short word, so a dropped "um" stayed in or
-    # a kept "is" was cut out (review, 28-Sep).
+    # Two words the recogniser has touching are cut on its boundary, give or take
+    # TOUCH_SLACK_S: the deepest dip nearby is usually a consonant inside a word, not
+    # the gap between two. 28-Sep: a dip 0.2 s before the boundary was the stop inside
+    # "coa-ched", and the edit said "coa". With a gap between them, the cut goes in
+    # its quietest frame, never past the middle of either word (a dropped "um" stayed
+    # in, a kept "is" was cut out when the search reached further; review, 28-Sep).
+    def between(left: float, right: float, left_mid: float, right_mid: float) -> float:
+        if right - left < TOUCH_GAP_S:
+            return _dip(levels, right - TOUCH_SLACK_S, right + TOUCH_SLACK_S, right)
+        return _dip(levels, max(left, left_mid), min(right, right_mid), (left + right) / 2)
+
     prev = next((k for k in range(i - 1, -1, -1) if audible[k]), None)
     if prev is None:
         lo = start - SEARCH_FAR_S
@@ -204,8 +210,7 @@ def _edges(
         elif start - pe >= NEAR_S:
             lo = max(pe, start - SEARCH_FAR_S)
         elif levels:
-            lo = _dip(levels, max(pe - 0.25, middle(prev)), min(start + 0.1, middle(i)),
-                      (pe + start) / 2)
+            lo = between(pe, start, middle(prev), middle(i))
         else:
             lo = max(start - SEARCH_S, pe - PRE_S)
     nxt = next((k for k in range(j + 1, len(words)) if audible[k]), None)
@@ -218,8 +223,7 @@ def _edges(
         elif ns - end >= NEAR_S:
             hi = min(ns, end + SEARCH_FAR_S)
         elif levels:
-            hi = _dip(levels, max(end - 0.25, middle(j)), min(ns + 0.05, middle(nxt)),
-                      (end + ns) / 2)
+            hi = between(end, ns, middle(j), middle(nxt))
         else:
             hi = min(end + SEARCH_S, ns + PRE_S)
     return max(0.0, lo), min(end_bound, hi)

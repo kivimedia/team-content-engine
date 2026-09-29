@@ -2,7 +2,7 @@
 
 TCE's editor (`src/tce/production/media.py`) speaks one contract:
 
-    -> JSON meta {lesson_id, title, filename, video_seconds, language}
+    -> JSON meta {lesson_id, title, filename, video_seconds, language, clip?}
     -> the whole media file as one binary frame
     <- {"status": "receiving_audio"} / {"status": "transcribing"}
     <- {"status": "complete", "words": [{start, end, word}], "transcript_md": "..."}
@@ -88,14 +88,26 @@ def build_transcript_md(segments: list[dict[str, Any]]) -> str:
     )
 
 
-def transcribe_file(path: Path, language: str | None) -> dict[str, Any]:
+def transcribe_file(path: Path, language: str | None, clip: bool = False) -> dict[str, Any]:
+    """A whole recording, or (clip=True) one short stretch heard again on its own.
+
+    29-Sep: over a whole 9-minute walk the recogniser drops what it takes for noise -
+    "and then that question, and then that question stopped me" came out once, and Hebrew
+    said to the dogs came out as an English "A". Heard alone, with no voice-activity
+    filter and no carry-over from the text before it, the same stretch comes out whole,
+    and the language guess for just that stretch (0.23 English over the Hebrew, 1.00 over
+    his English) says which stretches are not English.
+    """
     started = time.time()
+    options: dict[str, Any] = {"vad_filter": True}
+    if clip:
+        options = {"vad_filter": False, "condition_on_previous_text": False}
     segments_iter, info = model().transcribe(
         str(path),
         language=language or DEFAULT_LANGUAGE,
         beam_size=BEAM_SIZE,
-        vad_filter=True,
         word_timestamps=True,
+        **options,
     )
     segments: list[dict[str, Any]] = []
     words: list[dict[str, Any]] = []
@@ -123,6 +135,11 @@ def transcribe_file(path: Path, language: str | None) -> dict[str, Any]:
         "word_count": len(words) or sum(len(s["text"].split()) for s in segments),
         "elapsed_seconds": round(time.time() - started, 1),
         "language": info.language,
+        "language_probability": round(float(getattr(info, "language_probability", 0.0) or 0.0), 3),
+        "languages": [
+            [code, round(float(p), 3)]
+            for code, p in sorted(getattr(info, "all_language_probs", None) or [], key=lambda x: -x[1])[:5]
+        ],
         "duration_seconds": round(info.duration, 2),
     }
 
@@ -137,13 +154,14 @@ async def transcribe(ws: WebSocket) -> None:
             lesson_id = str(meta.get("lesson_id") or "unknown")
             filename = str(meta.get("filename") or "audio.wav")
             language = meta.get("language") or None
+            clip = bool(meta.get("clip"))
             await ws.send_text(json.dumps({"status": "receiving_audio", "lesson_id": lesson_id}))
             audio = await ws.receive_bytes()
             with tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / Path(filename).name
                 path.write_bytes(audio)
                 await ws.send_text(json.dumps({"status": "transcribing", "lesson_id": lesson_id}))
-                result = await asyncio.to_thread(transcribe_file, path, language)
+                result = await asyncio.to_thread(transcribe_file, path, language, clip)
             await ws.send_text(json.dumps({"status": "complete", "lesson_id": lesson_id, **result}))
             print(
                 f"[done] {lesson_id}: {result['word_count']} words, "

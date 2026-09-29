@@ -250,24 +250,29 @@ def test_the_plan_with_audio_reports_pauses_and_captions_only_kept_words():
     assert "Selling is the first step." in cues
 
 
-def test_a_dropped_word_running_into_a_kept_one_is_cut_at_the_dip_between_them():
-    # 28-Sep: "coached." ran into a dropped "Which"; cutting on the recogniser's
-    # boundary (0.2 s late) left "Whi-" in the edit. The audio dips at 1.62-1.64.
+def test_a_stop_inside_a_kept_word_is_not_where_it_ends():
+    # 29-Sep, "at 1:28 we cut me saying coached so it sounds like coa": the audio of
+    # "coached." dips for 20 ms at the "t" of "coa-ched", and the cut went there. The
+    # recogniser had "coached." and the dropped "Which" touching at 1.84, which was right.
     words = [
         {"text": "coached.", "start_s": 1.0, "end_s": 1.84, "precision": "word"},
         {"text": "Which", "start_s": 1.84, "end_s": 2.9, "precision": "word"},
     ]
     levels = [tightcut.SILENT_DB] * 400
-    for k in range(100, 162):
-        levels[k] = -15.0  # "coached"
-    for k in range(162, 164):
-        levels[k] = -60.0  # the dip
-    for k in range(164, 200):
-        levels[k] = -20.0  # "Which"
+    for k in range(100, 160):
+        levels[k] = -15.0  # "coa"
+    for k in range(160, 164):
+        levels[k] = -60.0  # the stop before "-ched"
+    for k in range(164, 180):
+        levels[k] = -25.0  # "-ched"
+    for k in range(180, 188):
+        levels[k] = -45.0  # the soft tail into the next word
+    for k in range(188, 196):
+        levels[k] = -15.0  # "Which"
     act = find_activity(levels)
     keep, _ = tight_keep(words, [True, False], act, 4.0)
     assert len(keep) == 1
-    assert 1.6 <= keep[0][1] <= 1.67, keep  # at the dip, not at 1.89
+    assert 1.79 <= keep[0][1] <= 1.88, keep  # "-ched" stays, "Which" does not
 
 
 def test_words_the_recogniser_invented_are_not_a_boundary():

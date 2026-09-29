@@ -60,7 +60,9 @@ def spoken_text(
     """
     if kept:
         indices = {int(w["index"]) for w in kept if "index" in w}
-        return " ".join(str(w["text"]) for i, w in enumerate(words) if i in indices)
+        return " ".join(
+            str(w["text"]) for i, w in enumerate(words) if i in indices and not w.get("sound")
+        )
     out = []
     for w in words:
         mid = (float(w["start_s"]) + float(w["end_s"])) / 2

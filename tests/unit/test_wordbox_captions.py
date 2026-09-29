@@ -188,3 +188,17 @@ async def test_the_render_boxes_the_word_being_said_and_cuts_on_the_frame_grid(t
     # The light copy for the phone exists, never wider than 720 (this source is 540).
     light = media.preview_path(out)
     assert light.exists() and await media.probe_video_size(light) == size
+
+
+def test_caption_lines_carry_no_period_at_the_end():
+    # 29-Sep: "It looks odd when you add them."
+    assert [wordbox.shown(t) for t in ["possible.", "actually...", "5.5", "call,", "why?", "go!"]] == [
+        "possible", "actually", "5.5", "call,", "why?", "go!"
+    ]
+
+
+def test_a_restored_sound_is_heard_but_never_captioned():
+    words = timed("Bring people", 1.0)
+    words.insert(0, {"text": "[sound]", "start": 0.5, "end": 0.9})
+    out = wordbox.on_edit_timeline(words, [[0.0, 3.0]])
+    assert [w["text"] for w in out] == ["Bring", "people"]
