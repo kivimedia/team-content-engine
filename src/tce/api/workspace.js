@@ -2032,12 +2032,11 @@
     var current = READER_SIZES.indexOf(document.body.dataset.reader || "normal");
     var next = Math.max(0, Math.min(READER_SIZES.length - 1, (current < 0 ? 0 : current) + delta));
     document.body.dataset.reader = READER_SIZES[next];
-    $("readerSmaller").disabled = next === 0;
-    $("readerBigger").disabled = next === READER_SIZES.length - 1;
+    // The buttons left the header on 29-Sep; the saved size still applies.
+    if ($("readerSmaller")) $("readerSmaller").disabled = next === 0;
+    if ($("readerBigger")) $("readerBigger").disabled = next === READER_SIZES.length - 1;
     try { localStorage.setItem("tce-workspace-reader", READER_SIZES[next]); } catch (e) { /* private mode */ }
   }
-  $("readerSmaller").addEventListener("click", function () { stepReader(-1); });
-  $("readerBigger").addEventListener("click", function () { stepReader(1); });
 
   window.addEventListener("popstate", function () { takeFilterFromUrl(); render(); });
 
@@ -2092,6 +2091,9 @@
     /* The bar carries the thing he most wants to do here, not just Talk.
        Recording was four taps from a topic he had already chosen; when a script
        is ready it is now one, from wherever he happens to be. */
+    /* The header microphone: the same call as the bar's Talk button, or the
+       week when this page has nothing specific to talk about. */
+    $("talkHeader").href = voiceCallUrl(state.talkContext ? state.talkContext.voice : "week");
     var record = recordTarget(route);
     var bar = $("actionBar");
     bar.innerHTML = "";

@@ -41,12 +41,13 @@
     <span id="pageStatus">Loading</span>
   </div>
   <div class="topbar-actions">
-    <!-- Smaller and bigger, not a cycling "Aa": "the icon of Aa means nothing"
-         (23-Sep). Same pair as the recording studio. -->
-    <button class="icon-button text-size" id="readerSmaller" type="button"
-            aria-label="Smaller text" title="Smaller text">A&#8722;</button>
-    <button class="icon-button text-size" id="readerBigger" type="button"
-            aria-label="Bigger text" title="Bigger text">A+</button>
+    <!-- 29-Sep: the text-size pair left this header - "only while a recording is
+         in progress". Recording happens in the studio, whose own A+ / A- now show
+         only while the camera runs. The size he last chose here still applies.
+         The microphone goes straight to the Talk with TCE call, about whatever
+         this page is about (the week when the page names nothing). -->
+    <a class="icon-button talk-link" id="talkHeader" href="/voice?seat=tce&amp;context=week"
+       aria-label="Talk with TCE" title="Talk with TCE"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></a>
     <!-- 26-Sep: how many videos a week. -->
     <a class="icon-button settings-link" href="settings" data-go="/settings"
        aria-label="Settings" title="Settings">&#9881;</a>

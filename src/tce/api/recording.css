@@ -386,3 +386,11 @@ body.overlay-mode .studio-view > .reader-shell[data-shade="4"] { background: rgb
 /* A short column (split screen): the size label gives its room to the buttons. */
 @media (max-height: 520px) { .size-value { display: none; } }
 .kmbot-link { display: inline-flex; align-items: center; min-height: 46px; padding: 0 12px; border-radius: 23px; background: #29405e; color: #fff; font-weight: 800; font-size: .86rem; text-decoration: none; white-space: nowrap; }
+
+/* 29-Sep: A+ and A- (and the size between them) only while the camera runs -
+   that is when he resizes the script. The background buttons stay. */
+body:not(.rec-live) #textBigger,
+body:not(.rec-live) #textSmaller,
+body:not(.rec-live) #textSizeValue { display: none; }
+.topbar-actions { display: flex; align-items: center; gap: 8px; }
+.talk-link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }

@@ -1422,6 +1422,15 @@ function rebindIdeas(ideas, next) {
     button.title = inStudio() ? "Back to the list" : "Back to Today";
   }
 
+  // The header microphone: the Talk with TCE call about the script that is
+  // open, or the week from the list. Worked out at the tap, so it is never stale.
+  $("talkHeader").addEventListener("click", () => {
+    const context = inStudio() && state.idea && state.idea.candidate_id
+      ? `topic:${state.idea.candidate_id}` : "week";
+    const here = window.location.pathname + window.location.search;
+    $("talkHeader").href = `/voice?seat=tce&context=${context}&return=${encodeURIComponent(here)}`;
+  });
+
   $("homeButton").addEventListener("click", () => {
     if (inStudio()) { showQueue(); return; }
     window.location.href = `${pathPrefix}/today`;
