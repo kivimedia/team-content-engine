@@ -8,6 +8,8 @@ back: the editor was told of one removed stumble ("the only cut is at 0:42") in 
 
 from __future__ import annotations
 
+import pytest
+
 from tce.production import autoedit
 from tce.production.retakes import plan_edit
 
@@ -152,3 +154,67 @@ def test_a_hold_reaches_the_plan_and_survives_re_plans():
     assert overrides["hold"] == [[0.9, "end", 0.6]]  # the newest on the same edge wins
     plan = plan_edit(words, [], pause_threshold_s=1.2, pad_s=0.05, duration_s=5.0, overrides=overrides)
     assert any(a <= 0.9 and b >= 1.49 for a, b in plan["keep"]), plan["keep"]
+
+
+# ---------------------------------------------------------------------------
+# The clock (talk to the editor, step 1): a second he paused on in the edit points
+# back at the recording, and back again, through the keep that made the file.
+
+from tce.production import media  # noqa: E402
+from tce.production.retakes import (  # noqa: E402
+    EDIT_FPS,
+    edit_length,
+    frame_keep,
+    map_to_edit,
+    map_to_source,
+)
+
+# 61 pieces on the 30-Sep course video; three are enough to hold every case.
+KEEP = [[1.5, 4.25], [6.0, 10.0], [12.75, 13.5]]
+
+
+def test_a_second_on_the_recording_comes_back_to_itself():
+    for t in (1.5, 2.0, 4.0, 6.0, 7.33, 9.99, 12.75, 13.0, 13.5):
+        assert abs(map_to_source(map_to_edit(t, KEEP), KEEP) - t) < 1e-9, t
+
+
+def test_a_second_in_the_edit_comes_back_to_itself():
+    total = edit_length(KEEP)
+    assert total == 7.5
+    steps = [k / 100 for k in range(int(total * 100) + 1)]
+    for t in steps:
+        assert abs(map_to_edit(map_to_source(t, KEEP), KEEP) - t) < 1e-9, t
+
+
+def test_a_join_points_at_the_piece_he_is_seeing():
+    # 2.75 s into the edit the first piece has ended and the second begins: the frame on
+    # screen is the recording at 6.0, not 4.25.
+    assert map_to_source(2.75, KEEP) == 6.0
+    assert map_to_source(2.7499, KEEP) == pytest.approx(4.2499)
+    assert map_to_source(7.5, KEEP) == 13.5  # the last frame
+
+
+def test_outside_the_edit_is_no_second_at_all():
+    assert map_to_source(-0.1, KEEP) is None
+    assert map_to_source(7.6, KEEP) is None
+    assert map_to_source(0.0, []) is None
+    assert map_to_edit(5.0, KEEP) is None  # a cut second on the recording
+
+
+def test_the_frame_keep_is_what_the_render_cuts():
+    assert EDIT_FPS == media.FPS
+    keep = [[0.0, 1.016], [2.005, 2.015], [3.349, 5.0]]
+    frames = [(round(s * media.FPS), round(e * media.FPS)) for s, e in keep]
+    cut = [[a / media.FPS, b / media.FPS] for a, b in frames if b > a]
+    assert frame_keep(keep) == cut
+    # 2.005-2.015 rounds to one frame number at both ends: the render drops it, and so
+    # does the clock.
+    assert len(frame_keep(keep)) == 2
+    assert frame_keep(keep)[1] == [100 / 30, 150 / 30]
+
+
+def test_the_frame_keep_round_trips_on_the_files_own_clock():
+    fk = frame_keep(KEEP + [[20.004, 21.49]])
+    for t in (1.5, 3.0, 8.0, 13.2, 20.5):
+        assert abs(map_to_source(map_to_edit(t, fk), fk) - t) < 1e-9
+    assert edit_length(fk) * EDIT_FPS == pytest.approx(round(edit_length(fk) * EDIT_FPS))

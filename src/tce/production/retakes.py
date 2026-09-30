@@ -1142,6 +1142,55 @@ def map_to_edit(t: float, keep: list[list[float]]) -> float | None:
     return None
 
 
+def map_to_source(t: float, keep: list[list[float]]) -> float | None:
+    """Where a second of the edited video sits in the recording: map_to_edit backwards.
+
+    30-Sep, talk to the editor: he pauses the edit at 0:38 and the note has to point at
+    the recording, because a second on the recording survives a re-render and a word
+    index does not. Map with the keep that MADE the file he is watching (the frame keep
+    stored with the render), never the current plan.
+
+    At a join the edit shows the next piece, so the second where one piece ends and
+    the next begins maps to the start of the next piece. The very end maps to the end
+    of the last piece. None outside the edit.
+    """
+    if t < 0:
+        return None
+    offset = 0.0
+    for s, e in keep:
+        length = float(e) - float(s)
+        if t < offset + length:
+            return float(s) + (t - offset)
+        offset += length
+    if keep and t - offset <= 1e-9:
+        return float(keep[-1][1])
+    return None
+
+
+def edit_length(keep: list[list[float]]) -> float:
+    """How long the edited video is."""
+    return sum(float(e) - float(s) for s, e in keep)
+
+
+# media.FPS: every edit is cut on this frame grid. Kept here too so the pure clock code
+# does not import the ffmpeg module; a test holds the two equal.
+EDIT_FPS = 30
+
+
+def frame_keep(keep: list[list[float]], fps: int = EDIT_FPS) -> list[list[float]]:
+    """The keep ranges exactly as the render cuts them.
+
+    media.render_edit trims every range by frame number (round(second x 30)) and drops
+    a range shorter than one frame, so the file's own clock is this keep, not the plan's.
+    """
+    out: list[list[float]] = []
+    for s, e in keep:
+        a, b = round(float(s) * fps), round(float(e) * fps)
+        if b > a:
+            out.append([a / fps, b / fps])
+    return out
+
+
 def _wrap(text: str, width: int = MAX_CAPTION_LINE) -> list[str]:
     lines: list[str] = []
     cur = ""
