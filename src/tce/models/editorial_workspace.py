@@ -107,8 +107,17 @@ CHANGE_OPS = (
 )
 CHANGE_OP_STATES = ("proposed", "accepted", "rejected", "applied", "skipped")
 
-EDIT_REQUEST_SCOPES = ("whole", "timestamp", "section")
-EDIT_REQUEST_STATES = ("open", "in_progress", "done", "rejected")
+# `moment`: a note pinned to the second he paused on (talk to the editor, 30-Sep).
+# start_s is that second on the edit clock and end_s is empty.
+EDIT_REQUEST_SCOPES = ("whole", "timestamp", "section", "moment")
+# `listening`: pinned, his words not in yet. `held`: collected in a sitting, not run
+# until he says make it. `needs_you`: the editor asked him one question back.
+EDIT_REQUEST_STATES = ("open", "in_progress", "done", "rejected", "needs_you", "listening", "held")
+
+# One sitting with an edited video. `open` takes notes; `thinking` and `rendering` are
+# the one batch job after "make it"; `done`, `needs_you` and `failed` are how it ended;
+# `closed` is a sitting he walked away from.
+EDIT_SESSION_STATES = ("open", "thinking", "rendering", "done", "needs_you", "failed", "closed")
 
 # What a notification can be about. Each one is a thing he asked for that has
 # finished while he was not looking; nothing here is an announcement.
@@ -481,23 +490,69 @@ class EditingRequest(_PrivateWorkspaceMixin, Base):
     upload_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("recording_uploads.id", ondelete="CASCADE"), index=True
     )
+    # The sitting this note belongs to, when it was given in one (30-Sep).
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("edit_sessions.id", ondelete="SET NULL", name="fk_editing_requests_session"),
+        nullable=True,
+        index=True,
+    )
+    # The paused second on the RECORDING's clock, fixed at pin time: it survives a
+    # re-render, a word index does not.
+    source_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The editor's one-line understanding of the note, which he hears back.
+    understood: Mapped[str | None] = mapped_column(Text, nullable=True)
     candidate_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("topic_candidates.id", ondelete="SET NULL"), nullable=True, index=True
     )
     packet_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     packet_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # whole | timestamp | section
+    # whole | timestamp | section | moment
     scope: Mapped[str] = mapped_column(String(20), default="whole")
     start_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     end_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     section_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # His words exactly as heard or typed.
     request: Mapped[str] = mapped_column(Text)
-    # open | in_progress | done | rejected
+    # open | in_progress | done | rejected | needs_you | listening | held
     state: Mapped[str] = mapped_column(String(20), default="open", index=True)
     # What actually happened, with a pointer to the produced file when there is one.
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class EditSession(_PrivateWorkspaceMixin, Base):
+    """One sitting with an edited video: he watches, pauses, says what is wrong.
+
+    30-Sep: "talk to the editor". Every note is an `editing_requests` row pointing
+    here, pinned to the second he paused on. Nothing renders while he talks: at
+    "make it" one job reads every note against one transcript and the video renders
+    once. The sitting remembers which render he was watching, so every pin maps
+    through the keep that made that file.
+    """
+
+    __tablename__ = "edit_sessions"
+
+    upload_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("recording_uploads.id", ondelete="CASCADE"), index=True
+    )
+    # open | thinking | rendering | done | needs_you | failed | closed
+    state: Mapped[str] = mapped_column(String(20), default="open", index=True)
+    # The render being watched and its frame keep (recording_uploads.render_ref and
+    # rendered_keep when the sitting opened).
+    render_ref: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    keep_snapshot: Mapped[list[list[float]] | None] = mapped_column(JSONType, nullable=True)
+    # The sheet's heartbeat. A sitting counts as in front of him for 120 s after it.
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # {"transcript", "overrides", "render_ref"} written when the batch applies, for undo.
+    before: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    llm_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # The read-back he confirmed, then the batch's own summary.
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 # ---------------------------------------------------------------------------

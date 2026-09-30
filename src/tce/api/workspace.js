@@ -1748,11 +1748,14 @@
     var text = window.prompt("What should change about this video?\n\nSay it the way you would say it to an editor.");
     if (text === null || !text.trim()) return;
     try {
-      await api("/production/recordings/" + encodeURIComponent(uploadId) + "/edit-requests", {
+      var saved = await api("/production/recordings/" + encodeURIComponent(uploadId) + "/edit-requests", {
         method: "POST",
         body: { request: text.trim(), scope: "whole" }
       });
-      toast("Asked. TCE is making the change now on your subscription; this card updates as it goes.");
+      // 30-Sep: while he is giving notes on this video, a typed request waits with them.
+      toast(saved && saved.joined_sitting
+        ? "Added to the notes you are giving on this video. It is made with them when you tap Make the new version."
+        : "Asked. TCE is making the change now on your subscription; this card updates as it goes.");
       await render();
     } catch (error) {
       toast(error.message, true);

@@ -29,6 +29,7 @@ from tce.models.editorial import (
 from tce.models.editorial_workspace import (
     CandidateBriefVersion,
     EditingRequest,
+    EditSession,
     EditorialChangeOperation,
     EditorialChangeSet,
     EditorialMessage,
@@ -88,6 +89,7 @@ __all__ = [
     "CreatorProfile",
     "CandidateBriefVersion",
     "EditingRequest",
+    "EditSession",
     "EditorialChangeOperation",
     "EditorialChangeSet",
     "EditorialMessage",

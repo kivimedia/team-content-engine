@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.api.private_access import require_private_workspace
 from tce.db.session import get_db
+from tce.editorial import library as library_service
 from tce.editorial.common import ORIGIN_TECHNICAL_VALIDATION
 from tce.models.editorial import (
     EvidenceCollectionRun,
@@ -1058,6 +1059,37 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         await _set_status(upload_id, ws, "failed", f"Render failed: {str(exc)[:400]}", attempt)
 
 
+# 30-Sep, talk to the editor: while he is giving notes on a video, nothing else may
+# swap the file under his player, or every second he pins would point somewhere else.
+SITTING_REFUSAL = (
+    "You are giving notes on this video right now. Make the new version from your notes, "
+    "or close the notes and try again in two minutes."
+)
+
+
+async def _refuse_while_sitting(db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID) -> None:
+    if await library_service.active_sitting(db, ws, upload_id) is not None:
+        raise HTTPException(status_code=409, detail=SITTING_REFUSAL)
+
+
+def upload_busy(row: RecordingUpload) -> str | None:
+    """What is editing this video right now, in his words; None when nothing is."""
+    if row.status in BUSY_STATUSES or AUTO_MARK in (row.job_ids or []) or _render_lock(row.id).locked():
+        return row.status_detail or "This video is being edited right now."
+    return None
+
+
+async def word_marks_for(
+    src: str | Path | None, words: list[dict[str, Any]], keep: list[list[float]]
+) -> dict[int, str]:
+    """What the editor cannot hear for itself, word by word (autoedit.word_marks), from
+    the recording's levels (read once per file, then cached beside it)."""
+    activity = await _speech_activity(src) if src and Path(src).exists() else None
+    if activity is None:
+        return {}
+    return autoedit.word_marks(words, keep, activity.levels, activity.low_db, hiss=await _levels(src, hiss=True))
+
+
 class RenderRequest(BaseModel):
     # The editor must explicitly accept a plan the meaning check blocked
     override_meaning_check: bool = False
@@ -1079,6 +1111,7 @@ async def auto_edit_again(
     row = await _upload(db, ws, upload_id)
     if row.status in BUSY_STATUSES or AUTO_MARK in (row.job_ids or []) or _render_lock(row.id).locked():
         return upload_json(row)
+    await _refuse_while_sitting(db, ws, row.id)
     if not row.storage_path or not Path(row.storage_path).exists():
         raise HTTPException(status_code=409, detail="The recording is not on this server")
     plan = dict(row.edit_plan or {})
@@ -1105,6 +1138,7 @@ async def render_upload(
     body = body or RenderRequest()
     if not row.edit_plan:
         raise HTTPException(status_code=409, detail="Plan the edit before rendering")
+    await _refuse_while_sitting(db, ws, row.id)
     if (
         body.mode == "cut"
         and row.edit_plan.get("meaning_check", {}).get("status") == "blocked"
@@ -1747,6 +1781,8 @@ async def _ask(
 # waits REVIEW_FIRST_WAIT_S, the edit goes out on the rules if it must, and a waiter
 # re-edits with the review when it lands.
 REVIEW_FIRST_WAIT_S = 600.0
+# A late review waiting for him to finish a sitting looks again this often.
+SITTING_RECHECK_S = 30.0
 
 
 _render_locks: dict[uuid.UUID, asyncio.Lock] = {}
@@ -1887,6 +1923,8 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
     asks for its own review), and once a post of this video went out (the edit he
     posted stays the edit he sees). While it applies and renders, the video carries
     the auto-edit mark: posting waits, "Edit it again" waits, a restart resumes it.
+    While he is giving notes on the video (a sitting in front of him) it keeps waiting,
+    so the file never changes under his player.
     """
     from tce.llm import LLMUnavailable
     from tce.llm.queue import QueueError
@@ -1935,30 +1973,36 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
                     return
                 if [w.get("text") for w in row.transcript or []] != [w.get("text") for w in words]:
                     return
-                posted = any(
-                    p.status in ("posting", "scheduled", "posted")
-                    for p in (await _publications(s, ws, upload_id)).values()
-                )
-                snapshot = (list(row.transcript or []), dict(row.edit_plan or {}), row.status, row.status_detail)
-                if not posted:
-                    row.job_ids = [j for j in row.job_ids or [] if j != AUTO_MARK] + [AUTO_MARK]
-                await s.commit()
-            if posted:
-                await _apply_review(upload_id, ws, words, answer, fix_words=False)
-                await _note(
-                    upload_id, ws, None,
-                    "Your editor's review arrived after this video was posted; the posted edit stays",
-                )
-                return
-            try:
-                await _apply_review(upload_id, ws, words, answer)
-                await _plan_and_render_locked(upload_id, ws, restore_if_blocked=snapshot)
-            finally:
-                async with session_factory()() as s:
-                    row = await _load(s, upload_id, ws)
-                    row.job_ids = [j for j in row.job_ids or [] if j != AUTO_MARK]
+                # 30-Sep: he is giving notes on this edit right now. Swapping the file
+                # under his player would move every second he pins: keep waiting.
+                in_front = await library_service.active_sitting(s, ws, upload_id) is not None
+                if not in_front:
+                    posted = any(
+                        p.status in ("posting", "scheduled", "posted")
+                        for p in (await _publications(s, ws, upload_id)).values()
+                    )
+                    snapshot = (list(row.transcript or []), dict(row.edit_plan or {}), row.status, row.status_detail)
+                    if not posted:
+                        row.job_ids = [j for j in row.job_ids or [] if j != AUTO_MARK] + [AUTO_MARK]
                     await s.commit()
-        return
+            if not in_front:
+                if posted:
+                    await _apply_review(upload_id, ws, words, answer, fix_words=False)
+                    await _note(
+                        upload_id, ws, None,
+                        "Your editor's review arrived after this video was posted; the posted edit stays",
+                    )
+                    return
+                try:
+                    await _apply_review(upload_id, ws, words, answer)
+                    await _plan_and_render_locked(upload_id, ws, restore_if_blocked=snapshot)
+                finally:
+                    async with session_factory()() as s:
+                        row = await _load(s, upload_id, ws)
+                        row.job_ids = [j for j in row.job_ids or [] if j != AUTO_MARK]
+                        await s.commit()
+                return
+        await asyncio.sleep(SITTING_RECHECK_S)
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
         review = dict((row.edit_plan or {}).get("review") or {})
@@ -2227,12 +2271,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             await settle("open", {"status": "Waiting: this recording is not edited yet."})
             return
         await settle("in_progress", {"status": "Reading your request on the subscription"})
-        activity = await _speech_activity(src) if src and Path(src).exists() else None
-        marks = (
-            autoedit.word_marks(words, keep, activity.levels, activity.low_db, hiss=await _levels(src, hiss=True))
-            if activity is not None
-            else {}
-        )
+        marks = await word_marks_for(src, words, keep)
         try:
             answer = await _ask(
                 autoedit.EDIT_REQUEST_JOB,
@@ -2303,6 +2342,37 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
 def start_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
     if settings.production_auto_edit:
         _spawn(run_edit_request(request_id, ws))
+
+
+async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
+    """Every note of a sitting in one job, then one render (talk to the editor, step 4).
+
+    Until the batch is built this hands the sitting straight back, open with every note
+    kept, and says so: a sitting must never sit in "thinking" with nothing behind it,
+    because a thinking sitting holds the gates that stop other renders.
+    """
+    from tce.models.editorial_workspace import EditSession
+
+    async with session_factory()() as s:
+        sitting = (
+            await s.execute(
+                select(EditSession).where(EditSession.id == session_id, EditSession.workspace_id == ws)
+            )
+        ).scalar_one_or_none()
+        if sitting is None or sitting.state != "thinking":
+            return
+        sitting.state = "open"
+        sitting.submitted_at = None
+        sitting.result = {
+            "status": "Making the new version from notes is not switched on yet. "
+            "Your notes are kept here, and nothing was changed."
+        }
+        await s.commit()
+
+
+def start_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
+    """He said yes to the read-back: the one batch job for the sitting."""
+    _spawn(run_talk_session(session_id, ws))
 
 
 async def resume_auto_work() -> None:

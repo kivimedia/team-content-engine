@@ -18,8 +18,12 @@ from pydantic import SecretStr
 from tce.api.routers import editorial as editorial_router
 from tce.api.routers import editorial_workspace as workspace_router
 from tce.api.routers import production as prod
+from tce.db.session import get_db
+from tce.editorial import library
 from tce.models.editorial import RecordingUpload, TopicCandidate
-from tce.production.retakes import frame_keep
+from tce.models.editorial_workspace import EditingRequest, EditSession
+from tce.production import autoedit
+from tce.production.retakes import edit_length, frame_keep, map_to_edit, map_to_source
 from tce.settings import settings
 
 KEY = "synthetic-test-key"
@@ -168,6 +172,13 @@ async def client(editorial_sessionmaker, monkeypatch):
     app.dependency_overrides[editorial_router.get_editorial_sessionmaker] = lambda: (
         editorial_sessionmaker
     )
+
+    async def _db():
+        async with editorial_sessionmaker() as s:
+            yield s
+            await s.commit()
+
+    app.dependency_overrides[get_db] = _db
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -184,3 +195,446 @@ async def test_the_library_card_carries_the_render_it_would_play(client, renders
     item = body["items"][0]
     assert item["upload_id"] == str(uid)
     assert row.render_ref and item["render_ref"] == row.render_ref
+
+
+# ---------------------------------------------------------------- the sitting
+
+
+async def edited(renders, tmp_path) -> tuple[uuid.UUID, uuid.UUID, RecordingUpload]:
+    ws, uid = await seed(renders["sm"], tmp_path)
+    return ws, uid, await render_once(renders["sm"], ws, uid)
+
+
+async def open_talk(client, ws, uid) -> dict:
+    r = await client.post(f"/api/v1/production/recordings/{uid}/talk", headers=headers(ws))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def pin(client, ws, sid, edit_s, render_ref):
+    return await client.post(
+        f"/api/v1/production/talk/{sid}/notes",
+        json={"edit_s": edit_s, "render_ref": render_ref},
+        headers=headers(ws),
+    )
+
+
+async def say(client, ws, sid, nid, **body):
+    return await client.patch(f"/api/v1/production/talk/{sid}/notes/{nid}", json=body, headers=headers(ws))
+
+
+async def age_sitting(sm, sid, seconds: float) -> None:
+    from datetime import timedelta
+
+    async with sm() as s:
+        row = await s.get(EditSession, uuid.UUID(sid))
+        row.last_seen = library._now() - timedelta(seconds=seconds)
+        await s.commit()
+
+
+async def test_opening_the_notes_starts_a_sitting_on_the_render_he_watches(client, renders, tmp_path):
+    ws, uid, row = await edited(renders, tmp_path)
+    body = await open_talk(client, ws, uid)
+    assert body["state"] == "open" and body["notes"] == [] and body["waiting"] == 0
+    assert body["render_ref"] == row.render_ref
+    assert body["file_url"].endswith(f"v={row.render_ref}")
+    assert body["edit_length_s"] == pytest.approx(edit_length(row.rendered_keep), abs=1e-3)
+    again = await open_talk(client, ws, uid)
+    assert again["session_id"] == body["session_id"]
+
+
+async def test_opening_is_refused_while_the_video_is_being_edited(client, renders, tmp_path):
+    ws, uid, _ = await edited(renders, tmp_path)
+    url = f"/api/v1/production/recordings/{uid}/talk"
+    async with renders["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        row.status, row.status_detail = "rendering", "Cutting and burning in your captions"
+        await s.commit()
+    r = await client.post(url, headers=headers(ws))
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"code": "busy", "message": "Cutting and burning in your captions"}
+
+    async with renders["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        row.status, row.status_detail = "edited", "Your editor is reading 14 words"
+        row.job_ids = [prod.AUTO_MARK]
+        await s.commit()
+    r = await client.post(url, headers=headers(ws))
+    assert r.status_code == 409 and r.json()["detail"]["message"] == "Your editor is reading 14 words"
+
+    async with renders["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        row.job_ids = []
+        await s.commit()
+    async with prod._render_lock(uid):
+        r = await client.post(url, headers=headers(ws))
+    assert r.status_code == 409
+    assert (await client.post(url, headers=headers(ws))).status_code == 200
+
+
+async def test_a_render_whose_process_died_does_not_hold_the_notes_shut(client, renders, tmp_path):
+    ws, uid, _ = await edited(renders, tmp_path)
+    async with renders["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        row.status, row.status_detail = "rendering", "Cutting and burning in your captions"
+        # This process started it and no longer runs it: the lease is provably dead.
+        row.job_ids = [prod._lease_entry("rendering", "deadbeef0000", prod._utcnow())]
+        await s.commit()
+    body = await open_talk(client, ws, uid)
+    assert body["state"] == "open"
+    async with renders["sm"]() as s:
+        assert (await prod._load(s, uid, ws)).status == "interrupted"
+
+
+async def test_there_is_no_sitting_without_an_edit(client, renders, tmp_path):
+    ws, uid = await seed(renders["sm"], tmp_path)
+    r = await client.post(f"/api/v1/production/recordings/{uid}/talk", headers=headers(ws))
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "no_edit"
+
+
+async def test_an_edit_made_before_the_stamp_opens_on_its_plan(client, renders, tmp_path):
+    ws, uid, row = await edited(renders, tmp_path)
+    async with renders["sm"]() as s:
+        up = await prod._load(s, uid, ws)
+        up.render_ref, up.rendered_keep = None, None
+        await s.commit()
+    body = await open_talk(client, ws, uid)
+    assert body["render_ref"] is None
+    assert body["edit_length_s"] == pytest.approx(edit_length(frame_keep(row.edit_plan["keep"])), abs=1e-3)
+    assert (await pin(client, ws, body["session_id"], 1.0, None)).status_code == 200
+
+
+async def test_a_pin_is_the_paused_second_on_both_clocks(client, renders, tmp_path):
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    r = await pin(client, ws, sid, 2.0, row.render_ref)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["edit_s"] == 2.0 and body["clock"] == "0:02"
+    assert body["source_s"] == pytest.approx(map_to_source(2.0, row.rendered_keep), abs=1e-3)
+    note = body["note"]
+    assert note["scope"] == "moment" and note["where"] == "at 0:02"
+    assert note["state"] == "listening" and note["end_s"] is None and note["created_by"] == "ziv"
+    sitting = (await client.get(f"/api/v1/production/talk/{sid}", headers=headers(ws))).json()
+    assert [n["id"] for n in sitting["notes"]] == [body["note_id"]]
+    assert sitting["waiting"] == 1
+
+
+async def test_a_pin_on_another_render_is_refused_and_reopening_moves_the_sitting(client, renders, tmp_path):
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    r = await pin(client, ws, sid, 1.0, "0123456789abcdef")
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "stale_render"
+    first = (await pin(client, ws, sid, 2.0, row.render_ref)).json()
+
+    # Re-rendered under the player anyway (the gates are for the routes, not this test):
+    # the next pin is refused with the new render, and reopening moves the sitting to it.
+    newer = await render_once(renders["sm"], ws, uid)
+    r = await pin(client, ws, sid, 3.0, row.render_ref)
+    assert r.status_code == 409 and r.json()["detail"]["render_ref"] == newer.render_ref
+    moved = await open_talk(client, ws, uid)
+    assert moved["session_id"] == sid and moved["render_ref"] == newer.render_ref
+    note = moved["notes"][0]
+    assert note["source_s"] == first["source_s"]
+    assert note["start_s"] == pytest.approx(map_to_edit(first["source_s"], newer.rendered_keep), abs=0.01)
+    assert (await pin(client, ws, sid, 3.0, newer.render_ref)).status_code == 200
+
+
+async def test_a_pin_outside_the_edit_is_refused(client, renders, tmp_path):
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    total = edit_length(row.rendered_keep)
+    assert (await pin(client, ws, sid, total + 5, row.render_ref)).status_code == 400
+    assert (await pin(client, ws, sid, -1, row.render_ref)).status_code == 400
+    ok = await pin(client, ws, sid, total + 0.2, row.render_ref)  # a hair past the last frame
+    assert ok.status_code == 200 and ok.json()["edit_s"] == pytest.approx(total, abs=0.01)
+
+
+async def test_his_words_and_the_editors_reading_hold_the_note_and_drop_takes_it_back(client, renders, tmp_path):
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    nid = (await pin(client, ws, sid, 2.0, row.render_ref)).json()["note_id"]
+    heard = await say(client, ws, sid, nid, heard="  cut the second basically  ")
+    assert heard.json()["state"] == "held" and heard.json()["request"] == "cut the second basically"
+    read = await say(client, ws, sid, nid, understood="At 0:02 you want the second 'basically' gone.")
+    assert read.json()["understood"].startswith("At 0:02") and read.json()["request"] == "cut the second basically"
+    assert (await say(client, ws, sid, nid)).status_code == 400
+    assert (await say(client, ws, sid, nid, heard="   ")).status_code == 400
+    dropped = await say(client, ws, sid, nid, drop=True)
+    assert dropped.json()["state"] == "rejected"
+    assert (await say(client, ws, sid, nid, heard="again")).status_code == 409
+    sitting = (await client.get(f"/api/v1/production/talk/{sid}", headers=headers(ws))).json()
+    assert sitting["waiting"] == 0
+
+
+async def test_the_editors_reading_can_land_before_his_words(client, renders, tmp_path):
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    nid = (await pin(client, ws, sid, 2.0, row.render_ref)).json()["note_id"]
+    r = await say(client, ws, sid, nid, understood="At 0:02 you want a longer pause.")
+    assert r.json()["state"] == "held" and r.json()["request"] == ""
+
+
+async def test_the_moment_waits_for_his_words_and_shows_the_words_around_it(client, renders, tmp_path):
+    import asyncio
+
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    earlier = (await pin(client, ws, sid, 1.0, row.render_ref)).json()["note_id"]
+    await say(client, ws, sid, earlier, heard="louder here", understood="At 0:01 you want it louder.")
+    nid = (await pin(client, ws, sid, 3.0, row.render_ref)).json()["note_id"]
+
+    async def words_arrive():
+        await asyncio.sleep(0.6)
+        await say(client, ws, sid, nid, heard="the word after smart sounds clipped")
+
+    moment, _ = await asyncio.gather(
+        client.get(f"/api/v1/production/talk/{sid}/moment?window=2&rules=1", headers=headers(ws)),
+        words_arrive(),
+    )
+    assert moment.status_code == 200, moment.text
+    m = moment.json()
+    assert m["note"]["id"] == nid and m["waited_for_words"] is True
+    assert m["heard"] == "the word after smart sounds clipped"
+    assert m["at"]["clock"] == "0:03"
+    assert m["at"]["source_s"] == pytest.approx(map_to_source(3.0, row.rendered_keep), abs=1e-3)
+    assert "in the edit]" in m["transcript"]
+    indexes = [w["index"] for w in m["words"]]
+    assert indexes == list(range(indexes[0], indexes[-1] + 1)) and 0 < len(indexes) < len(SPOKEN.split())
+    assert all(abs(w["edit_s"] - 3.0) <= 2.6 for w in m["words"] if w["edit_s"] is not None)
+    assert m["earlier"] == [
+        {"where": "at 0:01", "said": "louder here", "understood": "At 0:01 you want it louder.",
+         "state": "held", "reply": None, "question": None, "sitting": sid}
+    ]
+    assert m["rules"] == autoedit.editor_skill() and m["rules"]
+
+
+async def test_the_moment_does_not_wait_for_ever(client, renders, tmp_path, monkeypatch):
+    monkeypatch.setattr(library, "MOMENT_WAIT_S", 0.3)
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    await pin(client, ws, sid, 2.0, row.render_ref)
+    m = (await client.get(f"/api/v1/production/talk/{sid}/moment", headers=headers(ws))).json()
+    assert m["waited_for_words"] is True and m["heard"] is None and m["note"]["state"] == "listening"
+    assert "rules" not in m
+
+
+async def test_the_moment_at_a_second_needs_no_note(client, renders, tmp_path):
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    empty = await client.get(f"/api/v1/production/talk/{sid}/moment", headers=headers(ws))
+    assert empty.status_code == 404
+    m = (await client.get(f"/api/v1/production/talk/{sid}/moment?at=4", headers=headers(ws))).json()
+    assert m["note"] is None and m["at"]["clock"] == "0:04" and m["words"]
+
+
+async def test_the_read_back_carries_a_check_and_only_a_matching_yes_submits(client, renders, tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(prod, "start_talk_session", lambda sid, ws: started.append(sid))
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    a = (await pin(client, ws, sid, 1.0, row.render_ref)).json()["note_id"]
+    b = (await pin(client, ws, sid, 3.0, row.render_ref)).json()["note_id"]
+    await pin(client, ws, sid, 4.0, row.render_ref)  # never got words: left out
+    await say(client, ws, sid, a, heard="louder here")
+    await say(client, ws, sid, b, heard="cut basically", understood="At 0:03 you want 'basically' gone.")
+
+    url = f"/api/v1/production/talk/{sid}/submit"
+    preview = (await client.get(url, headers=headers(ws))).json()
+    assert preview["read_back"] == (
+        '2 notes: at 0:01: you said "louder here"; at 0:03: At 0:03 you want \'basically\' gone. '
+        "One re-render. 1 note with no words yet is left out."
+    )
+    assert len(preview["check"]) == 12 and preview["count"] == 2
+
+    wrong = await client.post(url, json={"check": "000000000000"}, headers=headers(ws))
+    assert wrong.status_code == 409 and wrong.json()["detail"]["check"] == preview["check"]
+    assert (await client.post(url, json={}, headers=headers(ws))).status_code == 409
+
+    # He re-said a note after hearing the read-back: the old yes no longer fits.
+    await say(client, ws, sid, a, heard="much louder here")
+    stale = await client.post(url, json={"check": preview["check"]}, headers=headers(ws))
+    assert stale.status_code == 409 and stale.json()["detail"]["code"] == "changed"
+    fresh = (await client.get(url, headers=headers(ws))).json()
+    assert fresh["check"] != preview["check"]
+
+    done = await client.post(url, json={"check": fresh["check"]}, headers=headers(ws))
+    assert done.status_code == 200, done.text
+    body = done.json()
+    assert body["state"] == "thinking" and body["summary"] == fresh["read_back"]
+    assert body["result"]["notes"] == [a, b]
+    assert started == [uuid.UUID(sid)]
+    # The notes he heard are frozen now.
+    assert (await say(client, ws, sid, a, heard="more")).status_code == 409
+    assert (await pin(client, ws, sid, 2.0, row.render_ref)).status_code == 409
+    # Reopening the sheet shows the sitting that is thinking, never a new one.
+    assert (await open_talk(client, ws, uid))["session_id"] == sid
+
+
+async def test_a_sitting_with_no_notes_has_nothing_to_make(client, renders, tmp_path):
+    ws, uid, _ = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    r = await client.get(f"/api/v1/production/talk/{sid}/submit", headers=headers(ws))
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "no_notes"
+
+
+async def test_until_the_batch_exists_a_submitted_sitting_comes_back_open(client, renders, tmp_path, monkeypatch):
+    monkeypatch.setattr(prod, "start_talk_session", lambda sid, ws: None)
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    nid = (await pin(client, ws, sid, 2.0, row.render_ref)).json()["note_id"]
+    await say(client, ws, sid, nid, heard="cut that")
+    url = f"/api/v1/production/talk/{sid}/submit"
+    check = (await client.get(url, headers=headers(ws))).json()["check"]
+    assert (await client.post(url, json={"check": check}, headers=headers(ws))).status_code == 200
+    await prod.run_talk_session(uuid.UUID(sid), ws)
+    back = (await client.get(f"/api/v1/production/talk/{sid}", headers=headers(ws))).json()
+    assert back["state"] == "open" and back["notes"][0]["state"] == "held"
+    assert "nothing was changed" in back["result"]["status"]
+
+
+async def test_nothing_else_renders_while_he_gives_notes(client, renders, tmp_path, monkeypatch):
+    started = []
+
+    async def fake_auto_edit(upload_id, ws):
+        started.append(upload_id)
+
+    monkeypatch.setattr(prod, "auto_edit", fake_auto_edit)
+    ws, uid, _ = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    again = await client.post(f"/api/v1/production/uploads/{uid}/auto-edit", headers=headers(ws))
+    assert again.status_code == 409 and again.json()["detail"] == prod.SITTING_REFUSAL
+    render = await client.post(f"/api/v1/production/uploads/{uid}/render", headers=headers(ws))
+    assert render.status_code == 409 and render.json()["detail"] == prod.SITTING_REFUSAL
+    assert started == []
+
+    # The sheet went away two minutes ago: the video is his to re-edit again.
+    await age_sitting(renders["sm"], sid, library.SITTING_ACTIVE_S + 5)
+    again = await client.post(f"/api/v1/production/uploads/{uid}/auto-edit", headers=headers(ws))
+    assert again.status_code == 202
+    await asyncio_idle()
+    assert started == [uid]
+
+
+async def asyncio_idle():
+    import asyncio
+
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+
+async def test_a_late_review_waits_until_he_has_finished_giving_notes(client, renders, tmp_path, monkeypatch):
+    ws, uid, _ = await edited(renders, tmp_path)
+    sm = renders["sm"]
+    async with sm() as s:
+        row = await prod._load(s, uid, ws)
+        words = list(row.transcript)
+        context = await prod._script_context(s, ws, row)
+        prompt, system = prod._review_request(words, context)
+        plan = dict(row.edit_plan)
+        plan["review"] = {"state": "waiting", "key": prod._review_key(uid, prompt, system),
+                          "since": prod._utcnow().isoformat()}
+        row.edit_plan = plan
+        await s.commit()
+    sid = (await open_talk(client, ws, uid))["session_id"]
+
+    asked, rendered_while = [], []
+
+    async def fake_ask(kind, prompt, system, schema, ws_, key, **_opts):
+        from tce.llm.provider import LLMResult
+
+        asked.append(key)
+        if len(asked) == 2:  # he closes the sheet: the sitting ends
+            async with sm() as s:
+                (await s.get(EditSession, uuid.UUID(sid))).state = "closed"
+                await s.commit()
+        return LLMResult(job_id=uuid.uuid4(), text="", structured={"removals": [], "corrections": []},
+                         model="claude-opus-5-5")
+
+    async def fake_plan_and_render(upload_id, ws_, *, restore_if_blocked=None):
+        async with sm() as s:
+            rendered_while.append(await library.active_sitting(s, ws_, upload_id))
+
+    monkeypatch.setattr(prod, "_ask", fake_ask)
+    monkeypatch.setattr(prod, "_plan_and_render_locked", fake_plan_and_render)
+    monkeypatch.setattr(prod, "SITTING_RECHECK_S", 0.0)
+    await prod._await_review(uid, ws)
+    assert len(asked) >= 2
+    assert rendered_while == [None]  # one render, and only once no sitting was in front of him
+
+
+async def test_a_typed_request_joins_the_sitting_he_is_in(client, renders, tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(prod, "start_edit_request", lambda rid, ws: ran.append(rid))
+    ws, uid, _ = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    r = await client.post(
+        f"/api/v1/production/recordings/{uid}/edit-requests",
+        json={"request": "Make the captions bigger", "scope": "whole"},
+        headers=headers(ws),
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["joined_sitting"] == sid and body["state"] == "held" and body["session_id"] == sid
+    assert ran == []
+    preview = (await client.get(f"/api/v1/production/talk/{sid}/submit", headers=headers(ws))).json()
+    assert preview["read_back"].startswith('1 note: the whole video: you said "Make the captions bigger"')
+
+    lib = (await client.get("/api/v1/production/library", headers=headers(ws))).json()
+    item = lib["items"][0]
+    assert item["waiting_notes"] == 1 and item["last_request"] is None and item["open_requests"] == 0
+
+
+async def test_a_typed_request_does_not_wait_on_an_old_empty_sitting(client, renders, tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(prod, "start_edit_request", lambda rid, ws: ran.append(rid))
+    ws, uid, _ = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    await age_sitting(renders["sm"], sid, library.SITTING_ACTIVE_S + 5)
+    r = await client.post(
+        f"/api/v1/production/recordings/{uid}/edit-requests",
+        json={"request": "Make the captions bigger"},
+        headers=headers(ws),
+    )
+    assert r.json()["joined_sitting"] is None and r.json()["state"] == "open"
+    assert [str(x) for x in ran] == [r.json()["id"]]
+
+
+async def test_a_closed_sheet_with_notes_waiting_still_collects_a_typed_request(client, renders, tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(prod, "start_edit_request", lambda rid, ws: ran.append(rid))
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    nid = (await pin(client, ws, sid, 2.0, row.render_ref)).json()["note_id"]
+    await say(client, ws, sid, nid, heard="cut that")
+    await age_sitting(renders["sm"], sid, library.SITTING_ACTIVE_S + 5)
+    r = await client.post(
+        f"/api/v1/production/recordings/{uid}/edit-requests",
+        json={"request": "and the captions bigger"},
+        headers=headers(ws),
+    )
+    assert r.json()["joined_sitting"] == sid and ran == []
+
+
+async def test_another_workspace_never_reaches_a_sitting(client, renders, tmp_path):
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    other = uuid.uuid4()
+    assert (await client.get(f"/api/v1/production/talk/{sid}", headers=headers(other))).status_code == 404
+    assert (await pin(client, other, sid, 1.0, row.render_ref)).status_code == 404
+    r = await client.post(f"/api/v1/production/recordings/{uid}/talk", headers=headers(other))
+    assert r.status_code == 404
+
+
+def test_a_window_of_the_transcript_keeps_the_real_word_numbers():
+    ws_ = words("one two three. four five six. seven eight")
+    keep = [[0.0, 1.4], [2.0, 4.0]]
+    text = autoedit.numbered_transcript(ws_, keep, span=(2, 5))
+    assert text.startswith("[0:01 in the edit] 2:three.")
+    assert "~~3:four~~" in text and "5:six." in text
+    assert "1:two" not in text and "6:seven" not in text
+
+
+def test_the_note_row_says_where_a_moment_is():
+    row = EditingRequest(upload_id=uuid.uuid4(), scope="moment", start_s=38.4, request="cou", state="held")
+    assert library.edit_request_to_json(row)["where"] == "at 0:38"

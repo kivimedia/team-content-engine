@@ -59,6 +59,8 @@ TABLE_NAMES = (
     "editorial_change_sets",
     "editorial_change_operations",
     "editing_requests",
+    # Talk to the editor: one sitting of notes on a video (migration 056)
+    "edit_sessions",
     "notification_subscriptions",
     "notification_events",
     # Voice agent research (migration 047)

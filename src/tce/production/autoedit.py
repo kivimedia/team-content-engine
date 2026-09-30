@@ -62,8 +62,12 @@ def numbered_transcript(
     keep: list[list[float]] | None = None,
     kept: list[dict[str, Any]] | None = None,
     marks: dict[int, str] | None = None,
+    span: tuple[int, int] | None = None,
 ) -> str:
     """One sentence a line, every word tagged with its index.
+
+    `span` (first, last) writes only those words, keeping their real indexes: the few
+    seconds around the moment he paused on (talk to the editor, 30-Sep).
 
     With a plan, each line starts with where it lands in the EDITED video (that is the
     clock he watches), and words the edit removed are wrapped in ~~ so a request can
@@ -81,6 +85,8 @@ def numbered_transcript(
     stamp = ""
     last_piece: int | None = None
     for i, w in enumerate(words):
+        if span is not None and not span[0] <= i <= span[1]:
+            continue
         start = timed.get(i, float(w["start_s"]))
         if not cur:
             if keep is None:

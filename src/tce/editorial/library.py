@@ -16,7 +16,11 @@ mutation of what was captured.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,7 +38,10 @@ from tce.models.editorial import (
 from tce.models.editorial_workspace import (
     EDIT_REQUEST_SCOPES,
     EditingRequest,
+    EditSession,
 )
+from tce.production import autoedit
+from tce.production.retakes import edit_length, frame_keep, map_to_edit, map_to_source
 
 # Library filters, in the order the chips are shown. Each maps to upload states.
 # 28-Sep: "Still to do" is the list the page opens on - everything not yet out and
@@ -81,11 +88,16 @@ STATE_SENTENCES = {
 
 
 class LibraryError(Exception):
-    def __init__(self, code: str, message: str, *, status: int = 409) -> None:
+    def __init__(
+        self, code: str, message: str, *, status: int = 409, extra: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status = status
+        # More for the caller than the sentence: the render the player should be on,
+        # the read-back as it is now.
+        self.extra = extra or {}
 
 
 def technical_candidate_ids(ws: uuid.UUID) -> Select[tuple[uuid.UUID]]:
@@ -113,6 +125,10 @@ async def _get_upload(
     if row is None:
         raise LibraryError("not_found", "that recording is not here", status=404)
     return row
+
+
+async def get_upload(db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID) -> RecordingUpload:
+    return await _get_upload(db, ws, upload_id)
 
 
 def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]]:
@@ -298,7 +314,14 @@ async def list_library(
     )
     open_by_upload: dict[uuid.UUID, int] = {}
     last_by_upload: dict[uuid.UUID, EditingRequest] = {}
+    waiting_by_upload: dict[uuid.UUID, int] = {}
     for req in requests.scalars().all():
+        if req.session_id is not None and req.state in (*WAITING_NOTE_STATES, "rejected"):
+            # 30-Sep: a note in a sitting waits for "make it"; it is not a request the
+            # editor is working on, and a note he took back is not one at all.
+            if req.state != "rejected":
+                waiting_by_upload[req.upload_id] = waiting_by_upload.get(req.upload_id, 0) + 1
+            continue
         last_by_upload[req.upload_id] = req
         if req.state in ("open", "in_progress"):
             open_by_upload[req.upload_id] = open_by_upload.get(req.upload_id, 0) + 1
@@ -382,6 +405,8 @@ async def list_library(
                 "has_transcript": bool(upload.transcript),
                 "issues": _issues(upload),
                 "open_requests": open_count,
+                # Notes given in a sitting that wait for "Make the new version".
+                "waiting_notes": waiting_by_upload.get(upload.id, 0),
                 "actions": _actions(upload, open_count),
             }
         )
@@ -411,7 +436,10 @@ async def create_edit_request(
     end_s: float | None = None,
     section_ref: str | None = None,
     created_by: str | None = None,
+    sitting: EditSession | None = None,
 ) -> EditingRequest:
+    """A typed request. With `sitting` (he is giving notes on this video) it joins that
+    sitting as a held note instead of running on its own: one re-render at the end."""
     if scope not in EDIT_REQUEST_SCOPES:
         raise LibraryError("bad_scope", f"unknown scope {scope}", status=400)
     if not request.strip():
@@ -422,19 +450,26 @@ async def create_edit_request(
         )
     if scope == "timestamp" and start_s is not None and end_s is not None and end_s <= start_s:
         raise LibraryError("bad_range", "the end must come after the start", status=400)
+    if scope == "moment" and start_s is None:
+        raise LibraryError("bad_range", "a note at a moment needs the second it is at", status=400)
 
     upload = await _get_upload(db, ws, upload_id)
+    source_s = None
+    if sitting is not None and start_s is not None and sitting.keep_snapshot:
+        source_s = map_to_source(float(start_s), sitting.keep_snapshot)
     row = EditingRequest(
         workspace_id=ws,
         upload_id=upload.id,
         candidate_id=upload.candidate_id,
         packet_id=upload.packet_id,
+        session_id=sitting.id if sitting is not None else None,
         scope=scope,
         start_s=start_s,
-        end_s=end_s,
+        end_s=None if scope == "moment" else end_s,
+        source_s=round(source_s, 3) if source_s is not None else None,
         section_ref=section_ref,
         request=request.strip(),
-        state="open",
+        state="held" if sitting is not None else "open",
         created_by=created_by,
     )
     db.add(row)
@@ -494,17 +529,23 @@ def edit_request_to_json(row: EditingRequest) -> dict[str, Any]:
     where = "the whole video"
     if row.scope == "timestamp" and row.start_s is not None:
         where = f"{_clock(row.start_s)} to {_clock(row.end_s or row.start_s)}"
+    elif row.scope == "moment" and row.start_s is not None:
+        where = f"at {_clock(row.start_s)}"
     elif row.scope == "section" and row.section_ref:
         where = row.section_ref
     return {
         "id": str(row.id),
         "upload_id": str(row.upload_id),
+        "session_id": str(row.session_id) if row.session_id else None,
         "scope": row.scope,
         "where": where,
         "start_s": row.start_s,
         "end_s": row.end_s,
+        "source_s": row.source_s,
         "section_ref": row.section_ref,
         "request": row.request,
+        "understood": row.understood,
+        "created_by": row.created_by,
         "state": row.state,
         "result": row.result,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -515,3 +556,608 @@ def edit_request_to_json(row: EditingRequest) -> dict[str, Any]:
 def _clock(seconds: float) -> str:
     total = int(seconds)
     return f"{total // 60}:{total % 60:02d}"
+
+
+def clock(seconds: float) -> str:
+    """0:38, the way the player shows a second."""
+    return _clock(seconds)
+
+
+# ---------------------------------------------------------------------------
+# Talk to the editor: one sitting of notes on a video (30-Sep)
+# ---------------------------------------------------------------------------
+#
+# He watches the edit, pauses, says what is wrong, plays on. Each pause is a note
+# pinned to that second; nothing changes until he says make it, and then one job
+# reads every note and the video renders once. The page owns the second (never a
+# model), and the sitting remembers which render it was watching, so every pin maps
+# through the keep that made that file.
+
+SITTING_ACTIVE_S = 120  # a sheet that checked in this recently is in front of him
+WAITING_NOTE_STATES = ("listening", "held")
+SITTING_WORKING_STATES = ("thinking", "rendering")  # its own batch is running
+SITTING_LIVE_STATES = ("open", *SITTING_WORKING_STATES)
+END_SLACK_S = 0.5  # a player a hair past the last frame is still on this edit
+MOMENT_WAIT_S = 4.0  # the voice can hand a note over before his words are saved
+MOMENT_POLL_S = 0.25
+MAX_EARLIER_NOTES = 12
+
+# (upload, keep) -> {word index: what the editor cannot hear for itself}
+MarksFor = Callable[[RecordingUpload, list[list[float]]], Awaitable[dict[int, str]]]
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _iso(dt: datetime | None) -> str | None:
+    return dt.isoformat() if dt else None
+
+
+def sitting_is_active(sitting: EditSession, now: datetime | None = None) -> bool:
+    """In front of him right now: open with a heartbeat in the last 120 s, or its own
+    batch running. Nothing else may re-render the video under the player then."""
+    if sitting.state in SITTING_WORKING_STATES:
+        return True
+    if sitting.state != "open" or sitting.last_seen is None:
+        return False
+    return ((now or _now()) - sitting.last_seen).total_seconds() <= SITTING_ACTIVE_S
+
+
+async def _sittings(
+    db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID, states: tuple[str, ...]
+) -> list[EditSession]:
+    result = await db.execute(
+        select(EditSession)
+        .where(
+            EditSession.workspace_id == ws,
+            EditSession.upload_id == upload_id,
+            EditSession.state.in_(states),
+        )
+        .order_by(EditSession.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def active_sitting(
+    db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID
+) -> EditSession | None:
+    """The sitting in front of him on this video, if there is one (see sitting_is_active)."""
+    now = _now()
+    for sitting in await _sittings(db, ws, upload_id, SITTING_LIVE_STATES):
+        if sitting_is_active(sitting, now):
+            return sitting
+    return None
+
+
+async def sitting_notes(
+    db: AsyncSession, ws: uuid.UUID, session_id: uuid.UUID
+) -> list[EditingRequest]:
+    result = await db.execute(
+        select(EditingRequest)
+        .where(EditingRequest.workspace_id == ws, EditingRequest.session_id == session_id)
+        .order_by(EditingRequest.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def sitting_for_typed_note(
+    db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID
+) -> EditSession | None:
+    """The sitting a typed request joins as a held note: open and in front of him, or
+    open with notes already waiting for "make it" (the sheet was closed). An old empty
+    sitting is not joined: the request would wait for a button nobody is about to press."""
+    now = _now()
+    for sitting in await _sittings(db, ws, upload_id, ("open",)):
+        if sitting_is_active(sitting, now):
+            return sitting
+        notes = await sitting_notes(db, ws, sitting.id)
+        if any(n.state in WAITING_NOTE_STATES for n in notes):
+            return sitting
+    return None
+
+
+def watched_render(upload: RecordingUpload) -> tuple[str | None, list[list[float]] | None]:
+    """The render he would be watching, and the keep that made it.
+
+    An edit rendered before renders were stamped has no stamp. Its plan's keep is the
+    file's own only while the video says edited and the plan was not blocked (a blocked
+    plan was rendered uncut, or not at all).
+    """
+    if not upload.edited_path:
+        return None, None
+    if upload.render_ref and upload.rendered_keep:
+        return upload.render_ref, [list(r) for r in upload.rendered_keep]
+    plan = upload.edit_plan or {}
+    if (
+        upload.status == "edited"
+        and plan.get("keep")
+        and (plan.get("meaning_check") or {}).get("status") != "blocked"
+    ):
+        return None, frame_keep(plan["keep"])
+    return None, None
+
+
+def edit_file_url(upload: RecordingUpload, render_ref: str | None) -> str | None:
+    """The address the sheet plays: the light copy when there is one, and the render's
+    id, so a new render never plays from the old one's cached pieces."""
+    if not upload.edited_path:
+        return None
+    query = []
+    if _has_preview(upload):
+        query.append("preview=1")
+    if render_ref:
+        query.append(f"v={render_ref}")
+    return f"/api/v1/production/uploads/{upload.id}/edited" + ("?" + "&".join(query) if query else "")
+
+
+async def open_sitting(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    upload_id: uuid.UUID,
+    *,
+    busy: Callable[[RecordingUpload], str | None] | None = None,
+) -> EditSession:
+    """Open a sitting on the edit he is about to watch, or return the one already open.
+
+    `busy` says what else is editing the video right now, in his words. While it does,
+    this is refused (409, with that sentence): notes pinned to a file about to be
+    replaced would point at the wrong seconds. A sitting whose own batch is running is
+    returned as it is, so the sheet shows the live step.
+    """
+    upload = await _get_upload(db, ws, upload_id)
+    now = _now()
+    live = await _sittings(db, ws, upload.id, SITTING_LIVE_STATES)
+    current = live[0] if live else None
+    if current is not None and current.state in SITTING_WORKING_STATES:
+        current.last_seen = now
+        await db.flush()
+        return current
+    doing = busy(upload) if busy is not None else None
+    if doing:
+        raise LibraryError("busy", doing, status=409)
+    ref, keep = watched_render(upload)
+    if not keep:
+        raise LibraryError(
+            "no_edit",
+            "This edit was made before notes could be pinned to it. Tap Edit it again, then give your notes."
+            if upload.edited_path
+            else "There is no edit of this video to give notes on yet.",
+            status=409,
+        )
+    if current is None:
+        current = EditSession(
+            workspace_id=ws,
+            upload_id=upload.id,
+            state="open",
+            render_ref=ref,
+            keep_snapshot=keep,
+            last_seen=now,
+        )
+        db.add(current)
+    else:
+        if current.render_ref != ref or current.keep_snapshot != keep:
+            await _move_to_render(db, ws, current, ref, keep)
+        current.last_seen = now
+    await db.flush()
+    return current
+
+
+async def _move_to_render(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    sitting: EditSession,
+    render_ref: str | None,
+    keep: list[list[float]],
+) -> None:
+    """The video was re-rendered while this sitting waited with the sheet closed. Each
+    note keeps its second on the recording and gets its place on the new edit."""
+    sitting.render_ref = render_ref
+    sitting.keep_snapshot = keep
+    for note in await sitting_notes(db, ws, sitting.id):
+        if note.source_s is None:
+            continue
+        moved = map_to_edit(float(note.source_s), keep)
+        if moved is not None:
+            note.start_s = round(moved, 2)
+
+
+async def get_sitting(
+    db: AsyncSession, ws: uuid.UUID, session_id: uuid.UUID, *, seen: bool = False
+) -> EditSession:
+    """One sitting. `seen` is the sheet's heartbeat."""
+    row = (
+        await db.execute(
+            select(EditSession).where(EditSession.workspace_id == ws, EditSession.id == session_id)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise LibraryError("not_found", "that sitting is not here", status=404)
+    if seen:
+        row.last_seen = _now()
+        await db.flush()
+    return row
+
+
+def sitting_to_json(
+    sitting: EditSession, notes: list[EditingRequest], upload: RecordingUpload
+) -> dict[str, Any]:
+    keep = sitting.keep_snapshot or []
+    return {
+        "session_id": str(sitting.id),
+        "upload_id": str(sitting.upload_id),
+        "state": sitting.state,
+        "render_ref": sitting.render_ref,
+        "file_url": edit_file_url(upload, sitting.render_ref),
+        "edit_length_s": round(edit_length(keep), 3),
+        "last_seen": _iso(sitting.last_seen),
+        "submitted_at": _iso(sitting.submitted_at),
+        "finished_at": _iso(sitting.finished_at),
+        "summary": sitting.summary,
+        "result": sitting.result,
+        "notes": [edit_request_to_json(n) for n in notes],
+        "waiting": sum(1 for n in notes if n.state in WAITING_NOTE_STATES),
+    }
+
+
+def _must_take_notes(sitting: EditSession) -> None:
+    if sitting.state != "open":
+        raise LibraryError(
+            "not_open",
+            "These notes were already handed to the editor. Open the notes again for new ones.",
+            status=409,
+            extra={"state": sitting.state},
+        )
+
+
+async def _note_of(
+    db: AsyncSession, ws: uuid.UUID, sitting: EditSession, note_id: uuid.UUID
+) -> EditingRequest:
+    note = (
+        await db.execute(
+            select(EditingRequest).where(
+                EditingRequest.workspace_id == ws,
+                EditingRequest.session_id == sitting.id,
+                EditingRequest.id == note_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if note is None:
+        raise LibraryError("not_found", "that note is not in this sitting", status=404)
+    return note
+
+
+async def pin_note(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    session_id: uuid.UUID,
+    *,
+    edit_s: float,
+    render_ref: str | None,
+    by: str = "ziv",
+) -> EditingRequest:
+    """The pin, the moment he presses: the paused second, on the edit he is watching.
+
+    No model is asked anything: this answers at once, and his words follow (PATCH
+    heard). Refused (409) when the player is on another render than the sitting, or the
+    video was re-rendered under it: the sheet reloads the new one and he pauses again.
+    """
+    sitting = await get_sitting(db, ws, session_id)
+    _must_take_notes(sitting)
+    upload = await _get_upload(db, ws, sitting.upload_id)
+    current_ref, _ = watched_render(upload)
+    if (render_ref or None) != (sitting.render_ref or None) or current_ref != sitting.render_ref:
+        raise LibraryError(
+            "stale_render",
+            "The player is on another edit of this video. Load the new one and pause again.",
+            status=409,
+            extra={"render_ref": current_ref},
+        )
+    keep = sitting.keep_snapshot or []
+    total = edit_length(keep)
+    source_s = None
+    if 0 <= edit_s <= total + END_SLACK_S:
+        edit_s = min(float(edit_s), total)
+        source_s = map_to_source(edit_s, keep)
+    if source_s is None:
+        raise LibraryError(
+            "bad_second",
+            f"{_clock(max(0.0, edit_s))} is not in this edit, which is {_clock(total)} long",
+            status=400,
+        )
+    now = _now()
+    note = EditingRequest(
+        workspace_id=ws,
+        upload_id=upload.id,
+        candidate_id=upload.candidate_id,
+        packet_id=upload.packet_id,
+        session_id=sitting.id,
+        scope="moment",
+        start_s=round(edit_s, 2),
+        end_s=None,
+        source_s=round(source_s, 3),
+        request="",
+        state="listening",
+        created_by=by,
+        # Set here, to the microsecond: notes pinned in the same second keep their order.
+        created_at=now,
+    )
+    db.add(note)
+    sitting.last_seen = now
+    await db.flush()
+    return note
+
+
+async def update_note(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    session_id: uuid.UUID,
+    note_id: uuid.UUID,
+    *,
+    heard: str | None = None,
+    understood: str | None = None,
+    drop: bool = False,
+) -> EditingRequest:
+    """His words (`heard`, from the page), the editor's reading (`understood`, from the
+    voice's backend), or taking the note back (`drop`). A note with either is held."""
+    sitting = await get_sitting(db, ws, session_id)
+    _must_take_notes(sitting)
+    note = await _note_of(db, ws, sitting, note_id)
+    if note.state not in WAITING_NOTE_STATES:
+        raise LibraryError(
+            "not_waiting",
+            "That note was taken back." if note.state == "rejected" else "That note is already being worked on.",
+            status=409,
+        )
+    now = _now()
+    if drop:
+        note.state = "rejected"
+        note.resolved_at = now
+    else:
+        if heard is None and understood is None:
+            raise LibraryError("empty", "say what the note is", status=400)
+        if heard is not None:
+            if not heard.strip():
+                raise LibraryError("empty", "the note has no words", status=400)
+            note.request = heard.strip()
+        if understood is not None:
+            note.understood = understood.strip() or None
+        if note.state == "listening" and (note.request.strip() or note.understood):
+            note.state = "held"
+    note.updated_at = now
+    sitting.last_seen = now
+    await db.flush()
+    return note
+
+
+async def _await_words(
+    db: AsyncSession, note: EditingRequest, wait_s: float
+) -> EditingRequest:
+    """The voice can hand a note to its backend mid-sentence, before the page has
+    saved his words (30-Sep). Wait a few seconds for them."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, wait_s)
+    while loop.time() < deadline:
+        await asyncio.sleep(MOMENT_POLL_S)
+        await db.refresh(note)
+        if note.request.strip() or note.state != "listening":
+            break
+    return note
+
+
+async def _earlier_notes(
+    db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID, *, exclude: uuid.UUID | None
+) -> list[dict[str, Any]]:
+    """Every earlier note and request on this video, oldest first, with what came of it."""
+    rows = await list_edit_requests(db, ws, upload_id)
+    out = []
+    for r in rows:
+        if r.id == exclude or (r.session_id is not None and r.state == "rejected"):
+            continue
+        result = r.result or {}
+        out.append(
+            {
+                "where": edit_request_to_json(r)["where"],
+                "said": r.request,
+                "understood": r.understood,
+                "state": r.state,
+                "reply": str(result.get("reply") or "") or None,
+                "question": str(result.get("question") or "") or None,
+                "sitting": str(r.session_id) if r.session_id else None,
+            }
+        )
+    return out[-MAX_EARLIER_NOTES:]
+
+
+async def moment(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    session_id: uuid.UUID,
+    *,
+    note_id: uuid.UUID | None = None,
+    at: float | None = None,
+    window: float = 8.0,
+    rules: bool = False,
+    marks_for: MarksFor | None = None,
+    wait_s: float | None = None,
+) -> dict[str, Any]:
+    """What the editor needs to understand one note, for the voice's backend.
+
+    The note (the one named, else the newest one not understood yet, else the second
+    `at`), his words, the numbered words `window` seconds either side on the edit clock
+    with the cut words (~~) and the joins (/cut Ns/), what the phone or the edit did to
+    a word, the earlier notes on this video, and his standing rules when `rules`.
+    """
+    sitting = await get_sitting(db, ws, session_id)
+    note: EditingRequest | None = None
+    if note_id is not None:
+        note = await _note_of(db, ws, sitting, note_id)
+    elif at is None:
+        pending = [
+            n
+            for n in await sitting_notes(db, ws, sitting.id)
+            if n.state in WAITING_NOTE_STATES and not n.understood
+        ]
+        note = pending[-1] if pending else None
+    waited = False
+    if note is not None and note.state == "listening" and not note.request.strip():
+        waited = True
+        note = await _await_words(db, note, MOMENT_WAIT_S if wait_s is None else wait_s)
+    edit_s = float(note.start_s) if note is not None and note.start_s is not None else at
+    if note is None and edit_s is None:
+        raise LibraryError(
+            "no_moment", "There is no note waiting in this sitting, and no second was given.", status=404
+        )
+
+    upload = await _get_upload(db, ws, sitting.upload_id)
+    keep = [list(r) for r in sitting.keep_snapshot or []]
+    words = list(upload.transcript or [])
+    transcript, items, marked = "", [], []
+    at_json: dict[str, Any] | None = None
+    span_json: dict[str, Any] | None = None
+    if edit_s is not None and keep:
+        total = edit_length(keep)
+        edit_s = max(0.0, min(float(edit_s), total))
+        source = map_to_source(edit_s, keep)
+        at_json = {
+            "edit_s": round(edit_s, 2),
+            "source_s": round(source, 3) if source is not None else None,
+            "clock": _clock(edit_s),
+        }
+        lo, hi = max(0.0, edit_s - window), min(total, edit_s + window)
+        span_json = {"from_edit_s": round(lo, 2), "to_edit_s": round(hi, 2)}
+        src_lo, src_hi = map_to_source(lo, keep) or 0.0, map_to_source(hi, keep) or 0.0
+        first = next((i for i, w in enumerate(words) if float(w["end_s"]) >= src_lo), None)
+        last = max((i for i, w in enumerate(words) if float(w["start_s"]) <= src_hi), default=None)
+        if first is not None and last is not None and first <= last:
+            plan = upload.edit_plan or {}
+            # The plan's kept words carry the times the cut follows, but only while the
+            # plan is still the one that made this file.
+            kept = plan.get("words") if frame_keep(plan.get("keep") or []) == keep else None
+            marks = await marks_for(upload, keep) if marks_for is not None else {}
+            transcript = autoedit.numbered_transcript(words, keep, kept, marks, span=(first, last))
+            timed = {int(w["index"]) for w in kept or [] if "index" in w}
+            for i in range(first, last + 1):
+                w = words[i]
+                s, e = float(w["start_s"]), float(w["end_s"])
+                cut = (i not in timed) if kept else map_to_edit((s + e) / 2, keep) is None
+                on_edit = None if cut else map_to_edit(s, keep)
+                if on_edit is None and not cut:
+                    on_edit = map_to_edit((s + e) / 2, keep)
+                item: dict[str, Any] = {
+                    "index": i,
+                    "text": str(w["text"]),
+                    "source_s": round(s, 2),
+                    "edit_s": round(on_edit, 2) if on_edit is not None else None,
+                    "cut": cut,
+                }
+                if i in marks:
+                    item["mark"] = marks[i]
+                    marked.append({"index": i, "text": str(w["text"]), "mark": marks[i]})
+                items.append(item)
+
+    payload: dict[str, Any] = {
+        "session_id": str(sitting.id),
+        "video": str(upload.id),
+        "state": sitting.state,
+        "note": edit_request_to_json(note) if note is not None else None,
+        "heard": note.request if note is not None and note.request.strip() else None,
+        "waited_for_words": waited,
+        "at": at_json,
+        "window": span_json,
+        "transcript": transcript,
+        "words": items,
+        "marks": marked,
+        "earlier": await _earlier_notes(
+            db, ws, upload.id, exclude=note.id if note is not None else None
+        ),
+    }
+    if rules:
+        payload["rules"] = autoedit.editor_skill()
+    return payload
+
+
+def _ready_notes(notes: list[EditingRequest]) -> list[EditingRequest]:
+    """Notes that go to the editor at "make it": waiting, with his words or a reading."""
+    return [
+        n
+        for n in notes
+        if n.state in WAITING_NOTE_STATES and (n.request.strip() or (n.understood or "").strip())
+    ]
+
+
+def _note_line(note: EditingRequest) -> str:
+    where = edit_request_to_json(note)["where"]
+    what = (note.understood or "").strip() or f'you said "{note.request.strip()}"'
+    return f"{where}: {what.rstrip(' .;')}"
+
+
+def read_back(notes: list[EditingRequest], left_out: int = 0) -> str:
+    """The sentence he hears before anything renders."""
+    n = len(notes)
+    text = f"{n} note{'s' if n != 1 else ''}: " + "; ".join(_note_line(x) for x in notes)
+    text += ". One re-render."
+    if left_out:
+        text += (
+            f" {left_out} note{'s' if left_out != 1 else ''} with no words yet "
+            f"{'are' if left_out != 1 else 'is'} left out."
+        )
+    return text
+
+
+def check_code(notes: list[EditingRequest]) -> str:
+    """The read-back's fingerprint: a note added, taken back, re-said or re-read since
+    the read-back changes it, so a yes only ever makes what he heard."""
+    body = json.dumps(
+        [[str(n.id), n.request.strip(), (n.understood or "").strip(), n.start_s] for n in notes]
+    )
+    return hashlib.sha256(body.encode()).hexdigest()[:12]
+
+
+async def submit_preview(db: AsyncSession, ws: uuid.UUID, session_id: uuid.UUID) -> dict[str, Any]:
+    """The read-back and its check code. Nothing changes."""
+    sitting = await get_sitting(db, ws, session_id, seen=True)
+    _must_take_notes(sitting)
+    notes = await sitting_notes(db, ws, sitting.id)
+    ready = _ready_notes(notes)
+    left_out = [n for n in notes if n.state in WAITING_NOTE_STATES and n not in ready]
+    if not ready:
+        raise LibraryError("no_notes", "There are no notes to make a new version from yet.", status=409)
+    return {
+        "session_id": str(sitting.id),
+        "read_back": read_back(ready, len(left_out)),
+        "check": check_code(ready),
+        "count": len(ready),
+        "notes": [edit_request_to_json(n) for n in ready],
+        "left_out": [str(n.id) for n in left_out],
+    }
+
+
+async def submit(
+    db: AsyncSession, ws: uuid.UUID, session_id: uuid.UUID, *, check: str, by: str = "ziv"
+) -> tuple[EditSession, dict[str, Any]]:
+    """He said yes to the read-back. The sitting starts thinking with exactly the notes
+    he heard; the caller starts the one batch job."""
+    preview = await submit_preview(db, ws, session_id)
+    if (check or "").strip() != preview["check"]:
+        raise LibraryError(
+            "changed",
+            "The notes changed since the read-back, or no check code was given. Read them back again: "
+            + preview["read_back"],
+            status=409,
+            extra={"check": preview["check"], "read_back": preview["read_back"]},
+        )
+    sitting = await get_sitting(db, ws, session_id)
+    now = _now()
+    count = preview["count"]
+    sitting.state = "thinking"
+    sitting.submitted_at = now
+    sitting.last_seen = now
+    sitting.summary = preview["read_back"]
+    sitting.result = {
+        "status": f"Reading your {count} note{'s' if count != 1 else ''} on the subscription",
+        "notes": [n["id"] for n in preview["notes"]],
+        "by": by,
+    }
+    await db.flush()
+    return sitting, preview

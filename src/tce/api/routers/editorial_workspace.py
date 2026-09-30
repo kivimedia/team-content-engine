@@ -971,6 +971,9 @@ async def create_edit_request(
     uid = _uuid(upload_id, "recording")
     async with open_session(sm) as db:
         try:
+            # 30-Sep: while he is giving notes on this video, a typed request is one more
+            # note in that sitting, made with the others in one re-render.
+            sitting = await library_service.sitting_for_typed_note(db, ws, uid)
             row = await library_service.create_edit_request(
                 db,
                 ws,
@@ -981,11 +984,15 @@ async def create_edit_request(
                 end_s=body.end_s,
                 section_ref=body.section_ref,
                 created_by="ziv",
+                sitting=sitting,
             )
             payload = library_service.edit_request_to_json(row)
+            payload["joined_sitting"] = str(sitting.id) if sitting is not None else None
             await db.commit()
         except ServiceError as error:
             raise _http(error) from error
+    if sitting is not None:
+        return payload
     # 25-Sep: TCE carries the request out itself, on the subscription worker.
     from tce.api.routers import production as production_routes
 
@@ -1006,3 +1013,202 @@ async def list_edit_requests(
             "upload_id": upload_id,
             "requests": [library_service.edit_request_to_json(r) for r in rows],
         }
+
+
+# ---------------------------------------------------------------------------
+# Talk to the editor (30-Sep): one sitting of notes on an edited video
+# ---------------------------------------------------------------------------
+
+
+class TalkPin(BaseModel):
+    # The paused second on the edit he is watching, read by the page, never a model.
+    edit_s: float
+    render_ref: str | None = None
+    by: str = "ziv"
+
+
+class TalkNotePatch(BaseModel):
+    heard: str | None = None
+    understood: str | None = None
+    drop: bool = False
+
+
+class TalkSubmit(BaseModel):
+    check: str = ""
+    by: str = "ziv"
+
+
+def _actor(by: str) -> str:
+    if by not in ACTORS:
+        raise HTTPException(status_code=400, detail=f"unknown actor {by}")
+    return by
+
+
+async def _sitting_payload(db, ws: uuid.UUID, sitting) -> dict[str, Any]:
+    notes = await library_service.sitting_notes(db, ws, sitting.id)
+    upload = await library_service.get_upload(db, ws, sitting.upload_id)
+    return library_service.sitting_to_json(sitting, notes, upload)
+
+
+@production_router.post("/recordings/{upload_id}/talk")
+async def open_talk(
+    upload_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Open a sitting on the edit, or return the one already open. 409 with what is
+    running now while something else is editing the video."""
+    from tce.api.routers import production as production_routes
+
+    uid = _uuid(upload_id, "recording")
+    async with open_session(sm) as db:
+        # A step whose process died is not "busy": say so first, like the other routes.
+        await production_routes.reconcile_interrupted_uploads(db, ws)
+        try:
+            sitting = await library_service.open_sitting(db, ws, uid, busy=production_routes.upload_busy)
+            payload = await _sitting_payload(db, ws, sitting)
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+    return payload
+
+
+@production_router.get("/talk/{session_id}")
+async def get_talk(
+    session_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """The sitting and its notes. The sheet polls this while a note is listening; each
+    read is also its heartbeat."""
+    sid = _uuid(session_id, "sitting")
+    async with open_session(sm) as db:
+        try:
+            sitting = await library_service.get_sitting(db, ws, sid, seen=True)
+            payload = await _sitting_payload(db, ws, sitting)
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+    return payload
+
+
+@production_router.post("/talk/{session_id}/notes")
+async def pin_talk_note(
+    session_id: str,
+    body: TalkPin,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """The pin: the paused second, stored at once with no model asked anything."""
+    sid = _uuid(session_id, "sitting")
+    by = _actor(body.by)
+    async with open_session(sm) as db:
+        try:
+            note = await library_service.pin_note(
+                db, ws, sid, edit_s=body.edit_s, render_ref=body.render_ref, by=by
+            )
+            payload = {
+                "note_id": str(note.id),
+                "edit_s": note.start_s,
+                "source_s": note.source_s,
+                "clock": library_service.clock(note.start_s or 0.0),
+                "note": library_service.edit_request_to_json(note),
+            }
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+    return payload
+
+
+@production_router.patch("/talk/{session_id}/notes/{note_id}")
+async def patch_talk_note(
+    session_id: str,
+    note_id: str,
+    body: TalkNotePatch,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """His words (heard), the editor's reading (understood), or taking it back (drop)."""
+    sid = _uuid(session_id, "sitting")
+    nid = _uuid(note_id, "note")
+    async with open_session(sm) as db:
+        try:
+            note = await library_service.update_note(
+                db, ws, sid, nid, heard=body.heard, understood=body.understood, drop=body.drop
+            )
+            payload = library_service.edit_request_to_json(note)
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+    return payload
+
+
+@production_router.get("/talk/{session_id}/moment")
+async def talk_moment(
+    session_id: str,
+    note: str | None = Query(None),
+    at: float | None = Query(None, ge=0),
+    window: float = Query(8.0, ge=1, le=60),
+    rules: bool = Query(False),
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """What the voice's backend needs to understand one note. Waits a few seconds for a
+    note whose words are not saved yet."""
+    from tce.api.routers import production as production_routes
+
+    sid = _uuid(session_id, "sitting")
+    nid = _uuid(note, "note") if note else None
+
+    async def marks_for(upload, keep):
+        return await production_routes.word_marks_for(upload.storage_path, list(upload.transcript or []), keep)
+
+    async with open_session(sm) as db:
+        try:
+            return await library_service.moment(
+                db, ws, sid, note_id=nid, at=at, window=window, rules=rules, marks_for=marks_for
+            )
+        except ServiceError as error:
+            raise _http(error) from error
+
+
+@production_router.get("/talk/{session_id}/submit")
+async def talk_submit_preview(
+    session_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """The read-back he hears before anything renders, and its check code."""
+    sid = _uuid(session_id, "sitting")
+    async with open_session(sm) as db:
+        try:
+            payload = await library_service.submit_preview(db, ws, sid)
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+    return payload
+
+
+@production_router.post("/talk/{session_id}/submit")
+async def talk_submit(
+    session_id: str,
+    body: TalkSubmit,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """He said yes to the read-back: one job reads every note, then one render. The
+    check must be the read-back's own, so a yes never makes notes he did not hear."""
+    from tce.api.routers import production as production_routes
+
+    sid = _uuid(session_id, "sitting")
+    by = _actor(body.by)
+    async with open_session(sm) as db:
+        try:
+            sitting, preview = await library_service.submit(db, ws, sid, check=body.check, by=by)
+            payload = await _sitting_payload(db, ws, sitting)
+            payload["read_back"] = preview["read_back"]
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+    production_routes.start_talk_session(sid, ws)
+    return payload
