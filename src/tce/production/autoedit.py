@@ -187,11 +187,25 @@ def word_marks(
                     continue
         for a, b in keep or []:
             a, b = float(a), float(b)
-            if s + 0.03 < b < e - 0.03 and max(frames(levels, b, b + 0.03) or [-999.0]) > low_db:
+            # Sound on the far side of the cut, standing above the noise in the gap beyond
+            # the word (with echo cancellation off the phone keeps its wind, always above
+            # `low`; read past the word, or the word's own sound hides the clip).
+            if s + 0.03 < b < e - 0.03 and max(frames(levels, b, b + 0.03) or [-999.0]) > _over_noise(
+                levels, e, +1, low_db
+            ):
                 out[i] = "the edit ends inside this word"
-            elif s + 0.03 < a < e - 0.03 and max(frames(levels, a - 0.03, a) or [-999.0]) > low_db:
+            elif s + 0.03 < a < e - 0.03 and max(frames(levels, a - 0.03, a) or [-999.0]) > _over_noise(
+                levels, s, -1, low_db
+            ):
                 out[i] = "the edit starts inside this word"
     return out
+
+
+def _over_noise(levels: list[float], t: float, direction: int, low_db: float) -> float:
+    from tce.production.tightcut import TAIL_OVER_NOISE_DB, _gap_noise
+
+    noise = _gap_noise(levels, t, t + direction * 1.0, direction)
+    return low_db if noise is None else max(low_db, noise + TAIL_OVER_NOISE_DB)
 
 
 def script_context(packet: Any | None, title: str | None) -> str:

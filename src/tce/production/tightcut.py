@@ -46,6 +46,7 @@ TAIL_FLOOR_DB = 6.0  # a word's quiet ending is followed this far under `low`
 TAIL_BRIDGE_S = 0.12  # ... across dips this short (a consonant's closure)
 TAIL_MAX_S = 0.3  # ... but no further than this from the speech region
 TAIL_RELEASE_S = 0.04
+TAIL_OVER_NOISE_DB = 8.0  # ... and only while this far above the noise in the gap beside it
 
 
 HISS_HZ = 3500  # an "s" lives above this; vowels and the wind mostly below
@@ -180,6 +181,25 @@ def _dip(levels: list[float], t0: float, t1: float, prefer: float, hop: float = 
     candidates = [k for k in range(a, b) if levels[k] <= floor + 6.0]
     best = min(candidates, key=lambda k: abs(k * hop + hop / 2 - prefer))
     return round((best * hop + hop / 2) * FPS) / FPS
+
+
+GAP_NOISE_FROM_S = 0.15  # the gap's own noise is read this far past a speech edge ...
+GAP_NOISE_TO_S = 0.45  # ... up to here, past where a word's tail can reach
+
+
+def _gap_noise(
+    levels: list[float] | None, t: float, bound: float, direction: int, hop: float = HOP_S
+) -> float | None:
+    """The noise in the gap beside a speech edge at `t` (median level, dB), or None when
+    the next speech is too close to leave a gap to read."""
+    if not levels:
+        return None
+    a, b = t + direction * GAP_NOISE_FROM_S, t + direction * GAP_NOISE_TO_S
+    lo, hi = (a, min(b, bound)) if direction > 0 else (max(b, bound), a)
+    frames = sorted(levels[max(0, int(round(lo / hop))) : max(0, int(round(hi / hop)))])
+    if len(frames) < 10:
+        return None
+    return frames[len(frames) // 2]
 
 
 def _follow(
@@ -319,10 +339,17 @@ def tight_keep(
             post = POST_SENTENCE_S if _ends_sentence(tail_word["text"]) else POST_S
             # A quiet ending (the "v" of "live", the "n" of "can") comes back after a
             # short dip without ever reaching `high`, so it is no region of its own:
-            # follow the sound down to TAIL_FLOOR_DB under `low` before cutting (30-Sep).
+            # follow the sound down to TAIL_FLOOR_DB under `low` before cutting (30-Sep),
+            # but only while it stands TAIL_OVER_NOISE_DB above the noise in the gap
+            # beside it: with echo cancellation off the phone keeps its wind and room
+            # tone, and a floor inside that followed the wind (pauses 0.29 -> 0.67 s).
             floor = activity.low_db - TAIL_FLOOR_DB
-            end = max(re_ + post, _follow(activity.levels, re_, hi, floor, +1) + TAIL_RELEASE_S)
-            start = min(rs - PRE_S, _follow(activity.levels, rs, lo, floor, -1) - PRE_S)
+            after = _gap_noise(activity.levels, re_, hi, +1)
+            before = _gap_noise(activity.levels, rs, lo, -1)
+            end_floor = floor if after is None else max(floor, after + TAIL_OVER_NOISE_DB)
+            start_floor = floor if before is None else max(floor, before + TAIL_OVER_NOISE_DB)
+            end = max(re_ + post, _follow(activity.levels, re_, hi, end_floor, +1) + TAIL_RELEASE_S)
+            start = min(rs - PRE_S, _follow(activity.levels, rs, lo, start_floor, -1) - PRE_S)
             run_pieces.append([max(lo, start), min(hi, end)])
         for w in words[i : j + 1]:
             ws, we = float(w["start_s"]), float(w["end_s"])

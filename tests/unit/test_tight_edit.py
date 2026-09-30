@@ -472,3 +472,24 @@ def test_a_hold_gives_a_word_more_room():
     assert apply_holds(keep, [[1.95, "end", 0.6]], 10.0) == [[1.0, 3.0]]  # meets the next: joined
     assert apply_holds(keep, [[2.52, "start", 0.2]], 10.0) == [[1.0, 2.0], [2.32, 3.0]]
     assert apply_holds(keep, [[5.0, "end", 0.3]], 10.0) == keep  # no edge near: nothing moves
+
+
+def test_a_tail_never_follows_the_wind():
+    # 30-Sep: with echo cancellation off the phone keeps its wind (median -46 dB, never
+    # digital silence). A tail floor inside that noise followed it to TAIL_MAX_S on every
+    # cut: pauses went from 0.29 to 0.67 s. Only sound above the gap's own noise is a tail.
+    levels = [(-20.0 if (k // 30) % 2 == 0 else -60.0) for k in range(10000)] + [-60.0] * 10000
+    for k in range(16300, 16350):
+        levels[k] = -15.0  # "so"
+    for k in range(16350, 16500):
+        levels[k] = -58.0 + (k % 3)  # wind, around the speech floor
+    for k in range(16500, 16550):
+        levels[k] = -15.0  # "go", 1.5 s later
+    words = [
+        {"text": "so", "start_s": 163.00, "end_s": 163.50, "precision": "word"},
+        {"text": "go.", "start_s": 165.00, "end_s": 165.50, "precision": "word"},
+    ]
+    act = find_activity(levels)
+    keep, _ = tight_keep(words, [True, True], act, 200.0)
+    first = next(r for r in keep if r[0] <= 163.1 <= r[1])
+    assert first[1] <= 163.5 + 0.15, keep  # a breath, not 0.3 s of wind
