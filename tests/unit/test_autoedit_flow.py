@@ -276,6 +276,34 @@ async def test_an_unclear_request_comes_back_as_one_question(wired):
     assert req.state == "needs_you" and "music" in req.result["question"]
 
 
+async def test_an_answer_with_nothing_to_change_is_done_and_the_next_note_sees_it(wired):
+    # 30-Sep: "the phone cut the s off course; no cut can bring it back" is the answer,
+    # not a question back to him; and his next note on the video is read with it.
+    ws, uid = await seed(wired["sm"], planned=True)
+    async with wired["sm"]() as s:
+        first = EditingRequest(workspace_id=ws, upload_id=uid, scope="whole",
+                               request="it sounds like cou", state="open")
+        s.add(first)
+        await s.commit()
+    wired["answers"][autoedit.EDIT_REQUEST_JOB] = {
+        "reply": "Your phone cut the 's' off 'course' at 0:38; the recording never had it.",
+        "needs_you": False, "question": "", "corrections": [], "cut": [], "restore": [], "hold": [],
+    }
+    await prod.run_edit_request(first.id, ws)
+    async with wired["sm"]() as s:
+        first = await s.get(EditingRequest, first.id)
+        assert first.state == "done" and first.result["changed"] is False
+        second = EditingRequest(workspace_id=ws, upload_id=uid, scope="whole",
+                                request="can you patch it", state="open")
+        s.add(second)
+        await s.commit()
+    await prod.run_edit_request(second.id, ws)
+    kind, prompt = wired["asked"][-1]
+    assert kind == autoedit.EDIT_REQUEST_JOB
+    assert "He wrote: it sounds like cou | You answered: Your phone cut the 's'" in prompt
+    assert prompt.index("Earlier notes") < prompt.index("His request now:\ncan you patch it")
+
+
 def test_the_review_key_changes_with_anything_the_editor_reads():
     # Review, 28-Sep: the key held the words only, so a renamed topic reused it with a
     # different prompt, the queue refused, and "Edit it again" failed on every click.

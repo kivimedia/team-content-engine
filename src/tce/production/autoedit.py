@@ -19,6 +19,7 @@ edit plan. The router owns the background tasks, statuses and rendering.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 from tce.production.retakes import map_to_edit
@@ -27,6 +28,18 @@ EDIT_REQUEST_JOB = "video_edit_request"
 AGENT_NAME = "video_editor"
 PROMPT_VERSION = "autoedit-v1"
 MAX_CORRECTIONS = 12
+MAX_HOLD_MS = 600
+
+# His standing rules, one file both editor jobs read (30-Sep: "the editor agent needs to be
+# opus 5.5 with the right skill files"). Edited in the repo; the next job picks it up.
+EDITOR_SKILL_PATH = Path(__file__).parent / "skills" / "video_editor.md"
+
+
+def editor_skill() -> str:
+    try:
+        return EDITOR_SKILL_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 _NORM = re.compile(r"[^\w']+")
 
@@ -48,6 +61,7 @@ def numbered_transcript(
     words: list[dict[str, Any]],
     keep: list[list[float]] | None = None,
     kept: list[dict[str, Any]] | None = None,
+    marks: dict[int, str] | None = None,
 ) -> str:
     """One sentence a line, every word tagged with its index.
 
@@ -56,11 +70,16 @@ def numbered_transcript(
     bring them back. `kept` is the plan's own kept words with their times on the
     speech (28-Sep): the cut follows the audio, so the recogniser's clock alone would
     call some kept words cut.
+
+    Every join between two kept words where the edit skips audio is written `/cut 1.4s/`
+    (30-Sep: told only of the removed words, the editor said "the only cut is at 0:42"
+    in an edit of 61 pieces). `marks` adds a note after a word (see word_marks).
     """
     timed = {int(w["index"]): float(w["start"]) for w in kept or [] if "index" in w}
     lines: list[str] = []
     cur: list[str] = []
     stamp = ""
+    last_piece: int | None = None
     for i, w in enumerate(words):
         start = timed.get(i, float(w["start_s"]))
         if not cur:
@@ -70,10 +89,20 @@ def numbered_transcript(
                 edited = map_to_edit(start, keep)
                 stamp = f"[{_clock(edited)} in the edit] " if edited is not None else "[cut] "
         token = f"{i}:{w['text']}"
-        if keep is not None and (
+        removed = keep is not None and (
             i not in timed if timed else map_to_edit((start + float(w["end_s"])) / 2, keep) is None
-        ):
+        )
+        if removed:
             token = f"~~{token}~~"
+        elif keep is not None:
+            piece = _piece(keep, start, float(w["end_s"]))
+            if piece is not None and last_piece is not None and piece != last_piece:
+                skip = float(keep[piece][0]) - float(keep[last_piece][1])
+                cur.append(f"/cut {max(0.0, skip):.1f}s/")
+            if piece is not None:
+                last_piece = piece
+        if marks and i in marks:
+            token = f"{token} ({marks[i]})"
         cur.append(token)
         if str(w["text"])[-1:] in ".?!" or len(cur) >= 24:
             lines.append(stamp + " ".join(cur))
@@ -81,6 +110,88 @@ def numbered_transcript(
     if cur:
         lines.append(stamp + " ".join(cur))
     return "\n".join(lines)
+
+
+def _piece(keep: list[list[float]], start: float, end: float) -> int | None:
+    """The keep range a word plays in (the one holding most of it)."""
+    best, most = None, 0.0
+    for k, (a, b) in enumerate(keep):
+        got = min(end, float(b)) - max(start, float(a))
+        if got > most:
+            best, most = k, got
+    if best is None:
+        best = next((k for k, (a, b) in enumerate(keep) if float(a) - 0.05 <= start <= float(b) + 0.05), None)
+    return best
+
+
+PHONE_ZERO_DB = -85.0  # the phone's mic switched off: digital silence
+PHONE_ZERO_WITHIN_S = 0.25  # ... this soon after the recogniser's end of the word
+HISS_PRESENT_DB = -45.0  # an "s" is -24..-35 dB above 3.5 kHz on his phone; a lost one stays under
+VOWEL_OVER_LOW_DB = 20.0  # the loud part of the word: this far above `low`
+VOWEL_OVER_HISS_DB = 15.0  # ... and this far above its own band over 3.5 kHz
+# Spellings that end on a HISSED "s" (course, place, less, box, push, what's, clicks, this,
+# yes). Not the buzzing "z" spelled s ("is", "was", "sales", "because", "courses"): it is
+# voiced and barely shows above 3.5 kHz even when said in full (30-Sep, all five walks).
+_HISS_END = re.compile(r"(ce|ss|x|sh|tch|ts|ks|ps|fs|t's|rse|nse|lse|pse)$")
+_HISS_WORDS = frozenset({"this", "yes", "us", "plus", "thus", "bus", "gas", "focus", "bonus", "status"})
+_LETTERS = re.compile(r"[^\w']+")
+
+
+def _ends_on_hiss(text: str) -> bool:
+    bare = _LETTERS.sub("", str(text)).lower()
+    return bare in _HISS_WORDS or bool(_HISS_END.search(bare))
+
+
+def word_marks(
+    words: list[dict[str, Any]],
+    keep: list[list[float]] | None,
+    levels: list[float] | None,
+    low_db: float,
+    hop: float = 0.01,
+    hiss: list[float] | None = None,
+) -> dict[int, str]:
+    """What the editor cannot hear for itself, word by word (30-Sep, "cou" for "course").
+
+    - "phone cut its end short": a word spelled to end on a hiss ("course") whose band
+      above 3.5 kHz (`hiss`) never reaches HISS_PRESENT_DB between its loud part and the
+      phone's digital silence. The recording lost the "s"; no cut can bring it back.
+      Loudness alone cannot tell: "this" and "sales" end in a strong "s" and the phone's
+      silence right after, just like the lost one. Without `hiss`, nothing is marked.
+    - "the edit ends inside this word" / "starts inside": a keep range stops or starts
+      inside a kept word while there is still sound there.
+    """
+    out: dict[int, str] = {}
+    if not levels:
+        return out
+
+    def frames(arr: list[float], a: float, b: float) -> list[float]:
+        return arr[max(0, int(round(a / hop))) : max(0, int(round(b / hop)))]
+
+    for i, w in enumerate(words):
+        s, e = float(w["start_s"]), float(w["end_s"])
+        if w.get("sound") or e <= s:
+            continue
+        if hiss and _ends_on_hiss(w["text"]):
+            k0 = int(round(s / hop))
+            k1 = min(len(levels), int(round((e + PHONE_ZERO_WITHIN_S) / hop)))
+            zero = next(
+                (k for k in range(max(k0, int(round(e / hop)) - 5), k1) if levels[k] <= PHONE_ZERO_DB), None
+            )
+            # The vowel: loud, and far louder than its own hiss (an "s" is nearly all hiss).
+            loud = [k for k in range(k0, zero or k0) if levels[k] >= low_db + VOWEL_OVER_LOW_DB
+                    and k < len(hiss) and levels[k] - hiss[k] >= VOWEL_OVER_HISS_DB]
+            if zero is not None and loud:
+                tail = hiss[loud[-1] + 1 : zero]
+                if not tail or max(tail) < HISS_PRESENT_DB:
+                    out[i] = "phone cut its end short"
+                    continue
+        for a, b in keep or []:
+            a, b = float(a), float(b)
+            if s + 0.03 < b < e - 0.03 and max(frames(levels, b, b + 0.03) or [-999.0]) > low_db:
+                out[i] = "the edit ends inside this word"
+            elif s + 0.03 < a < e - 0.03 and max(frames(levels, a - 0.03, a) or [-999.0]) > low_db:
+                out[i] = "the edit starts inside this word"
+    return out
 
 
 def script_context(packet: Any | None, title: str | None) -> str:
@@ -120,7 +231,7 @@ _RANGE = {
 # needs to be edited out. if I say no no no rain that needs to be taken out."
 
 REVIEW_JOB = "video_edit_review"
-REVIEW_PROMPT_VERSION = "edit-review-v2"
+REVIEW_PROMPT_VERSION = "edit-review-v3"
 REMOVAL_KINDS = ("retake", "false_start", "aside", "junk")
 # Talk to a dog is a few words; a take said again can be a long sentence.
 MAX_REMOVAL_WORDS = {"retake": 80, "false_start": 80, "aside": 30, "junk": 40}
@@ -169,6 +280,7 @@ def review_system(dog_names: list[str]) -> str:
         "names its kind, and for a retake or false_start gives kept_from: the index of the first "
         "word of the take you keep (-1 otherwise). Every correction quotes the exact words it "
         "replaces by index; replacement '' deletes."
+        + (f"\n\nHIS STANDING RULES (the editor's skill file):\n{editor_skill()}" if editor_skill() else "")
     )
 
 
@@ -300,12 +412,33 @@ EDIT_REQUEST_SYSTEM = (
     "words by index; replacement '' deletes.\n"
     "- cut: remove a range of words (by index) from the video.\n"
     "- restore: put back words the edit removed (shown wrapped in ~~).\n"
+    "- hold: give one kept word more room at its start or end, in ms (up to 600), when the "
+    "edit clipped it (marked 'the edit ends inside this word', or heard cut short at a "
+    "/cut/ join). It cannot bring back a sound the phone never recorded.\n"
     "Times in the transcript are where each line lands in the EDITED video, the clock he "
     "watches. Do exactly what he asked and nothing more. If the request cannot be done "
     "with these tools, or you cannot tell what he means, set needs_you true and ask ONE "
     "short question naming what you checked. reply: one or two plain sentences to him "
     "saying what you changed, quoting the new words where you fixed captions."
 )
+
+
+def edit_request_system() -> str:
+    """The request editor's instructions with his standing rules (the skill file)."""
+    skill = editor_skill()
+    return EDIT_REQUEST_SYSTEM + (f"\n\n{skill}" if skill else "")
+
+
+_HOLD = {
+    "type": "object",
+    "properties": {
+        "index": {"type": "integer"},
+        "side": {"type": "string", "enum": ["start", "end"]},
+        "extra_ms": {"type": "integer"},
+        "why": {"type": "string"},
+    },
+    "required": ["index", "side", "extra_ms", "why"],
+}
 
 EDIT_REQUEST_SCHEMA = {
     "type": "object",
@@ -316,8 +449,9 @@ EDIT_REQUEST_SCHEMA = {
         "corrections": {"type": "array", "items": _CORRECTION},
         "cut": {"type": "array", "items": _RANGE},
         "restore": {"type": "array", "items": _RANGE},
+        "hold": {"type": "array", "items": _HOLD},
     },
-    "required": ["reply", "needs_you", "corrections", "cut", "restore"],
+    "required": ["reply", "needs_you", "corrections", "cut", "restore", "hold"],
 }
 
 
@@ -331,15 +465,43 @@ def edit_request_prompt(
     start_s: float | None,
     end_s: float | None,
     kept: list[dict[str, Any]] | None = None,
+    marks: dict[int, str] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> str:
     where = ""
     if scope == "timestamp" and start_s is not None and end_s is not None:
         where = f"\nHe pointed at {_clock(start_s)} to {_clock(end_s)} in the edited video."
+    earlier = ""
+    if history:
+        rows = []
+        for h in history:
+            line = f"- He wrote: {h.get('request', '').strip()}"
+            if h.get("reply"):
+                line += f" | You answered: {h['reply'].strip()}"
+            if h.get("question"):
+                line += f" | You asked him: {h['question'].strip()}"
+            rows.append(line)
+        earlier = "Earlier notes on this video, oldest first:\n" + "\n".join(rows) + "\n\n"
     return (
-        f"{context}\n\nHis request:\n{request.strip()}{where}\n\n"
-        f"Transcript (index:word; ~~cut~~ words are not in the edit):\n"
-        f"{numbered_transcript(words, keep, kept)}"
+        f"{context}\n\n{earlier}His request now:\n{request.strip()}{where}\n\n"
+        f"Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join):\n"
+        f"{numbered_transcript(words, keep, kept, marks)}"
     )
+
+
+def word_holds(words: list[dict[str, Any]], holds: list[dict[str, Any]]) -> list[list[Any]]:
+    """The model's holds as [time the word starts or ends, side, extra seconds]."""
+    out: list[list[Any]] = []
+    for h in holds:
+        try:
+            i, extra = int(h["index"]), int(h["extra_ms"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        side = str(h.get("side") or "end")
+        if 0 <= i < len(words) and side in ("start", "end") and extra > 0:
+            at = float(words[i]["end_s" if side == "end" else "start_s"])
+            out.append([round(at, 3), side, min(extra, MAX_HOLD_MS) / 1000])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -443,13 +605,21 @@ def apply_overrides(plan: dict[str, Any], overrides: dict[str, Any] | None) -> d
 
 
 def merge_overrides(
-    old: dict[str, Any] | None, cut: list[list[float]], restore: list[list[float]]
+    old: dict[str, Any] | None,
+    cut: list[list[float]],
+    restore: list[list[float]],
+    hold: list[list[Any]] | None = None,
 ) -> dict[str, Any]:
-    """The newest instruction wins: restoring what an earlier request cut lifts that cut."""
+    """The newest instruction wins: restoring what an earlier request cut lifts that cut,
+    and a new hold on the same word edge replaces the old one."""
     old = old or {}
     old_cut = _subtract([list(r) for r in old.get("cut") or []], restore)
     old_restore = _subtract([list(r) for r in old.get("restore") or []], cut)
-    return {"cut": _merge(old_cut + cut), "restore": _merge(old_restore + restore)}
+    out: dict[str, Any] = {"cut": _merge(old_cut + cut), "restore": _merge(old_restore + restore)}
+    holds = {(round(float(h[0]), 3), h[1]): h for h in (old.get("hold") or []) + (hold or [])}
+    if holds:
+        out["hold"] = sorted(holds.values())
+    return out
 
 
 def _subtract(ranges: list[list[float]], minus: list[list[float]]) -> list[list[float]]:

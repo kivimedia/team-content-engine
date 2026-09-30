@@ -416,3 +416,59 @@ def test_a_take_split_by_a_long_pause_is_one_item_on_the_card():
     assert [r["text"] for r in removed] == [
         "Which means that the sales call is the first step of the transformation."
     ]
+
+
+def _walk_levels(pairs: dict[int, float], n: int = 20000) -> list[float]:
+    # Talk elsewhere so the thresholds land where the walk's did (-41 and -51 dB).
+    levels = [-14.0 if (k // 30) % 2 == 0 else -120.0 for k in range(10000)] + [-120.0] * (n - 10000)
+    for k, db in pairs.items():
+        levels[k] = db
+    return levels
+
+
+def test_a_quiet_word_ending_after_a_dip_is_kept():
+    # 30-Sep, "live" at 0:36 of the course video (real 10 ms levels): speech to 36.48, a
+    # 100 ms dip under -51 dB, then the "v" at -55..-48 dB, then the phone's silence. The
+    # edit cut at 36.60, before the "v". The next kept word is 0.7 s later.
+    real = [-13, -14, -15, -18, -22, -28, -34, -36, -37, -38, -39, -50, -60, -63, -65, -64,
+            -64, -60, -57, -56, -56, -55, -55, -52, -48, -55, -67, -80, -85, -95]
+    levels = _walk_levels({}, 20000)
+    for k, db in enumerate(real):
+        levels[16338 + k] = float(db)  # 163.38 s on
+    for k in range(16420, 16480):
+        levels[k] = -13.0  # "program", 0.7 s later
+    words = [
+        {"text": "live", "start_s": 163.38, "end_s": 163.62, "precision": "word"},
+        {"text": "program,", "start_s": 164.20, "end_s": 164.80, "precision": "word"},
+    ]
+    act = find_activity(levels)
+    assert -53 < act.low_db < -50  # the walk's was -51
+    keep, _ = tight_keep(words, [True, True], act, 200.0)
+    first = next(r for r in keep if r[0] <= 163.4 <= r[1])
+    assert first[1] >= 163.63, keep  # the "v" at 163.62 is in
+
+
+def test_a_tail_never_reaches_into_a_dropped_word():
+    levels = _walk_levels({}, 20000)
+    for k in range(16338, 16350):
+        levels[k] = -13.0  # "so"
+    for k in range(16350, 16357):
+        levels[k] = -60.0  # a short dip
+    for k in range(16357, 16400):
+        levels[k] = -50.0  # a quiet dropped "um", right after
+    words = [
+        {"text": "so", "start_s": 163.38, "end_s": 163.50, "precision": "word"},
+        {"text": "um", "start_s": 163.57, "end_s": 164.00, "precision": "word"},
+    ]
+    keep, _ = tight_keep(words, [True, False], find_activity(levels), 200.0)
+    assert keep and keep[-1][1] <= 163.6, keep
+
+
+def test_a_hold_gives_a_word_more_room():
+    from tce.production.tightcut import apply_holds
+
+    keep = [[1.0, 2.0], [2.5, 3.0]]
+    assert apply_holds(keep, [[1.95, "end", 0.3]], 10.0) == [[1.0, 2.25], [2.5, 3.0]]
+    assert apply_holds(keep, [[1.95, "end", 0.6]], 10.0) == [[1.0, 3.0]]  # meets the next: joined
+    assert apply_holds(keep, [[2.52, "start", 0.2]], 10.0) == [[1.0, 2.0], [2.32, 3.0]]
+    assert apply_holds(keep, [[5.0, "end", 0.3]], 10.0) == keep  # no edge near: nothing moves

@@ -359,6 +359,8 @@ async def list_library(
                 # What the subscription proofread changed, so no word moves unseen.
                 "proofread": list((upload.edit_plan or {}).get("proofread") or []),
                 "removed": _removed(upload),
+                # 30-Sep: words the phone cut short ("cou" for "course"); no cut can fix them.
+                "phone_cut": list((upload.edit_plan or {}).get("phone_cut") or []),
                 "review_note": REVIEW_SENTENCES.get(
                     str(((upload.edit_plan or {}).get("review") or {}).get("state") or "")
                 ),

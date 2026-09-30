@@ -1457,6 +1457,16 @@
            + esc(fix.replacement || "(removed)") + '\u201d</p>';
     });
     if (item.review_note) html += '<p class="notice">' + esc(item.review_note) + "</p>";
+    // 30-Sep: the phone cut the end of a word ("cou" for "course"). No cut can bring it
+    // back, so he hears it here first, with where it is in the edit.
+    var cutShort = item.phone_cut || [];
+    if (cutShort.length) {
+      html += '<p class="notice is-bad"><strong>Your phone cut ' + (cutShort.length === 1 ? "a word" : cutShort.length + " words")
+           + ' short:</strong> ' + cutShort.map(function (c) {
+             return "\u201c" + esc(c.text) + "\u201d at " + esc(clock(c.edit_s || 0));
+           }).join(", ")
+           + '. Say the line again, or ask for a patch in Request an editing change.</p>';
+    }
     // 28-Sep: what the editor took out (lines said twice, talk to the dogs), so
     // nothing disappears unseen. Bringing one back is an editing request.
     var removed = item.removed || [];

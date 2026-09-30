@@ -57,6 +57,7 @@ from tce.production.retakes import (
     build_cues,
     fmt_ts,
     is_word_level,
+    map_to_edit,
     plan_edit,
     to_ass,
     to_srt,
@@ -811,18 +812,16 @@ def aside_names() -> list[str]:
     return [n.strip() for n in settings.production_aside_names.split(",") if n.strip()]
 
 
-async def _speech_activity(path: str | Path | None) -> tightcut.Activity | None:
-    """Where he speaks in the recording, from a 10 ms level reading (28-Sep).
-
-    Read once per file (about 5 s for a 10-minute walk) and kept beside it, keyed
-    by size and time, so re-planning after an editing request is instant. None when
-    the audio cannot be read: the plan then falls back to the padded cut.
-    """
+async def _levels(path: str | Path | None, hiss: bool = False) -> list[float] | None:
+    """10 ms levels of the recording, read once per file (about 5 s for a 10-minute walk)
+    and kept beside it, keyed by size and time, so re-planning after an editing request is
+    instant. `hiss`: only the band above 3.5 kHz, where an "s" shows. None when the audio
+    cannot be read."""
     ff = media.ffmpeg_path()
     src = Path(path) if path else None
     if not ff or src is None or not src.exists():
         return None
-    cache = src.with_name(f".{src.stem}-levels.txt")
+    cache = src.with_name(f".{src.stem}-{'hiss' if hiss else 'levels'}.txt")
     stat = src.stat()
     key = f"{stat.st_size}:{int(stat.st_mtime)}"
     levels: list[float] | None = None
@@ -835,7 +834,7 @@ async def _speech_activity(path: str | Path | None) -> tightcut.Activity | None:
         levels = None
     if levels is None:
         try:
-            levels = await tightcut.measure_levels(str(src), ff)
+            levels = await tightcut.measure_levels(str(src), ff, hiss=hiss)
         except RuntimeError:
             return None
         try:  # written aside and renamed: a crash never leaves a short envelope behind
@@ -844,6 +843,13 @@ async def _speech_activity(path: str | Path | None) -> tightcut.Activity | None:
             os.replace(part, cache)
         except OSError:
             pass
+    return levels or None
+
+
+async def _speech_activity(path: str | Path | None) -> tightcut.Activity | None:
+    """Where he speaks in the recording, from a 10 ms level reading (28-Sep). None when
+    the audio cannot be read: the plan then falls back to the padded cut."""
+    levels = await _levels(path)
     return tightcut.find_activity(levels) if levels else None
 
 
@@ -893,6 +899,22 @@ async def _compute_plan(
         # Once per transcript: a re-plan must not send every stretch to be heard again
         # (and undo a correction he asked for on the words it would hear).
         plan["second_listen"] = previous["second_listen"]
+    if activity is not None:
+        # 30-Sep: kept words whose end the phone cut ("cou" for "course"). No cut can
+        # bring the sound back, so the card says so before he finds it by ear.
+        hiss = await _levels(row.storage_path, hiss=True)
+        kept = {int(w["index"]) for w in plan.get("words") or [] if "index" in w}
+        marks = autoedit.word_marks(row.transcript or [], None, activity.levels, activity.low_db, hiss=hiss)
+        plan["phone_cut"] = [
+            {
+                "index": i,
+                "text": str(row.transcript[i]["text"]),
+                "source_s": round(float(row.transcript[i]["start_s"]), 2),
+                "edit_s": round(map_to_edit(float(row.transcript[i]["start_s"]), plan["keep"]) or 0.0, 2),
+            }
+            for i, m in sorted(marks.items())
+            if m == "phone cut its end short" and i in kept
+        ]
     row.edit_plan = plan
     mc = plan["meaning_check"]
     drops = [d for d in plan["dropped"] if d["reason"] != "pause"]
@@ -2160,18 +2182,47 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             kept = list((row.edit_plan or {}).get("words") or [])
             context = await _script_context(s, ws, row)
             text, scope, start_s, end_s = req.request, req.scope, req.start_s, req.end_s
+            src = row.storage_path
+            # One conversation per video (30-Sep: six notes about one "cou", each read as
+            # new, got the same question back six times).
+            earlier = (
+                await s.execute(
+                    select(EditingRequest)
+                    .where(
+                        EditingRequest.upload_id == upload_id,
+                        EditingRequest.workspace_id == ws,
+                        EditingRequest.id != request_id,
+                        EditingRequest.created_at <= req.created_at,
+                    )
+                    .order_by(EditingRequest.created_at)
+                )
+            ).scalars().all()
+            history = [
+                {
+                    "request": str(e.request),
+                    "reply": str((e.result or {}).get("reply") or ""),
+                    "question": str((e.result or {}).get("question") or ""),
+                }
+                for e in earlier[-12:]
+            ]
         if not words or not keep:
             await settle("open", {"status": "Waiting: this recording is not edited yet."})
             return
         await settle("in_progress", {"status": "Reading your request on the subscription"})
+        activity = await _speech_activity(src) if src and Path(src).exists() else None
+        marks = (
+            autoedit.word_marks(words, keep, activity.levels, activity.low_db, hiss=await _levels(src, hiss=True))
+            if activity is not None
+            else {}
+        )
         try:
             answer = await _ask(
                 autoedit.EDIT_REQUEST_JOB,
                 autoedit.edit_request_prompt(
                     words, keep, context, text, scope=scope, start_s=start_s, end_s=end_s,
-                    kept=kept,
+                    kept=kept, marks=marks, history=history,
                 ),
-                autoedit.EDIT_REQUEST_SYSTEM,
+                autoedit.edit_request_system(),
                 autoedit.EDIT_REQUEST_SCHEMA,
                 ws,
                 f"edit-request:{request_id}",
@@ -2189,7 +2240,13 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
         fixed, applied = autoedit.apply_corrections(words, out.get("corrections") or [])
         cut = autoedit.word_ranges(words, out.get("cut") or [])
         restore = autoedit.word_ranges(words, out.get("restore") or [])
-        if not (applied or cut or restore):
+        hold = autoedit.word_holds(words, out.get("hold") or [])
+        if not (applied or cut or restore or hold) and str(out.get("reply") or "").strip():
+            # An answer, not a change (30-Sep: "the phone cut the 's' off 'course'; no cut
+            # can bring it back" is the whole answer, not a question back to him).
+            await settle("done", {"reply": str(out["reply"]), "changed": False, "model": answer.model})
+            return
+        if not (applied or cut or restore or hold):
             await settle(
                 "needs_you",
                 {
@@ -2204,7 +2261,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             row = await _load(s, upload_id, ws)
             row.transcript = fixed
             plan = dict(row.edit_plan or {})
-            plan["overrides"] = autoedit.merge_overrides(plan.get("overrides"), cut, restore)
+            plan["overrides"] = autoedit.merge_overrides(plan.get("overrides"), cut, restore, hold)
             row.edit_plan = plan
             await s.commit()
         row = await _plan_and_render(upload_id, ws)
@@ -2213,6 +2270,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             "corrections": [{"heard": c["heard"], "replacement": c["replacement"]} for c in applied],
             "cut": cut,
             "restore": restore,
+            "hold": hold,
             "file": f"/api/v1/production/uploads/{upload_id}/edited",
             "model": answer.model,
         }

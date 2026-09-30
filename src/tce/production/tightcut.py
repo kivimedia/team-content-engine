@@ -42,13 +42,26 @@ WORD_REACH_S = 0.25  # speech this close to a kept word belongs to it
 MERGE_REGIONS_S = 0.08
 MIN_REGION_S = 0.05
 MIN_PIECE_FRAMES = 2
+TAIL_FLOOR_DB = 6.0  # a word's quiet ending is followed this far under `low`
+TAIL_BRIDGE_S = 0.12  # ... across dips this short (a consonant's closure)
+TAIL_MAX_S = 0.3  # ... but no further than this from the speech region
+TAIL_RELEASE_S = 0.04
 
 
-def levels_filter() -> str:
-    """ffmpeg audio filter printing one RMS level (dB) per 10 ms of mono 8 kHz audio."""
+HISS_HZ = 3500  # an "s" lives above this; vowels and the wind mostly below
+
+
+def levels_filter(hiss: bool = False) -> str:
+    """ffmpeg audio filter printing one RMS level (dB) per 10 ms of mono audio: the whole
+    band at 8 kHz, or with `hiss` only what is above HISS_HZ (16 kHz, so the band exists)."""
+    head = (
+        f"aresample=16000,pan=mono|c0=c0,highpass=f={HISS_HZ},asetnsamples=n=160:p=0,"
+        if hiss
+        else "aresample=8000,pan=mono|c0=c0,asetnsamples=n=80:p=0,"
+    )
     return (
-        "aresample=8000,pan=mono|c0=c0,asetnsamples=n=80:p=0,"
-        "astats=metadata=1:reset=1:measure_overall=RMS_level:measure_perchannel=none,"
+        head
+        + "astats=metadata=1:reset=1:measure_overall=RMS_level:measure_perchannel=none,"
         "ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-"
     )
 
@@ -67,10 +80,11 @@ def parse_levels(text: str) -> list[float]:
     return out
 
 
-async def measure_levels(path: str, ffmpeg: str) -> list[float]:
-    """10 ms RMS levels of the whole recording (about 5 s for a 10-minute walk)."""
+async def measure_levels(path: str, ffmpeg: str, hiss: bool = False) -> list[float]:
+    """10 ms RMS levels of the whole recording (about 5 s for a 10-minute walk); with
+    `hiss`, of its band above HISS_HZ only (where an "s" shows)."""
     proc = await asyncio.create_subprocess_exec(
-        ffmpeg, "-v", "error", "-i", str(path), "-vn", "-af", levels_filter(), "-f", "null", "-",
+        ffmpeg, "-v", "error", "-i", str(path), "-vn", "-af", levels_filter(hiss), "-f", "null", "-",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -166,6 +180,32 @@ def _dip(levels: list[float], t0: float, t1: float, prefer: float, hop: float = 
     candidates = [k for k in range(a, b) if levels[k] <= floor + 6.0]
     best = min(candidates, key=lambda k: abs(k * hop + hop / 2 - prefer))
     return round((best * hop + hop / 2) * FPS) / FPS
+
+
+def _follow(
+    levels: list[float] | None, t: float, bound: float, floor: float, direction: int, hop: float = HOP_S
+) -> float:
+    """From the edge of a speech region at `t`, the last moment (going `direction`: +1
+    later, -1 earlier) the sound stays above `floor`, bridging dips up to TAIL_BRIDGE_S,
+    never past `bound` or TAIL_MAX_S. Returns `t` when nothing follows."""
+    if not levels:
+        return t
+    k0 = int(round(t / hop))
+    limit = min(TAIL_MAX_S, abs(bound - t))
+    steps = int(limit / hop)
+    bridge = int(round(TAIL_BRIDGE_S / hop))
+    last, quiet = 0, 0
+    for n in range(1, steps + 1):
+        k = k0 + direction * n
+        if k < 0 or k >= len(levels):
+            break
+        if levels[k] > floor:
+            last, quiet = n, 0
+        else:
+            quiet += 1
+            if quiet > bridge:
+                break
+    return t + direction * last * hop
 
 
 def _edges(
@@ -277,7 +317,13 @@ def tight_keep(
                 (w for a, b, w in reversed(reach) if rs < b and re_ > a), owner
             )
             post = POST_SENTENCE_S if _ends_sentence(tail_word["text"]) else POST_S
-            run_pieces.append([max(lo, rs - PRE_S), min(hi, re_ + post)])
+            # A quiet ending (the "v" of "live", the "n" of "can") comes back after a
+            # short dip without ever reaching `high`, so it is no region of its own:
+            # follow the sound down to TAIL_FLOOR_DB under `low` before cutting (30-Sep).
+            floor = activity.low_db - TAIL_FLOOR_DB
+            end = max(re_ + post, _follow(activity.levels, re_, hi, floor, +1) + TAIL_RELEASE_S)
+            start = min(rs - PRE_S, _follow(activity.levels, rs, lo, floor, -1) - PRE_S)
+            run_pieces.append([max(lo, start), min(hi, end)])
         for w in words[i : j + 1]:
             ws, we = float(w["start_s"]), float(w["end_s"])
             # Measured against the speech found, not the padded pieces: a quiet word
@@ -389,3 +435,35 @@ def pause_stats(keep: list[list[float]], activity: Activity, hop: float = HOP_S)
         "pauses_over_half_second": sum(1 for g in inner if g >= 0.5),
         "dead_air_pct": round(100 * sum(g for g in inner if g >= MAX_NATURAL_GAP_S) / total, 2),
     }
+
+
+HOLD_REACH_S = 0.4  # a hold moves the keep edge this close to the word's start or end
+
+
+def apply_holds(
+    keep: list[list[float]], holds: list[list[Any]], end_bound: float
+) -> list[list[float]]:
+    """His "give that word more room" (30-Sep): each hold [time, side, seconds] moves the
+    edge of the keep range at that word's end (or start) outward, to the word's time plus
+    the seconds, never past the recording; ranges that then meet are joined."""
+    out = [[float(a), float(b)] for a, b in keep]
+    for at, side, extra in holds:
+        at, extra = float(at), float(extra)
+        if side == "end":
+            near = [k for k in range(len(out)) if out[k][0] <= at + 0.05 and abs(out[k][1] - at) <= HOLD_REACH_S]
+            if near:
+                k = min(near, key=lambda k: abs(out[k][1] - at))
+                out[k][1] = max(out[k][1], min(end_bound, at + extra))
+        else:
+            near = [k for k in range(len(out)) if out[k][1] >= at - 0.05 and abs(out[k][0] - at) <= HOLD_REACH_S]
+            if near:
+                k = min(near, key=lambda k: abs(out[k][0] - at))
+                out[k][0] = min(out[k][0], max(0.0, at - extra))
+    out.sort()
+    merged: list[list[float]] = []
+    for a, b in out:
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return [[round(a, 3), round(b, 3)] for a, b in merged]

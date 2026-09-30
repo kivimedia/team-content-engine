@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
-from tce.production.tightcut import Activity, pause_stats, retime, tight_keep
+from tce.production.tightcut import Activity, apply_holds, pause_stats, retime, tight_keep
 
 EN_NEGATIONS = frozenset(
     {
@@ -943,6 +943,9 @@ def _plan_words(
             previous_kept = True
         keep = [[round(s, 3), round(e, 3)] for s, e in keep]
         timed = retime(words_sorted, kept_flags, keep, [])
+    holds = (overrides or {}).get("hold") or []
+    if holds:
+        keep = apply_holds(keep, holds, end_bound)  # his "give that word more room"
     for w in timed:
         w["index"] = rows[w["index"]][0]  # position in `rows` -> index in the transcript
 
