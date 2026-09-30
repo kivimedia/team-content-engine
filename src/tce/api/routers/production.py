@@ -1758,6 +1758,7 @@ async def _ask(
     wait_timeout_s: float | None = None,
     prompt_version: str = autoedit.PROMPT_VERSION,
     max_tokens: int = 2000,
+    requeue_failed: bool = False,
 ):
     from tce.llm import LLMRequest
     from tce.llm import provider as llm
@@ -1773,7 +1774,9 @@ async def _ask(
         workspace_id=ws,
         idempotency_key=key,
     )
-    return await llm.complete(request, sessionmaker=session_factory(), wait_timeout_s=wait_timeout_s)
+    return await llm.complete(
+        request, sessionmaker=session_factory(), wait_timeout_s=wait_timeout_s, requeue_failed=requeue_failed
+    )
 
 
 # 28-Sep: the proofread was queued at 07:31 and the worker answered at 11:08; the edit
@@ -2016,31 +2019,42 @@ async def _plan_and_render(upload_id: uuid.UUID, ws: uuid.UUID) -> RecordingUplo
         return await _plan_and_render_locked(upload_id, ws)
 
 
+_BLOCKED_SAYS = {
+    "review": "Your editor's review wants a cut that needs your eyes, so the edit you have stays: {reason}",
+    "notes": "Your notes would make a cut that needs your eyes, so the edit you have stays: {reason}",
+    "undo": "Going back to the version before your notes needs your eyes, so the edit you have "
+    "stays: {reason}",
+}
+
+
 async def _plan_and_render_locked(
     upload_id: uuid.UUID,
     ws: uuid.UUID,
     *,
     restore_if_blocked: tuple[list[dict[str, Any]], dict[str, Any], str, str | None] | None = None,
+    blocked_by: Literal["review", "notes", "undo"] = "review",
 ) -> RecordingUpload:
     """Plan, then render unless the meaning check wants his eyes. With
-    `restore_if_blocked` (a late review), a plan that needs his eyes does not replace
-    the edit he already has: transcript, plan and status go back, and the review is
-    kept as "blocked" with the reason, so the card, the subtitles and the posts keep
-    describing the video that exists."""
+    `restore_if_blocked` (a late review, a sitting's notes, an undo), a plan that needs
+    his eyes does not replace the edit he already has: transcript, plan and status go
+    back, so the card, the subtitles and the posts keep describing the video that
+    exists. Only a blocked review is kept as "blocked" on the plan: marking the review
+    blocked for someone else's change would stop its cuts from being used (30-Sep)."""
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
         await _compute_plan(s, ws, row)
         if restore_if_blocked is not None and row.status != "planned" and row.edited_path:
             reason = row.status_detail or "the cut would change what you said"
-            review = {**((row.edit_plan or {}).get("review") or {}), "state": "blocked", "detail": reason[:300]}
             transcript, plan, status, detail = restore_if_blocked
             row.transcript = transcript
-            row.edit_plan = {**plan, "review": review}
+            if blocked_by == "review":
+                review = (row.edit_plan or {}).get("review") or {}
+                review = {**review, "state": "blocked", "detail": reason[:300]}
+                row.edit_plan = {**plan, "review": review}
+            else:
+                row.edit_plan = dict(plan)
             row.status = status
-            row.status_detail = (
-                "Your editor's review wants a cut that needs your eyes, so the edit you have "
-                f"stays: {reason}"
-            )[:500]
+            row.status_detail = _BLOCKED_SAYS[blocked_by].format(reason=reason)[:500]
         await s.commit()
         status = row.status
     if status != "planned":  # the meaning check wants his eyes: never render past it
@@ -2344,30 +2358,434 @@ def start_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
         _spawn(run_edit_request(request_id, ws))
 
 
-async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
-    """Every note of a sitting in one job, then one render (talk to the editor, step 4).
+# ---------------------------------------------------------------------------
+# Talk to the editor (30-Sep): a sitting's notes in one job, then one render.
+# "Collect all notes, one re-render at the end." The sitting's state is its lock on
+# the video: thinking and rendering hold the gates that stop other renders, so every
+# path out of them ends in done, needs_you, failed, or back to open with the notes kept.
 
-    Until the batch is built this hands the sitting straight back, open with every note
-    kept, and says so: a sitting must never sit in "thinking" with nothing behind it,
-    because a thinking sitting holds the gates that stop other renders.
-    """
+TALK_ASK_WAIT_S = 60.0  # one wait on the worker before the sitting says where it stands
+TALK_WORKER_RETRY_S = 30.0  # the worker is away: ask again this often
+TALK_MAX_ASKS = 2  # the words changed while it read: read once more, then hand the notes back
+
+
+def talk_key(session_id: uuid.UUID, prompt: str, system: str) -> str:
+    """Everything the batch reads is in its key, like _review_key: a changed skill file,
+    note or transcript is a new job instead of the queue refusing a reused key."""
+    body = "\x1f".join([autoedit.EDIT_BATCH_PROMPT_VERSION, system, prompt])
+    return f"edit-batch:{session_id}:{hashlib.sha256(body.encode()).hexdigest()[:24]}"
+
+
+def talk_tokens(count: int) -> int:
+    """Room for every note's answer: the request job's 2000 is sized for one."""
+    return min(8000, 1500 + 600 * count)
+
+
+async def _load_sitting(s: AsyncSession, session_id: uuid.UUID, ws: uuid.UUID):
     from tce.models.editorial_workspace import EditSession
 
+    query = select(EditSession).where(EditSession.id == session_id, EditSession.workspace_id == ws)
+    return (await s.execute(query)).scalar_one_or_none()
+
+
+async def _talk_status(session_id: uuid.UUID, ws: uuid.UUID, status: str, **fields: Any) -> None:
+    """What the batch is doing right now, on the sitting the sheet polls (3-second rule)."""
     async with session_factory()() as s:
-        sitting = (
-            await s.execute(
-                select(EditSession).where(EditSession.id == session_id, EditSession.workspace_id == ws)
-            )
-        ).scalar_one_or_none()
+        sitting = await _load_sitting(s, session_id, ws)
+        if sitting is None:
+            return
+        sitting.result = {**(sitting.result or {}), "status": status[:500]}
+        for name, value in fields.items():
+            setattr(sitting, name, value)
+        await s.commit()
+
+
+async def _hand_back(session_id: uuid.UUID, ws: uuid.UUID, status: str) -> None:
+    """Nothing was changed: the sitting takes notes again with every note as it was."""
+    async with session_factory()() as s:
+        sitting = await _load_sitting(s, session_id, ws)
         if sitting is None or sitting.state != "thinking":
             return
         sitting.state = "open"
         sitting.submitted_at = None
-        sitting.result = {
-            "status": "Making the new version from notes is not switched on yet. "
-            "Your notes are kept here, and nothing was changed."
-        }
+        sitting.result = {**(sitting.result or {}), "status": status[:500]}
         await s.commit()
+
+
+def _talk_note(note: Any) -> dict[str, Any]:
+    """One note as the batch prompt reads it."""
+    where = None
+    if note.scope == "timestamp" and note.start_s is not None and note.end_s is not None:
+        where = f"{library_service.clock(note.start_s)} to {library_service.clock(note.end_s)} in the edit"
+    elif note.scope == "section" and note.section_ref:
+        where = str(note.section_ref)
+    return {
+        "said": note.request or "",
+        "understood": note.understood or "",
+        "edit_s": note.start_s if note.scope == "moment" else None,
+        "where": where,
+        "source_s": note.source_s,
+    }
+
+
+def _history_row(req: Any) -> dict[str, Any]:
+    result = req.result or {}
+    where = None
+    if req.scope == "moment" and req.start_s is not None:
+        where = f"At {library_service.clock(req.start_s)}"
+    return {
+        "request": (req.request or "").strip() or (req.understood or ""),
+        "where": where,
+        "reply": str(result.get("reply") or ""),
+        "question": str(result.get("question") or ""),
+        "undone": bool(result.get("undone_at")),
+    }
+
+
+async def _talk_inputs(session_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any] | None:
+    """What the batch reads, in one snapshot: the notes he heard read back, in his order,
+    the transcript and plan, the script, and what came of earlier notes on the video."""
+    from tce.models.editorial_workspace import EditingRequest
+
+    async with session_factory()() as s:
+        sitting = await _load_sitting(s, session_id, ws)
+        if sitting is None or sitting.state != "thinking":
+            return None
+        row = await _load(s, sitting.upload_id, ws)
+        heard_ids = [str(i) for i in (sitting.result or {}).get("notes") or []]
+        by_id = {
+            str(r.id): r
+            for r in (
+                await s.execute(
+                    select(EditingRequest).where(
+                        EditingRequest.workspace_id == ws, EditingRequest.session_id == sitting.id
+                    )
+                )
+            ).scalars()
+        }
+        waiting = library_service.WAITING_NOTE_STATES
+        notes = [by_id[i] for i in heard_ids if i in by_id and by_id[i].state in waiting]
+        earlier = (
+            await s.execute(
+                select(EditingRequest)
+                .where(
+                    EditingRequest.workspace_id == ws,
+                    EditingRequest.upload_id == row.id,
+                    EditingRequest.state.in_(("done", "needs_you")),
+                )
+                .order_by(EditingRequest.created_at)
+            )
+        ).scalars().all()
+        plan = row.edit_plan or {}
+        return {
+            "upload_id": row.id,
+            "words": list(row.transcript or []),
+            "keep": [list(r) for r in plan.get("keep") or []],
+            "kept": list(plan.get("words") or []),
+            "context": await _script_context(s, ws, row),
+            "src": row.storage_path,
+            "note_ids": [n.id for n in notes],
+            "notes": [_talk_note(n) for n in notes],
+            "history": [_history_row(e) for e in earlier if e.session_id != sitting.id][-12:],
+            "submitted_at": sitting.submitted_at,
+        }
+
+
+async def _ask_for_notes(
+    session_id: uuid.UUID, ws: uuid.UUID, got: dict[str, Any], prompt: str, system: str, key: str
+):
+    """The one Opus job. While the worker is away the sitting says so and asks again
+    (the queued job is reused, never asked twice) until production_review_wait_h after
+    he said make it. Any other refusal hands the notes back unchanged. None when the
+    notes were handed back."""
+    from tce.llm import LLMUnavailable
+    from tce.llm.queue import QueueError
+
+    count = len(got["notes"])
+    reading = f"Reading your {count} note{'s' if count != 1 else ''} on the subscription"
+    deadline = (got["submitted_at"] or _utcnow()) + timedelta(hours=settings.production_review_wait_h)
+    while True:
+        try:
+            return await _ask(
+                autoedit.EDIT_BATCH_JOB, prompt, system, autoedit.EDIT_BATCH_SCHEMA, ws, key,
+                wait_timeout_s=TALK_ASK_WAIT_S, prompt_version=autoedit.EDIT_BATCH_PROMPT_VERSION,
+                max_tokens=talk_tokens(count), requeue_failed=True,
+            )
+        except LLMUnavailable as exc:
+            if exc.status in ("timeout", "waiting_capacity") and _utcnow() < deadline:
+                # A worker holding the job is reading it; otherwise nobody has picked it up.
+                leased = "still leased" in str(exc.detail or "")
+                away = f"Waiting for the subscription worker ({exc.status})"
+                await _talk_status(session_id, ws, reading if leased else away)
+                await asyncio.sleep(TALK_WORKER_RETRY_S)
+                continue
+            waited = exc.status in ("timeout", "waiting_capacity")
+            await _hand_back(
+                session_id,
+                ws,
+                (
+                    f"Your editor did not answer within {settings.production_review_wait_h:.0f} hours"
+                    if waited
+                    else f"Your editor could not read the notes ({exc.status})"
+                )
+                + ". Your notes are kept and nothing was changed; make the new version again.",
+            )
+            return None
+        except QueueError as exc:
+            await _hand_back(
+                session_id,
+                ws,
+                f"Your editor could not read the notes ({exc.__class__.__name__}). Your notes are kept "
+                "and nothing was changed; make the new version again.",
+            )
+            return None
+
+
+async def _apply_notes(
+    session_id: uuid.UUID, ws: uuid.UUID, got: dict[str, Any], answer: Any
+) -> tuple[list[dict[str, Any]], dict[str, Any], str, str | None] | bool | None:
+    """Write what the answer changes, under the render lock. Returns the edit as it was
+    (for restore_if_blocked) when there is something to render, False when there is
+    nothing to render, None when the words changed while the editor read (ask again)."""
+    async with session_factory()() as s:
+        sitting = await _load_sitting(s, session_id, ws)
+        if sitting is None or sitting.state != "thinking":
+            return False
+        row = await _load(s, got["upload_id"], ws)
+        if library_service.transcript_fingerprint(row.transcript) != library_service.transcript_fingerprint(
+            got["words"]
+        ):
+            return None
+        plan = dict(row.edit_plan or {})
+        batch = autoedit.apply_batch(
+            got["words"], plan.get("overrides"), answer.structured or {}, len(got["notes"])
+        )
+        outcomes = [{**o, "id": str(nid)} for o, nid in zip(batch["notes"], got["note_ids"], strict=True)]
+        result = {
+            **(sitting.result or {}),
+            "outcomes": outcomes,
+            "model": answer.model,
+            "batch_summary": batch["summary"],
+        }
+        snapshot = None
+        if batch["changed"]:
+            snapshot = (list(row.transcript or []), dict(row.edit_plan or {}), row.status, row.status_detail)
+            # For undo: the edit as it was, and a fingerprint of what this batch wrote, so
+            # going back never undoes a later change.
+            sitting.before = {
+                "transcript": snapshot[0],
+                "overrides": plan.get("overrides"),
+                "plan": snapshot[1],
+                "render_ref": row.render_ref,
+                "status": row.status,
+                "status_detail": row.status_detail,
+                "after": library_service.transcript_fingerprint(batch["words"]),
+                "after_overrides": batch["overrides"],
+                "at": _utcnow().isoformat(),
+            }
+            row.transcript = batch["words"]
+            plan["overrides"] = batch["overrides"]
+            row.edit_plan = plan
+            sitting.state = "rendering"
+            result["status"] = "Applying your notes, then cutting and burning in your captions"
+        sitting.result = result
+        await s.commit()
+    return snapshot if snapshot is not None else False
+
+
+def _note_outcome(
+    o: dict[str, Any], stop: str | None, file_url: str | None, model: str | None
+) -> tuple[str, dict[str, Any]]:
+    """A note's final state and result, from what the batch did with it."""
+    base: dict[str, Any] = {"note": o.get("note"), "reply": str(o.get("reply") or ""), "model": model}
+    if o.get("skipped"):
+        base["skipped"] = list(o["skipped"])
+    kind = o.get("outcome")
+    if kind == "change":
+        res = {
+            **base,
+            "reply": base["reply"] or "Done.",
+            "corrections": o.get("corrections") or [],
+            "cut": o.get("cut") or [],
+            "restore": o.get("restore") or [],
+            "hold": o.get("hold") or [],
+            "file": file_url,
+        }
+        if stop:
+            return "needs_you", {**res, "question": f"The re-render stopped: {stop}"}
+        return "done", res
+    if kind == "answer":
+        return "done", {**base, "changed": False}
+    return "needs_you", {**base, "question": str(o.get("question") or autoedit.UNCLEAR_QUESTION)}
+
+
+async def _settle_talk(session_id: uuid.UUID, ws: uuid.UUID, *, stopped: str | None = None) -> None:
+    """Every note of the batch ends done or needs_you, and the sitting ends with the
+    render he now has. `stopped` says why the render never ran (an error)."""
+    from tce.models.editorial_workspace import EditingRequest
+
+    async with session_factory()() as s:
+        sitting = await _load_sitting(s, session_id, ws)
+        if sitting is None or sitting.state not in library_service.SITTING_WORKING_STATES:
+            return
+        row = await _load(s, sitting.upload_id, ws)
+        result = dict(sitting.result or {})
+        outcomes = list(result.get("outcomes") or [])
+        before = dict(sitting.before or {})
+        fp = library_service.transcript_fingerprint
+        new_render = row.status == "edited" and row.render_ref != before.get("render_ref")
+        rendered = bool(before) and stopped is None and new_render
+        stop = None
+        if before and not rendered:
+            stop = stopped or row.status_detail or "the render did not finish"
+            put_back = fp(row.transcript) == fp(before.get("transcript"))
+            if put_back and (row.edit_plan or {}).get("overrides") == before.get("overrides"):
+                sitting.before = None  # the edit he had was put back: nothing to undo
+        file_url = library_service.edit_file_url(row, row.render_ref)
+        notes = {
+            str(n.id): n
+            for n in (
+                await s.execute(
+                    select(EditingRequest).where(
+                        EditingRequest.workspace_id == ws, EditingRequest.session_id == sitting.id
+                    )
+                )
+            ).scalars()
+        }
+        now = _utcnow()
+        needs = 0
+        for o in outcomes:
+            note = notes.get(str(o.get("id")))
+            if note is None:
+                continue
+            state, res = _note_outcome(o, stop, file_url, result.get("model"))
+            note.state, note.result = state, res
+            note.updated_at = note.resolved_at = now
+            needs += state == "needs_you"
+        notes_said = f"{len(outcomes)} note{'s' if len(outcomes) != 1 else ''}"
+        waiting = f" {needs} of them need{'s' if needs == 1 else ''} you." if needs else ""
+        if stop:
+            status = f"The re-render stopped: {stop}"
+        elif rendered:
+            status = f"New version made from your {notes_said}.{waiting}"
+        else:
+            status = f"Nothing in the video needed changing for your {notes_said}.{waiting}"
+        if rendered:
+            sitting.render_ref = row.render_ref
+            sitting.keep_snapshot = [list(r) for r in row.rendered_keep or []]
+        result["read_back"] = result.get("read_back") or sitting.summary
+        result["status"] = status[:500]
+        result["render_ref"] = row.render_ref
+        sitting.summary = result.get("batch_summary") or status
+        sitting.result = result
+        sitting.state = "needs_you" if needs else "done"
+        sitting.finished_at = now
+        await s.commit()
+
+
+async def _render_notes_locked(session_id: uuid.UUID, ws: uuid.UUID, upload_id: uuid.UUID) -> None:
+    """The one render of a batch whose notes are written (the render lock held). After a
+    restart the render may have finished already: then only the notes are settled."""
+    async with session_factory()() as s:
+        sitting = await _load_sitting(s, session_id, ws)
+        if sitting is None or sitting.state != "rendering":
+            return
+        before = dict(sitting.before or {})
+        row = await _load(s, upload_id, ws)
+        finished = row.status == "edited" and row.render_ref != before.get("render_ref")
+    if before and not finished:
+        await _talk_status(session_id, ws, "Cutting and burning in your captions")
+        await _plan_and_render_locked(
+            upload_id,
+            ws,
+            restore_if_blocked=(
+                list(before.get("transcript") or []),
+                dict(before.get("plan") or {}),
+                str(before.get("status") or "edited"),
+                before.get("status_detail"),
+            ),
+            blocked_by="notes",
+        )
+    await _settle_talk(session_id, ws)
+
+
+async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
+    """Every note of a sitting in one job, then one render (talk to the editor, step 4).
+
+    One Opus job on the subscription reads every note against one transcript snapshot;
+    under the render lock the words are compared with that snapshot (changed: ask once
+    more with a new key), then everything the notes change is written and the video is
+    planned and rendered ONCE. A plan the meaning check blocks leaves the edit he has.
+    Every note then ends done or needs_you, and the sitting ends with the new render.
+    Restart-safe: a thinking sitting asks again (the same key reuses the job), a
+    rendering one only renders and settles.
+    """
+    async with session_factory()() as s:
+        sitting = await _load_sitting(s, session_id, ws)
+        state = sitting.state if sitting is not None else None
+        upload_id = sitting.upload_id if sitting is not None else None
+    if state not in library_service.SITTING_WORKING_STATES or upload_id is None:
+        return
+    try:
+        if state == "rendering":
+            async with _render_lock(upload_id):
+                await _render_notes_locked(session_id, ws, upload_id)
+            return
+        for _ask_round in range(TALK_MAX_ASKS):
+            got = await _talk_inputs(session_id, ws)
+            if got is None:
+                return
+            if not got["notes"]:
+                await _hand_back(session_id, ws, "None of these notes has words yet. Nothing was changed.")
+                return
+            if not got["words"] or not got["keep"]:
+                await _hand_back(
+                    session_id,
+                    ws,
+                    "This video has no edit to change right now. Your notes are kept and nothing was changed.",
+                )
+                return
+            marks = await word_marks_for(got["src"], got["words"], got["keep"])
+            prompt = autoedit.edit_batch_prompt(
+                got["words"], got["keep"], got["context"], got["notes"],
+                kept=got["kept"], marks=marks, history=got["history"],
+            )
+            system = autoedit.edit_batch_system()
+            key = talk_key(session_id, prompt, system)
+            count = len(got["notes"])
+            reading = f"Reading your {count} note{'s' if count != 1 else ''} on the subscription"
+            await _talk_status(session_id, ws, reading, llm_key=key)
+            answer = await _ask_for_notes(session_id, ws, got, prompt, system, key)
+            if answer is None:
+                return
+            async with _render_lock(upload_id):
+                applied = await _apply_notes(session_id, ws, got, answer)
+                if applied is None:
+                    continue  # he or another step changed the words while it read
+                if applied:
+                    await _render_notes_locked(session_id, ws, upload_id)
+                else:
+                    await _settle_talk(session_id, ws)
+            return
+        await _hand_back(
+            session_id,
+            ws,
+            "The words of this video changed twice while your editor was reading your notes. "
+            "Your notes are kept and nothing was changed; make the new version again.",
+        )
+    except Exception as exc:  # noqa: BLE001 - lands on the sitting, never only in a log
+        async with session_factory()() as s:
+            sitting = await _load_sitting(s, session_id, ws)
+            state = sitting.state if sitting is not None else None
+        if state == "thinking":
+            await _hand_back(
+                session_id,
+                ws,
+                f"Stopped with an error before anything changed: {str(exc)[:300]}. Your notes are kept; "
+                "make the new version again.",
+            )
+        elif state == "rendering":
+            await _settle_talk(session_id, ws, stopped=f"Stopped with an error: {str(exc)[:300]}")
 
 
 def start_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
@@ -2375,13 +2793,145 @@ def start_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
     _spawn(run_talk_session(session_id, ws))
 
 
+async def run_talk_undo(session_id: uuid.UUID, ws: uuid.UUID) -> None:
+    """Put back the version from before a sitting's notes, then one re-render.
+
+    Only while the transcript and the cuts are still what the batch wrote: going back
+    over a later change would undo that too. Restart-safe: an undo whose words were put
+    back before a restart only renders again.
+    """
+    from tce.models.editorial_workspace import EditingRequest
+
+    fp = library_service.transcript_fingerprint
+
+    async def say(undo: dict[str, Any]) -> None:
+        async with session_factory()() as s:
+            sitting = await _load_sitting(s, session_id, ws)
+            if sitting is not None:
+                sitting.result = {**(sitting.result or {}), "undo": {**undo, "at": _utcnow().isoformat()}}
+                await s.commit()
+
+    async with session_factory()() as s:
+        sitting = await _load_sitting(s, session_id, ws)
+        if sitting is None or not sitting.before:
+            return
+        if ((sitting.result or {}).get("undo") or {}).get("state") not in ("queued", "rendering"):
+            return
+        upload_id = sitting.upload_id
+    try:
+        async with _render_lock(upload_id):
+            async with session_factory()() as s:
+                sitting = await _load_sitting(s, session_id, ws)
+                before = dict(sitting.before or {})
+                row = await _load(s, upload_id, ws)
+                overrides = (row.edit_plan or {}).get("overrides")
+                snapshot = None
+                ref = row.render_ref
+                now_words = fp(row.transcript)
+                if now_words == before.get("after") and overrides == before.get("after_overrides"):
+                    snapshot = (
+                        list(row.transcript or []), dict(row.edit_plan or {}), row.status, row.status_detail
+                    )
+                    plan = dict(row.edit_plan or {})
+                    if before.get("overrides") is None:
+                        plan.pop("overrides", None)
+                    else:
+                        plan["overrides"] = before["overrides"]
+                    row.transcript = list(before.get("transcript") or [])
+                    row.edit_plan = plan
+                elif not (now_words == fp(before.get("transcript")) and overrides == before.get("overrides")):
+                    # Neither what the batch wrote nor the version from before: changed since.
+                    await s.rollback()
+                    await say({"state": "refused", "status": library_service.UNDO_CHANGED})
+                    return
+                sitting.result = {
+                    **(sitting.result or {}),
+                    "undo": {
+                        "state": "rendering",
+                        "status": "Putting back the version from before your notes: cutting and "
+                        "burning in your captions",
+                        "at": _utcnow().isoformat(),
+                    },
+                }
+                await s.commit()
+            row = await _plan_and_render_locked(upload_id, ws, restore_if_blocked=snapshot, blocked_by="undo")
+            async with session_factory()() as s:
+                sitting = await _load_sitting(s, session_id, ws)
+                now = _utcnow()
+                if row.status == "edited" and row.render_ref != ref:
+                    sitting.before = None
+                    sitting.result = {
+                        **(sitting.result or {}),
+                        "undo": {
+                            "state": "done",
+                            "status": "The version from before your notes is back.",
+                            "render_ref": row.render_ref,
+                            "at": now.isoformat(),
+                        },
+                    }
+                    # Later notes on this video read these as undone, not as the edit he has.
+                    for note in (
+                        await s.execute(
+                            select(EditingRequest).where(
+                                EditingRequest.workspace_id == ws,
+                                EditingRequest.session_id == sitting.id,
+                                EditingRequest.state == "done",
+                            )
+                        )
+                    ).scalars():
+                        note.result = {**(note.result or {}), "undone_at": now.isoformat()}
+                else:
+                    sitting.result = {
+                        **(sitting.result or {}),
+                        "undo": {
+                            "state": "stopped",
+                            "status": f"Going back stopped: {row.status_detail}"[:500],
+                            "at": now.isoformat(),
+                        },
+                    }
+                await s.commit()
+    except Exception as exc:  # noqa: BLE001 - lands on the sitting
+        await say({"state": "stopped", "status": f"Going back stopped with an error: {str(exc)[:300]}"})
+
+
+def start_talk_undo(session_id: uuid.UUID, ws: uuid.UUID) -> None:
+    _spawn(run_talk_undo(session_id, ws))
+
+
 async def resume_auto_work() -> None:
     """After a restart: finish automatic edits and requests that were mid-way."""
     import structlog
 
-    from tce.models.editorial_workspace import EditingRequest
+    from tce.models.editorial_workspace import EditingRequest, EditSession
 
     log = structlog.get_logger()
+    # 30-Sep: a sitting he said "make it" to is his tap, like a post: it resumes whether
+    # or not automatic editing is on, and a thinking or rendering sitting left alone
+    # would hold the video's gates shut until the next restart.
+    try:
+        async with session_factory()() as s:
+            working = (
+                await s.execute(
+                    select(EditSession).where(EditSession.state.in_(library_service.SITTING_WORKING_STATES))
+                )
+            ).scalars().all()
+            sittings = [(r.id, r.workspace_id) for r in working]
+            finished = (
+                await s.execute(select(EditSession).where(EditSession.state.in_(("done", "needs_you", "failed"))))
+            ).scalars().all()
+            undos = [
+                (r.id, r.workspace_id)
+                for r in finished
+                if ((r.result or {}).get("undo") or {}).get("state") in ("queued", "rendering")
+            ]
+        for session_id, ws in sittings:
+            _spawn(run_talk_session(session_id, ws))
+        for session_id, ws in undos:
+            _spawn(run_talk_undo(session_id, ws))
+        if sittings or undos:
+            log.info("production.talk_resumed", sittings=len(sittings), undos=len(undos))
+    except Exception:
+        log.warning("production.talk_resume_failed", exc_info=True)
     if not settings.production_auto_edit:
         return
     try:

@@ -478,21 +478,6 @@ async def test_a_sitting_with_no_notes_has_nothing_to_make(client, renders, tmp_
     assert r.status_code == 409 and r.json()["detail"]["code"] == "no_notes"
 
 
-async def test_until_the_batch_exists_a_submitted_sitting_comes_back_open(client, renders, tmp_path, monkeypatch):
-    monkeypatch.setattr(prod, "start_talk_session", lambda sid, ws: None)
-    ws, uid, row = await edited(renders, tmp_path)
-    sid = (await open_talk(client, ws, uid))["session_id"]
-    nid = (await pin(client, ws, sid, 2.0, row.render_ref)).json()["note_id"]
-    await say(client, ws, sid, nid, heard="cut that")
-    url = f"/api/v1/production/talk/{sid}/submit"
-    check = (await client.get(url, headers=headers(ws))).json()["check"]
-    assert (await client.post(url, json={"check": check}, headers=headers(ws))).status_code == 200
-    await prod.run_talk_session(uuid.UUID(sid), ws)
-    back = (await client.get(f"/api/v1/production/talk/{sid}", headers=headers(ws))).json()
-    assert back["state"] == "open" and back["notes"][0]["state"] == "held"
-    assert "nothing was changed" in back["result"]["status"]
-
-
 async def test_nothing_else_renders_while_he_gives_notes(client, renders, tmp_path, monkeypatch):
     started = []
 

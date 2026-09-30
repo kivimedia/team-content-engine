@@ -1212,3 +1212,43 @@ async def talk_submit(
             raise _http(error) from error
     production_routes.start_talk_session(sid, ws)
     return payload
+
+
+@production_router.get("/talk/{session_id}/undo")
+async def talk_undo_preview(
+    session_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """What going back would do ("Put back the version from before your 3 notes. One
+    re-render."), or why it cannot be done now. Nothing changes."""
+    from tce.api.routers import production as production_routes
+
+    sid = _uuid(session_id, "sitting")
+    async with open_session(sm) as db:
+        try:
+            return await library_service.undo_preview(db, ws, sid, busy=production_routes.upload_busy)
+        except ServiceError as error:
+            raise _http(error) from error
+
+
+@production_router.post("/talk/{session_id}/undo")
+async def talk_undo(
+    session_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Put back the version from before this sitting's notes, then one re-render. 409
+    with the reason when the video changed since, or something is editing it now."""
+    from tce.api.routers import production as production_routes
+
+    sid = _uuid(session_id, "sitting")
+    async with open_session(sm) as db:
+        try:
+            sitting = await library_service.start_undo(db, ws, sid, busy=production_routes.upload_busy)
+            payload = await _sitting_payload(db, ws, sitting)
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+    production_routes.start_talk_undo(sid, ws)
+    return payload

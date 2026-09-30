@@ -472,6 +472,10 @@ async def create_edit_request(
         state="held" if sitting is not None else "open",
         created_by=created_by,
     )
+    if sitting is not None:
+        # Like a pin, to the microsecond: the batch reads the notes in the order he gave
+        # them, and a later note wins over an earlier one.
+        row.created_at = _now()
     db.add(row)
     await db.flush()
     return row
@@ -797,7 +801,112 @@ def sitting_to_json(
         "result": sitting.result,
         "notes": [edit_request_to_json(n) for n in notes],
         "waiting": sum(1 for n in notes if n.state in WAITING_NOTE_STATES),
+        # While the new version renders, the video's own live step ("Cutting and burning
+        # in your captions", then ffmpeg's progress), so the sheet never shows a bare spinner.
+        "video_status": upload.status,
+        "video_step": upload.status_detail,
+        "can_undo": undo_refusal(sitting, upload) is None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Going back to the version from before a sitting's notes
+
+
+UNDO_CHANGED = (
+    "The video was changed again after these notes, so going back would undo that too. "
+    "Nothing was changed."
+)
+
+
+def transcript_fingerprint(words: list[dict[str, Any]] | None) -> str:
+    """A short id of the words and their times: equal only when nothing moved."""
+    body = json.dumps([[w.get("text"), w.get("start_s"), w.get("end_s")] for w in words or []])
+    return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
+def undo_refusal(sitting: EditSession, upload: RecordingUpload) -> tuple[str, str] | None:
+    """Why the version from before this sitting's notes cannot be put back now, as
+    (code, sentence), or None when it can."""
+    before = sitting.before or {}
+    undo = (sitting.result or {}).get("undo") or {}
+    if undo.get("state") in ("queued", "rendering"):
+        return "busy", "The version from before these notes is being put back right now."
+    if sitting.state == "open":
+        return "not_made", "These notes have not been made into a new version yet."
+    if sitting.state in SITTING_WORKING_STATES:
+        return "busy", "The new version from these notes is still being made."
+    if not before:
+        if undo.get("state") == "done":
+            return "undone", "The version from before these notes was already put back."
+        return "nothing", "These notes did not change the video, so there is nothing to go back from."
+    if transcript_fingerprint(upload.transcript) != before.get("after") or (upload.edit_plan or {}).get(
+        "overrides"
+    ) != before.get("after_overrides"):
+        return "changed", UNDO_CHANGED
+    return None
+
+
+def _undo_read_back(sitting: EditSession) -> str:
+    changed = [
+        o for o in (sitting.result or {}).get("outcomes") or [] if o.get("outcome") == "change"
+    ]
+    n = len(changed)
+    return (
+        f"Put back the version from before your {n} note{'s' if n != 1 else ''}"
+        + (f" ({sitting.summary.strip().rstrip('.')})" if (sitting.summary or "").strip() else "")
+        + ". One re-render."
+    )
+
+
+async def undo_preview(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    session_id: uuid.UUID,
+    *,
+    busy: Callable[[RecordingUpload], str | None] | None = None,
+) -> dict[str, Any]:
+    """The read-back before going back, and whether it can be done now. Nothing changes."""
+    sitting = await get_sitting(db, ws, session_id)
+    upload = await _get_upload(db, ws, sitting.upload_id)
+    refusal = undo_refusal(sitting, upload)
+    doing = busy(upload) if busy is not None and refusal is None else None
+    if doing:
+        refusal = ("busy", doing)
+    return {
+        "session_id": str(sitting.id),
+        "possible": refusal is None,
+        "code": refusal[0] if refusal else None,
+        "reason": refusal[1] if refusal else None,
+        "read_back": _undo_read_back(sitting) if refusal is None else refusal[1],
+    }
+
+
+async def start_undo(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    session_id: uuid.UUID,
+    *,
+    busy: Callable[[RecordingUpload], str | None] | None = None,
+) -> EditSession:
+    """Mark the undo queued; the caller starts it. 409 with the reason when it cannot be done."""
+    sitting = await get_sitting(db, ws, session_id)
+    upload = await _get_upload(db, ws, sitting.upload_id)
+    refusal = undo_refusal(sitting, upload)
+    if refusal is None and busy is not None and (doing := busy(upload)):
+        refusal = ("busy", doing)
+    if refusal is not None:
+        raise LibraryError(refusal[0], refusal[1], status=409)
+    sitting.result = {
+        **(sitting.result or {}),
+        "undo": {
+            "state": "queued",
+            "status": "Putting back the version from before your notes",
+            "at": _now().isoformat(),
+        },
+    }
+    await db.flush()
+    return sitting
 
 
 def _must_take_notes(sitting: EditSession) -> None:

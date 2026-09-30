@@ -11,6 +11,8 @@ by the PC worker on the policy model (never a metered API):
   exact words by index, or it is dropped.
 - `video_edit_request`: carry out what he typed in "Request an editing change" -
   word fixes, cuts, restores - or come back with one question.
+- `video_edit_batch` (30-Sep, talk to the editor): every note of one sitting, each
+  pinned to the second he paused on, read against one transcript, then one render.
 
 This module is pure: prompts, schemas, and applying results to a transcript and an
 edit plan. The router owns the background tasks, statuses and rendering.
@@ -63,11 +65,15 @@ def numbered_transcript(
     kept: list[dict[str, Any]] | None = None,
     marks: dict[int, str] | None = None,
     span: tuple[int, int] | None = None,
+    pins: dict[int, list[int]] | None = None,
 ) -> str:
     """One sentence a line, every word tagged with its index.
 
     `span` (first, last) writes only those words, keeping their real indexes: the few
     seconds around the moment he paused on (talk to the editor, 30-Sep).
+
+    `pins` writes `<note N>` after word i for each N in pins[i]: where the video was
+    when he paused for note N (see pin_index). Key -1 is before the first word.
 
     With a plan, each line starts with where it lands in the EDITED video (that is the
     clock he watches), and words the edit removed are wrapped in ~~ so a request can
@@ -109,6 +115,11 @@ def numbered_transcript(
                 last_piece = piece
         if marks and i in marks:
             token = f"{token} ({marks[i]})"
+        if pins:
+            if i == 0 and -1 in pins:
+                token = " ".join(f"<note {n}>" for n in pins[-1]) + " " + token
+            if i in pins:
+                token = token + " " + " ".join(f"<note {n}>" for n in pins[i])
         cur.append(token)
         if str(w["text"])[-1:] in ".?!" or len(cur) >= 24:
             lines.append(stamp + " ".join(cur))
@@ -491,21 +502,140 @@ def edit_request_prompt(
     where = ""
     if scope == "timestamp" and start_s is not None and end_s is not None:
         where = f"\nHe pointed at {_clock(start_s)} to {_clock(end_s)} in the edited video."
-    earlier = ""
-    if history:
-        rows = []
-        for h in history:
-            line = f"- He wrote: {h.get('request', '').strip()}"
-            if h.get("reply"):
-                line += f" | You answered: {h['reply'].strip()}"
-            if h.get("question"):
-                line += f" | You asked him: {h['question'].strip()}"
-            rows.append(line)
-        earlier = "Earlier notes on this video, oldest first:\n" + "\n".join(rows) + "\n\n"
     return (
-        f"{context}\n\n{earlier}His request now:\n{request.strip()}{where}\n\n"
+        f"{context}\n\n{_earlier_block(history)}His request now:\n{request.strip()}{where}\n\n"
         f"Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join):\n"
         f"{numbered_transcript(words, keep, kept, marks)}"
+    )
+
+
+def _earlier_block(history: list[dict[str, Any]] | None) -> str:
+    """Earlier notes on this video and what came of them (one conversation per video).
+
+    A row with `where` was a note pinned in a sitting ("at 0:38"); `undone` means he put
+    back the version from before it."""
+    if not history:
+        return ""
+    rows = []
+    for h in history:
+        said = str(h.get("request") or "").strip()
+        line = f"- {h['where']}, he said: {said}" if h.get("where") else f"- He wrote: {said}"
+        if h.get("reply"):
+            line += f" | You answered: {str(h['reply']).strip()}"
+        if h.get("question"):
+            line += f" | You asked him: {str(h['question']).strip()}"
+        if h.get("undone"):
+            line += " | He undid this afterwards"
+        rows.append(line)
+    return "Earlier notes on this video, oldest first:\n" + "\n".join(rows) + "\n\n"
+
+
+# ---------------------------------------------------------------------------
+# Talk to the editor (30-Sep): every note of one sitting in one job, one render.
+# "Collect all notes, one re-render at the end." The notes are read against one
+# transcript, so word numbers cannot drift from one note to the next.
+
+EDIT_BATCH_JOB = "video_edit_batch"
+EDIT_BATCH_PROMPT_VERSION = "edit-batch-v1"
+
+EDIT_BATCH_RULES = (
+    "THIS TIME HE GAVE SEVERAL NOTES IN ONE SITTING. He watched the edit and paused on it "
+    "each time something was wrong; each pause is one note, numbered in the order he gave "
+    "them, and the video renders once after all of them. <note N> in the transcript marks "
+    "where the video was when he paused for note N: what he means is usually just before "
+    "it, the part he had just heard. 'agreed' is how the editor he spoke with read the note "
+    "back to him; he heard it and did not correct it, but where it and his own words "
+    "disagree, his words win.\n"
+    "Answer every note once, by its number, in notes, each with only its own changes. The "
+    f"tools and limits above apply to each note (at most {MAX_CORRECTIONS} word fixes a note). "
+    "Every word number refers to this one transcript: never renumber for an earlier note's "
+    "change. A later note can refine or cancel an earlier one: the later note then carries "
+    "the change and its reply says which note it replaces ('Instead of note 1: ...'), and the "
+    "earlier note makes no change and its reply points to the later note. Never make the "
+    "same change in two notes, and never fix the same words in two notes. If one note "
+    "cannot be done or you cannot tell what he means, set needs_you on that note alone with "
+    "one short question; the other notes still go ahead.\n"
+    "summary: one or two plain sentences for the whole sitting, saying what changed."
+)
+
+
+def edit_batch_system() -> str:
+    """The request editor's instructions and his standing rules, plus the batch rules."""
+    return edit_request_system() + "\n\n" + EDIT_BATCH_RULES
+
+
+_BATCH_NOTE = {
+    "type": "object",
+    "properties": {"note": {"type": "integer"}, **EDIT_REQUEST_SCHEMA["properties"]},
+    "required": ["note", *EDIT_REQUEST_SCHEMA["required"]],
+}
+
+EDIT_BATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "notes": {"type": "array", "items": _BATCH_NOTE},
+        "summary": {"type": "string"},
+    },
+    "required": ["notes", "summary"],
+}
+
+
+def pin_index(
+    words: list[dict[str, Any]], source_s: float, kept: list[dict[str, Any]] | None = None
+) -> int:
+    """The word a pause at `source_s` (the recording's clock) comes after: the last word
+    that had started by then. -1 when he paused before the first word."""
+    timed = {int(w["index"]): float(w["start"]) for w in kept or [] if "index" in w}
+    at = -1
+    for i, w in enumerate(words):
+        if timed.get(i, float(w["start_s"])) <= source_s + 1e-6:
+            at = i
+    return at
+
+
+def _note_where(note: dict[str, Any]) -> str:
+    if note.get("where"):
+        return str(note["where"])
+    if note.get("edit_s") is not None:
+        return f"{_clock(float(note['edit_s']))} in the edit"
+    return "the whole video"
+
+
+def edit_batch_prompt(
+    words: list[dict[str, Any]],
+    keep: list[list[float]],
+    context: str,
+    notes: list[dict[str, Any]],
+    *,
+    kept: list[dict[str, Any]] | None = None,
+    marks: dict[int, str] | None = None,
+    history: list[dict[str, Any]] | None = None,
+) -> str:
+    """Every note of the sitting, numbered in the order he gave them.
+
+    Each note: `said` (his words as heard), `understood` (the reading he heard back),
+    `edit_s` (the paused second on the edit clock) or `where` (a typed note's place),
+    and `source_s` (the paused second on the recording), which puts `<note N>` in the
+    transcript. One block a note: [note N | 0:38 in the edit | he said "..." | agreed: "..."].
+    """
+    blocks: list[str] = []
+    pins: dict[int, list[int]] = {}
+    for n, note in enumerate(notes, 1):
+        parts = [f"note {n}", _note_where(note)]
+        said = str(note.get("said") or "").strip()
+        parts.append(f'he said "{said}"' if said else "his own words were not caught")
+        understood = str(note.get("understood") or "").strip()
+        if understood:
+            parts.append(f'agreed: "{understood}"')
+        blocks.append("[" + " | ".join(parts) + "]")
+        if note.get("source_s") is not None and words:
+            pins.setdefault(pin_index(words, float(note["source_s"]), kept), []).append(n)
+    return (
+        f"{context}\n\n{_earlier_block(history)}"
+        f"His notes from this sitting, in the order he gave them:\n" + "\n".join(blocks) + "\n\n"
+        "Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
+        "<note N> is where the video was when he paused for note N):\n"
+        f"{numbered_transcript(words, keep, kept, marks, pins=pins)}"
     )
 
 
@@ -537,34 +667,176 @@ def apply_corrections(
     correction that misquotes, overlaps another, or falls outside the list is dropped:
     the model must prove it is looking at the words it changes.
     """
+    valid, _skipped = _check_corrections(words, corrections, {}, None)
+    return _replace_words(words, valid), sorted(valid, key=lambda c: c["first"])
+
+
+def _check_corrections(
+    words: list[dict[str, Any]],
+    corrections: list[dict[str, Any]],
+    taken: dict[int, int | None],
+    note: int | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The corrections that quote their words exactly and touch no word already fixed.
+
+    `taken` maps a word index to the note that fixed it (None outside a sitting) and is
+    shared across the notes of one sitting. Returns (valid, what was skipped and why, in
+    his words). At most MAX_CORRECTIONS are read.
+    """
     valid: list[dict[str, Any]] = []
-    taken: set[int] = set()
-    for c in corrections[:MAX_CORRECTIONS]:
+    skipped: list[str] = []
+    items = list(corrections or [])
+    if len(items) > MAX_CORRECTIONS:
+        skipped.append(f"only the first {MAX_CORRECTIONS} word fixes were used")
+    for c in items[:MAX_CORRECTIONS]:
         try:
             first, last = int(c["first"]), int(c["last"])
         except (KeyError, TypeError, ValueError):
+            skipped.append("a word fix that did not say which words")
             continue
         if first < 0 or last < first or last >= len(words):
+            skipped.append(f'a word fix of "{c.get("heard") or ""}" pointed outside the transcript')
             continue
         span = range(first, last + 1)
-        if taken.intersection(span):
-            continue
         heard = " ".join(str(w["text"]) for w in words[first : last + 1])
+        clash = next((i for i in span if i in taken), None)
+        if clash is not None:
+            owner = taken[clash]
+            skipped.append(
+                f'"{heard}" overlaps words note {owner} already fixed'
+                if owner is not None and owner != note
+                else f'"{heard}" overlaps another fix in this note'
+            )
+            continue
         if _norm(heard) != _norm(str(c.get("heard") or "")):
+            skipped.append(f'a fix quoted "{c.get("heard") or ""}" where the words are "{heard}"')
             continue
         replacement = str(c.get("replacement") or "").strip()
         if replacement == heard:
             continue
-        taken.update(span)
+        for i in span:
+            taken[i] = note
         valid.append({**c, "first": first, "last": last, "heard": heard, "replacement": replacement})
+    return valid, skipped
 
+
+def _replace_words(words: list[dict[str, Any]], valid: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply checked corrections last-to-first, so earlier indices hold."""
     out = [dict(w) for w in words]
     for c in sorted(valid, key=lambda c: c["first"], reverse=True):
         first, last = c["first"], c["last"]
         start, end = float(out[first]["start_s"]), float(out[last]["end_s"])
         new = replacement_words(c["replacement"], start, end, out[first].get("precision", "word"))
         out[first : last + 1] = new
-    return out, sorted(valid, key=lambda c: c["first"])
+    return out
+
+
+UNCLEAR_QUESTION = (
+    "I could not turn that into a change to the video. What exactly should change, and roughly where?"
+)
+MISSED_QUESTION = "I did not get to this one. Say it again in your next notes."
+
+
+def _checked_ranges(
+    words: list[dict[str, Any]], ranges: list[dict[str, Any]], what: str
+) -> tuple[list[list[float]], list[str]]:
+    out: list[list[float]] = []
+    skipped: list[str] = []
+    for r in ranges or []:
+        got = word_ranges(words, [r])
+        if got:
+            out.extend(got)
+        else:
+            skipped.append(f"a {what} that pointed outside the transcript")
+    return out, skipped
+
+
+def apply_batch(
+    words: list[dict[str, Any]],
+    overrides: dict[str, Any] | None,
+    answer: dict[str, Any] | None,
+    count: int,
+) -> dict[str, Any]:
+    """What one sitting's answer does, before anything is written (pure).
+
+    Every note's changes are checked against the ONE transcript the job read. Word
+    fixes share one set of taken words: a fix touching words an earlier note already
+    fixed is reported on its own note instead of silently dropped, and at most
+    MAX_CORRECTIONS are read per note. Cut, restore and hold fold in note order through
+    merge_overrides, so a later note wins over an earlier one. A note that asks him a
+    question changes nothing.
+
+    Returns {"words", "overrides", "changed", "summary", "notes"}; each note is
+    {"note", "outcome", "reply", ...} with outcome one of:
+    change (something to render), answer (a reply, nothing to change), question (it
+    asks him), refused (every change it proposed was skipped), unclear (neither a
+    change nor a reply), missing (the answer never got to it).
+    """
+    by_note: dict[int, dict[str, Any]] = {}
+    for item in (answer or {}).get("notes") or []:
+        try:
+            n = int(item.get("note"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if 1 <= n <= count and n not in by_note:
+            by_note[n] = item
+    taken: dict[int, int | None] = {}
+    fixes: list[dict[str, Any]] = []
+    merged: dict[str, Any] | None = overrides
+    changed = False
+    out_notes: list[dict[str, Any]] = []
+    for n in range(1, count + 1):
+        item = by_note.get(n)
+        if item is None:
+            out_notes.append({"note": n, "outcome": "missing", "reply": "", "question": MISSED_QUESTION})
+            continue
+        reply = str(item.get("reply") or "").strip()
+        if item.get("needs_you"):
+            question = str(item.get("question") or "").strip() or UNCLEAR_QUESTION
+            out_notes.append({"note": n, "outcome": "question", "reply": reply, "question": question})
+            continue
+        valid, skipped = _check_corrections(words, item.get("corrections") or [], taken, n)
+        cut, bad_cut = _checked_ranges(words, item.get("cut") or [], "cut")
+        restore, bad_restore = _checked_ranges(words, item.get("restore") or [], "restore")
+        proposed_holds = item.get("hold") or []
+        hold = word_holds(words, proposed_holds)
+        skipped += bad_cut + bad_restore
+        if len(hold) < len(proposed_holds):
+            skipped.append("a hold that pointed outside the transcript or asked for no time")
+        entry: dict[str, Any] = {
+            "note": n,
+            "reply": reply,
+            "corrections": [{"heard": c["heard"], "replacement": c["replacement"]} for c in valid],
+            "cut": cut,
+            "restore": restore,
+            "hold": hold,
+            "skipped": skipped,
+        }
+        proposed = any(item.get(k) for k in ("corrections", "cut", "restore", "hold"))
+        if valid or cut or restore or hold:
+            fixes.extend(valid)
+            if cut or restore or hold:
+                merged = merge_overrides(merged, cut, restore, hold)
+            changed = True
+            entry["outcome"] = "change"
+        elif proposed and skipped:
+            entry["outcome"] = "refused"
+            entry["question"] = (
+                "I could not make this change: " + "; ".join(skipped) + ". Say it again if it still matters."
+            )
+        elif reply:
+            entry["outcome"] = "answer"
+        else:
+            entry["outcome"] = "unclear"
+            entry["question"] = UNCLEAR_QUESTION
+        out_notes.append(entry)
+    return {
+        "words": _replace_words(words, fixes) if fixes else [dict(w) for w in words],
+        "overrides": merged if changed else overrides,
+        "changed": changed,
+        "summary": str((answer or {}).get("summary") or "").strip(),
+        "notes": out_notes,
+    }
 
 
 def replacement_words(text: str, start: float, end: float, precision: str) -> list[dict[str, Any]]:
