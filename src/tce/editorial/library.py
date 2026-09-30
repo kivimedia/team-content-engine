@@ -365,6 +365,8 @@ async def list_library(
                     str(((upload.edit_plan or {}).get("review") or {}).get("state") or "")
                 ),
                 "has_preview": _has_preview(upload),
+                # 30-Sep: the render he would be watching; the player puts it on the address.
+                "render_ref": upload.render_ref if upload.edited_path else None,
                 "publishing": _publishing_json(pubs_by_upload.get(upload.id, {})),
                 "last_request": (
                     edit_request_to_json(last_by_upload[upload.id])

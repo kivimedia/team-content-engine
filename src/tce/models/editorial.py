@@ -306,6 +306,13 @@ class RecordingUpload(_PrivateWorkspaceMixin, Base):
     edit_plan: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     captions_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     edited_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    # 30-Sep, talk to the editor: which render made the file he is watching. Written only
+    # when a render succeeds. `rendered_keep` is that render's frame keep (the file's own
+    # clock; edit_plan.keep moves on a re-plan that never renders), `render_ref` a short id
+    # the player puts on the video address, so a new render never plays from the old
+    # one's cached pieces.
+    render_ref: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    rendered_keep: Mapped[list[list[float]] | None] = mapped_column(JSONType, nullable=True)
     # uploaded | transcribing | planned | needs_review | edited | failed
     status: Mapped[str] = mapped_column(String(20), default="uploaded")
     status_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import shutil
 import socket
@@ -56,6 +57,7 @@ from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet
 from tce.production.retakes import (
     build_cues,
     fmt_ts,
+    frame_keep,
     is_word_level,
     map_to_edit,
     plan_edit,
@@ -353,6 +355,7 @@ def upload_json(u: RecordingUpload) -> dict[str, Any]:
         "captions_vtt_url": f"/api/v1/production/uploads/{u.id}/captions.vtt" if plan else None,
         "video_url": f"/api/v1/production/uploads/{u.id}/video" if u.storage_path else None,
         "edited_url": f"/api/v1/production/uploads/{u.id}/edited" if u.edited_path else None,
+        "render_ref": u.render_ref,
         "created_at": _iso(u.created_at),
         "updated_at": _iso(u.updated_at),
     }
@@ -956,6 +959,16 @@ async def captions(
     )
 
 
+def render_ref(rendered_keep: list[list[float]], captions: str, attempt: str) -> str:
+    """A short id for one render: its frame keep, its captions and the attempt.
+
+    The keep alone is not enough: a caption fix re-renders with the same keep, and the
+    player must still see a new address. The attempt makes every render its own.
+    """
+    body = "\x1f".join([json.dumps(rendered_keep), captions, attempt])
+    return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
 async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str) -> None:
     async def report(text: str) -> None:
         await _set_status(upload_id, ws, "rendering", text, attempt)
@@ -1019,6 +1032,11 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             row.edited_path = str(out)
             row.captions_path = str(srt)
             row.status = "edited"
+            # 30-Sep, talk to the editor: the keep that made THIS file, on its own frame
+            # clock, and a short id for it. Only here: a plan that never renders must not
+            # say it is the file he watches.
+            row.rendered_keep = frame_keep(keep)
+            row.render_ref = render_ref(row.rendered_keep, srt_text, attempt)
             kept_s = sum(e - b for b, e in keep)
             what = (
                 "Uncut captioned MP4 ready (nothing removed)"

@@ -1501,7 +1501,12 @@
         var file = apiV1 + "/production/uploads/" + esc(item.upload_id)
                  + (action.key === "watch_edit" ? "/edited" : "/video");
         // 28-Sep: the phone plays the light 720p copy; the full edit is the download.
-        var play = action.key === "watch_edit" && item.has_preview ? file + "?preview=1" : file;
+        // 30-Sep: the render's own id on the address, so a new edit never plays from
+        // pieces of the old one the phone kept.
+        var query = [];
+        if (action.key === "watch_edit" && item.has_preview) query.push("preview=1");
+        if (action.key === "watch_edit" && item.render_ref) query.push("v=" + encodeURIComponent(item.render_ref));
+        var play = file + (query.length ? "?" + query.join("&") : "");
         html += '<button class="btn' + (action.key === "watch_edit" ? " primary" : "")
              + '" type="button" data-watch="' + play + '">' + esc(action.label) + "</button>";
         html += '<a class="btn quiet" href="' + file + '?download=1" download>'
