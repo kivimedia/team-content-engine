@@ -102,6 +102,45 @@ def test_words_the_first_pass_invented_do_not_count_against_a_recovery():
     assert [x["text"] for x in out] == ["it.", "make", "Bring", "people", "value."]
 
 
+ADS = "On Google Ads, you want at least 100 clicks before you can make a decision. On".split()
+
+
+def ads_words(squeezed: set[int]) -> list[dict]:
+    # The ads walk at 2:16; the recogniser stamped the words in `squeezed` 20 ms long.
+    out, t = [], 136.5
+    for k, tok in enumerate(ADS):
+        out.append(w(tok, t, t + (0.02 if k in squeezed else 0.3)))
+        t += 0.3
+    return out
+
+
+def ads_regions(words: list[dict], _squeezed: set[int]) -> list[tuple[float, float]]:
+    return [(136.5, 136.5 + 0.3 * len(ADS))]  # he talks straight through
+
+
+def test_the_same_words_heard_again_in_lowercase_are_not_more_words():
+    # 29-Sep, the ads walk: the clip heard the same 15 words, lowercase, no commas; two
+    # first-pass words too short to count as speech made 15 > 13, and "Google Ads,"
+    # became "google ads" in the captions.
+    squeezed = {9, 14}
+    words = ads_words(squeezed)
+    wins = [relisten.Window(136.45, 141.51, 0, len(words) - 1, ["test"], [(0, len(words) - 1)])]
+    said = [(tok.lower().strip(".,"), 136.5 + 0.3 * k, 136.8 + 0.3 * k) for k, tok in enumerate(ADS)]
+    out, report = relisten.merge(words, wins, [clip(wins[0], said)], regions=ads_regions(words, squeezed))
+    assert out == words and report[0]["result"] == "same"
+
+
+def test_a_lowercase_clip_with_a_dropped_word_keeps_the_first_pass_writing():
+    words = ads_words(set())
+    wins = [relisten.Window(136.45, 141.51, 0, len(words) - 1, ["test"], [(0, len(words) - 1)])]
+    said = [(tok.lower().strip(".,"), x["start_s"], x["end_s"]) for tok, x in zip(ADS, words)]
+    said[3] = (said[3][0], said[3][1], said[3][2] - 0.1)  # "you" shorter, then "really"
+    said.insert(4, ("really", said[3][2], said[3][2] + 0.1))
+    out, report = relisten.merge(words, wins, [clip(wins[0], said)], regions=ads_regions(words, set()))
+    assert report[0]["result"] == "more words"
+    assert " ".join(x["text"] for x in out) == "On Google Ads, you really want at least 100 clicks before you can make a decision. On"
+
+
 def test_a_stretch_that_is_not_all_english_is_judged_line_by_line():
     # "Selling is the first step." / 1.5 s / Hebrew to the dogs / 1.5 s / "The sale is
     # where the coaching starts.": one verdict for the stretch would cut both English lines.

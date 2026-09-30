@@ -253,9 +253,23 @@ def merge(
             if placed:
                 again.append({"start_s": round(placed[0], 3), "end_s": round(placed[1], 3), "text": text,
                               "precision": "word", "heard_again": True})
-        before, after = _spoken(span, regions), [_bare(w["text"]) for w in again]
-        kept = sum(m.size for m in SequenceMatcher(None, before, after, autojunk=False).get_matching_blocks())
-        if len(after) > len(before) and kept >= KEEP_FIRST_PASS * len(before):
+        # Only words the first pass does not have count as recovered: a few quiet first-pass
+        # words that _spoken leaves out must not make the same words look like more
+        # (29-Sep, the ads walk: 15 words heard again as the same 15, lowercase).
+        sm = SequenceMatcher(None, [_bare(w["text"]) for w in span], [_bare(w["text"]) for w in again],
+                             autojunk=False)
+        ops = sm.get_opcodes()
+        kept = sum(m.size for m in sm.get_matching_blocks())
+        extra = sum((j2 - j1) - (i2 - i1) for tag, i1, i2, j1, j2 in ops
+                    if tag in ("insert", "replace") and j2 - j1 > i2 - i1)
+        if extra >= 1 and kept >= KEEP_FIRST_PASS * len(_spoken(span, regions)):
+            if not any(re.search(r"[A-Z.,?!]", w["text"]) for w in again):
+                # A clip can come back lowercase with no punctuation: words it shares
+                # with the first pass keep the first pass's writing ("Google Ads,").
+                for tag, i1, i2, j1, _j2 in ops:
+                    if tag == "equal":
+                        for k in range(i2 - i1):
+                            again[j1 + k]["text"] = str(span[i1 + k]["text"])
             out[win.first : win.last + 1] = again
             report.append({**win.as_dict(), "result": "more words",
                            "before": " ".join(str(w["text"]) for w in span),
