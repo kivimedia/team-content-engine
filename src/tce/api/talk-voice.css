@@ -1,0 +1,111 @@
+/* Talking to the editor: the hold bar and the note rows (talk-voice.js, 1-Oct).
+
+   Same tokens as workspace.css, which is loaded first. The hold button is the one
+   control a thumb finds without looking: 72px tall, full width, and while it is
+   held it never scrolls the page, selects text or opens the long-press menu.
+   Colours are solid (no opacity on text), and a disabled button is a darker
+   solid rather than a faded one. */
+
+.tv { display: grid; gap: 8px; }
+
+.tv-status {
+  margin: 0;
+  min-height: 2.6em; /* two lines reserved, so the button does not jump as the sentence changes */
+  color: var(--ink, #10213b);
+  font-weight: 800;
+  line-height: 1.3;
+  font-size: .98rem;
+  overflow-wrap: anywhere;
+}
+
+/* His words as the voice hears them, while he holds. */
+.tv-words {
+  margin: 0;
+  padding: 8px 12px;
+  border: 2px dashed var(--line, #b8b09d);
+  border-radius: 10px;
+  background: var(--white, #fffefa);
+  color: var(--ink, #10213b);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.tv-signin {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  min-height: 46px;
+  padding: 0 16px;
+}
+
+.tv-hold {
+  width: 100%;
+  min-height: 72px;
+  padding: 0 16px;
+  border: 2px solid var(--ink, #10213b);
+  border-radius: 16px;
+  background: var(--moss, #366346);
+  color: #fff;
+  font-size: 1.15rem;
+  font-weight: 900;
+  box-shadow: 4px 4px 0 var(--ink, #10213b);
+  /* Hold to talk, not scroll, select or long-press. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.tv-hold.is-holding {
+  background: var(--signal, #c72c2c);
+  transform: translate(2px, 2px);
+  box-shadow: 2px 2px 0 var(--ink, #10213b);
+}
+.tv-hold[disabled] {
+  background: var(--line, #b8b09d);
+  color: var(--ink, #10213b);
+  box-shadow: none;
+  cursor: default;
+}
+
+/* ------------------------------------------------------------ the note rows */
+
+.tv-notes { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.tv-note {
+  border: 2px solid var(--ink, #10213b);
+  border-radius: 12px;
+  background: var(--white, #fffefa);
+  padding: 10px 12px;
+  min-width: 0;
+}
+.tv-note-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tv-when {
+  color: var(--ink, #10213b);
+  font-weight: 900;
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+.tv-drop {
+  min-width: 44px;
+  min-height: 44px;
+  border: 2px solid var(--line, #b8b09d);
+  border-radius: 10px;
+  background: var(--paper, #f7f3e8);
+  color: var(--ink, #10213b);
+  font-weight: 900;
+}
+.tv-said { margin: 6px 0 0; color: var(--ink, #10213b); line-height: 1.45; overflow-wrap: anywhere; }
+/* The editor's written answer: the note row TCE stores, never the voice's speech. */
+.tv-answer {
+  margin: 6px 0 0;
+  color: var(--moss, #366346);
+  font-weight: 700;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.tv-note.is-reading .tv-answer,
+.tv-note.is-working .tv-answer { color: var(--helper, #4a5a70); }
+.tv-note.is-unconfirmed .tv-answer,
+.tv-note.is-needs_you .tv-answer { color: #5a4110; }
+.tv-moved { margin: 6px 0 0; color: var(--helper, #4a5a70); font-size: .9rem; line-height: 1.4; }
+.tv-empty { color: var(--helper, #4a5a70); line-height: 1.45; padding: 6px 0; }

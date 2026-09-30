@@ -1,0 +1,738 @@
+"""Talk to the editor, step 8 (1-Oct): hold to talk, at phone width.
+
+Boots the real TCE talk routes (sitting, pins, notes) on a throwaway SQLite file
+behind a fake authenticating proxy, plus a small host page that plays an edit and
+opens the hold bar exactly as the notes sheet does (TceTalkVoice.open). KM BOT's
+/voice-client.js is replaced by a stub that records what the page asks of the call
+(mute, quiet, hush, stop) and lets the test play the call's events (the ear opening,
+his words, the editor talking, a dropped connection). Headless Chromium at 390x844.
+
+Asserts, each one a sentence in plans/30-Sep-26-talk-to-the-editor.md:
+- the voice client loads only when the sheet opens, and a 401 shows "Sign in to the
+  voice" linking to /voice?seat=tce&context=video:<id>;
+- the call starts on the tce seat, context video:<id>, Live, no greeting, muted;
+- a press pauses the video and pins its currentTime at once, and unmutes; a release
+  mutes and saves his words on that note; pointercancel counts as a release;
+- the editor's written answer is the note row TCE stores, never the voice's speech;
+- play hushes the editor and keeps it quiet with the mic muted; pause lifts it;
+- a wake lock is held while the sheet is open and let go when it closes;
+- "Voice dropped - hold to reconnect", and the next hold is a fresh call on the same sitting.
+
+Skipped when Playwright, its Chromium build or ffmpeg is missing. Nothing here calls
+a paid service or a real database.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import shutil
+import socket
+import subprocess
+import threading
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+from fastapi import FastAPI
+from fastapi.responses import FileResponse, HTMLResponse, Response
+from pydantic import SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from tce.api import dashboard
+from tce.api.routers import editorial as editorial_router
+from tce.api.routers import editorial_workspace as workspace_router
+from tce.api.routers import production as prod
+from tce.models.editorial import RecordingUpload, TopicCandidate
+from tce.settings import settings
+from tests.editorial_db import create_tables
+
+API_DIR = Path(__file__).resolve().parents[2] / "src" / "tce" / "api"
+KEY = "talk-voice-" + uuid.uuid4().hex
+WS = uuid.UUID("beefbeef-3333-4333-8333-333333333333")
+PHONE = {"width": 390, "height": 844}
+REF = "a1b2c3d4e5f60718"
+SPOKEN = "Getting them back is really smart after you have finished your service"
+
+
+# ------------------------------------------------------------------ static
+
+
+def test_the_hold_bar_is_served_and_linked_and_the_voice_client_is_not():
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(dashboard.router)
+    with TestClient(app) as client:
+        js = client.get("/talk-voice.js")
+        css = client.get("/talk-voice.css")
+    assert js.status_code == 200 and js.headers["content-type"].startswith("application/javascript")
+    assert "TceTalkVoice" in js.text
+    assert css.status_code == 200 and css.headers["content-type"].startswith("text/css")
+    assert "touch-action: none" in css.text and "-webkit-touch-callout: none" in css.text
+
+    html = (API_DIR / "workspace.html").read_text(encoding="utf-8")
+    assert html.index('src="talk-voice.js"') < html.index('src="workspace.js"')
+    assert 'href="talk-voice.css"' in html
+    # KM BOT's client is loaded by talk-voice.js when a sheet opens, never by the shell.
+    assert 'src="/voice-client.js"' not in html and 'src="voice-client.js"' not in html
+    source = js.text
+    assert 'VOICE_SCRIPT = "/voice-client.js"' in source
+    for option in ('seat: "tce"', 'api: "live"', "greet: false", "startMuted: true"):
+        assert option in source, option
+
+
+# ---------------------------------------------------------------- the stub
+
+
+FAKE_VOICE = """
+(function (g) {
+  var starts = [];
+  g.__voice = { starts: starts };
+  g.KmVoice = {
+    start: function (opts) {
+      var c = { opts: opts, log: [], muted: !!opts.startMuted, quieted: false,
+                stopped: false, speakingNow: false };
+      c.emit = function (type, data) { opts.on(type, data || {}); };
+      var handle = {
+        mute: function (on) { on = on === undefined ? true : !!on; c.muted = on;
+                              c.log.push(on ? "mute" : "unmute"); return on; },
+        quiet: function (on) { on = on === undefined ? true : !!on; c.quieted = on;
+                               c.log.push(on ? "quiet" : "unquiet"); return on; },
+        hush: function () { c.log.push("hush"); },
+        interrupt: function () { c.log.push("interrupt"); },
+        send: function () {},
+        stop: function () {
+          if (c.stopped) return;
+          c.stopped = true; c.log.push("stop");
+          setTimeout(function () { opts.on("closed", {}); opts.on("stopped", {}); }, 0);
+        },
+        get muted() { return c.muted; },
+        get quieted() { return c.quieted; },
+        get speaking() { return c.speakingNow; },
+        get busy() { return !c.stopped; },
+        get live() { return !c.stopped; }
+      };
+      starts.push(c);
+      opts.on("connecting", { agent: "TCE" });
+      return handle;
+    }
+  };
+})(window);
+"""
+
+HOST = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/workspace.css">
+<link rel="stylesheet" href="/talk-voice.css">
+<style>
+  .host { padding: 12px 16px; display: grid; gap: 12px; }
+  .host video { width: 100%; height: 40dvh; background: #000; display: block; }
+</style></head>
+<body>
+<main class="host">
+  <video id="player" playsinline controls controlslist="nofullscreen" disablepictureinpicture
+         preload="auto" src="/clip.webm"></video>
+  <ol id="notes"></ol>
+  <div id="bar"></div>
+</main>
+<script src="/talk-voice.js"></script>
+<script>
+window.__stale = [];
+window.__sittings = 0;
+window.__openSheet = async function (uploadId) {
+  var r = await fetch("/api/v1/production/recordings/" + uploadId + "/talk", { method: "POST" });
+  var sitting = await r.json();
+  window.talk = TceTalkVoice.open({
+    root: document.getElementById("bar"),
+    video: document.getElementById("player"),
+    sitting: sitting,
+    notes: document.getElementById("notes"),
+    onStale: function (ref) { window.__stale.push(ref); },
+    onSitting: function () { window.__sittings += 1; }
+  });
+  return sitting;
+};
+</script>
+</body></html>
+"""
+
+WAKE_STUB = """
+window.__wake = { requested: [], released: 0 };
+Object.defineProperty(navigator, "wakeLock", { configurable: true, value: {
+  request: async function (type) {
+    window.__wake.requested.push(type);
+    return { release: async function () { window.__wake.released += 1; },
+             addEventListener: function () {} };
+  }
+}});
+"""
+
+VOICE_STATE = """() => (window.__voice ? window.__voice.starts : []).map(function (c) {
+  return { opts: { seat: c.opts.seat, context: c.opts.context, api: c.opts.api,
+                   greet: c.opts.greet, startMuted: c.opts.startMuted },
+           log: c.log.slice(), muted: c.muted, quieted: c.quieted, stopped: c.stopped };
+})"""
+
+LAYOUT_JS = """() => {
+  const vw = window.innerWidth;
+  const hold = document.querySelector('.tv-hold');
+  const r = hold.getBoundingClientRect();
+  const cs = getComputedStyle(hold);
+  const menu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+  hold.dispatchEvent(menu);
+  const drops = [...document.querySelectorAll('.tv-drop')].map(b => b.getBoundingClientRect());
+  return {
+    overflowX: document.documentElement.scrollWidth > vw + 1,
+    holdHeight: r.height, holdLeft: r.left, holdRight: r.right,
+    touchAction: cs.touchAction, userSelect: cs.userSelect || cs.webkitUserSelect,
+    menuPrevented: menu.defaultPrevented,
+    smallDrops: drops.filter(d => d.width < 44 || d.height < 44).length,
+    statusColor: getComputedStyle(document.querySelector('.tv-status')).color,
+  };
+}"""
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _words(text: str, step: float = 0.5) -> list[dict]:
+    out, t = [], 0.0
+    for w in text.split():
+        out.append({"text": w, "start_s": t, "end_s": t + step - 0.1, "precision": "word"})
+        t += step
+    return out
+
+
+async def _seed(sessionmaker, tmp_path: Path) -> uuid.UUID:
+    src = tmp_path / "walk.mp4"
+    src.write_bytes(b"synthetic")
+    edited = tmp_path / "walk-edited.mp4"
+    edited.write_bytes(b"edited")
+    async with sessionmaker() as s:
+        cand = TopicCandidate(
+            workspace_id=WS, week_start=datetime(2026, 9, 28), moment_ids=["m"],
+            title="Call them after the service", lesson="l", audience="a",
+            public_angle="p", gates={}, status="recorded",
+        )
+        s.add(cand)
+        await s.flush()
+        up = RecordingUpload(
+            workspace_id=WS, candidate_id=cand.id, original_filename="walk.mp4",
+            storage_path=str(src), sha256=uuid.uuid4().hex * 2, status="edited",
+            transcript=_words(SPOKEN), duration_s=6.0, edited_path=str(edited),
+            render_ref=REF, rendered_keep=[[0.0, 6.0]], edit_plan={"keep": [[0.0, 6.0]]},
+        )
+        s.add(up)
+        await s.commit()
+        return up.id
+
+
+def _set_ref(sessionmaker, upload_id: uuid.UUID, ref: str) -> None:
+    """A new render of the video lands while the sheet is open. Sync Playwright holds an
+    event loop in this thread, so the write runs in a thread of its own."""
+
+    async def write() -> None:
+        async with sessionmaker() as s:
+            row = await s.get(RecordingUpload, upload_id)
+            row.render_ref = ref
+            await s.commit()
+
+    worker = threading.Thread(target=lambda: asyncio.run(write()))
+    worker.start()
+    worker.join(timeout=30)
+
+
+@pytest.fixture(scope="module")
+def clip(tmp_path_factory) -> Path:
+    """Six seconds of a plain frame, VP8: Playwright's Chromium has no H.264."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg is not installed")
+    out = tmp_path_factory.mktemp("clip") / "clip.webm"
+    subprocess.run(
+        [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+         "-i", "color=c=0x10213b:s=180x320:r=10:d=6", "-c:v", "libvpx", "-b:v", "60k", "-y", str(out)],
+        check=True, timeout=120,
+    )
+    return out
+
+
+@pytest.fixture
+def host(monkeypatch, tmp_path, clip):
+    pytest.importorskip("playwright.sync_api")
+    monkeypatch.setattr(settings, "private_access_key", SecretStr(KEY))
+    monkeypatch.setattr(settings, "editor_default_workspace_id", str(WS))
+
+    db_path = (tmp_path / "talk.db").as_posix()
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", poolclass=NullPool)
+    sessionmaker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(prod, "session_factory", lambda: sessionmaker)
+
+    async def prepare():
+        await create_tables(engine)
+        return await _seed(sessionmaker, tmp_path)
+
+    upload_id = asyncio.run(prepare())
+    voice = {"status": 200}
+
+    app = FastAPI()
+    app.include_router(dashboard.router)
+    app.include_router(workspace_router.router, prefix="/api/v1")
+    app.include_router(workspace_router.production_router, prefix="/api/v1")
+    app.dependency_overrides[editorial_router.get_editorial_sessionmaker] = lambda: sessionmaker
+
+    @app.get("/voice-client.js")
+    async def voice_client():
+        # KM BOT's own sign-in ("KM BOT" realm) when the phone has not passed it yet.
+        if voice["status"] == 401:
+            return Response("", status_code=401, headers={"WWW-Authenticate": 'Basic realm="KM BOT"'})
+        return Response(FAKE_VOICE, media_type="application/javascript")
+
+    @app.get("/talk-host")
+    async def talk_host():
+        return HTMLResponse(HOST)
+
+    @app.get("/clip.webm")
+    async def clip_file():
+        return FileResponse(clip, media_type="video/webm")
+
+    async def proxy(scope, receive, send):
+        # The browser never holds the key; nginx injects it after Basic Auth.
+        if scope["type"] == "http" and scope["path"].startswith("/api/v1/"):
+            headers = [(k, v) for k, v in scope["headers"] if k.lower() != b"x-tce-editor-key"]
+            headers.append((b"x-tce-editor-key", KEY.encode()))
+            scope = dict(scope, headers=headers)
+        await app(scope, receive, send)
+
+    import uvicorn
+
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(proxy, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(300):
+        if server.started:
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("talk host did not start")
+    try:
+        yield {
+            "base": f"http://127.0.0.1:{port}",
+            "upload": str(upload_id),
+            "upload_id": upload_id,
+            "sm": sessionmaker,
+            "voice": voice,
+        }
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        asyncio.run(engine.dispose())
+
+
+# ----------------------------------------------------------------- helpers
+
+
+class Phone:
+    def __init__(self, page):
+        self.page = page
+
+    def voice(self) -> list[dict]:
+        return self.page.evaluate(VOICE_STATE)
+
+    def emit(self, index: int, kind: str, data: dict | None = None) -> None:
+        self.page.evaluate("([i, t, d]) => window.__voice.starts[i].emit(t, d)", [index, kind, data or {}])
+
+    def status(self) -> str:
+        return self.page.locator(".tv-status").inner_text()
+
+    def wait_status(self, text: str, timeout: float = 15_000) -> None:
+        self.page.wait_for_function(
+            "(s) => (document.querySelector('.tv-status') || {}).textContent.includes(s)",
+            arg=text, timeout=timeout,
+        )
+
+    def sitting(self, sid: str) -> dict:
+        return self.page.evaluate(
+            "async (sid) => (await fetch('/api/v1/production/talk/' + sid)).json()", sid
+        )
+
+    def notes_in(self, sid: str, state: str, count: int, timeout: float = 8.0) -> list[dict]:
+        deadline = time.monotonic() + timeout
+        while True:
+            notes = [n for n in self.sitting(sid)["notes"] if n["state"] == state]
+            if len(notes) == count or time.monotonic() > deadline:
+                return notes
+            time.sleep(0.2)
+
+    def hold_point(self) -> tuple[float, float]:
+        button = self.page.locator(".tv-hold")
+        button.scroll_into_view_if_needed()
+        box = button.bounding_box()
+        return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+    def video(self, expr: str):
+        return self.page.evaluate(f"() => {{ const v = document.getElementById('player'); return {expr}; }}")
+
+
+def _launch(pw):
+    from playwright.sync_api import Error as PlaywrightError
+
+    try:
+        return pw.chromium.launch(headless=True, args=["--autoplay-policy=no-user-gesture-required"])
+    except PlaywrightError as exc:  # pragma: no cover - environment dependent
+        pytest.skip(f"Chromium is not installed for Playwright: {exc}")
+
+
+def _phone(browser):
+    context = browser.new_context(viewport=PHONE, device_scale_factor=2, is_mobile=True, has_touch=True)
+    context.set_default_timeout(20_000)
+    context.add_init_script(WAKE_STUB)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    return page, errors
+
+
+def _patched(response) -> bool:
+    return "/notes/" in response.url and response.request.method == "PATCH"
+
+
+def _pinned(response) -> bool:
+    return response.url.endswith("/notes") and response.request.method == "POST"
+
+
+# ------------------------------------------------------------------- walks
+
+
+def test_hold_to_talk_pins_the_second_saves_his_words_and_writes_the_editors_answer(host, tmp_path):
+    from playwright.sync_api import sync_playwright
+
+    shots = Path(os.environ.get("TCE_TEST_SHOTS") or tmp_path)
+    shots.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as pw:
+        browser = _launch(pw)
+        page, errors = _phone(browser)
+        phone = Phone(page)
+        asked_for_voice: list[str] = []
+        page.on("request", lambda r: asked_for_voice.append(r.url) if "voice-client.js" in r.url else None)
+
+        page.goto(f"{host['base']}/talk-host")
+        page.wait_for_function("() => !!window.TceTalkVoice")
+        page.wait_for_function("() => document.getElementById('player').readyState >= 1")
+        # Lazy: nothing asks for KM BOT's client until the sheet opens.
+        assert asked_for_voice == []
+        assert page.evaluate("() => typeof window.KmVoice") == "undefined"
+
+        sitting = page.evaluate("(id) => window.__openSheet(id)", host["upload"])
+        sid = sitting["session_id"]
+        page.wait_for_function("() => window.__voice && window.__voice.starts.length === 1")
+        assert len(asked_for_voice) >= 1
+        call = phone.voice()[0]
+        assert call["opts"] == {
+            "seat": "tce", "context": f"video:{host['upload']}", "api": "live",
+            "greet": False, "startMuted": True,
+        }
+        assert call["muted"] is True
+        # 3-second rule: while it connects, the bar says what is happening.
+        phone.wait_status("Connecting the editor's voice")
+        assert page.evaluate("() => window.__wake.requested") == ["screen"]
+        phone.emit(0, "ear", {"open": True})
+        phone.wait_status("Pause where something is wrong, then hold to talk.")
+        assert page.locator(".tv-empty").inner_text().startswith("No notes yet")
+
+        # ---- play: the editor is hushed and kept quiet, and the mic stays muted
+        phone.video("v.play()")
+        page.wait_for_function("() => document.getElementById('player').currentTime > 1.3")
+        phone.wait_status("The editor stays quiet while the video plays")
+        call = phone.voice()[0]
+        assert call["quieted"] is True and call["muted"] is True
+        assert "hush" in call["log"]
+
+        # ---- press: pause, pin currentTime at once, unmute
+        x, y = phone.hold_point()
+        page.mouse.move(x, y)
+        with page.expect_response(_pinned) as pinned:
+            page.mouse.down()
+        pin = pinned.value.json()
+        assert pinned.value.status == 200
+        assert phone.video("v.paused") is True
+        assert abs(pin["edit_s"] - phone.video("v.currentTime")) < 0.1
+        assert pinned.value.request.post_data_json["render_ref"] == REF
+        at = pin["clock"]
+        phone.wait_status(f"Listening at {at}")
+        call = phone.voice()[0]
+        assert call["muted"] is False and call["quieted"] is False
+        assert page.locator(".tv-hold").get_attribute("aria-pressed") == "true"
+        assert page.locator(".tv-hold").inner_text() == "Listening - let go when done"
+
+        # His words appear as the voice hears them.
+        phone.emit(0, "hearing", {"text": "Cut the second"})
+        phone.emit(0, "hearing", {"text": "Cut the second basically here"})
+        page.wait_for_function(
+            "() => document.querySelector('.tv-words').textContent.includes('Cut the second basically here')"
+        )
+        page.wait_for_timeout(400)
+
+        # ---- release: mute, then his words are saved on that note
+        with page.expect_response(_patched) as heard:
+            page.mouse.up()
+            assert phone.voice()[0]["muted"] is True
+            phone.wait_status(f"Saving what you said at {at}")
+            phone.emit(0, "said", {"text": "Cut the second basically here"})
+        assert heard.value.status == 200
+        assert heard.value.request.post_data_json == {"heard": "Cut the second basically here"}
+        saved = heard.value.json()
+        assert saved["id"] == pin["note_id"] and saved["state"] == "held"
+        page.wait_for_function(
+            "() => [...document.querySelectorAll('.tv-said')].some(p => p.textContent.includes('Cut the second basically here'))"
+        )
+        row = page.locator(f'.tv-note[data-note-id="{pin["note_id"]}"]')
+        assert row.locator(".tv-when").inner_text() == at
+        assert row.locator(".tv-answer").inner_text() == "The editor is reading this note."
+
+        # ---- the editor talks: its speech is never drawn; its written answer is the row
+        phone.emit(0, "partial", {"text": "Sure thing, I will SNIP IT OUT right away"})
+        phone.wait_status("The editor is answering out loud")
+        understood = f"At {at} you want the second 'basically' gone."
+        status = page.evaluate(
+            """async ([sid, nid, u]) => (await fetch('/api/v1/production/talk/' + sid + '/notes/' + nid, {
+                 method: 'PATCH', headers: {'Content-Type': 'application/json'},
+                 body: JSON.stringify({understood: u})})).status""",
+            [sid, pin["note_id"], understood],
+        )
+        assert status == 200
+        phone.emit(0, "turn_end", {"text": "Sure thing, I will SNIP IT OUT right away"})
+        page.wait_for_function(
+            "(u) => [...document.querySelectorAll('.tv-answer')].some(p => p.textContent.includes(u))",
+            arg=understood,
+        )
+        assert row.locator(".tv-answer").inner_text() == f"The editor: “{understood}”"
+        assert "SNIP IT OUT" not in page.locator("body").inner_text()
+
+        # ---- phone layout
+        layout = page.evaluate(LAYOUT_JS)
+        assert layout["overflowX"] is False, layout
+        assert layout["holdHeight"] >= 72, layout
+        assert layout["holdLeft"] >= 0 and layout["holdRight"] <= PHONE["width"], layout
+        assert layout["touchAction"] == "none" and layout["userSelect"] == "none", layout
+        assert layout["menuPrevented"] is True, layout
+        assert layout["smallDrops"] == 0, layout
+        page.screenshot(path=str(shots / "talk-voice-phone.png"), full_page=True)
+
+        # ---- a tap is not a note
+        x, y = phone.hold_point()
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.up()
+        phone.wait_status("Keep the button held while you talk. Nothing was saved.")
+        assert len(phone.notes_in(sid, "rejected", 1)) == 1
+
+        # ---- a hold with no words is taken back, and says so
+        # (measured again: the notes above the bar changed height since the last press)
+        page.mouse.move(*phone.hold_point())
+        page.mouse.down()
+        page.wait_for_timeout(450)
+        page.mouse.up()
+        phone.wait_status("No words were caught at", timeout=8_000)
+        assert len(phone.notes_in(sid, "rejected", 2)) == 2
+
+        # ---- pointercancel (the phone took the gesture) is a release: the words are kept
+        hold = page.locator(".tv-hold")
+        pointer = {"pointerId": 7, "pointerType": "touch", "isPrimary": True, "button": 0,
+                   "bubbles": True, "cancelable": True}
+        with page.expect_response(_pinned):
+            hold.dispatch_event("pointerdown", pointer)
+        phone.emit(0, "hearing", {"text": "Keep the pause after service"})
+        page.wait_for_timeout(400)
+        with page.expect_response(_patched, timeout=8_000) as kept:
+            hold.dispatch_event("pointercancel", pointer)
+        assert phone.voice()[0]["muted"] is True
+        assert kept.value.request.post_data_json == {"heard": "Keep the pause after service"}
+        held = phone.notes_in(sid, "held", 2)
+        assert sorted(n["request"] for n in held) == ["Cut the second basically here", "Keep the pause after service"]
+
+        # ---- play again: quiet; pause: the editor may be heard again
+        phone.video("v.play()")
+        page.wait_for_function("() => !document.getElementById('player').paused")
+        page.wait_for_function("() => window.__voice.starts[0].quieted === true")
+        phone.video("v.pause()")
+        page.wait_for_function("() => window.__voice.starts[0].quieted === false")
+        assert phone.voice()[0]["muted"] is True
+
+        # ---- re-rendered under the sheet: the pin is refused and the player reloads
+        _set_ref(host["sm"], host["upload_id"], "ffff0000ffff0000")
+        reopened_url = f"/production/recordings/{host['upload']}/talk"
+        with page.expect_response(
+            lambda r: r.url.endswith(reopened_url) and r.request.method == "POST"
+        ) as reopened:
+            with page.expect_response(_pinned) as stale:
+                page.mouse.move(*phone.hold_point())
+                page.mouse.down()
+            assert stale.value.status == 409
+            page.mouse.up()
+        phone.wait_status("This is an older edit of the video")
+        # Opening the notes again moved the sitting (same one) onto the new render.
+        assert reopened.value.status == 200
+        moved = reopened.value.json()
+        assert moved["session_id"] == sid and moved["render_ref"] == "ffff0000ffff0000"
+        assert "v=ffff0000ffff0000" in moved["file_url"]
+        page.wait_for_function("() => window.__stale.length === 1")
+        assert page.evaluate("() => window.__stale") == ["ffff0000ffff0000"]
+        assert page.evaluate("() => window.talk.renderRef") == "ffff0000ffff0000"
+
+        # ---- closing the sheet ends the call and lets the screen sleep
+        page.evaluate("() => window.talk.close()")
+        call = phone.voice()[0]
+        assert call["stopped"] is True
+        assert page.evaluate("() => window.__wake.released") == 1
+        assert page.locator("#bar").inner_html() == ""
+        assert len(phone.voice()) == 1, "closing must not start another call"
+
+        assert errors == [], errors
+        browser.close()
+
+
+def test_a_dropped_voice_says_so_and_the_next_hold_is_a_fresh_call_on_the_same_sitting(host):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser = _launch(pw)
+        page, errors = _phone(browser)
+        phone = Phone(page)
+        page.goto(f"{host['base']}/talk-host")
+        page.wait_for_function("() => !!window.TceTalkVoice")
+        sitting = page.evaluate("(id) => window.__openSheet(id)", host["upload"])
+        sid = sitting["session_id"]
+        page.wait_for_function("() => window.__voice && window.__voice.starts.length === 1")
+        phone.emit(0, "ear", {"open": True})
+        phone.wait_status("Pause where something is wrong")
+
+        # The wifi went: the client reports the dropped connection.
+        phone.emit(0, "error", {"text": "The voice connection dropped."})
+        phone.wait_status("Voice dropped - hold to reconnect")
+        assert page.locator(".tv-hold").inner_text() == "Hold to reconnect"
+        assert phone.voice()[0]["stopped"] is True
+        page.wait_for_timeout(100)  # the old call's own "stopped" must not change anything
+        assert phone.status() == "Voice dropped - hold to reconnect"
+
+        # The next hold: a fresh call on the same seat and video, and the pin on the same sitting.
+        page.mouse.move(*phone.hold_point())
+        with page.expect_response(_pinned) as pinned:
+            page.mouse.down()
+        assert f"/talk/{sid}/notes" in pinned.value.url
+        page.wait_for_function("() => window.__voice.starts.length === 2")
+        again = phone.voice()[1]
+        assert again["opts"]["context"] == f"video:{host['upload']}" and again["opts"]["greet"] is False
+        assert again["muted"] is False, "he is holding: the new call must hear him once it connects"
+        phone.wait_status("Connecting the editor's voice... keep holding")
+        phone.emit(1, "ear", {"open": True})
+        phone.wait_status(f"Listening at {pinned.value.json()['clock']}")
+        phone.emit(1, "hearing", {"text": "Tighten the gap here"})
+        page.wait_for_timeout(400)
+        with page.expect_response(_patched) as heard:
+            page.mouse.up()
+            phone.emit(1, "said", {"text": "Tighten the gap here"})
+        assert heard.value.request.post_data_json == {"heard": "Tighten the gap here"}
+        assert f"/talk/{sid}/notes/" in heard.value.url
+
+        # The voice service ends the call on its own (idle reaper, the 2-hour cap).
+        phone.emit(1, "closed", {"code": 0, "text": "Call ended."})
+        phone.wait_status("Voice dropped - hold to reconnect")
+        assert len(phone.voice()) == 2, "a call is started by a hold, never by itself"
+
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
+def test_a_voice_that_asks_for_its_own_sign_in_links_to_it_and_typing_still_works(host):
+    from playwright.sync_api import sync_playwright
+
+    host["voice"]["status"] = 401
+    with sync_playwright() as pw:
+        browser = _launch(pw)
+        page, errors = _phone(browser)
+        phone = Phone(page)
+        page.goto(f"{host['base']}/talk-host")
+        page.wait_for_function("() => !!window.TceTalkVoice")
+        page.evaluate("(id) => window.__openSheet(id)", host["upload"])
+        phone.wait_status("needs its own sign-in")
+        assert "Typing still works." in phone.status()
+        link = page.locator(".tv-signin")
+        assert link.is_visible()
+        assert link.inner_text() == "Sign in to the voice"
+        assert link.get_attribute("href") == (
+            f"/voice?seat=tce&context=video:{host['upload']}&return=%2Ftalk-host"
+        )
+        assert page.locator(".tv-hold").is_disabled()
+        assert page.evaluate("() => typeof window.KmVoice") == "undefined"
+        assert page.evaluate("() => document.querySelectorAll('script[src$=\"voice-client.js\"]').length") == 0
+        assert page.evaluate("() => window.__voice === undefined")
+
+        # He signs in in the other tab and comes back: the voice loads and the call starts.
+        host["voice"]["status"] = 200
+        page.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")
+        page.wait_for_function("() => window.__voice && window.__voice.starts.length === 1")
+        phone.wait_status("Connecting the editor's voice")
+        assert page.locator(".tv-hold").is_enabled()
+        assert page.locator(".tv-signin").is_hidden()
+
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
+def test_his_words_for_a_note_are_what_came_after_the_press():
+    """The voice client's buffer can still hold the last note's words, and Live can
+    flush it mid-sentence (when it hands the words to the editor)."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    source = (API_DIR / "talk-voice.js").read_text(encoding="utf-8")
+    with sync_playwright() as pw:
+        browser = _launch(pw)
+        page = browser.new_page()
+        page.set_content("<!doctype html><title>t</title>")
+        page.add_script_tag(content=source)
+        got = page.evaluate(
+            """() => {
+              const C = window.TceTalkVoice.Capture;
+              const out = {};
+              // Note 2 while the buffer still holds note 1 (the editor has not answered yet).
+              let c = new C();
+              c.start(); c.hearing(" Cut the"); c.hearing(" Cut the second"); c.stop();
+              c.start(); c.hearing(" Cut the second Keep"); c.hearing(" Cut the second Keep the pause");
+              out.second = c.words();
+              // Live hands the words over mid-sentence ("said"), then he keeps talking.
+              c = new C();
+              c.start(); c.hearing("Take out"); c.said("Take out");
+              c.hearing(" the second one"); out.split = c.words();
+              // A realtime turn: "hearing" with nothing, then the whole sentence as "said".
+              c = new C();
+              c.start(); c.hearing(""); c.said("Move the title up"); out.realtime = c.words();
+              // Words that arrive while no note is open belong to no note.
+              c = new C();
+              c.said("stray words"); c.start(); c.hearing("Fresh"); out.fresh = c.words();
+              // The note line never shows the voice's own speech.
+              const v = window.TceTalkVoice.noteView(
+                {id: "n", start_s: 38.4, request: "cut it", understood: null, state: "held", result: null}, "unconfirmed");
+              out.when = v.when; out.answer = v.answer;
+              return out;
+            }"""
+        )
+        browser.close()
+    assert got["second"] == "Keep the pause"
+    assert got["split"] == "Take out the second one"
+    assert got["realtime"] == "Move the title up"
+    assert got["fresh"] == "Fresh"
+    assert got["when"] == "0:38"
+    assert got["answer"] == "Not confirmed yet - hold and say it again."

@@ -19,6 +19,10 @@ _WORKSPACE_HTML_PATH = Path(__file__).parent / "workspace.html"
 _WORKSPACE_CSS_PATH = Path(__file__).parent / "workspace.css"
 _WORKSPACE_JS_PATH = Path(__file__).parent / "workspace.js"
 _WORKSPACE_SW_PATH = Path(__file__).parent / "workspace-sw.js"
+# Talk to the editor (1-Oct): the hold-to-talk half of the notes sheet. Its own files,
+# so the call's code stays apart from the workspace it is drawn into.
+_TALK_VOICE_JS_PATH = Path(__file__).parent / "talk-voice.js"
+_TALK_VOICE_CSS_PATH = Path(__file__).parent / "talk-voice.css"
 _CACHE: str | None = None
 
 # Every editorial workspace path serves the same shell; the page reads the URL
@@ -154,6 +158,23 @@ async def workspace_js():
         _WORKSPACE_JS_PATH.read_text(encoding="utf-8"),
         media_type="application/javascript",
     )
+
+
+@router.get("/talk-voice.js", include_in_schema=False)
+async def talk_voice_js():
+    from fastapi.responses import Response
+
+    return Response(
+        _TALK_VOICE_JS_PATH.read_text(encoding="utf-8"),
+        media_type="application/javascript",
+    )
+
+
+@router.get("/talk-voice.css", include_in_schema=False)
+async def talk_voice_css():
+    from fastapi.responses import Response
+
+    return Response(_TALK_VOICE_CSS_PATH.read_text(encoding="utf-8"), media_type="text/css")
 
 
 @router.get("/recording.css", include_in_schema=False)

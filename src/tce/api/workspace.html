@@ -26,6 +26,7 @@
 })();
 </script>
 <link rel="stylesheet" href="workspace.css">
+<link rel="stylesheet" href="talk-voice.css">
 <link rel="manifest" href="workspace.webmanifest">
 <meta name="theme-color" content="#10213b">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -102,6 +103,9 @@
   </div>
 </section>
 
+<!-- Talk to the editor (1-Oct): the hold-to-talk call for the notes sheet. Only this
+     small file loads here; KM BOT's /voice-client.js loads when a sheet opens. -->
+<script src="talk-voice.js"></script>
 <script src="workspace.js"></script>
 </body>
 </html>
