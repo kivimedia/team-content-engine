@@ -94,20 +94,36 @@ FAKE_VOICE = """
   g.__voice = { starts: starts };
   g.KmVoice = {
     start: function (opts) {
-      var c = { opts: opts, log: [], muted: !!opts.startMuted, quieted: false,
-                stopped: false, speakingNow: false };
-      c.emit = function (type, data) { opts.on(type, data || {}); };
+      /* el is the element carrying the editor's voice, driven the way KM BOT's
+         web/voice-client.js drives it: hush() pauses it, quiet(true) mutes it, and
+         quiet(false) unmutes it AND plays it again when hush() paused it
+         (resumeRemote). heard is the voice's running buffer of his words: stop()
+         writes it down first, as one "said" (flushHeard), like the real client. */
+      var c = { opts: opts, log: [], times: [], muted: !!opts.startMuted, quieted: false,
+                stopped: false, speakingNow: false, el: { paused: false, muted: false }, heard: "" };
+      var mark = function (what) { c.log.push(what); c.times.push({ what: what, at: performance.now() }); };
+      c.emit = function (type, data) {
+        data = data || {};
+        if (type === "hearing") c.heard = data.text || "";
+        if (type === "said") c.heard = "";
+        if (type === "partial") c.speakingNow = true;
+        opts.on(type, data);
+      };
       var handle = {
         mute: function (on) { on = on === undefined ? true : !!on; c.muted = on;
-                              c.log.push(on ? "mute" : "unmute"); return on; },
-        quiet: function (on) { on = on === undefined ? true : !!on; c.quieted = on;
-                               c.log.push(on ? "quiet" : "unquiet"); return on; },
-        hush: function () { c.log.push("hush"); },
-        interrupt: function () { c.log.push("interrupt"); },
+                              mark(on ? "mute" : "unmute"); return on; },
+        quiet: function (on) {
+          on = on === undefined ? true : !!on; c.quieted = on;
+          if (on) c.el.muted = true; else { c.el.muted = false; c.el.paused = false; }
+          mark(on ? "quiet" : "unquiet"); return on;
+        },
+        hush: function () { c.el.paused = true; c.speakingNow = false; mark("hush"); },
+        interrupt: function () { mark("interrupt"); },
         send: function () {},
         stop: function () {
           if (c.stopped) return;
-          c.stopped = true; c.log.push("stop");
+          c.stopped = true; mark("stop");
+          if (c.heard) { var h = c.heard; c.heard = ""; opts.on("said", { text: h }); }
           setTimeout(function () { opts.on("closed", {}); opts.on("stopped", {}); }, 0);
         },
         get muted() { return c.muted; },
@@ -175,7 +191,8 @@ Object.defineProperty(navigator, "wakeLock", { configurable: true, value: {
 VOICE_STATE = """() => (window.__voice ? window.__voice.starts : []).map(function (c) {
   return { opts: { seat: c.opts.seat, context: c.opts.context, api: c.opts.api,
                    greet: c.opts.greet, startMuted: c.opts.startMuted },
-           log: c.log.slice(), muted: c.muted, quieted: c.quieted, stopped: c.stopped };
+           log: c.log.slice(), muted: c.muted, quieted: c.quieted, stopped: c.stopped,
+           audible: !c.el.paused && !c.el.muted, times: c.times.slice() };
 })"""
 
 LAYOUT_JS = """() => {
@@ -470,7 +487,8 @@ def test_hold_to_talk_pins_the_second_saves_his_words_and_writes_the_editors_ans
         at = pin["clock"]
         phone.wait_status(f"Listening at {at}")
         call = phone.voice()[0]
-        assert call["muted"] is False and call["quieted"] is False
+        # His mic is open, and nothing of the editor is heard while he holds.
+        assert call["muted"] is False and call["quieted"] is True and call["audible"] is False
         assert page.locator(".tv-hold").get_attribute("aria-pressed") == "true"
         assert page.locator(".tv-hold").inner_text() == "Listening - let go when done"
 
@@ -482,12 +500,15 @@ def test_hold_to_talk_pins_the_second_saves_his_words_and_writes_the_editors_ans
         )
         page.wait_for_timeout(400)
 
-        # ---- release: mute, then his words are saved on that note
+        # ---- release: the editor may be heard again, the mic closes a moment later,
+        # and his words are saved on that note
         with page.expect_response(_patched) as heard:
             page.mouse.up()
-            assert phone.voice()[0]["muted"] is True
-            phone.wait_status(f"Saving what you said at {at}")
+            assert phone.voice()[0]["muted"] is False, "the mic stays open for the end of his sentence"
+            assert phone.voice()[0]["audible"] is True
+            phone.wait_status(f"Finishing what you said at {at}")
             phone.emit(0, "said", {"text": "Cut the second basically here"})
+        page.wait_for_function("() => window.__voice.starts[0].muted === true", timeout=5_000)
         assert heard.value.status == 200
         assert heard.value.request.post_data_json == {"heard": "Cut the second basically here"}
         saved = heard.value.json()
@@ -633,7 +654,7 @@ def test_a_dropped_voice_says_so_and_the_next_hold_is_a_fresh_call_on_the_same_s
         again = phone.voice()[1]
         assert again["opts"]["context"] == f"video:{host['upload']}" and again["opts"]["greet"] is False
         assert again["muted"] is False, "he is holding: the new call must hear him once it connects"
-        phone.wait_status("Connecting the editor's voice... keep holding")
+        phone.wait_status("Connecting the editor's voice. Keep holding")
         phone.emit(1, "ear", {"open": True})
         phone.wait_status(f"Listening at {pinned.value.json()['clock']}")
         phone.emit(1, "hearing", {"text": "Tighten the gap here"})
@@ -648,6 +669,23 @@ def test_a_dropped_voice_says_so_and_the_next_hold_is_a_fresh_call_on_the_same_s
         phone.emit(1, "closed", {"code": 0, "text": "Call ended."})
         phone.wait_status("Voice dropped - hold to reconnect")
         assert len(phone.voice()) == 2, "a call is started by a hold, never by itself"
+
+        # 1-Oct review: the call drops WHILE he holds, before any word came back. The
+        # note is taken back, and the bar blames the voice, not his words.
+        page.mouse.move(*phone.hold_point())
+        with page.expect_response(_pinned) as third:
+            page.mouse.down()
+        page.wait_for_function("() => window.__voice.starts.length === 3")
+        phone.emit(2, "ear", {"open": True})
+        phone.wait_status("Listening at")
+        phone.emit(2, "error", {"text": "The voice connection dropped."})
+        page.wait_for_timeout(450)
+        page.mouse.up()
+        clock = third.value.json()["clock"]
+        phone.wait_status(f"The voice dropped while you talked at {clock}", timeout=10_000)
+        assert "No words were caught" not in phone.status()
+        third_id = third.value.json()["note_id"]
+        assert [n["id"] for n in phone.notes_in(sid, "rejected", 1)] == [third_id]
 
         page.evaluate("() => window.talk.close()")
         assert errors == [], errors
@@ -736,3 +774,364 @@ def test_his_words_for_a_note_are_what_came_after_the_press():
     assert got["fresh"] == "Fresh"
     assert got["when"] == "0:38"
     assert got["answer"] == "Not confirmed yet - hold and say it again."
+
+
+# ------------------------------------------------------- 1-Oct review fixes
+
+
+def _ready(page, phone, host) -> str:
+    """The sheet open on the seeded edit, its voice up. Returns the sitting id."""
+    page.goto(f"{host['base']}/talk-host")
+    page.wait_for_function("() => !!window.TceTalkVoice")
+    page.wait_for_function("() => document.getElementById('player').readyState >= 1")
+    sitting = page.evaluate("(id) => window.__openSheet(id)", host["upload"])
+    page.wait_for_function("() => window.__voice && window.__voice.starts.length === 1")
+    phone.emit(0, "ear", {"open": True})
+    phone.wait_status("Pause where something is wrong")
+    return sitting["session_id"]
+
+
+def _patches(page) -> list[dict]:
+    seen: list[dict] = []
+
+    def keep(request) -> None:
+        if "/production/talk/" in request.url and request.method == "PATCH":
+            seen.append({"url": request.url, "body": request.post_data_json})
+
+    page.on("request", keep)
+    return seen
+
+
+CLOSE_AND_MARK = (
+    "() => { window.__closed = false; Promise.resolve(window.talk.close()).then(() => { window.__closed = true; }); }"
+)
+
+
+def test_a_press_over_the_editor_keeps_it_silent_and_the_mic_closes_a_moment_after_letting_go(host):
+    """Review findings 4 and 10: hush() then quiet(false) played the editor again, so it
+    talked over his "no, I meant...". Finding 6: the sheet muted the moment he let go,
+    while scenario F (the receipt) keeps the mic open 1.5 s after the phrase."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser = _launch(pw)
+        page, errors = _phone(browser)
+        phone = Phone(page)
+        _ready(page, phone, host)
+        page.evaluate(
+            """() => { window.__ups = []; document.querySelector('.tv-hold')
+                 .addEventListener('pointerup', () => window.__ups.push(performance.now())); }"""
+        )
+
+        # The editor is answering out loud on the paused video.
+        phone.emit(0, "partial", {"text": "At 0:01 you want the"})
+        phone.wait_status("The editor is answering out loud")
+        assert phone.voice()[0]["audible"] is True
+
+        # He presses over it: cut off, and silent for the whole hold.
+        page.mouse.move(*phone.hold_point())
+        with page.expect_response(_pinned):
+            page.mouse.down()
+        call = phone.voice()[0]
+        assert call["audible"] is False and call["muted"] is False, call
+        assert call["log"][-3:] == ["quiet", "hush", "unmute"], call["log"]
+        phone.emit(0, "partial", {"text": " rest of the old answer"})  # Live finishes its sentence
+        phone.emit(0, "hearing", {"text": "No I meant the second one"})
+        page.wait_for_timeout(500)
+        assert phone.voice()[0]["audible"] is False, "the editor talked over his hold"
+
+        # Let go: the answer may be heard; the mic stays open a moment, then closes.
+        page.mouse.up()
+        assert phone.voice()[0]["audible"] is True
+        assert phone.voice()[0]["muted"] is False
+        phone.wait_status("Finishing what you said at")
+        page.wait_for_function("() => window.__voice.starts[0].muted === true", timeout=5_000)
+        call = phone.voice()[0]
+        muted_at = [t["at"] for t in call["times"] if t["what"] == "mute"][-1]
+        up_at = page.evaluate("() => window.__ups[window.__ups.length - 1]")
+        assert 1_400 <= muted_at - up_at <= 2_500, muted_at - up_at
+        phone.emit(0, "said", {"text": "No I meant the second one"})
+
+        # The video plays while the editor talks; a press pauses it, and the video's own
+        # "pause" event that follows must not bring the editor back.
+        phone.video("v.play()")
+        page.wait_for_function("() => !document.getElementById('player').paused")
+        phone.emit(0, "partial", {"text": "Saved, nothing changes"})
+        page.mouse.move(*phone.hold_point())
+        with page.expect_response(_pinned):
+            page.mouse.down()
+        page.wait_for_function("() => document.getElementById('player').paused")
+        page.wait_for_timeout(300)
+        assert phone.voice()[0]["audible"] is False
+        assert phone.voice()[0]["muted"] is False
+
+        # Play in the moment after letting go shuts the mic at once.
+        phone.emit(0, "hearing", {"text": "Keep this part"})
+        page.wait_for_timeout(450)
+        page.mouse.up()
+        assert phone.voice()[0]["muted"] is False
+        phone.video("v.play()")
+        page.wait_for_function("() => window.__voice.starts[0].muted === true", timeout=1_000)
+
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
+def test_closing_right_after_letting_go_keeps_the_note_and_its_late_words(host):
+    """Review finding 3: close() saved what had arrived and stopped the call at once, so
+    the end of his sentence was lost, and a note with no words yet was taken back."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser = _launch(pw)
+        page, errors = _phone(browser)
+        phone = Phone(page)
+        patches = _patches(page)
+        sid = _ready(page, phone, host)
+
+        page.mouse.move(*phone.hold_point())
+        with page.expect_response(_pinned) as pinned:
+            page.mouse.down()
+        nid = pinned.value.json()["note_id"]
+        phone.emit(0, "hearing", {"text": "Take out the long"})
+        page.wait_for_timeout(500)
+        page.mouse.up()
+        page.wait_for_timeout(300)
+        page.evaluate(CLOSE_AND_MARK)
+        assert page.locator("#bar").inner_html() == "", "the bar goes at once"
+        # Live's transcript of the end of his sentence lands after the sheet closed.
+        phone.emit(0, "hearing", {"text": "Take out the long pause after service"})
+        page.wait_for_function("() => window.__closed === true", timeout=10_000)
+        assert phone.voice()[0]["stopped"] is True
+        held = phone.notes_in(sid, "held", 1)
+        assert [(n["id"], n["request"]) for n in held] == [(nid, "Take out the long pause after service")]
+
+        # Again, and this time no word has come back before he closes: the voice's own
+        # last flush (stop() writes down what it still holds) carries them.
+        page.evaluate("(id) => window.__openSheet(id)", host["upload"])
+        page.wait_for_function("() => window.__voice.starts.length === 2")
+        phone.emit(1, "ear", {"open": True})
+        phone.wait_status("Pause where something is wrong")
+        page.mouse.move(*phone.hold_point())
+        with page.expect_response(_pinned) as second:
+            page.mouse.down()
+        page.wait_for_timeout(500)
+        page.mouse.up()
+        page.evaluate(CLOSE_AND_MARK)
+        page.wait_for_timeout(200)
+        page.evaluate("() => { window.__voice.starts[1].heard = 'Move the title up'; }")
+        page.wait_for_function("() => window.__closed === true", timeout=10_000)
+        held = {n["id"]: n["request"] for n in phone.notes_in(sid, "held", 2)}
+        assert held.get(second.value.json()["note_id"]) == "Move the title up", held
+
+        # And a hold that never got a word: it stays on the server, never taken back.
+        page.evaluate("(id) => window.__openSheet(id)", host["upload"])
+        page.wait_for_function("() => window.__voice.starts.length === 3")
+        phone.emit(2, "ear", {"open": True})
+        phone.wait_status("Pause where something is wrong")
+        page.mouse.move(*phone.hold_point())
+        with page.expect_response(_pinned) as third:
+            page.mouse.down()
+        page.wait_for_timeout(500)
+        page.mouse.up()
+        page.evaluate(CLOSE_AND_MARK)
+        page.wait_for_function("() => window.__closed === true", timeout=10_000)
+        page.wait_for_timeout(300)
+        states = {n["id"]: n["state"] for n in phone.sitting(sid)["notes"]}
+        assert states[third.value.json()["note_id"]] == "listening", states
+        assert not any((p["body"] or {}).get("drop") for p in patches), patches
+        assert errors == [], errors
+        browser.close()
+
+
+def test_a_quick_second_press_keeps_the_end_of_the_first_note_on_it(host):
+    """Review finding 7: a press within a second of letting go cut the first note's words
+    short, and its late transcript landed on the second note."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser = _launch(pw)
+        page, errors = _phone(browser)
+        phone = Phone(page)
+        sid = _ready(page, phone, host)
+
+        page.mouse.move(*phone.hold_point())
+        with page.expect_response(_pinned) as first:
+            page.mouse.down()
+        phone.emit(0, "hearing", {"text": "Cut the second"})
+        page.wait_for_timeout(450)
+        page.mouse.up()
+        page.wait_for_timeout(400)
+        page.mouse.move(*phone.hold_point())
+        with page.expect_response(_pinned) as second:
+            page.mouse.down()
+            # Live's transcript of his first sentence is still arriving.
+            phone.emit(0, "hearing", {"text": "Cut the second basically"})
+        phone.wait_status(f"Listening at {second.value.json()['clock']}")
+        page.wait_for_timeout(900)
+        phone.emit(0, "hearing", {"text": "Cut the second basically and keep the pause"})
+        page.wait_for_function(
+            "() => document.querySelector('.tv-words').textContent.includes('and keep the pause')"
+        )
+        assert "Cut the second" not in page.locator(".tv-words").inner_text()
+        page.wait_for_timeout(300)
+        page.mouse.up()
+        phone.emit(0, "said", {"text": "Cut the second basically and keep the pause"})
+        a, b = first.value.json()["note_id"], second.value.json()["note_id"]
+        held = {n["id"]: n["request"] for n in phone.notes_in(sid, "held", 2)}
+        assert held == {a: "Cut the second basically", b: "and keep the pause"}, held
+
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
+STATUS_HOST = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>bar</title></head>
+<body><main style="padding: 12px 16px"><video id="player"></video><div id="bar"></div></main></body></html>
+"""
+
+# The sheet's bar against a scripted sitting, with no server. Writes answer like the routes.
+OPEN_FAKE = """(payload) => {
+  window.__payload = payload;
+  window.__posts = 0;
+  window.talk = TceTalkVoice.open({
+    root: document.getElementById('bar'),
+    video: document.getElementById('player'),
+    sitting: payload,
+    api: async (path, o) => {
+      const method = (o || {}).method || 'GET';
+      if (method === 'POST' && path.endsWith('/notes')) {
+        window.__posts += 1;
+        const id = 'n' + window.__posts;
+        return { note_id: id, edit_s: 0, clock: '0:00',
+                 note: { id, state: 'listening', start_s: 0, request: '', understood: null, result: null } };
+      }
+      if (method === 'PATCH') {
+        return { id: path.split('/').pop(), state: 'held', start_s: 0,
+                 request: (o.body || {}).heard || '', understood: null, result: null };
+      }
+      return JSON.parse(JSON.stringify(window.__payload));
+    }
+  });
+}"""
+
+BAR_LAYOUT = """() => {
+  // Layout positions (offsetTop): the pressed look's own 2 px nudge (a transform) is not a move.
+  const bar = document.getElementById('bar'), hold = document.querySelector('.tv-hold');
+  const s = document.querySelector('.tv-status'), w = document.querySelector('.tv-words');
+  return { offset: hold.offsetTop - bar.offsetTop, height: bar.offsetHeight,
+           statusFits: s.scrollHeight <= s.clientHeight + 1, wordsFit: w.scrollHeight <= w.clientHeight + 1,
+           overflowX: document.documentElement.scrollWidth > window.innerWidth + 1 };
+}"""
+
+OLD_STEP = "Captioned MP4 ready: 61 ranges, 2:14 long, longest pause 0.45 s"
+
+
+def _bar_page(pw, payload: dict):
+    """The bar alone at phone width, against a scripted sitting (no server)."""
+    browser = _launch(pw)
+    page, errors = _phone(browser)
+    page.set_content(STATUS_HOST)
+    page.add_style_tag(content=(API_DIR / "workspace.css").read_text(encoding="utf-8"))
+    page.add_style_tag(content=(API_DIR / "talk-voice.css").read_text(encoding="utf-8"))
+    page.add_script_tag(content=FAKE_VOICE)
+    page.add_script_tag(content=(API_DIR / "talk-voice.js").read_text(encoding="utf-8"))
+    page.evaluate(OPEN_FAKE, payload)
+    page.wait_for_function("() => window.__voice && window.__voice.starts.length === 1")
+    return browser, page, errors
+
+
+BASE = {"session_id": "s1", "upload_id": "u1", "render_ref": "r1", "state": "open", "notes": [],
+        "video_status": "edited", "video_step": OLD_STEP, "result": None}
+
+
+def test_the_bar_never_moves_the_button_and_says_a_voice_problem_plainly():
+    """Review finding 8: the words box appearing mid-hold, and longer sentences, moved
+    the hold button under his thumb. Finding 5: a raw "Voice error: {json}" from Live
+    went to the status line."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, page, errors = _bar_page(pw, BASE)
+        phone = Phone(page)
+        phone.wait_status("Connecting the editor's voice")
+
+        layouts = {"idle": page.evaluate(BAR_LAYOUT)}
+        page.mouse.move(*phone.hold_point())
+        page.mouse.down()
+        phone.wait_status("at 0:00 starts when it is ready.")
+        layouts["holding, connecting"] = page.evaluate(BAR_LAYOUT)
+        phone.emit(0, "ear", {"open": True})
+        phone.wait_status("Listening at 0:00")
+        long_words = ("Cut the second basically and keep the pause after service because the joke "
+                      "lands better when there is a breath before it and the title should move up a bit")
+        phone.emit(0, "hearing", {"text": long_words})
+        page.wait_for_function("() => document.querySelector('.tv-words').textContent.includes('move up a bit')")
+        layouts["holding, words"] = page.evaluate(BAR_LAYOUT)
+        page.wait_for_timeout(400)  # a hold, not a tap
+        page.mouse.up()
+        phone.wait_status("what you said at 0:00")
+        layouts["letting go"] = page.evaluate(BAR_LAYOUT)
+        offsets = {k: round(v["offset"], 1) for k, v in layouts.items()}
+        assert len(set(offsets.values())) == 1, offsets
+        assert all(v["statusFits"] and v["wordsFit"] and not v["overflowX"] for v in layouts.values()), layouts
+
+        phone.emit(0, "said", {"text": long_words})
+        phone.wait_status("Saved at 0:00")
+        raw = 'Voice error: {"type":"error","error":{"type":"invalid_request_error","message":"Unknown event"}}'
+        phone.emit(0, "error", {"text": raw})
+        page.wait_for_timeout(200)
+        assert phone.status() == "The editor's voice reported a problem. Your notes are saved.", phone.status()
+        problem = page.evaluate(BAR_LAYOUT)
+        assert round(problem["offset"], 1) == offsets["idle"] and problem["statusFits"], problem
+
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
+def test_the_bar_says_what_the_notes_are_doing_and_when_the_editor_has_stopped():
+    """Review finding 1: Live sends no end of turn while his mic is muted, so "answering
+    out loud" never ended. Finding 2: while the notes were being made the bar showed the
+    last render's line, and a hand-back never said why."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, page, errors = _bar_page(pw, BASE)
+        phone = Phone(page)
+        phone.emit(0, "ear", {"open": True})
+        phone.wait_status("Pause where something is wrong, then hold to talk.")
+
+        # The editor stops "answering" when its words stop: no turn_end comes on Live.
+        phone.emit(0, "partial", {"text": "At 0:00 you want the pause kept."})
+        phone.wait_status("The editor is answering out loud")
+        phone.wait_status("Pause where something is wrong, then hold to talk.", timeout=4_000)
+        assert page.evaluate("() => window.talk.speaking") is False
+
+        def status_for(payload: dict) -> str:
+            page.evaluate("(p) => { window.__payload = p; return window.talk.refresh(); }", payload)
+            return phone.status()
+
+        away = "Waiting for the subscription worker (waiting_capacity)"
+        assert status_for(dict(BASE, state="thinking", result={"status": away})) == away
+        handed = "Your editor could not read the notes, so nothing was changed. Make the new version again."
+        assert status_for(dict(BASE, state="open", result={"status": handed})) == handed
+        reading = "Reading your 3 notes on the subscription"
+        assert status_for(dict(BASE, state="thinking", result={"status": reading})) == reading
+        cutting = "Cutting and burning in your captions"
+        assert status_for(dict(BASE, state="rendering", result={"status": cutting})) == cutting
+        live = dict(BASE, state="rendering", video_status="rendering", video_step="Cutting and burning: 41%",
+                    result={"status": cutting})
+        assert status_for(live) == "Cutting and burning: 41%"
+        made = "New version made from your 3 notes. 1 of them needs you."
+        assert status_for(dict(BASE, state="needs_you", result={"status": made})) == made
+        assert OLD_STEP not in page.locator("body").inner_text()
+
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()

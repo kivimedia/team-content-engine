@@ -37,6 +37,21 @@
  * - A call that drops says "Voice dropped - hold to reconnect", and the next hold
  *   starts a fresh call on the same sitting: every pin and every word is already on
  *   the TCE server, and the call is not the record.
+ *
+ * 1-Oct review fixes, each with its test in tests/unit/test_talk_voice_phone.py:
+ * - Live sends no end of turn while his mic is muted, so "the editor is answering"
+ *   ends when its words stop for SPEAKING_QUIET_MS, not on turn_end alone.
+ * - A press keeps the editor quiet for the whole hold (quiet first, then hush):
+ *   K1's quiet(false) plays an element hush() paused, so the old order let the
+ *   editor talk over him. Pause lifts the quiet only when he is not holding.
+ * - Letting go keeps the mic open RELEASE_GRACE_MS, so the voice hears the end of
+ *   his sentence (KM BOT's scenario F lets go the same way, 1.5 s after it).
+ * - A second press does not cut the last note short: its late words stay on it
+ *   until they stop, then the new note's words start.
+ * - Closing the sheet lets the last note's words land before the call ends, and
+ *   never takes a note back.
+ * - While the notes are being made, the bar shows the batch's own step
+ *   (result.status), and how it ended; a hand-back says why, once.
  */
 (function (global) {
   "use strict";
@@ -44,14 +59,22 @@
   // KM BOT's voice client. Absolute: /tce/voice-client.js does not exist.
   var VOICE_SCRIPT = "/voice-client.js";
   var TAP_MS = 350;            // a press shorter than this is a tap, not a note
+  var RELEASE_GRACE_MS = 1500; // after he lets go the mic stays open this long: the voice hears his sentence end
   var SETTLE_QUIET_MS = 1200;  // after release: this long with no new words ends the note
   var SETTLE_MAX_MS = 3500;    // ...and never longer than this (the moment route waits 4 s)
+  var HANDOFF_QUIET_MS = 600;  // pressed again while the last note's words still arrive: this long with none ends it
+  var HANDOFF_MAX_MS = 1500;   // ...and never later than this after the new press
+  var SPEAKING_QUIET_MS = 1500; // no new words from the editor for this long: it has stopped talking
   var POLL_FAST_MS = 2000;     // while a note waits for its words or the editor's reading
   var POLL_SLOW_MS = 30000;    // otherwise: the sheet's heartbeat (a sitting is "active" for 120 s)
   var AWAIT_MS = 120000;       // the seat brain's own turn cap: past it, "not confirmed yet"
   var NOTICE_MS = 7000;        // how long a one-off sentence stays before the status returns
   var WAITING = ["listening", "held"];
+  var WORKING = ["thinking", "rendering"];
+  var VIDEO_BUSY = ["transcribing", "rendering"];  // the upload's own step is live (production.BUSY_STATUSES)
   var DROPPED = "Voice dropped - hold to reconnect";
+  // In place of the voice client's raw "Voice error: {json}" (the whole error is logged).
+  var VOICE_PROBLEM = "The editor's voice reported a problem. Your notes are saved.";
 
   var prefix = global.location.pathname.indexOf("/tce/") === 0 ? "/tce" : "";
   var apiV1 = prefix + "/api/v1";
@@ -69,6 +92,29 @@
   }
 
   function norm(text) { return String(text || "").replace(/\s+/g, " ").trim(); }
+
+  // The sitting's own sentence: the batch's live step, how it ended, or why it was handed back.
+  function statusOf(payload) { return norm(payload && payload.result && payload.result.status); }
+
+  /* An error the voice client reports, as a sentence for him. Live's own errors come
+     as "Voice error: {json}", which is not a sentence: it goes to the console. */
+  function plainError(text) {
+    var t = norm(text);
+    if (/^Voice error\b/i.test(t) || /[{}]/.test(t)) {
+      try { global.console.warn("[talk-voice] " + t); } catch (e) { /* no console */ }
+      return VOICE_PROBLEM;
+    }
+    return t;
+  }
+
+  // The end of a long run of words: the box keeps two lines at 390 px, and the newest words matter.
+  function tail(words, max) {
+    max = max || 64;
+    if (words.length <= max) return words;
+    var cut = words.slice(-max);
+    var space = cut.indexOf(" ");
+    return "..." + (space > 0 && space < 20 ? cut.slice(space + 1) : cut);
+  }
 
   /* The same shape as workspace.js's api(): the sentence to show on error.message,
      the status and the server's detail (code, render_ref) on the error. */
@@ -139,17 +185,19 @@
   function Capture() {
     this.buffer = "";  // the voice's running buffer, as last reported
     this.on = false;
+    this.owner = null; // the press whose words these are
     this.base = "";    // the buffer at the press: not this note's words
     this.done = "";    // flushed while this note was open
     this.live = "";    // in the buffer since the press
   }
-  Capture.prototype.start = function () {
+  Capture.prototype.start = function (owner) {
     this.on = true;
+    this.owner = owner || null;
     this.base = this.buffer;
     this.done = "";
     this.live = "";
   };
-  Capture.prototype.stop = function () { this.on = false; };
+  Capture.prototype.stop = function () { this.on = false; this.owner = null; };
   Capture.prototype.hearing = function (text) {
     var n = norm(text);
     // A buffer that no longer starts with what it held at the press started over.
@@ -239,33 +287,44 @@
       upload: start.upload_id,
       ref: start.render_ref || null,
       state: start.state || "open",
-      step: start.video_step || ""
+      step: start.video_step || "",                          // the upload's own step line
+      videoBusy: VIDEO_BUSY.indexOf(start.video_status) >= 0, // ...and whether it is live now
+      status: statusOf(start)                                 // the sitting's own sentence
     };
     var closed = false;
+    var closing = null;      // close() was called: {promise, resolve}. His last words still land.
     var voice = "loading";   // loading | signin | unavailable | connecting | ready | dropped | failed
     var voiceWhy = "";       // the sentence for failed / unavailable
     var call = null;         // the KmVoice handle of the call in use
     var callToken = null;    // events from any other call (an old one) are ignored
     var hold = null;         // the press in progress
-    var settling = null;     // released, words still arriving
+    var settling = null;     // released: {h, quiet, max, maxAt, handoff}, its words still arriving
     var capture = new Capture();
     var awaited = {};        // note id -> when this page pinned it (waiting for a reading)
     var unconfirmed = {};    // note id -> true: the wait ran out
     var saved = {};          // note id -> the words last saved on it
     var notes = start.notes || [];
     var notesKey = "";
-    var speaking = false;
+    var speaking = false;    // the editor is talking (its words are arriving)
+    var speakingTimer = null;
+    var muteTimer = null;    // the mic closes RELEASE_GRACE_MS after he lets go
     var notice = null;       // {text, until}
     var noticeTimer = null;
     var pollTimer = null;
     var epoch = 0;           // bumped when the sitting is reopened on a new edit
     var wakeLock = null;
+    var shownStatus = "";    // the sitting's own sentence, last said as a notice
 
+    /* The bar keeps the same height whatever it says (1-Oct review: the words box
+       appearing mid-hold moved the button 73 px under his thumb): the status line has
+       three lines, and the words box (or the sign-in link) has a slot of its own. */
     root.innerHTML =
         '<div class="tv" data-tv>'
       + '<p class="tv-status" role="status" aria-live="polite"></p>'
-      + '<p class="tv-words" hidden></p>'
+      + '<div class="tv-slot">'
+      + '<p class="tv-words is-empty"></p>'
       + '<a class="btn tv-signin" target="_blank" rel="noopener" hidden>Sign in to the voice</a>'
+      + "</div>"
       + '<button class="tv-hold" type="button" aria-pressed="false">Hold to talk</button>'
       + "</div>";
     if (opts.notes) opts.notes.classList.add("tv-notes");
@@ -278,7 +337,10 @@
 
     // ------------------------------------------------------------ painting
 
+    function gone() { return closed || Boolean(closing); }
+
     function say(text) {
+      if (gone()) return;
       notice = { text: text, until: Date.now() + NOTICE_MS };
       clearTimeout(noticeTimer);
       noticeTimer = setTimeout(paint, NOTICE_MS + 50);
@@ -288,12 +350,22 @@
     function playing() { return Boolean(video && !video.paused && !video.ended); }
 
     function statusText() {
-      if (sitting.state === "thinking" || sitting.state === "rendering") {
-        // The batch's own live step ("Cutting and burning in your captions"), never a spinner.
-        return sitting.step || "Your notes are being made into a new version.";
+      var state = sitting.state;
+      if (state === "thinking") {
+        // The batch's own live step ("Reading your 3 notes on the subscription",
+        // "Waiting for the subscription worker"), never a spinner and never the
+        // upload's line from the render before.
+        return sitting.status || "Your notes are being made into a new version.";
       }
-      if (sitting.state !== "open") {
-        return "These notes were handed to the editor. Open the notes again for new ones.";
+      if (state === "rendering") {
+        // The upload's own step while it is live ("Cutting and burning in your captions",
+        // then the render's progress); before that, the batch's own.
+        return (sitting.videoBusy && sitting.step) || sitting.status || "Your new version is being made.";
+      }
+      if (state === "closed") return "These notes were closed. Open the notes again to give new ones.";
+      if (state !== "open") {
+        // How it ended ("New version made from your 3 notes. 1 of them needs you.").
+        return sitting.status || "These notes were handed to the editor. Open the notes again for new ones.";
       }
       if (voice === "loading") return "Loading the editor's voice";
       if (voice === "signin") {
@@ -305,25 +377,41 @@
       if (hold) {
         var at = clock(hold.t);
         if (voice === "ready") return "Listening at " + at;
-        return "Connecting the editor's voice... keep holding. Listening at " + at + " starts when it is ready.";
+        return "Connecting the editor's voice. Keep holding: listening at " + at + " starts when it is ready.";
       }
-      if (settling) return "Saving what you said at " + clock(settling.h.t);
+      if (settling) {
+        return (muteTimer ? "Finishing what you said at " : "Saving what you said at ") + clock(settling.h.t);
+      }
       if (notice && notice.until > Date.now()) return notice.text;
       if (voice === "dropped") return DROPPED;
-      if (voice === "failed") return (voiceWhy || "The editor's voice stopped") + ". Hold to try again.";
+      if (voice === "failed") return (voiceWhy || "The editor's voice stopped").replace(/\.$/, "") + ". Hold to try again.";
       if (voice === "connecting") return "Connecting the editor's voice...";
       if (playing()) return "The editor stays quiet while the video plays. Pause, then hold to talk.";
       if (speaking) return "The editor is answering out loud. Its answer is written on the note below.";
       return "Pause where something is wrong, then hold to talk.";
     }
 
+    // The words of the note the status line is about: the one he holds, else the one being saved.
+    function shownWords() {
+      var owner = capture.on ? capture.owner : null;
+      if (hold) return owner === hold ? capture.words() : "";
+      if (settling && owner === settling.h) return capture.words();
+      return "";
+    }
+
     function paint() {
-      if (closed) return;
-      statusEl.textContent = statusText();
-      var words = hold || settling ? capture.words() : "";
-      wordsEl.hidden = !words;
-      wordsEl.textContent = words ? "“" + words + "”" : "";
-      signinEl.hidden = voice !== "signin";
+      if (gone()) return;
+      var text = statusText();
+      statusEl.textContent = text;
+      statusEl.title = text;   // three lines are shown; the whole sentence is here
+      var words = shownWords();
+      var signin = voice === "signin";
+      signinEl.hidden = !signin;
+      wordsEl.hidden = signin;
+      wordsEl.classList.toggle("is-empty", !words);
+      wordsEl.textContent = words ? "“" + tail(words) + "”"
+        : hold ? "Say what is wrong at " + clock(hold.t) + "."
+        : "Your words show here while you hold.";
       var usable = sitting.state === "open"
         && ["loading", "signin", "unavailable"].indexOf(voice) < 0;
       button.disabled = !usable && !hold;
@@ -341,7 +429,7 @@
     }
 
     function drawNotes() {
-      if (!opts.notes) return;
+      if (!opts.notes || gone()) return;
       var html = notesHtml(notes, pendingOf);
       if (html === notesKey) return;
       notesKey = html;
@@ -351,10 +439,13 @@
     // --------------------------------------------------------- the sitting
 
     function take(payload) {
-      if (!payload || closed) return;
+      if (!payload || gone()) return;
+      var was = sitting.state;
       notes = payload.notes || [];
       sitting.state = payload.state || sitting.state;
       sitting.step = payload.video_step || "";
+      sitting.videoBusy = VIDEO_BUSY.indexOf(payload.video_status) >= 0;
+      sitting.status = statusOf(payload);
       var now = Date.now();
       Object.keys(awaited).forEach(function (id) {
         var row = notes.filter(function (n) { return n.id === id; })[0];
@@ -369,12 +460,22 @@
       }
       drawNotes();
       if (opts.onSitting) opts.onSitting(payload);
+      tellHandBack(WORKING.indexOf(was) >= 0);
       paint();
+    }
+
+    /* Handed back with nothing changed (the worker could not read the notes, the
+       words moved...): the sitting takes notes again, and says why once. */
+    function tellHandBack(wasWorking) {
+      if (sitting.state !== "open" || !sitting.status) return;
+      if (sitting.status === shownStatus && !wasWorking) return;
+      shownStatus = sitting.status;
+      say(sitting.status);
     }
 
     async function refresh() {
       clearTimeout(pollTimer);
-      if (closed) return;
+      if (gone()) return;
       var asked = epoch;
       try {
         var payload = await api("/production/talk/" + sitting.id);
@@ -386,13 +487,17 @@
 
     function schedule() {
       clearTimeout(pollTimer);
-      if (closed) return;
+      if (gone()) return;
       var waiting = Object.keys(awaited).length || notes.some(function (n) { return n.state === "listening"; })
         || sitting.state !== "open";
       pollTimer = setTimeout(refresh, waiting ? POLL_FAST_MS : POLL_SLOW_MS);
     }
 
-    function refreshSoon() { clearTimeout(pollTimer); pollTimer = setTimeout(refresh, 250); }
+    function refreshSoon() {
+      if (gone()) return;
+      clearTimeout(pollTimer);
+      pollTimer = setTimeout(refresh, 250);
+    }
 
     async function reopen() {
       epoch += 1;
@@ -403,10 +508,10 @@
     // ------------------------------------------------------------- the call
 
     function startCall() {
-      if (closed || !global.KmVoice) return;
+      if (gone() || !global.KmVoice) return;
       var token = {};
       callToken = token;
-      speaking = false;
+      stopSpeaking();
       voice = "connecting";
       try {
         call = global.KmVoice.start({
@@ -420,7 +525,7 @@
       } catch (error) {
         call = null;
         voice = "failed";
-        voiceWhy = String(error && error.message || error);
+        voiceWhy = plainError(error && error.message || error);
       }
       if (call && playing()) { call.quiet(true); }
       paint();
@@ -432,16 +537,42 @@
       var old = call;
       call = null;
       callToken = null;
-      speaking = false;
+      stopSpeaking();
+      clearTimeout(muteTimer);
+      muteTimer = null;
       voice = state;
       voiceWhy = why || "";
       notice = null;   // the drop is the news now
       if (old) { try { old.stop(); } catch (e) { /* already down */ } }
+      // Read when the note ends with no words: the voice dropped, not his words.
       if (hold) hold.voiceLost = true;
+      if (settling) settling.h.voiceLost = true;
       paint();
     }
 
+    function stopSpeaking() {
+      clearTimeout(speakingTimer);
+      speakingTimer = null;
+      speaking = false;
+    }
+
     function onVoice(type, d) {
+      // His words, first: they still land on his last note while the sheet closes.
+      if (type === "hearing") {
+        capture.hearing(d.text);
+        if (settling && capture.owner === settling.h) armQuiet();
+        paint();
+        return;
+      }
+      if (type === "said") {
+        if (!capture.said(d.text)) return;
+        // Flushed: the voice handed his words over (or the call is closing). A note
+        // being saved is complete now; a note being held is saved so far.
+        if (settling && capture.owner === settling.h) { finishSettle(); return; }
+        if (hold && capture.owner === hold) { saveWords(hold); paint(); }
+        return;
+      }
+      if (gone()) return;   // the sheet is closed: nothing else is shown
       if (type === "connecting") { voice = "connecting"; paint(); return; }
       if (type === "ear") {
         if (d.open) {
@@ -451,31 +582,25 @@
         paint();
         return;
       }
-      if (type === "hearing") {
-        capture.hearing(d.text);
-        if (settling) armQuiet();
-        paint();
-        return;
-      }
-      if (type === "said") {
-        if (!capture.said(d.text)) return;
-        if (hold) { saveWords(hold); paint(); return; }
-        if (settling) finishSettle();
-        return;
-      }
       // The editor talking. Its words are Live's paraphrase and are never drawn:
       // the written answer is the note row (understood).
       if (type === "partial") {
         // What is happening now beats the last one-off sentence ("Saved at 0:38").
-        if (!speaking) { speaking = true; notice = null; paint(); }
+        if (!speaking) { speaking = true; notice = null; }
+        /* Live writes no end of turn while his mic is muted (it flushes only when he
+           speaks again, or the call closes), so the editor's words stopping is the
+           end of its answer (1-Oct review: the bar said it was answering for minutes). */
+        clearTimeout(speakingTimer);
+        speakingTimer = setTimeout(function () { stopSpeaking(); paint(); refreshSoon(); }, SPEAKING_QUIET_MS);
+        paint();
         return;
       }
-      if (type === "turn_end") { speaking = false; paint(); refreshSoon(); return; }
+      if (type === "turn_end") { stopSpeaking(); paint(); refreshSoon(); return; }
       if (type === "tool") { refreshSoon(); return; }
       if (type === "error") {
-        if (d.fatal) { lostCall("failed", d.text); return; }
+        if (d.fatal) { lostCall("failed", plainError(d.text)); return; }
         if (/connection dropped/i.test(d.text || "")) { lostCall("dropped"); return; }
-        if (d.text) say(d.text);
+        if (d.text) say(plainError(d.text));
         return;
       }
       if (type === "closed" || type === "stopped") {
@@ -487,21 +612,30 @@
     // ------------------------------------------------------------ the press
 
     function press() {
-      if (closed || hold || sitting.state !== "open") return;
+      if (gone() || hold || sitting.state !== "open") return;
       if (["loading", "signin", "unavailable"].indexOf(voice) >= 0) return;
-      if (settling) finishSettle();       // the note before this one is saved now
       notice = null;
       var t = video ? Number(video.currentTime) || 0 : 0;
-      if (video && !video.paused) video.pause();
       hold = { t: t, at: Date.now(), noteId: null, failed: "", heardReady: voice === "ready" };
-      capture.start();
+      if (video && !video.paused) video.pause();
+      // He is talking again: the mic that was about to close after his last note stays open.
+      clearTimeout(muteTimer);
+      muteTimer = null;
+      /* The last note's words can still be on their way (the transcript trails his
+         voice): they stay on it until they stop, and this note's words start after
+         them (1-Oct review: the end of one note landed on the next). */
+      if (settling) handOff(); else capture.start(hold);
       // A dropped or stopped call comes back on this press, on the same sitting.
       if (!call) startCall();
       if (call) {
-        if (call.speaking) call.hush();   // he is talking over the editor
-        call.quiet(false);
+        /* Nothing of the editor is heard while he holds. Quiet first, then hush: K1's
+           quiet(false) plays an element that hush() paused, so hush then quiet(false)
+           let the editor talk on over his "no, I meant..." (1-Oct review). */
+        call.quiet(true);
+        if (speaking) call.hush();   // he is talking over the editor: cut it off
         call.mute(false);
       }
+      stopSpeaking();
       hold.pinning = pin(hold);
       paint();
     }
@@ -532,8 +666,8 @@
         if (hold === h) {
           // Nowhere to put his words: stop listening now rather than after he lets go.
           hold = null;
-          capture.stop();
-          if (call) call.mute(true);
+          if (capture.owner === h) capture.stop();
+          muteNow();
         }
         say(h.failed);
         if (detail.code === "not_open") refresh();
@@ -541,30 +675,80 @@
       }
     }
 
-    function release() {
+    /* `keep`: the sheet is closing. What he was saying is kept, never taken back as a tap. */
+    function release(keep) {
       if (!hold) return;
       var h = hold;
       hold = null;
-      if (call) {
-        call.mute(true);
-        // The video is still paused: his answer may be heard now.
-        if (!playing()) call.quiet(false);
-      }
-      if (Date.now() - h.at < TAP_MS) {
-        capture.stop();
+      // The video is still paused: his answer may be heard now.
+      if (call && !playing()) call.quiet(false);
+      if (!keep && Date.now() - h.at < TAP_MS) {
+        muteNow();
+        if (capture.owner === h) capture.stop();
         h.pinning.then(function (id) { if (id) dropNote(id); });
         say("Keep the button held while you talk. Nothing was saved.");
         return;
       }
-      settling = { h: h, quiet: null, max: setTimeout(finishSettle, SETTLE_MAX_MS) };
+      /* The mic stays open a moment after he lets go, so the voice hears the end of his
+         sentence (1-Oct review: KM BOT's scenario F lets go 1.5 s after the phrase; the
+         sheet now does what the receipt proves). Play shuts it at once. */
+      muteSoon();
+      if (settling) finishSettle();   // the note before this one ends now
+      if (capture.owner !== h) capture.start(h);
+      settling = { h: h, quiet: null, max: null, maxAt: Date.now() + SETTLE_MAX_MS, handoff: false };
+      settling.max = setTimeout(maxDue, SETTLE_MAX_MS);
       armQuiet();
       paint();
+    }
+
+    function muteSoon() {
+      clearTimeout(muteTimer);
+      muteTimer = setTimeout(function () {
+        muteTimer = null;
+        if (!hold && call) call.mute(true);
+        paint();
+      }, RELEASE_GRACE_MS);
+    }
+
+    function muteNow() {
+      clearTimeout(muteTimer);
+      muteTimer = null;
+      if (call) call.mute(true);
     }
 
     function armQuiet() {
       if (!settling) return;
       clearTimeout(settling.quiet);
-      settling.quiet = setTimeout(finishSettle, SETTLE_QUIET_MS);
+      settling.quiet = setTimeout(quietDue, settling.handoff ? HANDOFF_QUIET_MS : SETTLE_QUIET_MS);
+    }
+
+    // Pressed again before the last note's words stopped: they get a short while more.
+    function handOff() {
+      var s = settling;
+      s.handoff = true;
+      clearTimeout(s.max);
+      s.max = setTimeout(maxDue, Math.max(0, Math.min(HANDOFF_MAX_MS, s.maxAt - Date.now())));
+      armQuiet();
+    }
+
+    function quietDue() {
+      if (!settling) return;
+      // The mic is still open after he let go: more of his sentence may come.
+      if (muteTimer) { armQuiet(); return; }
+      settleNow();
+    }
+
+    function maxDue() { if (settling) settleNow(); }
+
+    function settleNow() {
+      if (!closing) { finishSettle(); return; }
+      /* The sheet is closing. stop() hands over what the voice still holds as one
+         "said" (its own flush), which lands on this note while the call's events
+         still count; the call is stopped here, once. */
+      var old = call;
+      call = null;
+      if (old) { try { old.stop(); } catch (e) { /* already down */ } }
+      finishSettle();
     }
 
     function finishSettle() {
@@ -573,21 +757,29 @@
       settling = null;
       clearTimeout(s.quiet);
       clearTimeout(s.max);
-      var words = capture.words();
-      capture.stop();
       var h = s.h;
+      var words = capture.owner === h ? capture.words() : "";
+      if (capture.owner === h) capture.stop();
       h.words = words;
+      // A press that waited for these words to end: its own words start here.
+      if (hold && !closing) capture.start(hold);
       h.pinning.then(function (id) {
         if (!id) return;
         if (words) { saveWords(h, true); return; }
         if (saved[id]) return;
+        // Never because the sheet closed: the note stays on the server, and reads
+        // "not confirmed yet" when the notes open again.
+        if (gone()) return;
         dropNote(id);
-        say(h.heardReady || voice === "ready"
-          ? "No words were caught at " + clock(h.t) + ", so that note was taken back. Hold and say it again."
-          : "The voice was still connecting, so nothing was heard at " + clock(h.t)
-            + ". That note was taken back. Hold again once it is ready.");
+        say(h.voiceLost
+          ? "The voice dropped while you talked at " + clock(h.t) + ", so that note was taken back. Hold to reconnect and say it again."
+          : h.heardReady || voice === "ready"
+            ? "No words were caught at " + clock(h.t) + ", so that note was taken back. Hold and say it again."
+            : "The voice was still connecting, so nothing was heard at " + clock(h.t)
+              + " and that note was taken back. Hold again.");
       });
-      paint();
+      if (closing) finishClose();
+      else paint();
     }
 
     /* His words on the note, as the voice transcribed them. Saved when the voice
@@ -603,6 +795,7 @@
           var row = await api("/production/talk/" + sitting.id + "/notes/" + id, {
             method: "PATCH", body: { heard: words }
           });
+          if (gone()) return;   // saved; the sheet has nothing left to draw it on
           notes = notes.map(function (n) { return n.id === id ? row : n; });
           drawNotes();
           if (final) say("Saved at " + clock(h.t) + ". The editor answers out loud, and in writing on the note.");
@@ -629,29 +822,31 @@
     function onPlay() {
       // He played it: he is not talking any more, and the editor goes quiet.
       if (hold) release();
-      if (call) { call.mute(true); call.hush(); call.quiet(true); }
-      speaking = false;
+      muteNow();   // the video's sound (his own voice) is never taken as a note
+      if (call) { call.hush(); call.quiet(true); }
+      stopSpeaking();
       paint();
     }
     function onPause() {
-      if (call && !closed) call.quiet(false);
+      // The answer may be heard again, but never while he holds: his press paused it.
+      if (call && !gone() && !hold) call.quiet(false);
       paint();
     }
 
     // ----------------------------------------------------------- the screen
 
     async function lockScreen() {
-      if (closed || wakeLock || !global.navigator.wakeLock || document.visibilityState !== "visible") return;
+      if (gone() || wakeLock || !global.navigator.wakeLock || document.visibilityState !== "visible") return;
       try {
         var lock = await global.navigator.wakeLock.request("screen");
-        if (closed) { lock.release().catch(function () {}); return; }
+        if (gone()) { lock.release().catch(function () {}); return; }
         wakeLock = lock;
         if (lock.addEventListener) lock.addEventListener("release", function () { if (wakeLock === lock) wakeLock = null; });
       } catch (error) { /* a phone in power saving can refuse; the sheet still works */ }
     }
 
     function onVisible() {
-      if (document.visibilityState !== "visible" || closed) return;
+      if (document.visibilityState !== "visible" || gone()) return;
       lockScreen();
       // Back from signing in to the voice in the other tab: try again.
       if (voice === "signin" || voice === "unavailable") loadVoice();
@@ -666,11 +861,12 @@
       try { button.setPointerCapture(event.pointerId); } catch (e) { /* synthetic pointer */ }
       press();
     }
+    function onRelease() { release(false); }
     function onKeyDown(event) {
       if ((event.key === " " || event.key === "Enter") && !event.repeat) { event.preventDefault(); press(); }
     }
     function onKeyUp(event) {
-      if (event.key === " " || event.key === "Enter") { event.preventDefault(); release(); }
+      if (event.key === " " || event.key === "Enter") { event.preventDefault(); release(false); }
     }
     function noMenu(event) { event.preventDefault(); }
     function onNotesClick(event) {
@@ -683,9 +879,9 @@
     button.addEventListener("pointerdown", onPointerDown);
     // pointercancel (the phone took the gesture over) is a release, not a discard:
     // what he said is kept.
-    button.addEventListener("pointerup", release);
-    button.addEventListener("pointercancel", release);
-    button.addEventListener("lostpointercapture", release);
+    button.addEventListener("pointerup", onRelease);
+    button.addEventListener("pointercancel", onRelease);
+    button.addEventListener("lostpointercapture", onRelease);
     button.addEventListener("keydown", onKeyDown);
     button.addEventListener("keyup", onKeyUp);
     button.addEventListener("contextmenu", noMenu);
@@ -702,7 +898,7 @@
       voice = "loading";
       paint();
       var result = await loadVoiceClient(opts.voiceScript);
-      if (closed) return;
+      if (gone()) return;
       if (!result.ok) {
         voice = result.status === 401 || result.status === 403 ? "signin" : "unavailable";
         voiceWhy = result.status ? "the voice answered " + result.status : "no connection to the voice";
@@ -712,17 +908,35 @@
       startCall();
     }
 
-    function close() {
+    function finishClose() {
       if (closed) return;
-      if (hold) release();
-      finishSettle();                    // words already heard are still saved
       closed = true;
+      clearTimeout(muteTimer);
+      muteTimer = null;
+      var old = call;
+      call = null;
+      callToken = null;
+      if (old) { try { old.stop(); } catch (e) { /* already down */ } }
+      if (closing && closing.resolve) closing.resolve();
+    }
+
+    /* The sheet closes. The bar goes at once; the call ends once the last note's words
+       have landed (1-Oct review: a close right after letting go took the note back, or
+       saved it without its last words). Every note stays on the server. Returns a
+       promise of the moment the call is let go. */
+    function close() {
+      if (closing) return closing.promise;
+      if (hold) release(true);
+      var resolve;
+      closing = { promise: new Promise(function (r) { resolve = r; }) };
+      closing.resolve = resolve;
       clearTimeout(pollTimer);
       clearTimeout(noticeTimer);
+      stopSpeaking();
       button.removeEventListener("pointerdown", onPointerDown);
-      button.removeEventListener("pointerup", release);
-      button.removeEventListener("pointercancel", release);
-      button.removeEventListener("lostpointercapture", release);
+      button.removeEventListener("pointerup", onRelease);
+      button.removeEventListener("pointercancel", onRelease);
+      button.removeEventListener("lostpointercapture", onRelease);
       if (video) {
         video.removeEventListener("play", onPlay);
         video.removeEventListener("pause", onPause);
@@ -731,15 +945,14 @@
       if (opts.notes) opts.notes.removeEventListener("click", onNotesClick);
       document.removeEventListener("visibilitychange", onVisible);
       if (wakeLock) { wakeLock.release().catch(function () {}); wakeLock = null; }
-      var old = call;
-      call = null;
-      callToken = null;
-      if (old) { try { old.stop(); } catch (e) { /* already down */ } }
       root.innerHTML = "";
+      if (!settling) finishClose();
+      return closing.promise;
     }
 
     drawNotes();
     paint();
+    tellHandBack(false);
     lockScreen();
     loadVoice();
     schedule();
@@ -749,6 +962,7 @@
       refresh: refresh,
       get voice() { return voice; },
       get holding() { return Boolean(hold); },
+      get speaking() { return speaking; },
       get renderRef() { return sitting.ref; },
       // For the sheet's own "reload the new video" path: pins go to that render now.
       setRenderRef: function (ref) { sitting.ref = ref || null; }
@@ -762,7 +976,11 @@
     noteView: noteView,
     notesHtml: notesHtml,
     clock: clock,
+    plainError: plainError,
     VOICE_SCRIPT: VOICE_SCRIPT,
-    DROPPED: DROPPED
+    DROPPED: DROPPED,
+    VOICE_PROBLEM: VOICE_PROBLEM,
+    RELEASE_GRACE_MS: RELEASE_GRACE_MS,
+    SPEAKING_QUIET_MS: SPEAKING_QUIET_MS
   };
 })(window);
