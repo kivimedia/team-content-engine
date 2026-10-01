@@ -1167,6 +1167,20 @@ def map_to_source(t: float, keep: list[list[float]]) -> float | None:
     return None
 
 
+def edit_join(t: float, keep: list[list[float]]) -> float:
+    """Where a second of the recording sits in the edit, even when the edit left it out.
+
+    A second in the edit is its own second (map_to_edit). A second a cut removed sits at
+    the join where that cut is: the end of everything kept before it (1-Oct review: a
+    note whose second a new render cut kept its old edit second, and the moment it
+    pointed at on the new file was another word).
+    """
+    on_edit = map_to_edit(t, keep)
+    if on_edit is not None:
+        return on_edit
+    return sum(float(e) - float(s) for s, e in keep if float(e) <= t)
+
+
 def edit_length(keep: list[list[float]]) -> float:
     """How long the edited video is."""
     return sum(float(e) - float(s) for s, e in keep)

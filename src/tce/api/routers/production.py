@@ -1075,10 +1075,37 @@ async def _refuse_while_sitting(db: AsyncSession, ws: uuid.UUID, upload_id: uuid
         raise HTTPException(status_code=409, detail=SITTING_REFUSAL)
 
 
+# 1-Oct review: a typed request being carried out is editing the video too. It reads the
+# words, waits on the subscription worker (up to 15 minutes), then rewrites them and
+# renders: a sitting opened meanwhile would have the file change under its player.
+# upload id -> {request id: what that request is doing now}, for the requests running
+# in this process (like the render lock). A request parked until a restart (the worker
+# was away) is not running; when it carries on it joins or waits for his notes instead.
+_requests_running: dict[uuid.UUID, dict[uuid.UUID, str]] = {}
+
+
+def request_busy_sentence(status: str) -> str:
+    return f"An editing request you typed is being made right now ({status}). Give your notes once it is done."
+
+
+def _request_running(upload_id: uuid.UUID, request_id: uuid.UUID, status: str) -> None:
+    _requests_running.setdefault(upload_id, {})[request_id] = status
+
+
+def _request_stopped(request_id: uuid.UUID) -> None:
+    for upload_id, running in list(_requests_running.items()):
+        running.pop(request_id, None)
+        if not running:
+            _requests_running.pop(upload_id, None)
+
+
 def upload_busy(row: RecordingUpload) -> str | None:
     """What is editing this video right now, in his words; None when nothing is."""
     if row.status in BUSY_STATUSES or AUTO_MARK in (row.job_ids or []) or _render_lock(row.id).locked():
         return row.status_detail or "This video is being edited right now."
+    running = _requests_running.get(row.id)
+    if running:
+        return request_busy_sentence(list(running.values())[-1])
     return None
 
 
@@ -2222,128 +2249,260 @@ def start_auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
         _spawn(auto_edit(upload_id, ws))
 
 
-async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
-    """Carry out one editing request on the subscription, or ask one question."""
-    from tce.llm import LLMUnavailable
+EDIT_REQUEST_ROUNDS = 2  # the words changed while it read: read once more, then ask him
+REQUEST_JOINED = (
+    "Added to your notes on this video: it is made with them, in one re-render, when you say make it."
+)
+REQUEST_WAITS_FOR_NOTES = (
+    "Waiting: your notes on this video are being made into a new version first. "
+    "This request is read after that, on the new version."
+)
+REQUEST_WORDS_MOVED = (
+    "The words of this video changed twice while your editor was reading this request, "
+    "so nothing was changed. Send it again."
+)
+REQUEST_NOTES_TOOK_TOO_LONG = (
+    "Your notes on this video were still being made, so this request was not carried out. "
+    "Send it again once the new version is ready."
+)
+
+
+def edit_request_key(request_id: uuid.UUID, prompt: str, system: str) -> str:
+    """Everything the request's job reads is in its key, like _review_key: words that
+    changed while it read are read again as a new job (1-Oct review), and a changed
+    skill file or history is no longer refused by the queue as a reused key."""
+    body = "\x1f".join([autoedit.PROMPT_VERSION, system, prompt])
+    return f"edit-request:{request_id}:{hashlib.sha256(body.encode()).hexdigest()[:24]}"
+
+
+async def _load_request(s: AsyncSession, request_id: uuid.UUID, ws: uuid.UUID):
     from tce.models.editorial_workspace import EditingRequest
 
-    async def settle(state: str, result: dict[str, Any]) -> None:
-        async with session_factory()() as s:
-            req = (
-                await s.execute(
-                    select(EditingRequest).where(
-                        EditingRequest.id == request_id, EditingRequest.workspace_id == ws
-                    )
-                )
-            ).scalar_one()
-            req.state = state
-            req.result = result
-            req.updated_at = _utcnow()
-            if state in ("done", "needs_you", "rejected"):
-                req.resolved_at = _utcnow()
-            await s.commit()
+    query = select(EditingRequest).where(EditingRequest.id == request_id, EditingRequest.workspace_id == ws)
+    return (await s.execute(query)).scalar_one_or_none()
 
-    try:
+
+async def _join_his_notes(s: AsyncSession, ws: uuid.UUID, req: Any) -> bool:
+    """He is giving notes on this video: the request becomes one more of them (made with
+    the others in one re-render) instead of re-rendering under his player."""
+    sitting = await library_service.joinable_sitting(s, ws, req.upload_id)
+    if sitting is None:
+        return False
+    await library_service.join_sitting(s, req, sitting)
+    req.result = {"status": REQUEST_JOINED}
+    await s.commit()
+    return True
+
+
+async def _request_gate(request_id: uuid.UUID, ws: uuid.UUID, upload_id: uuid.UUID, settle) -> str:
+    """Before the request is read: "go"; "joined" when it became a note of the sitting he
+    is giving notes in; "gone" when it is no longer to be carried out. While a sitting's
+    notes are being made it waits for them (its words would be read before the batch
+    changes them), then reads the video as it is after."""
+    deadline = _utcnow() + timedelta(hours=settings.production_review_wait_h)
+    said_waiting = False
+    while True:
         async with session_factory()() as s:
-            req = (
-                await s.execute(
-                    select(EditingRequest).where(
-                        EditingRequest.id == request_id, EditingRequest.workspace_id == ws
-                    )
-                )
-            ).scalar_one_or_none()
+            req = await _load_request(s, request_id, ws)
             if req is None or req.state not in ("open", "in_progress"):
-                return
-            row = await _load(s, req.upload_id, ws)
-            upload_id = row.id
-            words = list(row.transcript or [])
-            keep = [list(r) for r in (row.edit_plan or {}).get("keep") or []]
-            kept = list((row.edit_plan or {}).get("words") or [])
-            context = await _script_context(s, ws, row)
-            text, scope, start_s, end_s = req.request, req.scope, req.start_s, req.end_s
-            src = row.storage_path
-            # One conversation per video (30-Sep: six notes about one "cou", each read as
-            # new, got the same question back six times).
-            earlier = (
-                await s.execute(
-                    select(EditingRequest)
-                    .where(
-                        EditingRequest.upload_id == upload_id,
-                        EditingRequest.workspace_id == ws,
-                        EditingRequest.id != request_id,
-                        EditingRequest.created_at <= req.created_at,
-                        # 1-Oct review: a note given in a sitting that was never made (taken
-                        # back, or still waiting for "make it") is not something he asked
-                        # for; the voice test call drops one on a video every run.
-                        EditingRequest.session_id.is_(None)
-                        | EditingRequest.state.not_in(SITTING_NOTES_NEVER_MADE),
-                    )
-                    .order_by(EditingRequest.created_at)
+                return "gone"
+            if await library_service.working_sitting(s, ws, upload_id) is None:
+                return "joined" if await _join_his_notes(s, ws, req) else "go"
+        if _utcnow() >= deadline:
+            await settle("needs_you", {"question": REQUEST_NOTES_TOOK_TOO_LONG})
+            return "gone"
+        if not said_waiting:
+            await settle("in_progress", {"status": REQUEST_WAITS_FOR_NOTES})
+            said_waiting = True
+        await _sitting_recheck()
+
+
+async def _sitting_recheck() -> None:
+    """The pause between two looks at a sitting whose notes are being made."""
+    await asyncio.sleep(SITTING_RECHECK_S)
+
+
+async def _request_inputs(request_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any] | None:
+    """What the request's job reads, in one snapshot."""
+    from tce.models.editorial_workspace import EditingRequest
+
+    async with session_factory()() as s:
+        req = await _load_request(s, request_id, ws)
+        if req is None or req.state not in ("open", "in_progress"):
+            return None
+        row = await _load(s, req.upload_id, ws)
+        # One conversation per video (30-Sep: six notes about one "cou", each read as
+        # new, got the same question back six times).
+        earlier = (
+            await s.execute(
+                select(EditingRequest)
+                .where(
+                    EditingRequest.upload_id == row.id,
+                    EditingRequest.workspace_id == ws,
+                    EditingRequest.id != request_id,
+                    EditingRequest.created_at <= req.created_at,
+                    # 1-Oct review: a note given in a sitting that was never made (taken
+                    # back, or still waiting for "make it") is not something he asked
+                    # for; the voice test call drops one on a video every run.
+                    EditingRequest.session_id.is_(None)
+                    | EditingRequest.state.not_in(SITTING_NOTES_NEVER_MADE),
                 )
-            ).scalars().all()
-            history = [
+                .order_by(EditingRequest.created_at)
+            )
+        ).scalars().all()
+        return {
+            "words": list(row.transcript or []),
+            "keep": [list(r) for r in (row.edit_plan or {}).get("keep") or []],
+            "kept": list((row.edit_plan or {}).get("words") or []),
+            "context": await _script_context(s, ws, row),
+            "text": req.request,
+            "scope": req.scope,
+            "start_s": req.start_s,
+            "end_s": req.end_s,
+            "src": row.storage_path,
+            "history": [
                 {
                     "request": str(e.request),
                     "reply": str((e.result or {}).get("reply") or ""),
                     "question": str((e.result or {}).get("question") or ""),
                 }
                 for e in earlier[-12:]
-            ]
-        if not words or not keep:
-            await settle("open", {"status": "Waiting: this recording is not edited yet."})
-            return
-        await settle("in_progress", {"status": "Reading your request on the subscription"})
-        marks = await word_marks_for(src, words, keep)
-        try:
-            answer = await _ask(
-                autoedit.EDIT_REQUEST_JOB,
-                autoedit.edit_request_prompt(
-                    words, keep, context, text, scope=scope, start_s=start_s, end_s=end_s,
-                    kept=kept, marks=marks, history=history,
-                ),
-                autoedit.edit_request_system(),
-                autoedit.EDIT_REQUEST_SCHEMA,
-                ws,
-                f"edit-request:{request_id}",
-            )
-        except LLMUnavailable as exc:
-            await settle("in_progress", {"status": f"Waiting for the subscription worker ({exc.status})"})
-            return
-        out = answer.structured or {}
-        if out.get("needs_you"):
-            await settle(
-                "needs_you",
-                {"reply": str(out.get("reply") or ""), "question": str(out.get("question") or "")},
-            )
-            return
-        fixed, applied = autoedit.apply_corrections(words, out.get("corrections") or [])
-        cut = autoedit.word_ranges(words, out.get("cut") or [])
-        restore = autoedit.word_ranges(words, out.get("restore") or [])
-        hold = autoedit.word_holds(words, out.get("hold") or [])
-        if not (applied or cut or restore or hold) and str(out.get("reply") or "").strip():
-            # An answer, not a change (30-Sep: "the phone cut the 's' off 'course'; no cut
-            # can bring it back" is the whole answer, not a question back to him).
-            await settle("done", {"reply": str(out["reply"]), "changed": False, "model": answer.model})
-            return
-        if not (applied or cut or restore or hold):
-            await settle(
-                "needs_you",
-                {
-                    "reply": str(out.get("reply") or ""),
-                    "question": "I could not turn that into a change to the video. "
-                    "What exactly should change, and roughly where?",
-                },
-            )
-            return
-        await settle("in_progress", {"status": "Applying your changes and re-rendering"})
+            ],
+        }
+
+
+async def _apply_request(
+    request_id: uuid.UUID,
+    ws: uuid.UUID,
+    upload_id: uuid.UUID,
+    words: list[dict[str, Any]],
+    change: tuple[list[dict[str, Any]], list[Any], list[Any], list[Any]],
+    settle,
+) -> RecordingUpload | str:
+    """Write what the request changes and render once, under the render lock. Returns
+    the video as it ended, or "joined" (he is giving notes: it joined them), "gate" (a
+    sitting's notes started being made: wait for them), "changed" (the words moved
+    while it read: read them again)."""
+    fixed, cut, restore, hold = change
+    fp = library_service.transcript_fingerprint
+    async with _render_lock(upload_id):
         async with session_factory()() as s:
+            if await library_service.working_sitting(s, ws, upload_id) is not None:
+                return "gate"
+            req = await _load_request(s, request_id, ws)
+            if req is not None and await _join_his_notes(s, ws, req):
+                return "joined"
             row = await _load(s, upload_id, ws)
+            if fp(row.transcript) != fp(words):
+                return "changed"
             row.transcript = fixed
             plan = dict(row.edit_plan or {})
             plan["overrides"] = autoedit.merge_overrides(plan.get("overrides"), cut, restore, hold)
             row.edit_plan = plan
             await s.commit()
-        row = await _plan_and_render(upload_id, ws)
+        await settle("in_progress", {"status": "Applying your changes and re-rendering"})
+        return await _plan_and_render_locked(upload_id, ws)
+
+
+async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
+    """Carry out one editing request on the subscription, or ask one question.
+
+    1-Oct review: a request read the words, waited on the worker, then wrote back words
+    fixed from that old copy (undoing a batch's fixes made meanwhile) and rendered under
+    a sitting. Now: while he is giving notes on the video it joins them as one more note;
+    while a sitting's notes are being made it waits, then reads the new words; and it
+    writes only under the render lock, only over the words it read (changed: it reads
+    them again as a new job). While it runs, notes cannot be opened (upload_busy).
+    """
+    from tce.llm import LLMUnavailable
+
+    upload_id: uuid.UUID | None = None
+
+    async def settle(state: str, result: dict[str, Any]) -> None:
+        async with session_factory()() as s:
+            req = await _load_request(s, request_id, ws)
+            if req is None:
+                return
+            req.state = state
+            req.result = result
+            req.updated_at = _utcnow()
+            if state in ("done", "needs_you", "rejected"):
+                req.resolved_at = _utcnow()
+            await s.commit()
+        if upload_id is not None and state == "in_progress" and result.get("status"):
+            _request_running(upload_id, request_id, str(result["status"]))
+
+    try:
+        async with session_factory()() as s:
+            req = await _load_request(s, request_id, ws)
+            if req is None or req.state not in ("open", "in_progress"):
+                return
+            upload_id = req.upload_id
+        _request_running(upload_id, request_id, "Reading your request on the subscription")
+        moved = 0
+        while True:
+            if await _request_gate(request_id, ws, upload_id, settle) != "go":
+                return
+            got = await _request_inputs(request_id, ws)
+            if got is None:
+                return
+            words, keep = got["words"], got["keep"]
+            if not words or not keep:
+                await settle("open", {"status": "Waiting: this recording is not edited yet."})
+                return
+            await settle("in_progress", {"status": "Reading your request on the subscription"})
+            marks = await word_marks_for(got["src"], words, keep)
+            prompt = autoedit.edit_request_prompt(
+                words, keep, got["context"], got["text"], scope=got["scope"], start_s=got["start_s"],
+                end_s=got["end_s"], kept=got["kept"], marks=marks, history=got["history"],
+            )
+            system = autoedit.edit_request_system()
+            try:
+                answer = await _ask(
+                    autoedit.EDIT_REQUEST_JOB, prompt, system, autoedit.EDIT_REQUEST_SCHEMA, ws,
+                    edit_request_key(request_id, prompt, system),
+                )
+            except LLMUnavailable as exc:
+                await settle("in_progress", {"status": f"Waiting for the subscription worker ({exc.status})"})
+                return
+            out = answer.structured or {}
+            if out.get("needs_you"):
+                await settle(
+                    "needs_you",
+                    {"reply": str(out.get("reply") or ""), "question": str(out.get("question") or "")},
+                )
+                return
+            fixed, applied = autoedit.apply_corrections(words, out.get("corrections") or [])
+            cut = autoedit.word_ranges(words, out.get("cut") or [])
+            restore = autoedit.word_ranges(words, out.get("restore") or [])
+            hold = autoedit.word_holds(words, out.get("hold") or [])
+            if not (applied or cut or restore or hold) and str(out.get("reply") or "").strip():
+                # An answer, not a change (30-Sep: "the phone cut the 's' off 'course'; no
+                # cut can bring it back" is the whole answer, not a question back to him).
+                await settle("done", {"reply": str(out["reply"]), "changed": False, "model": answer.model})
+                return
+            if not (applied or cut or restore or hold):
+                await settle(
+                    "needs_you",
+                    {
+                        "reply": str(out.get("reply") or ""),
+                        "question": "I could not turn that into a change to the video. "
+                        "What exactly should change, and roughly where?",
+                    },
+                )
+                return
+            row = await _apply_request(request_id, ws, upload_id, words, (fixed, cut, restore, hold), settle)
+            if row == "joined":
+                return
+            if row == "gate":
+                continue  # a sitting's notes are being made: wait for them, then read again
+            if row == "changed":
+                moved += 1
+                if moved >= EDIT_REQUEST_ROUNDS:
+                    await settle("needs_you", {"reply": str(out.get("reply") or ""), "question": REQUEST_WORDS_MOVED})
+                    return
+                continue
+            break
         result = {
             "reply": str(out.get("reply") or "Done."),
             "corrections": [{"heard": c["heard"], "replacement": c["replacement"]} for c in applied],
@@ -2359,10 +2518,16 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             await settle("needs_you", {**result, "question": f"The re-render stopped: {row.status_detail}"})
     except Exception as exc:  # noqa: BLE001 - lands on the request
         await settle("in_progress", {"status": f"Stopped with an error; it retries on restart: {str(exc)[:300]}"})
+    finally:
+        _request_stopped(request_id)
 
 
-def start_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
+def start_edit_request(request_id: uuid.UUID, ws: uuid.UUID, upload_id: uuid.UUID | None = None) -> None:
+    """Carry the request out now. With `upload_id` the video counts as busy from this
+    moment, before the task first runs, so notes cannot open in between."""
     if settings.production_auto_edit:
+        if upload_id is not None:
+            _request_running(upload_id, request_id, "Reading your request on the subscription")
         _spawn(run_edit_request(request_id, ws))
 
 
@@ -2377,10 +2542,17 @@ TALK_WORKER_RETRY_S = 30.0  # the worker is away: ask again this often
 TALK_MAX_ASKS = 2  # the words changed while it read: read once more, then hand the notes back
 
 
-def talk_key(session_id: uuid.UUID, prompt: str, system: str) -> str:
+def talk_key(session_id: uuid.UUID, prompt: str, system: str, attempt: int = 0) -> str:
     """Everything the batch reads is in its key, like _review_key: a changed skill file,
-    note or transcript is a new job instead of the queue refusing a reused key."""
-    body = "\x1f".join([autoedit.EDIT_BATCH_PROMPT_VERSION, system, prompt])
+    note or transcript is a new job instead of the queue refusing a reused key.
+
+    `attempt` counts his "make it" taps on the sitting (1-Oct review): after a failed job
+    (an expired worker login is never re-queued) the same notes tapped again are a new
+    job, not the failed one for ever. The worker-away wait and a restart keep the key."""
+    parts = [autoedit.EDIT_BATCH_PROMPT_VERSION, system, prompt]
+    if attempt > 1:
+        parts.append(f"attempt {attempt}")
+    body = "\x1f".join(parts)
     return f"edit-batch:{session_id}:{hashlib.sha256(body.encode()).hexdigest()[:24]}"
 
 
@@ -2485,17 +2657,27 @@ async def _talk_inputs(session_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any] |
             )
         ).scalars().all()
         plan = row.edit_plan or {}
+        # 1-Oct review: the notes were given on the file he watched, so the editor reads
+        # them against that file's keep, never a plan that moved on since (an uncut
+        # render, a blocked re-plan, a failed render). The plan's word times only while
+        # the plan is still that edit, the same rule as the moment.
+        watched = [list(r) for r in sitting.keep_snapshot or []]
+        plan_keep = [list(r) for r in plan.get("keep") or []]
+        keep = watched or plan_keep
+        kept = library_service.watched_plan_words(plan, keep)
         return {
             "upload_id": row.id,
             "words": list(row.transcript or []),
-            "keep": [list(r) for r in plan.get("keep") or []],
-            "kept": list(plan.get("words") or []),
+            "keep": keep,
+            "kept": kept or [],
+            "plan_moved": bool(watched) and bool(plan_keep) and kept is None,
             "context": await _script_context(s, ws, row),
             "src": row.storage_path,
             "note_ids": [n.id for n in notes],
             "notes": [_talk_note(n) for n in notes],
             "history": [_history_row(e) for e in earlier if e.session_id != sitting.id][-12:],
             "submitted_at": sitting.submitted_at,
+            "attempt": int((sitting.result or {}).get("attempt") or 0),
         }
 
 
@@ -2756,10 +2938,10 @@ async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
             marks = await word_marks_for(got["src"], got["words"], got["keep"])
             prompt = autoedit.edit_batch_prompt(
                 got["words"], got["keep"], got["context"], got["notes"],
-                kept=got["kept"], marks=marks, history=got["history"],
+                kept=got["kept"], marks=marks, history=got["history"], plan_moved=got["plan_moved"],
             )
             system = autoedit.edit_batch_system()
-            key = talk_key(session_id, prompt, system)
+            key = talk_key(session_id, prompt, system, got["attempt"])
             count = len(got["notes"])
             reading = f"Reading your {count} note{'s' if count != 1 else ''} on the subscription"
             await _talk_status(session_id, ws, reading, llm_key=key)
@@ -2830,6 +3012,12 @@ async def run_talk_undo(session_id: uuid.UUID, ws: uuid.UUID) -> None:
         async with _render_lock(upload_id):
             async with session_factory()() as s:
                 sitting = await _load_sitting(s, session_id, ws)
+                # 1-Oct review: two taps at once start two of these. The one that waited
+                # for the lock finds the undo done (or stopped) by the other: nothing to
+                # do, and nothing to overwrite with "the video was changed".
+                undo_state = ((sitting.result or {}).get("undo") or {}).get("state")
+                if not sitting.before or undo_state not in ("queued", "rendering"):
+                    return
                 before = dict(sitting.before or {})
                 row = await _load(s, upload_id, ws)
                 overrides = (row.edit_plan or {}).get("overrides")

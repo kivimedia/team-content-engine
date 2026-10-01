@@ -972,7 +972,8 @@ async def create_edit_request(
     async with open_session(sm) as db:
         try:
             # 30-Sep: while he is giving notes on this video, a typed request is one more
-            # note in that sitting, made with the others in one re-render.
+            # note in that sitting, made with the others in one re-render. 1-Oct: while
+            # that sitting's notes are being made it is refused (409), never run beside them.
             sitting = await library_service.sitting_for_typed_note(db, ws, uid)
             row = await library_service.create_edit_request(
                 db,
@@ -996,7 +997,7 @@ async def create_edit_request(
     # 25-Sep: TCE carries the request out itself, on the subscription worker.
     from tce.api.routers import production as production_routes
 
-    production_routes.start_edit_request(row.id, ws)
+    production_routes.start_edit_request(row.id, ws, upload_id=uid)
     return payload
 
 
@@ -1202,11 +1203,14 @@ async def talk_submit_preview(
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
-    """The read-back he hears before anything renders, and its check code."""
+    """The read-back he hears before anything renders, and its check code. 409 while
+    something else is editing the video, or once it changed under the notes."""
+    from tce.api.routers import production as production_routes
+
     sid = _uuid(session_id, "sitting")
     async with open_session(sm) as db:
         try:
-            payload = await library_service.submit_preview(db, ws, sid)
+            payload = await library_service.submit_preview(db, ws, sid, busy=production_routes.upload_busy)
             await db.commit()
         except ServiceError as error:
             raise _http(error) from error
@@ -1228,7 +1232,9 @@ async def talk_submit(
     by = _actor(body.by)
     async with open_session(sm) as db:
         try:
-            sitting, preview = await library_service.submit(db, ws, sid, check=body.check, by=by)
+            sitting, preview = await library_service.submit(
+                db, ws, sid, check=body.check, by=by, busy=production_routes.upload_busy
+            )
             payload = await _sitting_payload(db, ws, sitting)
             payload["read_back"] = preview["read_back"]
             await db.commit()

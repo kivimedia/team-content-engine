@@ -26,7 +26,7 @@ from tce.editorial import library
 from tce.llm import LLMUnavailable
 from tce.llm.provider import LLMResult
 from tce.models.editorial import RecordingUpload, TopicCandidate
-from tce.models.editorial_workspace import EditSession
+from tce.models.editorial_workspace import EditingRequest, EditSession
 from tce.production import autoedit
 from tce.production.retakes import frame_keep
 from tce.settings import settings
@@ -728,3 +728,291 @@ def test_the_sitting_says_what_the_video_is_doing_while_it_renders():
     body = library.sitting_to_json(sitting, [], upload)
     assert body["video_status"] == "rendering" and body["video_step"] == "Cutting and burning in your captions"
     assert body["can_undo"] is False
+
+
+# ---------------------------------------------------------------- review findings, 1-Oct
+#
+# A typed request and a sitting on the same video, a note left out at "make it", a
+# failed job, a plan that moved, and two undo taps.
+
+
+def request_answer(*corrections, cut=(), reply="Done."):
+    return {
+        "reply": reply, "needs_you": False, "question": "", "corrections": list(corrections),
+        "cut": list(cut), "restore": [], "hold": [],
+    }
+
+
+async def typed_request(sm, ws, uid, text: str, state: str = "open") -> uuid.UUID:
+    """A request typed on the Library card, outside any sitting."""
+    async with sm() as s:
+        req = EditingRequest(
+            workspace_id=ws, upload_id=uid, scope="whole", request=text, state=state, created_by="ziv"
+        )
+        s.add(req)
+        await s.commit()
+        return req.id
+
+
+def held_on(event: asyncio.Event, gate: asyncio.Event, answer: dict):
+    """An answer that arrives only when the test lets it: the job is being read meanwhile."""
+
+    async def slow():
+        event.set()
+        await gate.wait()
+        return answer
+
+    return slow
+
+
+async def test_a_typed_request_while_the_notes_are_being_made_is_refused_not_run(
+    wired, client, tmp_path, monkeypatch
+):
+    ran: list = []
+    monkeypatch.setattr(prod, "start_edit_request", lambda rid, ws, **_k: ran.append(rid))
+    sm = wired["sm"]
+    ws, uid = await seed(sm, tmp_path)
+    sid, _ = await sit(sm, ws, uid, [(3.2, "no not", None)])  # thinking: the batch is on its way
+    url = f"/api/v1/production/recordings/{uid}/edit-requests"
+    for state in ("thinking", "rendering"):
+        async with sm() as s:
+            (await s.get(EditSession, sid)).state = state
+            await s.commit()
+        r = await client.post(url, json={"request": "and make the captions bigger"}, headers=headers(ws))
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == {"code": "notes_being_made", "message": library.NOTES_BEING_MADE}
+    assert ran == []
+    async with sm() as s:
+        assert len(await library.list_edit_requests(s, ws, uid)) == 1  # only the sitting's own note
+
+
+async def test_a_request_that_read_the_words_before_a_batch_never_undoes_its_fixes(wired, tmp_path):
+    sm = wired["sm"]
+    ws, uid = await seed(sm, tmp_path)
+    rid = await typed_request(sm, ws, uid, "say truly, not really")
+    reading, go = asyncio.Event(), asyncio.Event()
+    wired["answers"].append(held_on(reading, go, request_answer(fix(4, 4, "really", "truly"))))
+    task = asyncio.create_task(prod.run_edit_request(rid, ws))
+    await asyncio.wait_for(reading.wait(), 10)
+
+    # A sitting made past the gates (a restart resumed the request while he gave notes):
+    # its batch fixes "Not after" and renders while the request is still being read.
+    sid, (n1,) = await sit(sm, ws, uid, [(3.2, "no not", None)])
+    wired["answers"].append({
+        "summary": "Removed 'Not'.",
+        "notes": [note(1, reply="Removed 'Not'.", corrections=[fix(6, 7, "Not after", "After")])],
+    })
+    await prod.run_talk_session(sid, ws)
+    wired["answers"].append(request_answer(fix(4, 4, "really", "truly")))
+    go.set()
+    await asyncio.wait_for(task, 10)
+
+    asked = wired["asked"]
+    kinds = [a["kind"] for a in asked]
+    assert kinds == [autoedit.EDIT_REQUEST_JOB, autoedit.EDIT_BATCH_JOB, autoedit.EDIT_REQUEST_JOB]
+    # The words moved while it read: it read them again, as a new job.
+    assert asked[2]["key"] != asked[0]["key"] and "6:After" in asked[2]["prompt"]
+    row, sitting, notes = await state_of(sm, ws, uid, sid)
+    text = " ".join(w["text"] for w in row.transcript)
+    assert "is truly smart. After you've" in text and "Not after" not in text
+    assert notes[n1].state == "done" and len(wired["renders"]) == 2
+    async with sm() as s:
+        req = await s.get(EditingRequest, rid)
+    assert req.state == "done" and req.result["corrections"] == [{"heard": "really", "replacement": "truly"}]
+
+
+async def test_notes_cannot_open_while_a_typed_request_is_being_made_and_it_joins_a_sitting_opened_anyway(
+    wired, client, tmp_path
+):
+    sm = wired["sm"]
+    ws, uid = await seed(sm, tmp_path)
+    rid = await typed_request(sm, ws, uid, "cut the end")
+    reading, go = asyncio.Event(), asyncio.Event()
+    wired["answers"].append(held_on(reading, go, request_answer(cut=[{"first": 12, "last": 13}])))
+    task = asyncio.create_task(prod.run_edit_request(rid, ws))
+    await asyncio.wait_for(reading.wait(), 10)
+
+    r = await client.post(f"/api/v1/production/recordings/{uid}/talk", headers=headers(ws))
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "busy"
+    assert r.json()["detail"]["message"] == prod.request_busy_sentence("Reading your request on the subscription")
+
+    # A sheet that was still loaded wakes up and takes notes anyway: when the request's
+    # answer lands, it joins those notes instead of re-rendering under his player.
+    async with sm() as s:
+        sitting = await library.open_sitting(s, ws, uid)
+        pinned = await library.pin_note(s, ws, sitting.id, edit_s=1.0, render_ref=sitting.render_ref)
+        await library.update_note(s, ws, sitting.id, pinned.id, heard="louder here")
+        await s.commit()
+        sid = sitting.id
+    go.set()
+    await asyncio.wait_for(task, 10)
+    assert wired["renders"] == []
+    async with sm() as s:
+        req = await s.get(EditingRequest, rid)
+        preview = await library.submit_preview(s, ws, sid)
+    assert req.session_id == sid and req.state == "held"
+    assert req.result["status"] == prod.REQUEST_JOINED
+    assert preview["count"] == 2 and 'the whole video: you said "cut the end"' in preview["read_back"]
+    r = await client.post(f"/api/v1/production/recordings/{uid}/talk", headers=headers(ws))
+    assert r.status_code == 200 and r.json()["session_id"] == str(sid)
+
+
+async def test_a_request_resumed_while_he_gives_notes_joins_them_without_asking(wired, client, tmp_path):
+    sm = wired["sm"]
+    ws, uid = await seed(sm, tmp_path)
+    # Parked: the worker was away and the request waits for a restart to carry on.
+    rid = await typed_request(sm, ws, uid, "cut the end", state="in_progress")
+    body = (await client.post(f"/api/v1/production/recordings/{uid}/talk", headers=headers(ws))).json()
+    await prod.run_edit_request(rid, ws)  # the restart resumes it now
+    assert wired["asked"] == [] and wired["renders"] == []
+    async with sm() as s:
+        req = await s.get(EditingRequest, rid)
+    assert str(req.session_id) == body["session_id"] and req.state == "held"
+
+
+async def test_a_request_waits_while_his_notes_are_made_then_reads_the_new_words(wired, tmp_path, monkeypatch):
+    # The request looks at the sitting again only when this test says so: the suite's
+    # SQLite shares one connection between sessions, so a request polling while the
+    # batch writes would roll the batch's writes back (Postgres gives each its own).
+    looked, look_again = asyncio.Event(), asyncio.Event()
+
+    async def recheck():
+        looked.set()
+        await look_again.wait()
+
+    monkeypatch.setattr(prod, "_sitting_recheck", recheck)
+    sm = wired["sm"]
+    ws, uid = await seed(sm, tmp_path)
+    rid = await typed_request(sm, ws, uid, "say truly, not really", state="in_progress")
+    sid, (n1,) = await sit(sm, ws, uid, [(3.2, "no not", None)])
+    reading, go = asyncio.Event(), asyncio.Event()
+    wired["answers"].append(held_on(reading, go, {
+        "summary": "Removed 'Not'.",
+        "notes": [note(1, reply="Removed 'Not'.", corrections=[fix(6, 7, "Not after", "After")])],
+    }))
+    talk = asyncio.create_task(prod.run_talk_session(sid, ws))
+    await asyncio.wait_for(reading.wait(), 10)
+    request = asyncio.create_task(prod.run_edit_request(rid, ws))
+    await asyncio.wait_for(looked.wait(), 10)
+    # Its notes are being made: the request asks nothing and changes nothing yet.
+    assert [a["kind"] for a in wired["asked"]] == [autoedit.EDIT_BATCH_JOB]
+    async with sm() as s:
+        assert (await s.get(EditingRequest, rid)).result["status"] == prod.REQUEST_WAITS_FOR_NOTES
+    wired["answers"].append(request_answer(fix(4, 4, "really", "truly")))
+    go.set()
+    await asyncio.wait_for(talk, 10)
+    look_again.set()
+    await asyncio.wait_for(request, 10)
+    assert [a["kind"] for a in wired["asked"]] == [autoedit.EDIT_BATCH_JOB, autoedit.EDIT_REQUEST_JOB]
+    assert "6:After" in wired["asked"][1]["prompt"]
+    row, sitting, notes = await state_of(sm, ws, uid, sid)
+    assert "is truly smart. After you've" in " ".join(w["text"] for w in row.transcript)
+    assert notes[n1].state == "done" and len(wired["renders"]) == 2
+
+
+async def test_the_batch_reads_the_edit_he_watched_not_a_plan_that_moved(wired, tmp_path):
+    # His editor's review cut "Hey, Maple Rain, boy!", but the file on his phone is an
+    # uncut render: the words he heard must not reach the editor struck out as cut.
+    w = words(WALK)
+    removals, _ = autoedit.validate_removals(
+        w, [{"first": 6, "last": 9, "heard": "Hey, Maple Rain, boy!", "kind": "aside", "kept_from": -1, "why": "dogs"}]
+    )
+    sm = wired["sm"]
+    ws, uid = await seed(sm, tmp_path, WALK, review={"state": "done", "removals": removals})
+    async with sm() as s:
+        up = await prod._load(s, uid, ws)
+        assert not kept(up, 8)  # the plan cuts "Rain,"
+        up.rendered_keep, up.render_ref = frame_keep([[0.0, up.duration_s]]), "uncutrender00000"
+        await s.commit()
+    sid, (n1,) = await sit(sm, ws, uid, [(4.1, "take this out", None)])
+    wired["answers"].append({"summary": "", "notes": [note(1, reply="Cut 'Hey, Maple Rain, boy!'.",
+                                                            cut=[{"first": 6, "last": 9}])]})
+    await prod.run_talk_session(sid, ws)
+    prompt = wired["asked"][0]["prompt"]
+    assert "8:Rain, <note 1>" in prompt and "~~8:Rain,~~" not in prompt
+    assert autoedit.PLAN_MOVED_LINE in prompt
+
+
+async def test_the_batch_prompt_says_nothing_of_a_plan_while_it_is_the_edit_he_watched(wired, tmp_path):
+    sm = wired["sm"]
+    ws, uid = await seed(sm, tmp_path)
+    sid, _ = await sit(sm, ws, uid, [(3.2, "no not", None)])
+    wired["answers"].append({"summary": "", "notes": [note(1, reply="Nothing to change.")]})
+    await prod.run_talk_session(sid, ws)
+    assert autoedit.PLAN_MOVED_LINE not in wired["asked"][0]["prompt"]
+
+
+async def test_a_failed_job_then_make_it_again_is_a_new_job(wired, tmp_path):
+    sm = wired["sm"]
+    ws, uid = await seed(sm, tmp_path)
+    sid, (n1,) = await sit(sm, ws, uid, [(6.6, "cut the end", None)])
+    # The process went away while the job was read: after the restart the same job is asked.
+    wired["answers"].append(asyncio.CancelledError())
+    with pytest.raises(asyncio.CancelledError):
+        await prod.run_talk_session(sid, ws)
+    wired["answers"].append(LLMUnavailable("failed", "auth: the worker's login expired"))
+    await prod.run_talk_session(sid, ws)
+    asked = wired["asked"]
+    assert asked[0]["key"] == asked[1]["key"]
+    row, sitting, notes = await state_of(sm, ws, uid, sid)
+    assert sitting.state == "open" and notes[n1].state == "held"
+
+    # He fixed the login and taps Make the new version again: a new job, not the failed one.
+    async with sm() as s:
+        preview = await library.submit_preview(s, ws, sid)
+        await library.submit(s, ws, sid, check=preview["check"])
+        await s.commit()
+    wired["answers"].append({"summary": "Cut it.", "notes": [note(1, reply="Cut it.", cut=[{"first": 12, "last": 13}])]})
+    await prod.run_talk_session(sid, ws)
+    assert len(asked) == 3 and asked[2]["key"] != asked[1]["key"]
+    assert asked[2]["prompt"] == asked[1]["prompt"]  # the same notes, the same words
+    row, sitting, notes = await state_of(sm, ws, uid, sid)
+    assert sitting.state == "done" and notes[n1].state == "done" and not kept(row, 12)
+
+
+async def test_a_note_left_out_at_make_it_is_taken_back_not_stranded(wired, tmp_path):
+    sm = wired["sm"]
+    ws, uid = await seed(sm, tmp_path)
+    async with sm() as s:
+        sitting = await library.open_sitting(s, ws, uid)
+        spoke = await library.pin_note(s, ws, sitting.id, edit_s=6.6, render_ref=sitting.render_ref)
+        await library.update_note(s, ws, sitting.id, spoke.id, heard="cut the end")
+        silent = await library.pin_note(s, ws, sitting.id, edit_s=2.0, render_ref=sitting.render_ref)
+        preview = await library.submit_preview(s, ws, sitting.id)
+        assert preview["left_out"] == [str(silent.id)]
+        await library.submit(s, ws, sitting.id, check=preview["check"])
+        await s.commit()
+        sid = sitting.id
+    wired["answers"].append({"summary": "Cut it.", "notes": [note(1, reply="Cut it.", cut=[{"first": 12, "last": 13}])]})
+    await prod.run_talk_session(sid, ws)
+    row, sitting, notes = await state_of(sm, ws, uid, sid)
+    assert sitting.state == "done" and notes[spoke.id].state == "done"
+    assert notes[silent.id].state == "rejected"
+    assert notes[silent.id].result == {"left_out": library.LEFT_OUT}
+    async with sm() as s:
+        item = (await library.list_library(s, ws))["items"][0]
+    assert item["waiting_notes"] == 0
+
+
+async def test_notes_being_made_are_not_counted_as_waiting_on_the_card(wired, tmp_path):
+    sm = wired["sm"]
+    ws, uid = await seed(sm, tmp_path)
+    await sit(sm, ws, uid, [(6.6, "cut the end", None)])  # thinking
+    async with sm() as s:
+        item = (await library.list_library(s, ws))["items"][0]
+    assert item["waiting_notes"] == 0
+
+
+async def test_two_undo_tasks_put_the_version_back_once_and_say_so(wired, tmp_path):
+    ws, uid, sid, _ids, before_words = await made(wired, tmp_path)
+    async with wired["sm"]() as s:
+        await library.start_undo(s, ws, sid)
+        await s.commit()
+    # A double tap, or the voice tool and a tap: two tasks on the same queued undo.
+    await asyncio.gather(prod.run_talk_undo(sid, ws), prod.run_talk_undo(sid, ws))
+    row, sitting, _ = await state_of(wired["sm"], ws, uid, sid)
+    assert row.transcript == before_words
+    assert len(wired["renders"]) == 2  # the batch's, and one for going back
+    assert sitting.result["undo"]["state"] == "done"
+    assert library.undo_refusal(sitting, row)[0] == "undone"

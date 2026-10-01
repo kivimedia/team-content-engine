@@ -32,10 +32,12 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -118,6 +120,8 @@ EDIT_REQUEST_STATES = ("open", "in_progress", "done", "rejected", "needs_you", "
 # the one batch job after "make it"; `done`, `needs_you` and `failed` are how it ended;
 # `closed` is a sitting he walked away from.
 EDIT_SESSION_STATES = ("open", "thinking", "rendering", "done", "needs_you", "failed", "closed")
+# A live sitting takes notes or is making them; a video has at most one (migration 056).
+EDIT_SESSION_LIVE_WHERE = "state IN ('open', 'thinking', 'rendering')"
 
 # What a notification can be about. Each one is a thing he asked for that has
 # finished while he was not looking; nothing here is an announcement.
@@ -533,6 +537,18 @@ class EditSession(_PrivateWorkspaceMixin, Base):
     """
 
     __tablename__ = "edit_sessions"
+    # One live sitting per video (1-Oct review): two opens at once (a double tap, a
+    # retried request) could each find none and each insert one, and the notes pinned to
+    # the one the page did not keep dropped off the read-back. Finished sittings are many.
+    __table_args__ = (
+        Index(
+            "uq_edit_sessions_live_upload",
+            "upload_id",
+            unique=True,
+            postgresql_where=text(EDIT_SESSION_LIVE_WHERE),
+            sqlite_where=text(EDIT_SESSION_LIVE_WHERE),
+        ),
+    )
 
     upload_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("recording_uploads.id", ondelete="CASCADE"), index=True

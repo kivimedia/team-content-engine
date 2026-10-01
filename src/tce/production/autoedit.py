@@ -601,6 +601,14 @@ def _note_where(note: dict[str, Any]) -> str:
     return "the whole video"
 
 
+PLAN_MOVED_LINE = (
+    "He gave these notes on the version he watched, which is the edit shown in the "
+    "transcript below. The edit plan has changed since that version was made and was "
+    "not rendered, so the new version can differ from it in places his notes do not "
+    "mention: judge each note against the version he watched."
+)
+
+
 def edit_batch_prompt(
     words: list[dict[str, Any]],
     keep: list[list[float]],
@@ -610,6 +618,7 @@ def edit_batch_prompt(
     kept: list[dict[str, Any]] | None = None,
     marks: dict[int, str] | None = None,
     history: list[dict[str, Any]] | None = None,
+    plan_moved: bool = False,
 ) -> str:
     """Every note of the sitting, numbered in the order he gave them.
 
@@ -617,6 +626,9 @@ def edit_batch_prompt(
     `edit_s` (the paused second on the edit clock) or `where` (a typed note's place),
     and `source_s` (the paused second on the recording), which puts `<note N>` in the
     transcript. One block a note: [note N | 0:38 in the edit | he said "..." | agreed: "..."].
+
+    `keep` is the keep of the file he watched, never a plan that moved on since (1-Oct
+    review); `plan_moved` says so in one line when the plan is no longer that edit.
     """
     blocks: list[str] = []
     pins: dict[int, list[int]] = {}
@@ -633,7 +645,8 @@ def edit_batch_prompt(
     return (
         f"{context}\n\n{_earlier_block(history)}"
         f"His notes from this sitting, in the order he gave them:\n" + "\n".join(blocks) + "\n\n"
-        "Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
+        + (PLAN_MOVED_LINE + "\n\n" if plan_moved else "")
+        + "Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
         "<note N> is where the video was when he paused for note N):\n"
         f"{numbered_transcript(words, keep, kept, marks, pins=pins)}"
     )

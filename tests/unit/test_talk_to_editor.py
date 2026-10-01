@@ -23,7 +23,7 @@ from tce.editorial import library
 from tce.models.editorial import RecordingUpload, TopicCandidate
 from tce.models.editorial_workspace import EditingRequest, EditSession
 from tce.production import autoedit
-from tce.production.retakes import edit_length, frame_keep, map_to_edit, map_to_source
+from tce.production.retakes import edit_join, edit_length, frame_keep, map_to_edit, map_to_source
 from tce.settings import settings
 
 KEY = "synthetic-test-key"
@@ -403,9 +403,10 @@ async def test_the_moment_waits_for_his_words_and_shows_the_words_around_it(clie
     assert indexes == list(range(indexes[0], indexes[-1] + 1)) and 0 < len(indexes) < len(SPOKEN.split())
     assert all(abs(w["edit_s"] - 3.0) <= 2.6 for w in m["words"] if w["edit_s"] is not None)
     assert m["earlier"] == [
-        {"where": "at 0:01", "said": "louder here", "understood": "At 0:01 you want it louder.",
+        {"id": earlier, "where": "at 0:01", "said": "louder here", "understood": "At 0:01 you want it louder.",
          "state": "held", "reply": None, "question": None, "sitting": sid}
     ]
+    assert m["waiting"] == [{"id": nid, "where": "at 0:03", "heard": "the word after smart sounds clipped"}]
     assert m["rules"] == autoedit.editor_skill() and m["rules"]
 
 
@@ -550,7 +551,7 @@ async def test_a_late_review_waits_until_he_has_finished_giving_notes(client, re
 
 async def test_a_typed_request_joins_the_sitting_he_is_in(client, renders, tmp_path, monkeypatch):
     ran = []
-    monkeypatch.setattr(prod, "start_edit_request", lambda rid, ws: ran.append(rid))
+    monkeypatch.setattr(prod, "start_edit_request", lambda rid, ws, **_k: ran.append(rid))
     ws, uid, _ = await edited(renders, tmp_path)
     sid = (await open_talk(client, ws, uid))["session_id"]
     r = await client.post(
@@ -572,7 +573,7 @@ async def test_a_typed_request_joins_the_sitting_he_is_in(client, renders, tmp_p
 
 async def test_a_typed_request_does_not_wait_on_an_old_empty_sitting(client, renders, tmp_path, monkeypatch):
     ran = []
-    monkeypatch.setattr(prod, "start_edit_request", lambda rid, ws: ran.append(rid))
+    monkeypatch.setattr(prod, "start_edit_request", lambda rid, ws, **_k: ran.append(rid))
     ws, uid, _ = await edited(renders, tmp_path)
     sid = (await open_talk(client, ws, uid))["session_id"]
     await age_sitting(renders["sm"], sid, library.SITTING_ACTIVE_S + 5)
@@ -587,7 +588,7 @@ async def test_a_typed_request_does_not_wait_on_an_old_empty_sitting(client, ren
 
 async def test_a_closed_sheet_with_notes_waiting_still_collects_a_typed_request(client, renders, tmp_path, monkeypatch):
     ran = []
-    monkeypatch.setattr(prod, "start_edit_request", lambda rid, ws: ran.append(rid))
+    monkeypatch.setattr(prod, "start_edit_request", lambda rid, ws, **_k: ran.append(rid))
     ws, uid, row = await edited(renders, tmp_path)
     sid = (await open_talk(client, ws, uid))["session_id"]
     nid = (await pin(client, ws, sid, 2.0, row.render_ref)).json()["note_id"]
@@ -623,3 +624,163 @@ def test_a_window_of_the_transcript_keeps_the_real_word_numbers():
 def test_the_note_row_says_where_a_moment_is():
     row = EditingRequest(upload_id=uuid.uuid4(), scope="moment", start_s=38.4, request="cou", state="held")
     assert library.edit_request_to_json(row)["where"] == "at 0:38"
+
+
+# ---------------------------------------------------------------- review findings, 1-Oct
+
+
+async def test_the_moment_takes_the_note_he_gave_first_and_lists_every_waiting_one(
+    client, renders, tmp_path, monkeypatch
+):
+    # He pauses at 0:01 and says "drop the not", plays on and pauses again at 0:03
+    # before the editor has read the first: the first delegation is about the first note.
+    monkeypatch.setattr(library, "MOMENT_WAIT_S", 0.1)
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    silent = (await pin(client, ws, sid, 0.5, row.render_ref)).json()["note_id"]  # he never spoke
+    first = (await pin(client, ws, sid, 1.0, row.render_ref)).json()["note_id"]
+    await say(client, ws, sid, first, heard="drop the not")
+    second = (await pin(client, ws, sid, 3.0, row.render_ref)).json()["note_id"]
+    await say(client, ws, sid, second, heard="cut the end")
+    url = f"/api/v1/production/talk/{sid}/moment"
+
+    m = (await client.get(url, headers=headers(ws))).json()
+    assert m["note"]["id"] == first and m["heard"] == "drop the not" and m["waited_for_words"] is False
+    assert [(w["id"], w["heard"]) for w in m["waiting"]] == [
+        (silent, None), (first, "drop the not"), (second, "cut the end")
+    ]
+    await say(client, ws, sid, first, understood="At 0:01 you want the 'not' gone.")
+    m = (await client.get(url, headers=headers(ws))).json()
+    assert m["note"]["id"] == second
+    assert [e["id"] for e in m["earlier"]] == [silent, first]
+    await say(client, ws, sid, second, understood="At 0:03 you want the end cut.")
+    m = (await client.get(url, headers=headers(ws))).json()
+    assert m["note"]["id"] == silent and m["waited_for_words"] is True
+
+
+async def test_a_note_whose_second_the_new_version_cut_keeps_its_own_word(client, renders, tmp_path):
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    pinned = (await pin(client, ws, sid, 3.2, row.render_ref)).json()
+    await say(client, ws, sid, pinned["note_id"], heard="this word sounds off")
+    src = pinned["source_s"]
+    # He closed the sheet; later something else re-planned with a cut over that second.
+    await age_sitting(renders["sm"], sid, library.SITTING_ACTIVE_S + 5)
+    async with renders["sm"]() as s:
+        up = await prod._load(s, uid, ws)
+        up.edit_plan = {**up.edit_plan, "overrides": {"cut": [[src - 0.4, src + 0.6]], "restore": []}}
+        await prod._compute_plan(s, ws, up)
+        await s.commit()
+    newer = await render_once(renders["sm"], ws, uid)
+    assert map_to_edit(src, newer.rendered_keep) is None  # the new version cut that second
+
+    moved = await open_talk(client, ws, uid)
+    note = moved["notes"][0]
+    join = edit_join(src, newer.rendered_keep)
+    assert note["source_s"] == src
+    assert note["start_s"] == pytest.approx(join, abs=0.01)
+    assert note["result"] == {"moved": library.NOTE_CUT_IN_NEW_VERSION}
+    m = (await client.get(f"/api/v1/production/talk/{sid}/moment?note={note['id']}", headers=headers(ws))).json()
+    assert m["at"]["source_s"] == pytest.approx(src, abs=1e-3)
+    assert m["at"]["in_edit"] is False
+    assert m["at"]["edit_s"] == pytest.approx(join, abs=0.01)
+    word = next(w for w in m["words"] if w["source_s"] <= src <= w["source_s"] + 0.45)
+    assert word["cut"] is True and word["text"] == "After"
+
+
+def test_a_second_the_edit_left_out_sits_at_the_join_of_its_cut():
+    keep = [[0.0, 2.0], [3.0, 5.0], [6.0, 7.0]]
+    assert edit_join(2.5, keep) == pytest.approx(2.0)
+    assert edit_join(5.5, keep) == pytest.approx(4.0)
+    assert edit_join(9.0, keep) == pytest.approx(5.0)
+    assert edit_join(-1.0, [[1.0, 2.0]]) == 0.0
+    assert edit_join(3.5, keep) == pytest.approx(map_to_edit(3.5, keep))  # in the edit: its own second
+
+
+async def test_two_opens_at_once_leave_one_live_sitting(client, renders, tmp_path, monkeypatch):
+    ws, uid, _ = await edited(renders, tmp_path)
+    first = await open_talk(client, ws, uid)
+    real = library._sittings
+    calls = {"n": 0}
+
+    async def not_committed_yet(db, ws_, upload_id, states):
+        # Two opens in flight at once: this one cannot see the other's row yet.
+        calls["n"] += 1
+        return [] if calls["n"] == 1 else await real(db, ws_, upload_id, states)
+
+    # Called on open_sitting itself: the route also asks active_sitting first, which
+    # would take the one blank answer and leave open_sitting seeing the row.
+    monkeypatch.setattr(library, "_sittings", not_committed_yet)
+    async with renders["sm"]() as s:
+        second = await library.open_sitting(s, ws, uid)
+        await s.commit()
+        second_id = str(second.id)
+    assert second_id == first["session_id"]
+    assert calls["n"] >= 2  # it looked again after the database refused a second one
+    from sqlalchemy import select
+
+    async with renders["sm"]() as s:
+        live = (
+            await s.execute(
+                select(EditSession).where(
+                    EditSession.upload_id == uid, EditSession.state.in_(library.SITTING_LIVE_STATES)
+                )
+            )
+        ).scalars().all()
+    assert len(live) == 1
+
+
+async def test_the_database_holds_one_live_sitting_per_video(renders, tmp_path):
+    from sqlalchemy.exc import IntegrityError
+
+    ws, uid, _ = await edited(renders, tmp_path)
+    async with renders["sm"]() as s:
+        s.add(EditSession(workspace_id=ws, upload_id=uid, state="done"))
+        s.add(EditSession(workspace_id=ws, upload_id=uid, state="done"))  # finished ones: any number
+        s.add(EditSession(workspace_id=ws, upload_id=uid, state="open"))
+        await s.commit()
+        s.add(EditSession(workspace_id=ws, upload_id=uid, state="thinking"))
+        with pytest.raises(IntegrityError):
+            await s.commit()
+
+
+async def test_make_it_is_refused_while_something_else_edits_the_video_or_it_changed(
+    client, renders, tmp_path, monkeypatch
+):
+    started = []
+    monkeypatch.setattr(prod, "start_talk_session", lambda sid_, ws_: started.append(sid_))
+    ws, uid, row = await edited(renders, tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    nid = (await pin(client, ws, sid, 2.0, row.render_ref)).json()["note_id"]
+    await say(client, ws, sid, nid, heard="cut that")
+    url = f"/api/v1/production/talk/{sid}/submit"
+    check = (await client.get(url, headers=headers(ws))).json()["check"]
+
+    # He closed the sheet and tapped Edit it again; a still-loaded sheet taps Make.
+    doing = "Editing it again: your editor's review, then the cut and the captions"
+    async with renders["sm"]() as s:
+        up = await prod._load(s, uid, ws)
+        up.job_ids, up.status_detail = [prod.AUTO_MARK], doing
+        await s.commit()
+    r = await client.get(url, headers=headers(ws))
+    assert r.status_code == 409 and r.json()["detail"] == {"code": "busy", "message": doing}
+    r = await client.post(url, json={"check": check}, headers=headers(ws))
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "busy"
+
+    # The auto edit made a new version: the notes were pinned on the old one.
+    async with renders["sm"]() as s:
+        up = await prod._load(s, uid, ws)
+        up.job_ids = []
+        await s.commit()
+    newer = await render_once(renders["sm"], ws, uid)
+    r = await client.post(url, json={"check": check}, headers=headers(ws))
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "stale_render"
+    assert r.json()["detail"]["render_ref"] == newer.render_ref
+    body = (await client.get(f"/api/v1/production/talk/{sid}", headers=headers(ws))).json()
+    assert body["state"] == "open" and body["waiting"] == 1
+
+    # Reopening moves the notes to the new version, and then it can be made.
+    assert (await open_talk(client, ws, uid))["render_ref"] == newer.render_ref
+    check = (await client.get(url, headers=headers(ws))).json()["check"]
+    assert (await client.post(url, json={"check": check}, headers=headers(ws))).status_code == 200
+    assert started == [uuid.UUID(sid)]

@@ -76,6 +76,9 @@ def _shape(sync_conn) -> dict:
             out[name + ".fks"] = {
                 (tuple(fk["constrained_columns"]), fk["referred_table"]) for fk in insp.get_foreign_keys(name)
             }
+            out[name + ".unique"] = {
+                (ix["name"], tuple(ix["column_names"])) for ix in insp.get_indexes(name) if ix.get("unique")
+            }
     return out
 
 
@@ -103,6 +106,8 @@ async def test_056_applies_on_the_suites_database_and_matches_the_models():
                 assert after[name] == _model_columns(name), name
             assert (("session_id",), NEW_TABLE) in after["editing_requests.fks"]
             assert (("upload_id",), "recording_uploads") in after[NEW_TABLE + ".fks"]
+            # One live sitting per video: two opens at once cannot both insert one.
+            assert after[NEW_TABLE + ".unique"] == {("uq_edit_sessions_live_upload", ("upload_id",))}
             # The recreate kept the note's older links.
             assert (("upload_id",), "recording_uploads") in after["editing_requests.fks"]
 
@@ -122,3 +127,26 @@ async def test_056_applies_on_the_suites_database_and_matches_the_models():
 
 def test_the_suite_builds_the_sitting_table():
     assert NEW_TABLE in TABLE_NAMES
+
+
+LIVE_ONLY = "WHERE state IN ('open', 'thinking', 'rendering')"
+
+
+def test_on_postgres_the_one_live_sitting_rule_covers_live_sittings_only():
+    """The server's SQL, written out: a unique index on the video, for live sittings only
+    (finished sittings of the same video are many)."""
+    import io
+
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    buf = io.StringIO()
+    ctx = MigrationContext.configure(dialect_name="postgresql", opts={"as_sql": True, "output_buffer": buf})
+    with Operations.context(ctx):
+        _migration().upgrade()
+    sql = " ".join(buf.getvalue().split())
+    assert f"CREATE UNIQUE INDEX uq_edit_sessions_live_upload ON edit_sessions (upload_id) {LIVE_ONLY}" in sql
+
+    index = next(i for i in Base.metadata.tables[NEW_TABLE].indexes if i.name == "uq_edit_sessions_live_upload")
+    model_sql = " ".join(str(CreateIndex(index).compile(dialect=postgresql.dialect())).split())
+    assert model_sql.startswith("CREATE UNIQUE INDEX") and model_sql.endswith(LIVE_ONLY)
