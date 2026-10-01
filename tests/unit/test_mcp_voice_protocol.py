@@ -196,6 +196,12 @@ VOICE_TOOLS = [
     "tce_recordings",
     "tce_video_posts",
     "tce_publish",
+    # Talk to the editor (1-Oct): tools/video.mjs, the same "voice" family.
+    "tce_video_moment",
+    "tce_video_note",
+    "tce_video_notes",
+    "tce_video_make",
+    "tce_video_undo_version",
 ]
 
 OLDER_TOOLS = [

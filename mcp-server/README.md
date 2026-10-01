@@ -60,7 +60,9 @@ node /home/ziv/team-content-engine/mcp-server/index.mjs
 
 `TCE_PRIVATE_KEY` wins over basic auth when both are set. `TCE_WORKSPACE_ID` is
 optional (the API falls back to its editor workspace). `TCE_MCP_FAMILIES=voice`
-keeps the call's tool list to the 13 it needs.
+keeps the call's tool list to the 23 it needs (`tools/voice.mjs` and
+`tools/video.mjs` are both the `voice` family). The call seat's allow-list,
+`deploy/voice-seat/tce.json`, must name exactly these; a test holds them equal.
 
 `TCE_VOICE_CALL_ID` names the call, and the voice seat must pass it: when the
 brain hits its cap mid-call it is replaced, and this server is respawned with
@@ -83,9 +85,17 @@ it.
 | `tce_reorder_week` | first / up / down / last / reserve / remove / position N |
 | `tce_undo` | The last change in this call, or one by id |
 | `tce_write_script` / `tce_more_hooks` / `tce_research` | Start a background job |
-| `tce_jobs` | Which of those finished, so the call can say so |
+| `tce_jobs` | Which of those finished, so the call can say so (and a new version of a video) |
+| `tce_video_moment` | Talk to the editor: one note on a paused video, with the words around its second and his rules |
+| `tce_video_note` | Save a one-line reading of a note and get the line to say back; never renders |
+| `tce_video_notes` | The notes on a video and where each stands |
+| `tce_video_make` | Read every note back with a check code, then on his yes one job and one render |
+| `tce_video_undo_version` | Read back, then on his yes the version from before his notes comes back |
 
 Every write is recorded as `voice` and listed on Today under "Changes by voice".
+The video tools never open a sitting or pin a note: only his notes sheet does,
+and they find its sitting with a read that leaves its heartbeat alone
+(`GET /production/recordings/{id}/talk`).
 
 ## Check it
 

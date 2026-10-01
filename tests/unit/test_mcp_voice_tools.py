@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,8 +24,15 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2] / "mcp-server"
 
 HARNESS = r"""
-import { register, parsePart } from './tools/voice.mjs';
+import { register as registerVoice, parsePart } from './tools/voice.mjs';
+import { register as registerVideo } from './tools/video.mjs';
 import { reply, failure, shortId, authHeaders, identityFromEnv, familyFilter } from './tools.mjs';
+
+// Both files are the "voice" family: the call seat loads them together.
+const register = (server, call, helpers) => {
+  registerVoice(server, call, helpers);
+  registerVideo(server, call, helpers);
+};
 
 const scenario = JSON.parse(process.argv[2]);
 if (scenario.unit) {
@@ -177,6 +186,11 @@ def test_the_voice_family_registers_every_tool():
             "tce_recordings",
             "tce_video_posts",
             "tce_publish",
+            "tce_video_moment",
+            "tce_video_note",
+            "tce_video_notes",
+            "tce_video_make",
+            "tce_video_undo_version",
         ]
     )
 
@@ -1641,8 +1655,14 @@ def test_more_openings_while_a_script_is_written_are_refused_in_words():
 
 BRIDGE = r"""
 import { createInterface } from 'node:readline';
-import { register } from './tools/voice.mjs';
+import { register as registerVoice } from './tools/voice.mjs';
+import { register as registerVideo } from './tools/video.mjs';
 import { reply, failure, shortId } from './tools.mjs';
+
+const register = (server, call, helpers) => {
+  registerVoice(server, call, helpers);
+  registerVideo(server, call, helpers);
+};
 
 const rl = createInterface({ input: process.stdin });
 const lines = [];
@@ -2220,6 +2240,10 @@ def test_the_call_seat_allows_exactly_the_tools_the_voice_family_registers():
     seat = json.loads((ROOT.parent / "deploy" / "voice-seat" / "tce.json").read_text())
     out = run({"steps": [], "responses": {}})
     assert sorted(t.split("__")[-1] for t in seat["allowedTools"]) == out["names"]
+    assert len(seat["allowedTools"]) == len(set(seat["allowedTools"]))
+    # KM BOT refuses a seat that allows more than 64 tools (validateSeat), and then
+    # every TCE call fails, not just the new tools.
+    assert len(seat["allowedTools"]) < 64
 
 
 # ------------------------------------------- recorded videos, posts, publishing
@@ -2346,3 +2370,1080 @@ def test_publish_refuses_changed_words_a_missing_check_and_anything_not_a_draft(
     assert "not an id" in t[5]
     assert "Which platform" in t[6]
     assert not any(s["key"].startswith("POST") for s in out["sent"]), "none of these publishes anything"
+
+
+
+# ------------------------------------------- talk to the editor: the video tools
+#
+# Design of 30-Sep, section 4 (step 7). He pauses the edit, holds a button and
+# says what is wrong; his notes sheet pins the paused second and saves his words.
+# The call brain reads the moment, saves a one-line reading and says it back.
+# Nothing renders until he says make it, and that has a read-back and a check
+# code, like a publish. A call never opens a sitting and never pins a note.
+
+VID = "abcdef12-2222-4333-8444-555555555555"
+SITTING = "5e5e5e5e-1111-4222-8333-444444444444"
+MADE = "6f6f6f6f-1111-4222-8333-444444444444"
+NOTE1 = "a0a0a0a0-1111-4222-8333-444444444444"
+NOTE2 = "b0b0b0b0-1111-4222-8333-444444444444"
+TITLE = "Charge what you are worth"
+FIND = f"GET /production/recordings/{VID}/talk"
+MOMENT = f"GET /production/talk/{SITTING}/moment"
+VIDEO_TOOLS = [
+    "tce_video_moment",
+    "tce_video_note",
+    "tce_video_notes",
+    "tce_video_make",
+    "tce_video_undo_version",
+]
+
+
+def _note(
+    nid,
+    where="at 0:38",
+    state="held",
+    request="cut the second basically",
+    understood=None,
+    result=None,
+):
+    return {
+        "id": nid,
+        "upload_id": VID,
+        "session_id": SITTING,
+        "scope": "moment",
+        "where": where,
+        "start_s": 38.25,
+        "end_s": None,
+        "source_s": 40.1,
+        "section_ref": None,
+        "request": request,
+        "understood": understood,
+        "created_by": "ziv",
+        "state": state,
+        "result": result,
+        "created_at": "2026-10-01T08:00:00",
+        "resolved_at": None,
+    }
+
+
+def _sitting(state="open", notes=(), result=None, video_step=None, sid=SITTING):
+    notes = list(notes)
+    return {
+        "session_id": sid,
+        "upload_id": VID,
+        "state": state,
+        "render_ref": "r1",
+        "file_url": f"/api/v1/production/uploads/{VID}/edited?v=r1",
+        "edit_length_s": 120.0,
+        "last_seen": None,
+        "submitted_at": None,
+        "finished_at": None,
+        "summary": None,
+        "result": result,
+        "notes": notes,
+        "waiting": sum(1 for n in notes if n["state"] in ("listening", "held")),
+        "video_status": "edited",
+        "video_step": video_step,
+        "can_undo": False,
+    }
+
+
+def _found(live=None, made=None):
+    return {
+        "ok": True,
+        "status": 200,
+        "data": {"upload_id": VID, "title": TITLE, "status": "edited", "live": live, "made": made},
+    }
+
+
+def _moment(note=None, heard="cut the second basically", waiting=None, in_edit=True):
+    note = note or _note(NOTE1)
+    return {
+        "ok": True,
+        "status": 200,
+        "data": {
+            "session_id": SITTING,
+            "video": VID,
+            "state": "open",
+            "note": note,
+            "heard": heard,
+            "waited_for_words": False,
+            "at": {"edit_s": 38.25, "source_s": 40.1, "clock": "0:38", "in_edit": in_edit},
+            "window": {"from_edit_s": 30.25, "to_edit_s": 46.25},
+            "transcript": (
+                "[0:36 in the edit] 70:so 71:basically ~~72:basically~~ /cut 0.4s/ "
+                "73:what 74:I 75:do"
+            ),
+            "words": [{"index": 70, "text": "so", "source_s": 37.0, "edit_s": 36.1, "cut": False}],
+            "marks": [
+                {"index": 75, "text": "do", "mark": "your phone cut the end of this word short"}
+            ],
+            "waiting": waiting
+            if waiting is not None
+            else [{"id": note["id"], "where": note["where"], "heard": heard}],
+            "earlier": [],
+            "rules": "Standing rules: keep the pauses short.",
+        },
+    }
+
+
+def _refused(code, message, status=409, **extra):
+    return {
+        "ok": False,
+        "status": status,
+        "data": {"detail": {"code": code, "message": message, **extra}},
+    }
+
+
+def test_the_moment_reads_his_note_with_the_words_around_it_and_the_rules_once():
+    out = run(
+        {
+            "steps": [
+                step("tce_video_moment", video=f"video:{VID}"),
+                step("tce_video_moment", video=VID, note=NOTE1[:8]),
+            ],
+            "responses": {FIND: _found(live=_sitting(notes=[_note(NOTE1)])), MOMENT: _moment()},
+        }
+    )
+    first, _second = out["texts"]
+    keys = [s["key"] for s in out["sent"]]
+    assert keys == [FIND, f"{MOMENT}?rules=1", FIND, f"{MOMENT}?note={NOTE1}"], (
+        "rules ride on the first moment only"
+    )
+    assert first.startswith(f'Note at 0:38 on "{TITLE}" (note id {NOTE1}).'), first
+    assert 'He said: "cut the second basically".' in first
+    assert "~~72:basically~~ /cut 0.4s/" in first
+    assert 'Word 75 "do": your phone cut the end of this word short' in first
+    assert f"tce_video_note (note {NOTE1})" in first and "Do not ask him first" in first
+    data = json.loads(out["seen"][0])["data"]
+    assert data["rules"] == "Standing rules: keep the pauses short." and data["note"]["id"] == NOTE1
+    assert "words" not in data, "the numbered transcript already carries them"
+    assert not any(k.startswith(("POST", "PATCH")) for k in keys), (
+        "reading a moment changes nothing"
+    )
+
+
+def test_the_moment_says_which_other_notes_wait_and_when_the_new_version_cut_the_second():
+    waiting = [
+        {"id": NOTE1, "where": "at 0:38", "heard": "cut the second basically"},
+        {"id": NOTE2, "where": "at 1:09", "heard": "trim the pause"},
+    ]
+    out = run(
+        {
+            "steps": [step("tce_video_moment", video=VID)],
+            "responses": {
+                FIND: _found(live=_sitting(notes=[_note(NOTE1)])),
+                MOMENT: _moment(waiting=waiting, in_edit=False, heard=None),
+            },
+        }
+    )
+    said = out["texts"][0]
+    assert "His words for this note are not saved yet" in said
+    assert "cut this moment" in said
+    assert f'Also waiting for your reading: at 1:09 (note id {NOTE2}): "trim the pause".' in said
+
+
+def test_the_moment_never_opens_a_sitting_and_says_when_there_is_nothing_to_read():
+    making = _sitting(
+        state="rendering",
+        notes=[_note(NOTE1)],
+        result={"status": "Applying your notes"},
+        video_step="Burning in your captions: 40%",
+    )
+    no_note = _refused(
+        "no_moment",
+        "There is no note waiting in this sitting, and no second was given.",
+        status=404,
+    )
+    none = run({"steps": [step("tce_video_moment", video=VID)], "responses": {FIND: _found()}})
+    assert "No notes are open" in none["texts"][0] and "notes sheet" in none["texts"][0]
+    busy = run(
+        {"steps": [step("tce_video_moment", video=VID)], "responses": {FIND: _found(live=making)}}
+    )
+    assert (
+        "being made into a new version right now (Burning in your captions: 40%)"
+        in busy["texts"][0]
+    )
+    empty = run(
+        {
+            "steps": [
+                step("tce_video_moment", video=VID),
+                step("tce_video_moment", video="the pricing one"),
+            ],
+            "responses": {FIND: _found(live=_sitting()), MOMENT: no_note},
+        }
+    )
+    assert "No note is waiting" in empty["texts"][0]
+    assert "not an id" in empty["texts"][1]
+    for out in (none, busy, empty):
+        assert all(s["key"].startswith("GET") for s in out["sent"]), (
+            "a call never opens a sitting or pins"
+        )
+
+
+def test_a_note_is_saved_by_its_id_and_said_back_naming_the_time_and_never_renders():
+    saved = {
+        "ok": True,
+        "status": 200,
+        "data": _note(NOTE1, understood="you want the second basically gone"),
+    }
+    reading = "At 0:38 you want the second basically gone."
+    out = run(
+        {
+            "steps": [
+                step("tce_video_moment", video=VID),
+                step("tce_video_note", note=NOTE1, understood=reading),
+                # Live hands the same words over twice (it re-reads its last lines):
+                # the same note again.
+                step("tce_video_note", note=NOTE1, understood=reading),
+            ],
+            "responses": {
+                FIND: _found(live=_sitting(notes=[_note(NOTE1)])),
+                MOMENT: _moment(),
+                f"PATCH /production/talk/{SITTING}/notes/{NOTE1}": saved,
+            },
+        }
+    )
+    _, said, again = out["texts"]
+    assert (
+        said
+        == "At 0:38: you want the second basically gone. "
+        "Saved; nothing changes until you say make it."
+    )
+    assert again == said
+    patches = [s for s in out["sent"] if s["key"].startswith("PATCH")]
+    assert (
+        patches
+        == [
+            {
+                "key": f"PATCH /production/talk/{SITTING}/notes/{NOTE1}",
+                "body": {"understood": "you want the second basically gone"},
+            }
+        ]
+        * 2
+    )
+    assert not any(s["key"].startswith("POST") for s in out["sent"]), (
+        "a note never pins, submits or renders"
+    )
+
+
+def test_a_note_this_process_never_read_is_found_through_its_video():
+    both = _sitting(notes=[_note(NOTE1), _note(NOTE2, where="at 1:09", request="trim the pause")])
+    out = run(
+        {
+            "steps": [
+                step("tce_video_note", note=NOTE2, understood="trim the pause"),
+                step("tce_video_note", note=NOTE2[:8], understood="trim the pause", video=VID),
+            ],
+            "responses": {
+                FIND: _found(live=both),
+                f"PATCH /production/talk/{SITTING}/notes/{NOTE2}": {
+                    "ok": True,
+                    "status": 200,
+                    "data": _note(NOTE2, where="at 1:09", understood="trim the pause"),
+                },
+            },
+        }
+    )
+    assert "Which video?" in out["texts"][0]
+    assert (
+        out["texts"][1] == "At 1:09: trim the pause. Saved; nothing changes until you say make it."
+    )
+    assert [s["key"] for s in out["sent"]] == [
+        FIND,
+        f"PATCH /production/talk/{SITTING}/notes/{NOTE2}",
+    ]
+
+
+def test_scratch_that_takes_the_note_back_and_a_late_reading_saves_nothing():
+    taken = _refused("not_waiting", "That note was taken back.")
+    out = run(
+        {
+            "steps": [
+                step("tce_video_note", note=NOTE1, drop=True, video=VID),
+                step("tce_video_note", note=NOTE1, drop=True),
+                step("tce_video_note", note=NOTE1, understood="cut it"),
+                step("tce_video_note", note=NOTE1),
+            ],
+            "responses": {
+                FIND: _found(live=_sitting(notes=[_note(NOTE1)])),
+                f"PATCH /production/talk/{SITTING}/notes/{NOTE1}": [
+                    {"ok": True, "status": 200, "data": _note(NOTE1, state="rejected")},
+                    taken,
+                    taken,
+                ],
+            },
+        }
+    )
+    t = out["texts"]
+    assert t[0] == "Took back the note at 0:38. Nothing changes until you say make it."
+    assert t[1] == "That note was already taken back. Nothing else changed."
+    assert t[2].startswith("That note was taken back.") and "Nothing was saved" in t[2]
+    assert "in one line" in t[3]
+    assert [s["body"] for s in out["sent"] if s["key"].startswith("PATCH")] == [
+        {"drop": True},
+        {"drop": True},
+        {"understood": "cut it"},
+    ]
+
+
+def test_make_reads_every_note_back_and_submits_only_with_its_check_then_jobs_follows_it():
+    notes = [
+        _note(NOTE1, understood="you want the second basically gone"),
+        _note(NOTE2, where="at 1:09", understood="trim the pause"),
+    ]
+    read_back = (
+        "2 notes: at 0:38: you want the second basically gone; at 1:09: trim the pause. "
+        "One re-render."
+    )
+    preview = {
+        "ok": True,
+        "status": 200,
+        "data": {
+            "session_id": SITTING,
+            "read_back": read_back,
+            "check": "c0ffee123456",
+            "count": 2,
+            "notes": notes,
+            "left_out": [],
+        },
+    }
+    thinking = _sitting(
+        state="thinking",
+        notes=notes,
+        result={"status": "Reading your 2 notes on the subscription", "notes": [NOTE1, NOTE2]},
+    )
+    settled = [
+        {**notes[0], "state": "done", "result": {"reply": "Cut the second basically."}},
+        {
+            **notes[1],
+            "state": "needs_you",
+            "result": {"question": "Which pause, the one before or after 'service'?"},
+        },
+    ]
+    done = _sitting(
+        state="needs_you",
+        notes=settled,
+        result={
+            "status": "New version made from your 2 notes. 1 of them needs you.",
+            "notes": [NOTE1, NOTE2],
+        },
+    )
+    out = run(
+        {
+            "steps": [
+                step("tce_video_make", video=VID),
+                step("tce_video_make", video=VID, confirmed=True),
+                step("tce_video_make", video=VID, confirmed=True, check="c0ffee123456"),
+                step("tce_jobs"),
+                step("tce_jobs", new_only=True),
+                step("tce_jobs", new_only=True),
+            ],
+            "responses": {
+                FIND: _found(live=_sitting(notes=notes)),
+                f"GET /production/talk/{SITTING}/submit": preview,
+                f"POST /production/talk/{SITTING}/submit": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {**thinking, "read_back": read_back},
+                },
+                f"GET /production/talk/{SITTING}": [
+                    {"ok": True, "status": 200, "data": thinking},
+                    {"ok": True, "status": 200, "data": done},
+                ],
+            },
+        }
+    )
+    t = out["texts"]
+    assert t[0] == (
+        f'Read this back to him about "{TITLE}" and ask for a clear yes: "{read_back}" '
+        "Nothing is made "
+        "until you call tce_video_make again with confirmed true and check c0ffee123456."
+    )
+    assert "no check code" in t[1]
+    assert t[2].startswith(f'Making the new version of "{TITLE}" from 2 notes now'), t[2]
+    posts = [s for s in out["sent"] if s["key"].startswith("POST")]
+    assert posts == [
+        {
+            "key": f"POST /production/talk/{SITTING}/submit",
+            "body": {"check": "c0ffee123456", "by": "voice"},
+        }
+    ]
+    assert (
+        t[3]
+        == f'The new version for "{TITLE}" is still being made '
+        "(Reading your 2 notes on the subscription)."
+    )
+    assert t[4].startswith(
+        f'The new version for "{TITLE}" is done: '
+        "New version made from your 2 notes. 1 of them needs you."
+    ), t[4]
+    assert "What was done: at 0:38: Cut the second basically." in t[4]
+    assert t[4].endswith(
+        "1 note needs him: at 1:09: Which pause, the one before or after 'service'?"
+    ), t[4]
+    assert t[5] == "Nothing new has finished yet."
+
+
+def test_make_refuses_a_yes_to_notes_that_changed_and_says_what_else_is_editing():
+    changed = _refused(
+        "changed",
+        "The notes changed since the read-back.",
+        check="beef00000000",
+        read_back="3 notes: at 0:38: cut it; at 1:09: trim; at 1:30: louder. One re-render.",
+    )
+    busy = _refused(
+        "busy", "An editing request you typed is being made right now (Reading your request)."
+    )
+    out = run(
+        {
+            "steps": [
+                step("tce_video_make", video=VID, confirmed=True, check="c0ffee123456"),
+                step("tce_video_make", video=VID),
+            ],
+            "responses": {
+                FIND: _found(live=_sitting(notes=[_note(NOTE1)])),
+                f"POST /production/talk/{SITTING}/submit": changed,
+                f"GET /production/talk/{SITTING}/submit": busy,
+            },
+        }
+    )
+    t = out["texts"]
+    assert (
+        "changed since you read them back" in t[0]
+        and "at 1:30: louder" in t[0]
+        and "beef00000000" in t[0]
+    )
+    assert json.loads(out["seen"][0])["data"]["made"] is False
+    assert (
+        t[1]
+        == "An editing request you typed is being made right now (Reading your request). "
+        "Nothing was made."
+    )
+
+
+def test_going_back_reads_back_first_and_goes_back_only_on_that_read_back():
+    made = _sitting(
+        state="done", sid=MADE, result={"status": "New version made from your 2 notes."}
+    )
+    rb = "Put back the version from before your 2 notes (cut basically). One re-render."
+    preview = {
+        "ok": True,
+        "status": 200,
+        "data": {
+            "session_id": MADE,
+            "possible": True,
+            "code": None,
+            "reason": None,
+            "read_back": rb,
+        },
+    }
+    base = {FIND: _found(live=_sitting(), made=made), f"GET /production/talk/{MADE}/undo": preview}
+    first = run({"steps": [step("tce_video_undo_version", video=VID)], "responses": base})
+    assert f'"{rb}"' in first["texts"][0] and f'about "{TITLE}"' in first["texts"][0]
+    assert not any(s["key"].startswith("POST") for s in first["sent"]), (
+        "nothing changes on the read-back"
+    )
+    code = json.loads(first["seen"][0])["data"]["check"]
+
+    going = {
+        **made,
+        "result": {
+            **made["result"],
+            "undo": {"state": "rendering", "status": "Putting back the version"},
+        },
+    }
+    back = {
+        **made,
+        "result": {
+            **made["result"],
+            "undo": {"state": "done", "status": "The version from before your notes is back."},
+        },
+    }
+    yes = run(
+        {
+            "steps": [
+                step("tce_video_undo_version", video=VID, confirmed=True, check="000000000000"),
+                step("tce_video_undo_version", video=VID, confirmed=True, check=code),
+                step("tce_jobs"),
+                step("tce_jobs"),
+            ],
+            "responses": {
+                **base,
+                f"POST /production/talk/{MADE}/undo": {"ok": True, "status": 200, "data": going},
+                f"GET /production/talk/{MADE}": [
+                    {"ok": True, "status": 200, "data": going},
+                    {"ok": True, "status": 200, "data": back},
+                ],
+            },
+        }
+    )
+    t = yes["texts"]
+    assert "not the read-back he heard" in t[0] and code in t[0]
+    assert t[1].startswith(f'Putting back the version of "{TITLE}" from before his notes now')
+    assert [s["key"] for s in yes["sent"] if s["key"].startswith("POST")] == [
+        f"POST /production/talk/{MADE}/undo"
+    ]
+    assert "is still going (Putting back the version)" in t[2]
+    assert t[3] == (
+        f'Going back to the version before the notes for "{TITLE}" is done: '
+        "The version from before your notes is back."
+    )
+
+
+UNDO_CHANGED = (
+    "The video was changed again after these notes, so going back would undo that too. "
+    "Nothing was changed."
+)
+
+
+def test_going_back_says_why_not_when_it_cannot_and_changes_nothing():
+    made = _sitting(state="done", sid=MADE)
+    refusal = {
+        "ok": True,
+        "status": 200,
+        "data": {
+            "session_id": MADE,
+            "possible": False,
+            "code": "changed",
+            "reason": UNDO_CHANGED,
+            "read_back": UNDO_CHANGED,
+        },
+    }
+    out = run(
+        {
+            "steps": [
+                step("tce_video_undo_version", video=VID, confirmed=True, check="x"),
+                step("tce_video_undo_version", video=VID),
+            ],
+            "responses": {
+                FIND: [_found(made=made), _found()],
+                f"GET /production/talk/{MADE}/undo": refusal,
+            },
+        }
+    )
+    assert out["texts"][0] == (
+        "The video was changed again after these notes, so going back would undo that too. "
+        "Nothing was changed."
+    )
+    assert "nothing to go back from" in out["texts"][1]
+    assert not any(s["key"].startswith("POST") for s in out["sent"])
+
+
+def test_the_notes_say_where_each_stands_and_a_short_id_is_found_in_the_library():
+    notes = [
+        _note(NOTE1, understood="you want the second basically gone"),
+        _note(NOTE2, where="at 1:09", state="listening", request=""),
+        _note(
+            "c0c0c0c0-1111-4222-8333-444444444444",
+            where="at 1:30",
+            state="rejected",
+            request="louder",
+        ),
+    ]
+    lib = {
+        "ok": True,
+        "status": 200,
+        "data": {"items": [{"upload_id": VID, "title": TITLE, "status": "edited"}]},
+    }
+    out = run(
+        {
+            "steps": [step("tce_video_notes", video=VID[:8])],
+            "responses": {"GET /production/library": lib, FIND: _found(live=_sitting(notes=notes))},
+        }
+    )
+    assert out["texts"][0].splitlines() == [
+        f'2 notes on "{TITLE}"; nothing changes until he says make it.',
+        "at 0:38: you want the second basically gone (saved, waiting for make it)",
+        "at 1:09: no words yet (his words are on their way)",
+        "1 note was taken back.",
+    ]
+    assert [s["key"] for s in out["sent"]] == ["GET /production/library?filter=all", FIND]
+
+
+# ------------------------------------------- the call seat that carries them
+
+KMBOT = ROOT.parents[1] / "kmbot-talk"
+SEAT_FILE = ROOT.parent / "deploy" / "voice-seat" / "tce.json"
+INSTALLER = ROOT.parent / "scripts" / "install-voice-seat.sh"
+# KM BOT's pattern for a call's ?context= (bin/kmbot-voice-seats.mjs CONTEXT_RE). Pinned
+# for a checkout with no KM BOT beside it; the next test holds it equal to the real one.
+CONTEXT_RE = r"^([a-z][a-z0-9_]{0,23})(?::([0-9a-f-]{6,40}))?$"
+# The tce seat's contexts on the box, read on 1-Oct. The installer now owns them, so
+# the repo must carry every one of them or a deploy would change a call it never meant to.
+BOX_CONTEXTS = {
+    "default": "He opened a call about his content. Ask what he wants to work on.",
+    "week": (
+        "He opened the call from his week. "
+        "Start with tce_week and tell him briefly what needs a decision."
+    ),
+    "topic": (
+        "He opened the call on one topic, id {id}. "
+        "Start with tce_topic for that id and tell him where it stands."
+    ),
+}
+
+
+def test_the_seat_has_a_video_context_for_any_upload_and_keeps_the_ones_on_the_box():
+    seat = json.loads(SEAT_FILE.read_text(encoding="utf-8"))
+    contexts = seat["contexts"]
+    assert {k: contexts[k] for k in BOX_CONTEXTS} == BOX_CONTEXTS
+    video = contexts["video"]
+    assert "{id}" in video and "tce_video_moment" in video and "never answer it yourself" in video
+    upload = str(uuid.uuid4())
+    m = re.match(CONTEXT_RE, f"video:{upload}")
+    assert m and m.group(1) == "video" and m.group(2) == upload
+    for kind, text in contexts.items():
+        assert kind == "default" or re.match(r"^[a-z][a-z0-9_]{0,23}$", kind)
+        assert text.strip() and len(text) <= 2000
+        assert "\u2014" not in text and "\u2013" not in text and "--" not in text
+    assert all(f"mcp__tce__{name}" in seat["allowedTools"] for name in VIDEO_TOOLS)
+
+
+SEAT_CHECK = r"""
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [, , mod, seatFile, upload] = process.argv;
+const m = await import(pathToFileURL(mod).href);
+const repo = JSON.parse(readFileSync(seatFile, 'utf8'));
+const errors = [];
+const seat = m.validateSeat({
+  id: 'tce', label: 'TCE', model: 'claude-opus-5-5', voice: 'gpt-live-1',
+  brief: '/etc/kmbot/seats/tce-brief.md',
+  mcpServers: { tce: {
+    command: 'node', args: ['/home/ziv/team-content-engine/mcp-server/index.mjs'],
+    env: { TCE_API_BASE: 'http://127.0.0.1:8200', TCE_MCP_FAMILIES: 'voice' },
+  } },
+  allowedTools: repo.allowedTools, contexts: repo.contexts,
+}, errors);
+console.log(JSON.stringify({
+  errors, ok: Boolean(seat), re: String(m.CONTEXT_RE),
+  video: seat && m.resolveContext(seat, `video:${upload}`),
+  bare: seat && m.resolveContext(seat, 'video'),
+  public: seat && m.publicSeat(seat),
+}));
+"""
+
+
+def _kmbot(path):
+    if shutil.which("node") is None:  # pragma: no cover
+        pytest.skip("node is not installed")
+    target = KMBOT / path
+    if not target.exists():
+        pytest.skip(f"KM BOT (kmbot-talk) is not beside this checkout: no {target}")
+    return target
+
+
+def test_km_bots_own_seat_check_takes_the_seat_and_opens_a_call_on_a_video():
+    mod = _kmbot("bin/kmbot-voice-seats.mjs")
+    upload = str(uuid.uuid4())
+    script = ROOT / f"_seat_check_{uuid.uuid4().hex[:8]}.mjs"
+    script.write_text(SEAT_CHECK, encoding="utf-8")
+    try:
+        proc = subprocess.run(
+            ["node", str(script), str(mod), str(SEAT_FILE), upload],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            encoding="utf-8",
+        )
+    finally:
+        script.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["errors"] == [] and out["ok"], out["errors"]
+    assert out["re"] == f"/{CONTEXT_RE}/", (
+        "the pinned copy of KM BOT's context pattern is out of date"
+    )
+    assert out["video"]["ok"] and out["video"]["kind"] == "video" and upload in out["video"]["text"]
+    assert out["bare"]["ok"] is False, "a video call needs the video's id"
+    # Scenario F's preflight reads exactly this: the seat lists a "video" context.
+    assert "video" in out["public"]["contexts"]
+
+
+def test_scenario_f_in_km_bot_calls_only_tools_and_routes_this_repo_has():
+    note_js = _kmbot("tools/voice-e2e/video-note.mjs")
+    probe = ROOT / f"_f_probe_{uuid.uuid4().hex[:8]}.mjs"
+    probe.write_text(
+        "import { pathToFileURL } from 'node:url';\n"
+        "const f = await import(pathToFileURL(process.argv[2]).href);\n"
+        "console.log(JSON.stringify(\n"
+        "  { video: f.VIDEO_TOOLS, allowed: f.F_ALLOWED_TOOLS, seat: f.TCE_SEAT }));\n",
+        encoding="utf-8",
+    )
+    try:
+        proc = subprocess.run(
+            ["node", str(probe), str(note_js)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            encoding="utf-8",
+        )
+    finally:
+        probe.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    f = json.loads(proc.stdout.strip().splitlines()[-1])
+    seat = json.loads(SEAT_FILE.read_text(encoding="utf-8"))
+    assert f["seat"] == "tce"
+    assert set(f["video"]) <= set(seat["allowedTools"]), "F's preflight needs these on the seat"
+    names = run({"steps": [], "responses": {}})["names"]
+    assert {t for t in f["allowed"] if t != "ask_brain"} <= set(names)
+
+    # Every TCE route F calls exists here, with that method.
+    from tce.api.routers import editorial_workspace as workspace_router
+
+    have = {
+        (method, re.sub(r"\{[^}]+\}", "{}", route.path))
+        for route in workspace_router.production_router.routes
+        for method in route.methods
+    }
+    source = note_js.read_text(encoding="utf-8")
+    calls = {
+        (method, re.sub(r"\$\{[^}]+\}", "{}", path))
+        for method, path in re.findall(
+            r"tce\(\s*\"(GET|POST|PATCH)\",\s*[`\"](/production/[^`\"?]+)", source
+        )
+    }
+    assert calls, "found no TCE calls in scenario F"
+    assert calls <= have, sorted(calls - have)
+
+
+# ------------------------------------------- the seat installer
+#
+# install-voice-seat.sh runs on every deploy. Its Python block decides what goes into
+# /etc/kmbot/voice-seats.json; it runs here unchanged against copies shaped like the box.
+
+
+def _installer_block() -> str:
+    text = INSTALLER.read_text(encoding="utf-8")
+    start = text.index("<<'PY'\n") + len("<<'PY'\n")
+    return text[start : text.index("\nPY\n", start)]
+
+
+def _box_seats(**changes):
+    repo = json.loads(SEAT_FILE.read_text(encoding="utf-8"))
+    tce = {
+        "id": "tce",
+        "label": "TCE",
+        "model": "claude-opus-5-5",
+        "voice": "gpt-live-1",
+        "brief": "/etc/kmbot/seats/tce-brief.md",
+        "mcpServers": {
+            "tce": {
+                "command": "node",
+                "args": ["/home/ziv/team-content-engine/mcp-server/index.mjs"],
+                "env": {
+                    "TCE_API_BASE": "http://127.0.0.1:8200",
+                    "TCE_MCP_FAMILIES": "voice",
+                    "TCE_PRIVATE_KEY": {"file": "/srv/tce/.env", "key": "TCE_PRIVATE_ACCESS_KEY"},
+                },
+            }
+        },
+        # The 18 tools and 3 contexts the box had on 1-Oct.
+        "allowedTools": [t for t in repo["allowedTools"] if t.split("__")[-1] not in VIDEO_TOOLS],
+        "contexts": dict(BOX_CONTEXTS),
+    }
+    tce.update(changes)
+    other = {
+        "id": "studio",
+        "label": "Studio",
+        "model": "claude-opus-5-5",
+        "brief": "/etc/kmbot/seats/studio.md",
+        "mcpServers": {"studio": {"command": "node"}},
+        "allowedTools": ["mcp__studio__look"],
+    }
+    return {"seats": [other, tce]}
+
+
+def _install(tmp_path, box, repo=None, name="candidate.json"):
+    seats = tmp_path / "voice-seats.json"
+    seats.write_text(json.dumps(box, indent=2), encoding="utf-8")
+    repo_file = tmp_path / "tce.json"
+    repo_file.write_text(
+        json.dumps(repo or json.loads(SEAT_FILE.read_text(encoding="utf-8"))), encoding="utf-8"
+    )
+    script = tmp_path / "seat_sync.py"
+    script.write_text(_installer_block(), encoding="utf-8")
+    out = tmp_path / name
+    proc = subprocess.run(
+        [sys.executable, str(script), str(seats), str(repo_file), str(out)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return proc, out
+
+
+def test_the_installer_syncs_tools_and_contexts_and_keeps_what_only_the_box_has(tmp_path):
+    box = _box_seats(contexts={**BOX_CONTEXTS, "legacy": "Something only this box has."})
+    proc, out = _install(tmp_path, box)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    after = json.loads(out.read_text(encoding="utf-8"))
+    repo = json.loads(SEAT_FILE.read_text(encoding="utf-8"))
+    tce = next(s for s in after["seats"] if s["id"] == "tce")
+    assert tce["allowedTools"] == repo["allowedTools"]
+    assert tce["contexts"] == {**repo["contexts"], "legacy": "Something only this box has."}
+    assert (
+        tce["mcpServers"] == box["seats"][1]["mcpServers"]
+        and tce["brief"] == box["seats"][1]["brief"]
+    )
+    assert after["seats"][0] == box["seats"][0], "another app's seat is never touched"
+    assert (
+        "added ['video']" in proc.stdout
+        and "kept as they are on this box ['legacy']" in proc.stdout
+    )
+    assert "tools 18 -> 23" in proc.stdout
+
+    # Run again on what it wrote: nothing to do, and nothing written.
+    again, second = _install(tmp_path, after, name="second.json")
+    assert again.returncode == 3, again.stdout + again.stderr
+    assert "already current" in again.stdout and not second.exists()
+
+
+@pytest.mark.parametrize(
+    ("change", "why"),
+    [
+        (lambda r: r["contexts"].update({"Video": "x"}), "not a short lowercase word"),
+        (lambda r: r["contexts"].update({"video": "x" * 2001}), "at most 2000 characters"),
+        (lambda r: r["contexts"].update({"week": "   "}), "at most 2000 characters"),
+        (
+            lambda r: r["allowedTools"].append("mcp__other__tce_week"),
+            "a server the live seat does not define",
+        ),
+        (lambda r: r["allowedTools"].append("Bash"), "not an mcp__<server>__<tool> name"),
+        (lambda r: r["allowedTools"].extend(f"mcp__tce__t{n}" for n in range(60)), "at most 64"),
+    ],
+)
+def test_the_installer_writes_nothing_the_voice_service_would_refuse(tmp_path, change, why):
+    """A seat KM BOT refuses is dropped from the file whole: every TCE call would fail."""
+    repo = json.loads(SEAT_FILE.read_text(encoding="utf-8"))
+    change(repo)
+    proc, out = _install(tmp_path, _box_seats(), repo=repo)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "REFUSED, nothing written" in proc.stdout and why in proc.stdout
+    assert not out.exists()
+
+
+def test_the_installer_refuses_a_seat_file_with_no_tce_seat(tmp_path):
+    box = _box_seats()
+    box["seats"] = box["seats"][:1]
+    proc, out = _install(tmp_path, box)
+    assert proc.returncode == 2 and "no tce seat" in proc.stdout and not out.exists()
+
+
+def test_the_installers_last_check_is_km_bots_own_module(tmp_path):
+    """Before the new file replaces the live one, the voice service's own loader reads it."""
+    mod = _kmbot("bin/kmbot-voice-seats.mjs")
+    text = INSTALLER.read_text(encoding="utf-8")
+    check = text[
+        text.index("NODE_CHECK='") + len("NODE_CHECK='") : text.index(
+            "\n'\n", text.index("NODE_CHECK='")
+        )
+    ]
+    proc, good = _install(tmp_path, _box_seats())
+    assert proc.returncode == 0, proc.stdout
+    bad = tmp_path / "bad.json"
+    broken = json.loads(good.read_text(encoding="utf-8"))
+    broken["seats"][1]["contexts"]["Video"] = "x"
+    bad.write_text(json.dumps(broken), encoding="utf-8")
+
+    def verdict(path):
+        return subprocess.run(
+            ["node", "--input-type=module", "-e", check, str(mod), str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            encoding="utf-8",
+        )
+
+    ok, refused, missing = verdict(good), verdict(bad), verdict(tmp_path / "nope.json")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert "23 tools" in ok.stdout and "video" in ok.stdout
+    assert refused.returncode == 2 and "would leave out the tce seat" in refused.stdout
+    assert missing.returncode == 2, "a file it cannot read never goes live"
+
+
+# ------------------------------------------- a scripted call on the real routes
+#
+# The sheet opens the sitting, pins the paused second and saves his words; the brain's
+# tools then read the moment, save the reading, read every note back and make it, all
+# answered by the real TCE routes on the test database. Nothing renders: the batch is
+# replaced by a recorder, as the batch has its own tests.
+
+
+@pytest.fixture
+async def video_call(editorial_sessionmaker, monkeypatch, tmp_path):
+    if shutil.which("node") is None:  # pragma: no cover
+        pytest.skip("node is not installed")
+    import httpx
+    from fastapi import FastAPI
+    from pydantic import SecretStr
+
+    from tce.api.routers import editorial as editorial_router
+    from tce.api.routers import editorial_workspace as workspace_router
+    from tce.api.routers import production as prod
+    from tce.db.session import get_db
+    from tce.settings import settings
+    from tests.unit.test_talk_to_editor import KEY, render_once, seed
+
+    sm = editorial_sessionmaker
+    monkeypatch.setattr(settings, "private_access_key", SecretStr(KEY))
+    monkeypatch.setattr(settings, "editor_default_workspace_id", "")
+    monkeypatch.setattr(prod, "session_factory", lambda: sm)
+
+    async def fake_render_edit(src, keep, out, **_kw):
+        Path(out).write_bytes(b"edited")
+        return Path(out)
+
+    async def fake_size(_src):
+        return (1080, 1920)
+
+    monkeypatch.setattr(prod.media, "render_edit", fake_render_edit)
+    monkeypatch.setattr(prod.media, "probe_video_size", fake_size)
+    monkeypatch.setattr(prod.wordbox, "usable", lambda *_a, **_k: False)
+    started: list[uuid.UUID] = []
+    monkeypatch.setattr(prod, "start_talk_session", lambda sid, ws_: started.append(sid))
+
+    ws, uid = await seed(sm, tmp_path)
+    row = await render_once(sm, ws, uid)
+    assert row.status == "edited" and row.render_ref
+
+    app = FastAPI()
+    app.include_router(workspace_router.router, prefix="/api/v1")
+    app.include_router(workspace_router.production_router, prefix="/api/v1")
+    app.include_router(prod.router, prefix="/api/v1")
+    app.dependency_overrides[editorial_router.get_editorial_sessionmaker] = lambda: sm
+
+    async def _db():
+        async with sm() as s:
+            yield s
+            await s.commit()
+
+    app.dependency_overrides[get_db] = _db
+    script = ROOT / f"_voice_bridge_{uuid.uuid4().hex[:8]}.mjs"
+    script.write_text(BRIDGE, encoding="utf-8")
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("TCE_VOICE_CALL_ID", "KMBOT_VOICE_SESSION", "TCE_VOICE_STATE_DIR")
+    }
+    proc = await asyncio.create_subprocess_exec(
+        "node",
+        str(script),
+        cwd=str(ROOT),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+        limit=2**24,
+    )
+    try:
+        ready = json.loads(await asyncio.wait_for(proc.stdout.readline(), 60))
+        assert ready["type"] == "ready", ready
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {KEY}", "X-Workspace-Id": str(ws)},
+        ) as http:
+            world = Live(http, proc)
+            world.sm, world.ws, world.uid, world.row, world.started = sm, ws, uid, row, started
+            yield world
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        script.unlink(missing_ok=True)
+
+
+async def _sittings(world):
+    from sqlalchemy import select
+
+    from tce.models.editorial_workspace import EditingRequest, EditSession
+
+    async with world.sm() as s:
+        sittings = list(
+            (
+                await s.execute(select(EditSession).where(EditSession.upload_id == world.uid))
+            ).scalars()
+        )
+        notes = list(
+            (
+                await s.execute(select(EditingRequest).where(EditingRequest.upload_id == world.uid))
+            ).scalars()
+        )
+    return sittings, notes
+
+
+async def test_live_a_scripted_note_call_pins_reads_saves_reads_back_and_makes_it_once(video_call):
+    from tce.production import autoedit
+
+    world = video_call
+    uid = str(world.uid)
+
+    # Before his sheet is open, the brain finds nothing, and opens nothing.
+    nothing, _ = await world.tool("tce_video_moment", video=uid)
+    assert "No notes are open" in nothing
+    assert await _sittings(world) == ([], [])
+
+    # The sheet: open the sitting, pin the paused second, save his words.
+    opened = (await world.http.post(f"/api/v1/production/recordings/{uid}/talk")).json()
+    sid = opened["session_id"]
+    pin = await world.http.post(
+        f"/api/v1/production/talk/{sid}/notes",
+        json={"edit_s": 2.0, "render_ref": world.row.render_ref},
+    )
+    assert pin.status_code == 200, pin.text
+    nid = pin.json()["note_id"]
+    heard = "the pause after smart drags on, tighten it"
+    assert (
+        await world.http.patch(f"/api/v1/production/talk/{sid}/notes/{nid}", json={"heard": heard})
+    ).status_code == 200
+
+    # The brain: the moment (with his rules), the reading, said back naming the time.
+    moment, data = await world.tool("tce_video_moment", video=f"video:{uid}")
+    assert moment.startswith('Note at 0:02 on "Call them after the service"'), moment
+    assert f'He said: "{heard}".' in moment and "in the edit]" in moment
+    assert data["note"]["id"] == nid and data["rules"] == autoedit.editor_skill()
+    reading = "At 0:02 you want the pause after smart shorter."
+    said, _ = await world.tool("tce_video_note", note=nid, understood=reading)
+    assert (
+        said
+        == "At 0:02: you want the pause after smart shorter. "
+        "Saved; nothing changes until you say make it."
+    )
+    # Live hands the same words over twice: the same note, never a second one.
+    again, _ = await world.tool("tce_video_note", note=nid, understood=reading)
+    assert again == said
+    sittings, notes = await _sittings(world)
+    assert len(sittings) == 1 and [(n.id, n.state, n.request, n.understood) for n in notes] == [
+        (uuid.UUID(nid), "held", heard, "you want the pause after smart shorter")
+    ]
+    assert world.started == [], "a note never renders"
+
+    # "That's all, make it": the read-back and its check code, then his yes.
+    listed, _ = await world.tool("tce_video_notes", video=uid)
+    assert "at 0:02: you want the pause after smart shorter (saved, waiting for make it)" in listed
+    back, rb = await world.tool("tce_video_make", video=uid)
+    assert '"1 note: at 0:02: you want the pause after smart shorter. One re-render."' in back
+    assert world.started == [] and rb["made"] is False
+    wrong, _ = await world.tool("tce_video_make", video=uid, confirmed=True, check="000000000000")
+    assert "changed since you read them back" in wrong and world.started == []
+    made, _ = await world.tool("tce_video_make", video=uid, confirmed=True, check=rb["check"])
+    assert made.startswith(
+        'Making the new version of "Call them after the service" from 1 note now'
+    ), made
+    assert world.started == [uuid.UUID(sid)], "one job, started once"
+    sittings, _ = await _sittings(world)
+    assert sittings[0].state == "thinking" and sittings[0].result["by"] == "voice"
+    assert sittings[0].result["notes"] == [nid]
+
+    jobs, _ = await world.tool("tce_jobs")
+    assert jobs == (
+        'The new version for "Call them after the service" is still being made '
+        "(Reading your 1 note on the subscription)."
+    )
+    # New notes wait until it is made.
+    busy, _ = await world.tool("tce_video_moment", video=uid)
+    assert "being made into a new version right now" in busy

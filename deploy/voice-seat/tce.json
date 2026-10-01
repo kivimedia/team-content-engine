@@ -17,6 +17,17 @@
     "mcp__tce__tce_find_ideas",
     "mcp__tce__tce_recordings",
     "mcp__tce__tce_video_posts",
-    "mcp__tce__tce_publish"
-  ]
+    "mcp__tce__tce_publish",
+    "mcp__tce__tce_video_moment",
+    "mcp__tce__tce_video_note",
+    "mcp__tce__tce_video_notes",
+    "mcp__tce__tce_video_make",
+    "mcp__tce__tce_video_undo_version"
+  ],
+  "contexts": {
+    "default": "He opened a call about his content. Ask what he wants to work on.",
+    "week": "He opened the call from his week. Start with tce_week and tell him briefly what needs a decision.",
+    "topic": "He opened the call on one topic, id {id}. Start with tce_topic for that id and tell him where it stands.",
+    "video": "He is reviewing video {id} with the player paused. Everything he says is a note about that video: always hand it to your backend, never answer it yourself. Backend: start with tce_video_moment for video {id}, save your reading with tce_video_note and say back the line it gives. Make the new version (tce_video_make) only after he says make it and says yes to its read-back."
+  }
 }

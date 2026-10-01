@@ -1079,6 +1079,73 @@ async def open_talk(
     return payload
 
 
+# What a made sitting can be going back from: its notes changed the video, or going back
+# is under way right now.
+_MADE_STATES = ("done", "needs_you")
+
+
+@production_router.get("/recordings/{upload_id}/talk")
+async def find_talk(
+    upload_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Which sitting the editor's voice tools mean on this video (talk to the editor, step 7).
+
+    Read only: it never opens a sitting and never touches its heartbeat. Only his notes
+    sheet opens one (a brain that opened one on a call would gate the video for a sheet
+    nobody has open). `live` is the sitting taking notes or making them, `made` the newest
+    whose notes were made into a version (preferring one that can still be gone back
+    from), each null when there is none.
+    """
+    from sqlalchemy import select
+
+    from tce.models.editorial import TopicCandidate
+    from tce.models.editorial_workspace import EditSession
+
+    uid = _uuid(upload_id, "recording")
+    async with open_session(sm) as db:
+        try:
+            upload = await library_service.get_upload(db, ws, uid)
+        except ServiceError as error:
+            raise _http(error) from error
+        sittings = list(
+            (
+                await db.execute(
+                    select(EditSession)
+                    .where(EditSession.workspace_id == ws, EditSession.upload_id == upload.id)
+                    .order_by(EditSession.created_at.desc())
+                )
+            ).scalars()
+        )
+        live = next((s for s in sittings if s.state in library_service.SITTING_LIVE_STATES), None)
+        made_all = [s for s in sittings if s.state in _MADE_STATES]
+
+        def going_back(s: Any) -> bool:
+            return ((s.result or {}).get("undo") or {}).get("state") in ("queued", "rendering")
+
+        made = next(
+            (s for s in made_all if s.before or going_back(s)),
+            made_all[0] if made_all else None,
+        )
+        title = None
+        if upload.candidate_id is not None:
+            title = (
+                await db.execute(
+                    select(TopicCandidate.title).where(
+                        TopicCandidate.workspace_id == ws, TopicCandidate.id == upload.candidate_id
+                    )
+                )
+            ).scalar_one_or_none()
+        return {
+            "upload_id": str(upload.id),
+            "title": title or "(untitled recording)",
+            "status": upload.status,
+            "live": await _sitting_payload(db, ws, live) if live is not None else None,
+            "made": await _sitting_payload(db, ws, made) if made is not None else None,
+        }
+
+
 @production_router.get("/talk/{session_id}")
 async def get_talk(
     session_id: str,

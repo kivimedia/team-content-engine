@@ -78,6 +78,78 @@ function saveLedger(file, ledger) {
   }
 }
 
+/*
+ * One ledger per process, shared by every family that starts a job on this call
+ * (1-Oct: the editor's voice tools in video.mjs start "make the new version",
+ * and tce_jobs here says when it is ready). Two copies of one file would each
+ * save over the other's jobs.
+ */
+let shared = null;
+
+export function callLedger(env = process.env) {
+  if (!shared) {
+    const file = ledgerPath(env);
+    const ledger = loadLedger(file);
+    shared = { file, ledger, save: () => saveLedger(file, ledger) };
+  }
+  return shared;
+}
+
+/** Start following a background job on this call, so tce_jobs reports it. */
+export function trackJob(job) {
+  const { ledger, save } = callLedger();
+  ledger.jobs.push({ ...job, started: new Date().toISOString(), announced: false });
+  save();
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const sentence = (text) => String(text || '').trim().replace(/[.!?]+$/, '');
+
+/*
+ * Where a new version made from his notes stands, from the sitting TCE returns
+ * (GET /production/talk/{id}). A video_edit job is "make the new version"; a
+ * video_undo job is going back to the version from before those notes.
+ */
+export function videoJobState(job, sitting) {
+  const s = sitting || {};
+  const result = s.result || {};
+  const status = sentence(result.status);
+  if (job.kind === 'video_undo') {
+    const undo = result.undo || {};
+    const said = sentence(undo.status);
+    if (undo.state === 'done') return { state: 'done', said: `is done: ${said || 'the version from before his notes is back'}` };
+    if (undo.state === 'refused' || undo.state === 'stopped') {
+      return { state: 'failed', said: `did not go through: ${said || 'it stopped'}` };
+    }
+    if (undo.state === 'queued' || undo.state === 'rendering') {
+      return { state: 'running', said: `is still going (${said || 'putting it back'})` };
+    }
+    return { state: 'unknown', said: 'could not be checked' };
+  }
+  if (s.state === 'thinking') return { state: 'running', said: `is still being made (${status || 'reading his notes'})` };
+  if (s.state === 'rendering') {
+    return { state: 'running', said: `is being rendered (${sentence(s.video_step) || status || 'cutting and burning in the captions'})` };
+  }
+  const made = (s.notes || []).filter((n) => (result.notes || []).includes(n.id));
+  if (s.state === 'done' || s.state === 'needs_you') {
+    // A question keeps its question mark: it is what he is asked.
+    const asks = made.filter((n) => n.state === 'needs_you')
+      .map((n) => `${n.where}: ${String(n.result?.question || '').trim().replace(/\.+$/, '') || 'it needs him'}`);
+    const done = made.filter((n) => n.state === 'done' && n.result?.reply)
+      .map((n) => `${n.where}: ${clip(sentence(n.result.reply), 160)}`);
+    const parts = [`is done: ${status || 'the notes were made'}`];
+    if (done.length) parts.push(`What was done: ${done.join('; ')}`);
+    if (asks.length) parts.push(`${plural(asks.length, 'note')} need${asks.length === 1 ? 's' : ''} him: ${asks.join('; ')}`);
+    return { state: 'done', said: parts.join('. '), needs: asks.length };
+  }
+  if (s.state === 'open') {
+    // Handed back: nothing changed and the notes wait again (a failed job, the worker away too long).
+    return { state: 'failed', said: `did not go through: ${status || 'his notes were handed back'}` };
+  }
+  if (s.state === 'closed') return { state: 'failed', said: 'was closed before it was made' };
+  return { state: 'unknown', said: 'could not be checked' };
+}
+
 const BRIEF_ALIASES = {
   topic: 'topic',
   audience: 'audience',
@@ -193,9 +265,7 @@ function isAway(t) {
 }
 
 export function register(server, call, { reply, failure, shortId }) {
-  const ledgerFile = ledgerPath();
-  const ledger = loadLedger(ledgerFile);
-  const save = () => saveLedger(ledgerFile, ledger);
+  const { ledger, save } = callLedger();
 
   /**
    * The one topic an id names, for a tool that writes; a reply to return instead
@@ -319,10 +389,7 @@ export function register(server, call, { reply, failure, shortId }) {
     return ` (change ${shortId(data.change_id)})`;
   }
 
-  function track(job) {
-    ledger.jobs.push({ ...job, started: new Date().toISOString(), announced: false });
-    save();
-  }
+  const track = trackJob;
 
   /*
    * Undo with nothing on record for this call. That can be a call with no
@@ -1070,10 +1137,17 @@ export function register(server, call, { reply, failure, shortId }) {
   const JOB_WORDS = {
     script: 'The script', more_hooks: 'More openings', research: 'Research',
     idea: 'Your idea', idea_research: 'Looking for ideas',
+    video_edit: 'The new version', video_undo: 'Going back to the version before the notes',
   };
   const FINISHED = new Set(['done', 'ready', 'failed', 'interrupted']);
 
   async function jobState(job) {
+    if (job.kind === 'video_edit' || job.kind === 'video_undo') {
+      const r = await call('GET', `/production/talk/${job.session_id}`);
+      if (r.status === 404) return { state: 'interrupted', said: 'can no longer be found on this video' };
+      if (!r.ok) return { state: 'unknown', said: 'could not be checked' };
+      return videoJobState(job, r.data);
+    }
     if (job.kind === 'script') {
       const r = await call('GET', `/editorial/candidates/${job.candidate_id}/packet-status`);
       if (!r.ok) return { state: 'unknown', said: 'could not be checked' };
@@ -1134,9 +1208,10 @@ export function register(server, call, { reply, failure, shortId }) {
 
   server.tool(
     'tce_jobs',
-    'What happened to the scripts, openings and research started in this call. Finished ones come '
-      + 'first, so you can tell him "the new script for X is ready". Set new_only to hear only what '
-      + 'finished since you last asked.',
+    'What happened to the scripts, openings and research started in this call, and to a new version '
+      + 'of a video made from his notes (or going back from one). Finished ones come first, so you can '
+      + 'tell him "the new script for X is ready". Set new_only to hear only what finished since you '
+      + 'last asked.',
     {
       type: 'object',
       properties: { new_only: { type: 'boolean', description: 'Only jobs that finished since the last check.' } },
@@ -1157,7 +1232,9 @@ export function register(server, call, { reply, failure, shortId }) {
       const jobs = rows.map((r) => ({ kind: r.job.kind, title: r.job.title, candidate_id: r.job.candidate_id, state: r.state }));
       if (!shown.length) return reply('Nothing new has finished yet.', { jobs });
       const lines = shown.map((r) => {
-        const base = `${JOB_WORDS[r.job.kind]} for "${r.job.title}" ${r.said}.`;
+        const head = `${JOB_WORDS[r.job.kind]} for "${r.job.title}" ${r.said}`;
+        // A state sentence can end in its own full stop (a new version's status does).
+        const base = /[.!?]$/.test(head) ? head : `${head}.`;
         const version = Number.isInteger(r.replaced) ? r.replaced : r.job.replaces_version;
         const replaced = r.state === 'done' && Number.isInteger(r.job.replaces_version) && Number.isInteger(version)
           ? ` It replaced version ${version}; tce_undo puts that one back.`
