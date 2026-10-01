@@ -493,3 +493,31 @@ def test_a_tail_never_follows_the_wind():
     keep, _ = tight_keep(words, [True, True], act, 200.0)
     first = next(r for r in keep if r[0] <= 163.1 <= r[1])
     assert first[1] <= 163.5 + 0.15, keep  # a breath, not 0.3 s of wind
+
+
+def test_sound_no_word_covers_is_cut_not_kept_whole():
+    # 1-Oct, Ziv: "full of dead air". "If" ends at 1.0 s but the sound runs on to 4.0 s
+    # (a mumbled restart the recogniser never wrote down), then "your" at 5.0 s.
+    # Upload 8a4a4807 carried 65 s of such sound; a word nearby kept it whole.
+    words = [
+        {"text": "If", "start_s": 0.5, "end_s": 1.0, "precision": "word"},
+        {"text": "your", "start_s": 5.0, "end_s": 5.4, "precision": "word"},
+        {"text": "copy.", "start_s": 5.45, "end_s": 5.9, "precision": "word"},
+    ]
+    act = find_activity(speech_levels([(0.5, 4.0), (5.0, 5.9)], 7.0))
+    keep, _ = tight_keep(words, [True, True, True], act, 7.0)
+    kept_s = sum(e - s for s, e in keep)
+    assert kept_s < 2.6, keep  # was 4.9 s: the whole 0.5-4.0 sound stayed
+    assert any(s <= 0.5 <= e for s, e in keep) and any(s <= 5.6 <= e for s, e in keep)
+
+
+def test_two_words_far_apart_inside_one_sound_are_cut_apart():
+    # "And" ... 3 s of sound with no word ... "the": one continuous region.
+    words = [
+        {"text": "And", "start_s": 1.0, "end_s": 1.4, "precision": "word"},
+        {"text": "the", "start_s": 4.4, "end_s": 4.6, "precision": "word"},
+        {"text": "problem.", "start_s": 4.65, "end_s": 5.2, "precision": "word"},
+    ]
+    act = find_activity(speech_levels([(1.0, 5.2)], 6.5))
+    keep, _ = tight_keep(words, [True, True, True], act, 6.5)
+    assert not any(s <= 2.9 <= e for s, e in keep), keep

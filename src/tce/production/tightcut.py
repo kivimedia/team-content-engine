@@ -47,6 +47,11 @@ TAIL_BRIDGE_S = 0.12  # ... across dips this short (a consonant's closure)
 TAIL_MAX_S = 0.3  # ... but no further than this from the speech region
 TAIL_RELEASE_S = 0.04
 TAIL_OVER_NOISE_DB = 8.0  # ... and only while this far above the noise in the gap beside it
+# Sound that no word covers (1-Oct, Ziv: "full of dead air"): 65 s of a 4:52 edit was a
+# mumble, a breath or a restart the recogniser never wrote down, kept because a word
+# was within WORD_REACH_S of its region. A piece now ends this far past the words in it.
+WORDLESS_EDGE_S = 0.3
+WORDLESS_GAP_S = 0.6  # ... and two words this far apart inside one sound are cut apart
 
 
 HISS_HZ = 3500  # an "s" lives above this; vowels and the wind mostly below
@@ -350,7 +355,19 @@ def tight_keep(
             start_floor = floor if before is None else max(floor, before + TAIL_OVER_NOISE_DB)
             end = max(re_ + post, _follow(activity.levels, re_, hi, end_floor, +1) + TAIL_RELEASE_S)
             start = min(rs - PRE_S, _follow(activity.levels, rs, lo, start_floor, -1) - PRE_S)
-            run_pieces.append([max(lo, start), min(hi, end)])
+            inside = [
+                w for w in words[i : j + 1]
+                if float(w["start_s"]) < re_ + WORD_REACH_S and float(w["end_s"]) > rs - WORD_REACH_S
+            ]
+            start = max(start, min(float(w["start_s"]) for w in inside) - SEARCH_FAR_S)  # onsets run up to 0.4 s late
+            end = min(end, max(float(w["end_s"]) for w in inside) + WORDLESS_EDGE_S)
+            cut_from = start
+            for a, b in zip(inside, inside[1:], strict=False):
+                gap_lo, gap_hi = float(a["end_s"]), float(b["start_s"])
+                if gap_hi - gap_lo > WORDLESS_GAP_S and cut_from < gap_lo < end:
+                    run_pieces.append([max(lo, cut_from), min(hi, gap_lo + POST_S + TAIL_MAX_S / 2)])
+                    cut_from = gap_hi - PRE_S - SEARCH_S / 2
+            run_pieces.append([max(lo, cut_from), min(hi, end)])
         for w in words[i : j + 1]:
             ws, we = float(w["start_s"]), float(w["end_s"])
             # Measured against the speech found, not the padded pieces: a quiet word
