@@ -2762,7 +2762,8 @@ def test_make_reads_every_note_back_and_submits_only_with_its_check_then_jobs_fo
     )
     assert "no check code" in t[1]
     assert t[2].startswith(f'Making the new version of "{TITLE}" from 2 notes now'), t[2]
-    posts = [s for s in out["sent"] if s["key"].startswith("POST")]
+    # The submit itself; the hold that asked for each step is taken back first (its own test).
+    posts = [s for s in out["sent"] if s["key"].startswith("POST") and not s["key"].endswith("/command")]
     assert posts == [
         {
             "key": f"POST /production/talk/{SITTING}/submit",
@@ -2822,6 +2823,107 @@ def test_make_refuses_a_yes_to_notes_that_changed_and_says_what_else_is_editing(
     )
 
 
+def test_a_hold_that_carried_an_instruction_is_taken_back_by_the_tool_that_carries_it_out():
+    """1-Oct final review: every hold on the sheet is pinned, so "that's all, make it", the
+    yes, "no, I meant...", "scratch that" and "go back" each became a note. The tool that
+    acts on one takes its hold back first (by his words), and a yes is said with the
+    read-back's as_of, so a yes hold never changes the check."""
+    as_of = "2026-10-01T08:00:05.123456"
+    preview = {
+        "ok": True,
+        "status": 200,
+        "data": {
+            "session_id": SITTING,
+            "read_back": "1 note: at 0:38: you want the second basically gone. One re-render.",
+            "check": "c0ffee123456",
+            "count": 1,
+            "notes": [],
+            "left_out": [],
+            "as_of": as_of,
+        },
+    }
+    notes = [_note(NOTE1, understood="you want the second basically gone")]
+    thinking = _sitting(state="thinking", notes=notes, result={"notes": [NOTE1]})
+    taken = {"ok": True, "status": 200, "data": {"taken": _note(NOTE2, state="rejected")}}
+    out = run(
+        {
+            "steps": [
+                step("tce_video_moment", video=VID, said="Trim the pause here."),
+                step("tce_video_note", note=NOTE1, understood="the first basically", correcting=True,
+                     said="no, I meant the first one", video=VID),
+                step("tce_video_note", note=NOTE1, understood="cut it", video=VID),
+                step("tce_video_make", video=VID, said="that's all, make it"),
+                step("tce_video_make", video=VID, confirmed=True, check="c0ffee123456", said="yes"),
+                step("tce_video_note", note=NOTE1, drop=True, said="scratch that", video=VID),
+            ],
+            "responses": {
+                FIND: _found(live=_sitting(notes=notes)),
+                MOMENT: _moment(),
+                f"PATCH /production/talk/{SITTING}/notes/{NOTE1}": {"ok": True, "status": 200, "data": notes[0]},
+                f"POST /production/talk/{SITTING}/command": taken,
+                f"GET /production/talk/{SITTING}/submit": preview,
+                f"POST /production/talk/{SITTING}/submit": {"ok": True, "status": 200, "data": thinking},
+            },
+        }
+    )
+    keys = [s["key"] for s in out["sent"]]
+    assert f"{MOMENT}?said=Trim%20the%20pause%20here.&rules=1" in keys
+    commands = [s["body"] for s in out["sent"] if s["key"].endswith("/command")]
+    assert commands == [
+        {"said": "no, I meant the first one", "keep": NOTE1},
+        {"said": "that's all, make it"},
+        {"said": "yes"},
+        {"said": "scratch that", "keep": NOTE1},
+    ], "a plain save takes nothing back"
+    # Each hold is taken back before the read-back and before the yes is sent.
+    sent = out["sent"]
+
+    def at(match):
+        return next(i for i, s in enumerate(sent) if match(s))
+
+    def command(said):
+        return at(lambda s: s["key"].endswith("/command") and s["body"].get("said") == said)
+
+    assert command("that's all, make it") < at(lambda s: s["key"] == f"GET /production/talk/{SITTING}/submit")
+    assert command("yes") < at(lambda s: s["key"] == f"POST /production/talk/{SITTING}/submit")
+    submit = next(s for s in out["sent"] if s["key"] == f"POST /production/talk/{SITTING}/submit")
+    assert submit["body"] == {"check": "c0ffee123456", "by": "voice", "as_of": as_of}
+    assert out["texts"][4].startswith(f'Making the new version of "{TITLE}" from 1 note now')
+
+    # Going back: his "go back" hold, in the notes he has open now, is taken back too.
+    made = _sitting(state="done", sid=MADE, result={"status": "New version made from your 1 note."})
+    back = run(
+        {
+            "steps": [step("tce_video_undo_version", video=VID, said="go back to the version before")],
+            "responses": {
+                FIND: _found(live=_sitting(), made=made),
+                f"GET /production/talk/{MADE}/undo": {
+                    "ok": True, "status": 200,
+                    "data": {"session_id": MADE, "possible": True, "code": None, "reason": None,
+                             "read_back": "Put back the version from before your 1 note. One re-render."},
+                },
+            },
+        }
+    )
+    assert [s for s in back["sent"] if s["key"].endswith("/command")] == [
+        {"key": f"POST /production/talk/{SITTING}/command", "body": {"said": "go back to the version before"}}
+    ]
+
+
+def test_a_moment_for_words_no_hold_has_says_it_may_be_an_instruction():
+    out = run(
+        {
+            "steps": [step("tce_video_moment", video=VID, said="yes")],
+            "responses": {
+                FIND: _found(live=_sitting(notes=[_note(NOTE1)])),
+                MOMENT: _refused("no_moment", "No hold of his waiting for a reading has those words.",
+                                 status=404, said=True),
+            },
+        }
+    )
+    assert "use the tool for it" in out["texts"][0] and "Nothing was done" in out["texts"][0]
+
+
 def test_going_back_reads_back_first_and_goes_back_only_on_that_read_back():
     made = _sitting(
         state="done", sid=MADE, result={"status": "New version made from your 2 notes."}
@@ -2841,9 +2943,10 @@ def test_going_back_reads_back_first_and_goes_back_only_on_that_read_back():
     base = {FIND: _found(live=_sitting(), made=made), f"GET /production/talk/{MADE}/undo": preview}
     first = run({"steps": [step("tce_video_undo_version", video=VID)], "responses": base})
     assert f'"{rb}"' in first["texts"][0] and f'about "{TITLE}"' in first["texts"][0]
-    assert not any(s["key"].startswith("POST") for s in first["sent"]), (
-        "nothing changes on the read-back"
-    )
+    # Only his "go back" hold is taken back (it is not a note); the video is untouched.
+    assert [s["key"] for s in first["sent"] if s["key"].startswith("POST")] == [
+        f"POST /production/talk/{SITTING}/command"
+    ], "nothing changes on the read-back"
     code = json.loads(first["seen"][0])["data"]["check"]
 
     going = {
@@ -2881,7 +2984,7 @@ def test_going_back_reads_back_first_and_goes_back_only_on_that_read_back():
     t = yes["texts"]
     assert "not the read-back he heard" in t[0] and code in t[0]
     assert t[1].startswith(f'Putting back the version of "{TITLE}" from before his notes now')
-    assert [s["key"] for s in yes["sent"] if s["key"].startswith("POST")] == [
+    assert [s["key"] for s in yes["sent"] if s["key"].startswith("POST") and "/command" not in s["key"]] == [
         f"POST /production/talk/{MADE}/undo"
     ]
     assert "is still going (Putting back the version)" in t[2]
@@ -2939,6 +3042,14 @@ def test_the_notes_say_where_each_stands_and_a_short_id_is_found_in_the_library(
             where="at 1:30",
             state="rejected",
             request="louder",
+        ),
+        # His "yes" on a hold: an instruction taken back, never a note he took back.
+        _note(
+            "d0d0d0d0-1111-4222-8333-444444444444",
+            where="at 1:31",
+            state="rejected",
+            request="yes",
+            result={"command": "yes", "taken": "This hold was an instruction to the editor, not a note."},
         ),
     ]
     lib = {
@@ -3122,6 +3233,32 @@ def _installer_block() -> str:
     return text[start : text.index("\nPY\n", start)]
 
 
+# The call handle of KM BOT's web/voice-client.js, before and after K1 (the call's own
+# mute and quiet, and startMuted), as far as the installer reads it.
+OLD_CLIENT = """
+    var greetFirst = true;
+    return {
+      send: function (text) { return sendText(text); },
+      stop: function () { return stopCall(); },
+      hush: function () { return hushNow(); },
+    };
+"""
+K1_CLIENT = """
+    var micMuted = Boolean(opts.startMuted);
+    return {
+      send: function (text) { return sendText(text); },
+      mute: function (on) { return setMute(on === undefined ? true : Boolean(on)); },
+      quiet: function (on) { return setQuiet(on === undefined ? true : Boolean(on)); },
+    };
+"""
+
+
+def _client_file(tmp_path, text: str):
+    path = tmp_path / f"voice-client-{uuid.uuid4().hex[:6]}.js"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 def _box_seats(**changes):
     repo = json.loads(SEAT_FILE.read_text(encoding="utf-8"))
     tce = {
@@ -3157,7 +3294,7 @@ def _box_seats(**changes):
     return {"seats": [other, tce]}
 
 
-def _install(tmp_path, box, repo=None, name="candidate.json"):
+def _install(tmp_path, box, repo=None, name="candidate.json", client=None):
     seats = tmp_path / "voice-seats.json"
     seats.write_text(json.dumps(box, indent=2), encoding="utf-8")
     repo_file = tmp_path / "tce.json"
@@ -3167,8 +3304,10 @@ def _install(tmp_path, box, repo=None, name="candidate.json"):
     script = tmp_path / "seat_sync.py"
     script.write_text(_installer_block(), encoding="utf-8")
     out = tmp_path / name
+    # The box's KM BOT voice client, as the installer passes it (K1_CLIENT by default).
+    client = client or _client_file(tmp_path, K1_CLIENT)
     proc = subprocess.run(
-        [sys.executable, str(script), str(seats), str(repo_file), str(out)],
+        [sys.executable, str(script), str(seats), str(repo_file), str(out), str(client)],
         capture_output=True,
         text=True,
         timeout=60,
@@ -3224,6 +3363,36 @@ def test_the_installer_writes_nothing_the_voice_service_would_refuse(tmp_path, c
     assert proc.returncode == 2, proc.stdout + proc.stderr
     assert "REFUSED, nothing written" in proc.stdout and why in proc.stdout
     assert not out.exists()
+
+
+def test_the_installer_holds_the_video_context_until_km_bots_voice_client_can_mute_the_call(tmp_path):
+    """1-Oct final review: a TCE deploy before KM BOT's K1 put the video context on the
+    box, and the notes sheet then opened an unmuted call that greeted over the video and
+    threw on every hold. The context waits for a client with the call's mute and quiet."""
+    old = _client_file(tmp_path, OLD_CLIENT)
+    proc, out = _install(tmp_path, _box_seats(), client=old)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    tce = next(s for s in json.loads(out.read_text(encoding="utf-8"))["seats"] if s["id"] == "tce")
+    assert "video" not in tce["contexts"] and tce["contexts"] == BOX_CONTEXTS
+    assert all(f"mcp__tce__{name}" in tce["allowedTools"] for name in VIDEO_TOOLS)
+    assert "the video context waits" in proc.stdout and "KM BOT K1" in proc.stdout
+
+    missing, out2 = _install(tmp_path, _box_seats(), client=tmp_path / "no-such-client.js", name="c2.json")
+    assert "video" not in json.loads(out2.read_text(encoding="utf-8"))["seats"][1]["contexts"]
+    assert "the video context waits" in missing.stdout
+
+    k1, out3 = _install(tmp_path, _box_seats(), client=_client_file(tmp_path, K1_CLIENT), name="c3.json")
+    assert "video" in json.loads(out3.read_text(encoding="utf-8"))["seats"][1]["contexts"]
+    assert "waits" not in k1.stdout
+
+    # The real client on KM BOT's talk-to-editor branch has it; the box's main before K1 does not.
+    real = KMBOT / "web" / "voice-client.js"
+    if real.exists():
+        mine, out4 = _install(tmp_path, _box_seats(), client=real, name="c4.json")
+        assert "video" in json.loads(out4.read_text(encoding="utf-8"))["seats"][1]["contexts"], mine.stdout
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert 'VOICE_CLIENT_JS=/opt/kmbot/web/voice-client.js' in text
+    assert '"$cand" "$VOICE_CLIENT_JS" <<\'PY\'' in text
 
 
 def test_the_installer_refuses_a_seat_file_with_no_tce_seat(tmp_path):
@@ -3392,7 +3561,7 @@ async def test_live_a_scripted_note_call_pins_reads_saves_reads_back_and_makes_i
     sid = opened["session_id"]
     pin = await world.http.post(
         f"/api/v1/production/talk/{sid}/notes",
-        json={"edit_s": 2.0, "render_ref": world.row.render_ref},
+        json={"edit_s": 2.0, "render_ref": world.row.render_ref, "by": "voice"},
     )
     assert pin.status_code == 200, pin.text
     nid = pin.json()["note_id"]
@@ -3447,3 +3616,67 @@ async def test_live_a_scripted_note_call_pins_reads_saves_reads_back_and_makes_i
     # New notes wait until it is made.
     busy, _ = await world.tool("tce_video_moment", video=uid)
     assert "being made into a new version right now" in busy
+
+
+async def test_live_every_hold_is_pinned_and_his_spoken_instructions_make_one_version_of_his_notes(video_call):
+    """1-Oct final review, scripted the way the sheet really works: EVERY hold is pinned
+    and saved, including "no, I meant...", "scratch that", "that's all, make it" and the
+    yes. Before, the yes changed the check code each time (Make never started), the
+    correction hold took the next note's reading, and "make it" went to the batch."""
+    world = video_call
+    uid = str(world.uid)
+    opened = (await world.http.post(f"/api/v1/production/recordings/{uid}/talk")).json()
+    sid = opened["session_id"]
+
+    async def hold(edit_s: float, words: str) -> str:
+        # The sheet: the pin at the press, his words saved when the voice flushes them,
+        # which is when Live hands them to the brain (before the brain's turn).
+        pin = await world.http.post(
+            f"/api/v1/production/talk/{sid}/notes",
+            json={"edit_s": edit_s, "render_ref": world.row.render_ref, "by": "voice"},
+        )
+        assert pin.status_code == 200, pin.text
+        nid = pin.json()["note_id"]
+        saved = await world.http.patch(f"/api/v1/production/talk/{sid}/notes/{nid}", json={"heard": words})
+        assert saved.status_code == 200, saved.text
+        return nid
+
+    first_words = "the pause after smart drags on, tighten it"
+    first = await hold(2.0, first_words)
+    m, data = await world.tool("tce_video_moment", video=uid, said=first_words)
+    assert data["note"]["id"] == first, m
+    await world.tool("tce_video_note", note=first, understood="you want the pause after smart shorter")
+
+    correction = await hold(2.1, "no, I meant the pause before smart")
+    fixed, _ = await world.tool(
+        "tce_video_note", note=first, understood="you want the pause before smart shorter",
+        correcting=True, said="no, I meant the pause before smart",
+    )
+    assert fixed.startswith("At 0:02: you want the pause before smart shorter."), fixed
+
+    # The next note is read at its own second, never at the correction's.
+    last_words = "cut the last two words"
+    last = await hold(5.0, last_words)
+    m, data = await world.tool("tce_video_moment", video=uid, said=last_words)
+    assert data["note"]["id"] == last and data["at"]["clock"] == "0:05", m
+    await world.tool("tce_video_note", note=last, understood="you want the last two words cut")
+    scratch = await hold(5.1, "scratch that")
+    await world.tool("tce_video_note", note=last, drop=True, said="scratch that")
+
+    make_it = await hold(5.2, "That's all, make it.")
+    back, rb = await world.tool("tce_video_make", video=uid, said="that's all, make it")
+    assert '"1 note: at 0:02: you want the pause before smart shorter. One re-render."' in back, back
+    yes = await hold(5.2, "Yes.")
+    made, _ = await world.tool("tce_video_make", video=uid, confirmed=True, check=rb["check"], said="yes")
+    assert made.startswith('Making the new version of "Call them after the service" from 1 note now'), made
+    assert world.started == [uuid.UUID(sid)], "one job, started on the first yes"
+
+    sittings, notes = await _sittings(world)
+    assert sittings[0].state == "thinking" and sittings[0].result["notes"] == [first]
+    state = {str(n.id): n.state for n in notes}
+    assert state == {
+        first: "held", correction: "rejected", last: "rejected", scratch: "rejected",
+        make_it: "rejected", yes: "rejected",
+    }, state
+    instructions = {str(n.id) for n in notes if (n.result or {}).get("command")}
+    assert instructions == {correction, scratch, make_it, yes}

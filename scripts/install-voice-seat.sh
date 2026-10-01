@@ -16,12 +16,19 @@
 # applies (KM BOT bin/kmbot-voice-seats.mjs validateSeat), and then by that module
 # itself when it is on this box. Nothing is written unless both pass, and the live
 # file is replaced in one rename, with a dated copy of the old one kept beside it.
+#
+# 1-Oct final review: the "video" context is what lets the notes sheet open a call.
+# Before KM BOT's voice client has the call's own mute and quiet (K1), that call
+# would be unmuted, greet over the video and hear everything. So "video" goes in
+# only when /opt/kmbot/web/voice-client.js on this box has them; until then the
+# box's contexts are kept and the reason is printed. (The sheet checks too.)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SEATS=/etc/kmbot/voice-seats.json
 BRIEF=/etc/kmbot/seats/tce-brief.md
 KMBOT_SEATS_JS=/opt/kmbot/bin/kmbot-voice-seats.mjs
+VOICE_CLIENT_JS=/opt/kmbot/web/voice-client.js
 
 if [ ! -f "$SEATS" ]; then
   echo "[voice-seat] no $SEATS on this box; nothing to install"
@@ -35,7 +42,7 @@ cand="$SEATS.candidate-$stamp"
 # nothing written. 2: refused, nothing written. tests/unit/test_mcp_voice_tools.py
 # runs this exact block against copies of the live file.
 set +e
-sudo python3 - "$SEATS" "$REPO/deploy/voice-seat/tce.json" "$cand" <<'PY'
+sudo python3 - "$SEATS" "$REPO/deploy/voice-seat/tce.json" "$cand" "$VOICE_CLIENT_JS" <<'PY'
 import json
 import os
 import re
@@ -72,7 +79,23 @@ def problems(entry, tools, contexts):
     return out
 
 
+def voice_client_has_k1(path):
+    """KM BOT's voice client on this box gives a call its own mute and quiet, and
+    starts it muted (K1). Without them a notes sheet's call is open and greets."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return False
+    return (
+        "startMuted" in text
+        and re.search(r"^\s*mute: function", text, re.M) is not None
+        and re.search(r"^\s*quiet: function", text, re.M) is not None
+    )
+
+
 seats_path, repo_path, out_path = sys.argv[1:4]
+voice_client = sys.argv[4] if len(sys.argv) > 4 else None
 with open(seats_path) as f:
     seats = json.load(f)
 with open(repo_path) as f:
@@ -83,7 +106,14 @@ if entry is None:
     print("[voice-seat] REFUSED, nothing written: the seat file has no tce seat")
     sys.exit(2)
 want_tools = repo.get("allowedTools")
-want_ctx = repo.get("contexts") or {}
+want_ctx = dict(repo.get("contexts") or {})
+if voice_client is not None and "video" in want_ctx and not voice_client_has_k1(voice_client):
+    del want_ctx["video"]
+    print(
+        f"[voice-seat] the video context waits: {voice_client} on this box has no mute and quiet "
+        "for the call (KM BOT K1), so a notes sheet would open an unmuted call that greets over the "
+        "video. Deploy KM BOT first; the box's own contexts are kept."
+    )
 bad = problems(entry, want_tools, want_ctx)
 if bad:
     for why in bad:

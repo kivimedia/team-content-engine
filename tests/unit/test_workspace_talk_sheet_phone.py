@@ -42,7 +42,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, Response
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -190,11 +190,8 @@ def host(monkeypatch, tmp_path, clip):
     app.include_router(workspace_router.router, prefix="/api/v1")
     app.include_router(workspace_router.production_router, prefix="/api/v1")
     app.dependency_overrides[editorial_router.get_editorial_sessionmaker] = lambda: sessionmaker
-
-    @app.get("/library/{upload}/talk")
-    async def sheet_address(upload: str):
-        # The shell, as dashboard.py serves it on every other workspace path.
-        return HTMLResponse((API_DIR / "workspace.html").read_text(encoding="utf-8"))
+    # /library/<id>/talk is dashboard.py's own route (1-Oct final review): a reload of
+    # the sheet, a restored tab or a pasted link reach the shell, never a 404.
 
     @app.get("/voice-client.js")
     async def voice_client():
@@ -232,6 +229,7 @@ def host(monkeypatch, tmp_path, clip):
             "answers": answers,
             "renders": renders,
             "requests_started": requests_started,
+            "sm": sessionmaker,
         }
     finally:
         server.should_exit = True
@@ -564,6 +562,10 @@ def test_the_notes_sheet_from_the_card_to_one_new_version(host, tmp_path):
             confirm.click()
         assert made.value.status == 200, made.value.text()
         assert made.value.request.post_data_json["check"] == preview["check"]
+        # 1-Oct final review: nothing can be said to the editor while the notes are
+        # made, so the call (billed by the minute) ends and the screen may sleep.
+        page.wait_for_function("() => window.__voice.starts[0].stopped === true", timeout=3_000)
+        assert page.evaluate("() => window.__wake.released") == 1
 
         # The live step, never a bare spinner: the batch's own, then the render's.
         phone.wait_status("Reading your 2 notes on the subscription")
@@ -664,6 +666,17 @@ def test_closing_keeps_the_notes_and_the_card_says_they_wait(host, tmp_path):
         phone.emit(0, "ear", {"open": True})
         _type_note(page, phone, 2.2, TYPED)
 
+        # ---- a reload of the sheet (pull to refresh, a restored tab) reopens the same notes
+        with page.expect_response(_opened) as again:
+            page.reload()
+        assert again.value.json()["session_id"] == sid
+        page.wait_for_selector("#notesSheet:not([hidden]) video.ns-player")
+        phone.wait_row(TYPED)
+        page.wait_for_function("() => window.__voice && window.__voice.starts.length === 1")
+        page.wait_for_function("() => document.querySelector('.ns-player').readyState >= 1")
+        phone.emit(0, "ear", {"open": True})
+        assert page.evaluate("() => document.documentElement.scrollWidth > window.innerWidth + 1") is False
+
         # ---- closing keeps the note: the sitting stays open, and the card says it waits
         with page.expect_response(_closed) as closed:
             page.locator("#notesClose").click()
@@ -701,5 +714,62 @@ def test_closing_keeps_the_notes_and_the_card_says_they_wait(host, tmp_path):
         assert page.locator("article.card", has_text=TITLE).locator(".waiting-notes").count() == 0
         assert page.locator("#notesSheet").is_hidden()
 
+        assert errors == [], errors
+        browser.close()
+
+
+def _block_the_edit(host) -> None:
+    """What "Edit it again" leaves when the review's cut fails the meaning check: nothing
+    rendered, and the stamped older edit is what he watches. Sync Playwright holds an
+    event loop in this thread, so the write runs in a thread of its own."""
+
+    async def write() -> None:
+        async with host["sm"]() as s:
+            row = await prod._load(s, uuid.UUID(host["upload"]), WS)
+            plan = dict(row.edit_plan or {})
+            plan["meaning_check"] = {"status": "blocked", "issues": [{"detail": "Dropped take at 0:03"}]}
+            row.edit_plan = plan
+            row.status = "needs_review"
+            row.status_detail = 'Needs review: Dropped take at 0:03 says "not after"'
+            await s.commit()
+
+    worker = threading.Thread(target=lambda: asyncio.run(write()))
+    worker.start()
+    worker.join(timeout=30)
+
+
+def test_the_sheet_says_when_an_earlier_re_edit_waits_for_his_eyes(host, tmp_path):
+    """1-Oct final review: notes made while an earlier re-edit's cut waited for his eyes
+    stopped on that cut and were blamed for it. The sheet says so when it opens, his
+    notes are kept, and Make is refused with the same sentence before any job."""
+    from playwright.sync_api import sync_playwright
+
+    shots = _shots(tmp_path)
+    uid = host["upload"]
+    _block_the_edit(host)
+    with sync_playwright() as pw:
+        browser = _launch(pw)
+        page, errors = _phone(browser)
+        phone = Phone(page)
+        with page.expect_response(_opened) as opened:
+            page.goto(f"{host['base']}/library/{uid}/talk")
+        blocked = opened.value.json()["blocked"]
+        assert blocked and "waiting for your eyes" in blocked and "Dropped take at 0:03" in blocked
+        message = page.locator(".ns-message")
+        message.wait_for()
+        assert message.inner_text() == blocked
+        page.wait_for_function("() => window.__voice && window.__voice.starts.length === 1")
+        page.wait_for_function("() => document.querySelector('.ns-player').readyState >= 1")
+        phone.emit(0, "ear", {"open": True})
+        _type_note(page, phone, 2.2, TYPED)
+        with page.expect_response(lambda r: r.url.endswith("/submit") and r.request.method == "GET") as asked:
+            page.locator("[data-ns-make]").click()
+        assert asked.value.status == 409 and asked.value.json()["detail"]["code"] == "edit_needs_you"
+        page.wait_for_function("(t) => document.querySelector('.ns-message').textContent === t", arg=blocked)
+        assert "your notes would make" not in page.locator("body").inner_text().lower()
+        assert host["asked"] == [] and host["renders"] == []
+        layout = page.evaluate(SHEET_LAYOUT_JS)
+        assert layout["overlaps"] == [] and layout["overflowX"] is False, layout
+        page.screenshot(path=str(shots / "talk-sheet-edit-waits-phone.png"))
         assert errors == [], errors
         browser.close()

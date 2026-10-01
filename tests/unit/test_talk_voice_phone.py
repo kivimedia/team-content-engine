@@ -132,6 +132,8 @@ FAKE_VOICE = """
         get busy() { return !c.stopped; },
         get live() { return !c.stopped; }
       };
+      // KM BOT's client before K1 (origin/main on the box until K1 deploys): no mute, no quiet.
+      if (g.__noK1) { delete handle.mute; delete handle.quiet; }
       starts.push(c);
       opts.on("connecting", { agent: "TCE" });
       return handle;
@@ -484,6 +486,8 @@ def test_hold_to_talk_pins_the_second_saves_his_words_and_writes_the_editors_ans
         assert phone.video("v.paused") is True
         assert abs(pin["edit_s"] - phone.video("v.currentTime")) < 0.1
         assert pinned.value.request.post_data_json["render_ref"] == REF
+        # A hold, not a typed note: the editor's voice reads holds (1-Oct final review).
+        assert pinned.value.request.post_data_json["by"] == "voice"
         at = pin["clock"]
         phone.wait_status(f"Listening at {at}")
         call = phone.voice()[0]
@@ -773,7 +777,9 @@ def test_his_words_for_a_note_are_what_came_after_the_press():
     assert got["realtime"] == "Move the title up"
     assert got["fresh"] == "Fresh"
     assert got["when"] == "0:38"
-    assert got["answer"] == "Not confirmed yet - hold and say it again."
+    # 1-Oct final review: "hold and say it again" pinned a second copy of the note; the
+    # note already goes to the editor as he said it.
+    assert got["answer"] == "The editor has not confirmed this one. It is still made as you said it."
 
 
 # ------------------------------------------------------- 1-Oct review fixes
@@ -925,7 +931,9 @@ def test_closing_right_after_letting_go_keeps_the_note_and_its_late_words(host):
         held = {n["id"]: n["request"] for n in phone.notes_in(sid, "held", 2)}
         assert held.get(second.value.json()["note_id"]) == "Move the title up", held
 
-        # And a hold that never got a word: it stays on the server, never taken back.
+        # And a hold that never got a word, even after the voice's own last flush: it
+        # carries nothing of his, so it is taken back before the close is done (1-Oct
+        # final review: it kept the sitting open for good and said "Listening" later).
         page.evaluate("(id) => window.__openSheet(id)", host["upload"])
         page.wait_for_function("() => window.__voice.starts.length === 3")
         phone.emit(2, "ear", {"open": True})
@@ -937,10 +945,14 @@ def test_closing_right_after_letting_go_keeps_the_note_and_its_late_words(host):
         page.mouse.up()
         page.evaluate(CLOSE_AND_MARK)
         page.wait_for_function("() => window.__closed === true", timeout=10_000)
-        page.wait_for_timeout(300)
+        third_id = third.value.json()["note_id"]
+        # Taken back by the time close() resolved: the sheet's close route then finds
+        # nothing waiting, and closes the notes.
+        drops = [p["url"] for p in patches if (p["body"] or {}).get("drop")]
+        assert len(drops) == 1 and drops[0].endswith(third_id), patches
         states = {n["id"]: n["state"] for n in phone.sitting(sid)["notes"]}
-        assert states[third.value.json()["note_id"]] == "listening", states
-        assert not any((p["body"] or {}).get("drop") for p in patches), patches
+        assert states[third_id] == "rejected", states
+        assert states[second.value.json()["note_id"]] == "held", "a note with words is never taken back"
         assert errors == [], errors
         browser.close()
 
@@ -990,19 +1002,23 @@ def test_a_quick_second_press_keeps_the_end_of_the_first_note_on_it(host):
 STATUS_HOST = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>bar</title></head>
-<body><main style="padding: 12px 16px"><video id="player"></video><div id="bar"></div></main></body></html>
+<body><main style="padding: 12px 16px"><video id="player"></video><div id="bar"></div><ol id="notes"></ol></main></body></html>
 """
 
-# The sheet's bar against a scripted sitting, with no server. Writes answer like the routes.
+# The sheet's bar against a scripted sitting, with no server. Writes answer like the routes
+# (window.__patchAs: what a PATCH answers with, as the server would for that note).
 OPEN_FAKE = """(payload) => {
   window.__payload = payload;
   window.__posts = 0;
-  window.talk = TceTalkVoice.open({
+  window.__calls = [];
+  window.talk = TceTalkVoice.open(Object.assign({
     root: document.getElementById('bar'),
     video: document.getElementById('player'),
+    notes: document.getElementById('notes'),
     sitting: payload,
     api: async (path, o) => {
       const method = (o || {}).method || 'GET';
+      window.__calls.push({ method, path, body: (o || {}).body || null });
       if (method === 'POST' && path.endsWith('/notes')) {
         window.__posts += 1;
         const id = 'n' + window.__posts;
@@ -1010,12 +1026,12 @@ OPEN_FAKE = """(payload) => {
                  note: { id, state: 'listening', start_s: 0, request: '', understood: null, result: null } };
       }
       if (method === 'PATCH') {
-        return { id: path.split('/').pop(), state: 'held', start_s: 0,
-                 request: (o.body || {}).heard || '', understood: null, result: null };
+        return Object.assign({ id: path.split('/').pop(), state: 'held', start_s: 0,
+                 request: (o.body || {}).heard || '', understood: null, result: null }, window.__patchAs || {});
       }
       return JSON.parse(JSON.stringify(window.__payload));
     }
-  });
+  }, window.__openOpts || {}));
 }"""
 
 BAR_LAYOUT = """() => {
@@ -1030,17 +1046,21 @@ BAR_LAYOUT = """() => {
 OLD_STEP = "Captioned MP4 ready: 61 ranges, 2:14 long, longest pause 0.45 s"
 
 
-def _bar_page(pw, payload: dict):
-    """The bar alone at phone width, against a scripted sitting (no server)."""
+def _bar_page(pw, payload: dict, before: str = "", call: bool = True):
+    """The bar alone at phone width, against a scripted sitting (no server). `before`
+    runs before the voice client loads; `call`: wait for the call to start."""
     browser = _launch(pw)
     page, errors = _phone(browser)
     page.set_content(STATUS_HOST)
     page.add_style_tag(content=(API_DIR / "workspace.css").read_text(encoding="utf-8"))
     page.add_style_tag(content=(API_DIR / "talk-voice.css").read_text(encoding="utf-8"))
+    if before:
+        page.add_script_tag(content=before)
     page.add_script_tag(content=FAKE_VOICE)
     page.add_script_tag(content=(API_DIR / "talk-voice.js").read_text(encoding="utf-8"))
     page.evaluate(OPEN_FAKE, payload)
-    page.wait_for_function("() => window.__voice && window.__voice.starts.length === 1")
+    if call:
+        page.wait_for_function("() => window.__voice && window.__voice.starts.length === 1")
     return browser, page, errors
 
 
@@ -1132,6 +1152,160 @@ def test_the_bar_says_what_the_notes_are_doing_and_when_the_editor_has_stopped()
         assert status_for(dict(BASE, state="needs_you", result={"status": made})) == made
         assert OLD_STEP not in page.locator("body").inner_text()
 
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
+# ------------------------------------------------------- 1-Oct final review
+
+
+HOLD_POINTER = {"pointerId": 9, "pointerType": "touch", "isPrimary": True, "button": 0,
+                "bubbles": True, "cancelable": True}
+
+
+def test_a_voice_client_without_the_calls_own_mute_never_keeps_a_call_open():
+    """Finding: a TCE deploy that lands before KM BOT's K1 meets a voice client whose call
+    has no mute and no quiet. The call stayed open and unmuted, greeted over the video,
+    and every hold threw before its pin."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, page, errors = _bar_page(pw, BASE, before="window.__noK1 = true;", call=False)
+        phone = Phone(page)
+        page.wait_for_function("() => window.__voice && window.__voice.starts.length === 1")
+        phone.wait_status("older than the notes sheet")
+        assert "Typing still works." in phone.status()
+        assert phone.voice()[0]["stopped"] is True, "no call stays open"
+        assert page.locator(".tv-hold").is_disabled()
+        page.locator(".tv-hold").dispatch_event("pointerdown", HOLD_POINTER)
+        page.wait_for_timeout(300)
+        assert page.evaluate("() => window.__posts") == 0
+        assert len(phone.voice()) == 1, "a press never starts another call"
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
+def test_a_pin_with_no_words_from_an_earlier_visit_says_so_and_is_not_polled_for():
+    """Finding 5: an empty pin left behind read "Listening for your words" although
+    nothing listened, and kept the sheet polling every 2 s."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    old = {"id": "old", "state": "listening", "start_s": 2.0, "request": "", "understood": None, "result": None}
+    with sync_playwright() as pw:
+        browser, page, errors = _bar_page(pw, dict(BASE, notes=[old]))
+        row = page.locator('.tv-note[data-note-id="old"]')
+        row.wait_for()
+        assert row.locator(".tv-said").inner_text() == "No words were caught here."
+        assert row.locator(".tv-drop").count() == 1, "he can take it back"
+        page.wait_for_timeout(4_500)
+        gets = page.evaluate("() => window.__calls.filter(c => c.method === 'GET').length")
+        assert gets == 0, f"polled {gets} times for a pin nobody is speaking into"
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
+def test_a_hold_taken_back_as_an_instruction_says_so_not_saved():
+    """Finding 2: his "yes" on a hold is his answer. When the server says that hold was
+    taken back as an instruction, the bar says so instead of "Saved at 0:00"."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    taken = "This hold was an instruction to the editor, not a note."
+    with sync_playwright() as pw:
+        browser, page, errors = _bar_page(pw, BASE)
+        phone = Phone(page)
+        phone.emit(0, "ear", {"open": True})
+        phone.wait_status("Pause where something is wrong")
+        page.evaluate("(t) => { window.__patchAs = {state: 'rejected', result: {command: 'yes', taken: t}}; }", taken)
+        page.mouse.move(*phone.hold_point())
+        page.mouse.down()
+        phone.emit(0, "hearing", {"text": "Yes."})
+        page.wait_for_timeout(450)
+        page.mouse.up()
+        phone.emit(0, "said", {"text": "Yes."})
+        phone.wait_status(taken)
+        assert "Saved at" not in phone.status()
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
+def test_once_the_notes_are_handed_over_the_call_hangs_up_and_the_screen_may_sleep():
+    """Finding: after Make, the muted Live call (billed by the minute) and the wake lock
+    stayed on through thinking and rendering, up to the 12 h worker wait."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    reading = "Reading your 2 notes on the subscription"
+    with sync_playwright() as pw:
+        browser, page, errors = _bar_page(pw, BASE, before="window.__openOpts = { hangUpWaitMs: 2000 };")
+        phone = Phone(page)
+        phone.emit(0, "ear", {"open": True})
+        phone.wait_status("Pause where something is wrong")
+        assert page.evaluate("() => window.__wake.requested") == ["screen"]
+
+        # His spoken yes made it: the editor says so out loud, and the call ends after that.
+        page.evaluate("(p) => { window.__payload = p; return window.talk.refresh(); }",
+                      dict(BASE, state="thinking", result={"status": reading}))
+        phone.emit(0, "partial", {"text": "Making the new version from your two notes now"})
+        page.wait_for_timeout(1_000)
+        assert phone.voice()[0]["stopped"] is False, "never cut off mid-sentence"
+        page.wait_for_function("() => window.__voice.starts[0].stopped === true", timeout=6_000)
+        assert page.evaluate("() => window.__wake.released") == 1
+        assert phone.status() == reading, "the bar still follows the batch"
+        assert page.locator(".tv-hold").is_disabled()
+
+        # Handed back (nothing changed): the next hold starts a fresh call, and the screen stays on.
+        handed = "Your editor could not read the notes, so nothing was changed. Make the new version again."
+        page.evaluate("(p) => { window.__payload = p; return window.talk.refresh(); }",
+                      dict(BASE, state="open", result={"status": handed}))
+        phone.wait_status(handed)
+        assert page.locator(".tv-hold").is_enabled()
+        page.wait_for_function("() => window.__wake.requested.length === 2")
+        page.mouse.move(*phone.hold_point())
+        page.mouse.down()
+        page.wait_for_function("() => window.__voice.starts.length === 2")
+        page.wait_for_timeout(400)
+        page.mouse.up()
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+        # A sheet opened on notes already being made starts no call and holds no wake lock.
+        browser, page, errors = _bar_page(pw, dict(BASE, state="thinking", result={"status": reading}), call=False)
+        phone = Phone(page)
+        phone.wait_status(reading)
+        page.wait_for_timeout(800)
+        assert page.evaluate("() => window.__voice ? window.__voice.starts.length : 0") == 0
+        assert page.evaluate("() => window.__wake.requested") == []
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
+def test_notes_another_screen_closed_open_again_with_a_hold():
+    """Finding 4: the desk closed the notes the phone was using; the phone's hold was
+    refused and his words went nowhere. A hold opens them again (the pin does it)."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, page, errors = _bar_page(pw, BASE)
+        phone = Phone(page)
+        phone.emit(0, "ear", {"open": True})
+        page.evaluate("(p) => { window.__payload = p; return window.talk.refresh(); }", dict(BASE, state="closed"))
+        phone.wait_status("closed on another screen")
+        assert page.locator(".tv-hold").is_enabled()
+        page.mouse.move(*phone.hold_point())
+        page.mouse.down()
+        page.wait_for_function("() => window.__posts === 1")
+        phone.wait_status("Listening at 0:00")
+        page.mouse.up()
         page.evaluate("() => window.talk.close()")
         assert errors == [], errors
         browser.close()

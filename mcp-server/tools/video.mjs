@@ -22,6 +22,14 @@
  *
  * Nothing here opens a sitting or pins a note: only his sheet does. A sitting is
  * found with a read that leaves its heartbeat alone (GET /recordings/{id}/talk).
+ *
+ * 1-Oct final review: the sheet pins EVERY hold, so his "that's all, make it", his
+ * "yes", "no, I meant...", "scratch that" and "go back" arrive as pins too. Each tool
+ * takes `said` (his words on the hold it acts on, as the call heard them): the
+ * moment reads the hold with those words, and the tool that carries out an
+ * instruction takes its hold back (POST /talk/{sid}/command), so it is never read
+ * back or made as a note. A yes is said with the read-back's as_of, kept here by
+ * check code, so a yes hold pinned after the read-back never changes the check.
  */
 import { createHash } from 'node:crypto';
 
@@ -79,6 +87,11 @@ function noteLine(n) {
   return `${n.where}: ${what} (${NOTE_STATE[n.state] || n.state}${outcome})`;
 }
 
+/** His words on a hold, as a tool passes them on: trimmed, and never longer than TCE takes. */
+function words(said) {
+  return String(said ?? '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+}
+
 export function register(server, call, { reply, failure }) {
   // Which sitting each note is in, learned from every read, so tce_video_note can
   // save by the note id alone.
@@ -86,6 +99,22 @@ export function register(server, call, { reply, failure }) {
   // The rules go with the first moment of this process (a respawned brain starts
   // without them, and so does this process).
   let rulesGiven = false;
+  // Read-back check code -> the newest pin that read-back saw (its as_of). Said with
+  // his yes, a yes he gave by holding the button is taken as his answer, not a note.
+  const readBacks = new Map();
+
+  /* The hold that carried an instruction ("that's all, make it", "yes", "scratch
+     that", "no, I meant...", "go back") is taken back, so it is never read back or
+     made as a note. `keep`: the note the instruction is about (only a hold after it
+     counts). Never fatal: what follows refuses on its own when something is wrong. */
+  async function takeBack(sessionId, said, keep) {
+    if (!sessionId) return null;
+    const body = {};
+    if (words(said)) body.said = words(said);
+    if (keep) body.keep = keep;
+    const r = await call('POST', `/production/talk/${sessionId}/command`, body);
+    return r.ok ? r.data?.taken || null : null;
+  }
 
   const learn = (sitting) => {
     for (const n of sitting?.notes || []) sittingOf.set(n.id, sitting.session_id);
@@ -172,21 +201,33 @@ export function register(server, call, { reply, failure }) {
     type: 'string',
     description: 'The video id his call opened with (video:<id>), or its short id. Never words.',
   };
+  const SAID = {
+    type: 'string',
+    description: 'His words on the hold you are acting on, exactly as the call heard them (his last line). '
+      + 'They tell TCE which hold you mean.',
+  };
 
   server.tool(
     'tce_video_moment',
     'START HERE for every note he gives on a video he is reviewing (his call opened on video:<id>). '
       + 'Reads one note: the second he paused at, his words, the words of the video around that second '
       + '(cut words and joins marked), what his phone or the edit did to a word, his earlier notes on this '
-      + 'video, and, the first time, his standing rules for the editor. It waits a few seconds when his '
-      + 'words are still being saved. Pass the note id when you know which note you are answering. Then '
-      + 'save your reading with tce_video_note. It never changes anything.',
+      + 'video, and, the first time, his standing rules for the editor. Every hold of the button is pinned: '
+      + 'pass his words on this hold as said, and it reads the hold with those words (with no words and no '
+      + 'note id, his newest hold). It waits a few seconds when his words are still being saved. Pass the note '
+      + 'id when you know which note you mean. Then save your reading with tce_video_note. Never for a hold '
+      + 'that only says make it, yes, no, scratch that or go back: those are instructions, not notes. It never '
+      + 'changes anything.',
     {
       type: 'object',
-      properties: { video: VIDEO_ID, note: { ...NOTE_ID, description: 'The note id, when you know which note. Leave out for the note he just gave.' } },
+      properties: {
+        video: VIDEO_ID,
+        note: { ...NOTE_ID, description: 'The note id, when you know which note. Leave out for the hold he just gave.' },
+        said: SAID,
+      },
       required: ['video'],
     },
-    async ({ video, note }) => {
+    async ({ video, note, said }) => {
       const open = await takingNotes(video);
       if (open.stop) return open.stop;
       const { video: v, sitting } = open;
@@ -198,11 +239,18 @@ export function register(server, call, { reply, failure }) {
             + 'he just gave, or list them with tce_video_notes. Nothing was done.', { ok: false, code: 'unknown_note' });
         }
         query.push(`note=${encodeURIComponent(n.note.id)}`);
+      } else if (words(said)) {
+        query.push(`said=${encodeURIComponent(words(said))}`);
       }
       if (!rulesGiven) query.push('rules=1');
       const r = await call('GET', `/production/talk/${sitting.session_id}/moment${query.length ? `?${query.join('&')}` : ''}`);
       if (!r.ok) {
         if (r.status === 404 && r.data?.detail?.code === 'no_moment') {
+          if (r.data.detail.said) {
+            return reply('No hold of his waiting for your reading has those words. If he gave you an instruction (make it, '
+              + 'yes, no, scratch that, no I meant, go back), use the tool for it. Otherwise ask him to hold the button '
+              + 'and say it again. Nothing was done.', { ok: false, code: 'no_note', video: v.upload_id });
+          }
           return reply('No note is waiting in his notes on this video: he has not held the button yet, or every note '
             + 'already has your reading. Nothing was done.', { ok: false, code: 'no_note', video: v.upload_id });
         }
@@ -252,19 +300,24 @@ export function register(server, call, { reply, failure }) {
     'tce_video_note',
     'Save your one-line reading of ONE note (what he wants changed at that second, without the time), '
       + 'or take the note back when he says "scratch that" (drop true). Saving again for the same note '
-      + 'rewrites that note and never adds one. Nothing is cut or rendered: that happens only when he says '
-      + 'make it (tce_video_make). It returns the line to say back to him, naming the time.',
+      + 'rewrites that note and never adds one. "No, I meant..." is a new hold that corrects an earlier note: '
+      + 'pass the EARLIER note id, the new reading, correcting true and his words as said. With drop or '
+      + 'correcting, the hold that said it is taken back, so it never becomes a note of its own. Nothing is '
+      + 'cut or rendered: that happens only when he says make it (tce_video_make). It returns the line to say '
+      + 'back to him, naming the time.',
     {
       type: 'object',
       properties: {
         note: NOTE_ID,
         understood: { type: 'string', description: 'What he wants, in one plain line, without the time. Not needed with drop.' },
         drop: { type: 'boolean', description: 'True to take the note back ("scratch that").' },
+        correcting: { type: 'boolean', description: 'True when this hold corrects the earlier note named in note ("no, I meant...").' },
+        said: SAID,
         video: VIDEO_ID,
       },
       required: ['note'],
     },
-    async ({ note, understood, drop, video }) => {
+    async ({ note, understood, drop, correcting, said, video }) => {
       const id = idText(note);
       if (!SOME_ID.test(id)) {
         return reply(`A note is named by its id ("${String(note ?? '')}" is not one). Read it with tce_video_moment first. Nothing was saved.`,
@@ -293,9 +346,12 @@ export function register(server, call, { reply, failure }) {
         sid = s.session_id;
       }
       const r = await call('PATCH', `/production/talk/${sid}/notes/${noteId}`, drop ? { drop: true } : { understood: reading });
+      // "Scratch that" and "no, I meant..." came on a hold of their own: it is not a note.
+      const ownHold = () => (drop || correcting ? takeBack(sid, said, noteId) : null);
       if (!r.ok) {
         const code = r.data?.detail?.code;
         if (drop && code === 'not_waiting') {
+          await ownHold();
           return reply('That note was already taken back. Nothing else changed.', { ok: true, dropped: true, note: noteId });
         }
         if (code === 'not_waiting') {
@@ -305,6 +361,7 @@ export function register(server, call, { reply, failure }) {
       }
       const n = r.data;
       sittingOf.set(n.id, sid);
+      await ownHold();
       if (drop) {
         return reply(`Took back the note ${n.where}. Nothing changes until you say make it.`,
           { ok: true, dropped: true, note: n.id, where: n.where });
@@ -329,7 +386,8 @@ export function register(server, call, { reply, failure }) {
         return reply(`He has not given notes on "${v.title}" yet.`, { video: v.upload_id, notes: [] });
       }
       const kept = (s.notes || []).filter((n) => n.state !== 'rejected');
-      const back = (s.notes || []).length - kept.length;
+      // A hold that carried an instruction (make it, yes, scratch that) was never a note.
+      const back = (s.notes || []).filter((n) => n.state === 'rejected' && !(n.result && 'command' in n.result)).length;
       const status = sentence(s.state === 'rendering' ? s.video_step || s.result?.status : s.result?.status);
       let head;
       if (s.state === 'open') {
@@ -356,29 +414,34 @@ export function register(server, call, { reply, failure }) {
   server.tool(
     'tce_video_make',
     'Make the new version of the video from his notes: one job reads every note, then the video renders '
-      + 'once. Only when he says make it ("that\'s all, make it"). First call it with confirmed false: '
-      + 'nothing is made, and it returns the read-back of every note and a check code. Read that back to '
-      + 'him and ask for a clear yes. Only after his yes, call it again with confirmed true and the same '
-      + 'check code. If the notes changed after the read-back, it refuses and gives you the new read-back. '
-      + 'tce_jobs says when the new version is ready.',
+      + 'once. Only when he says make it ("that\'s all, make it"). First call it with confirmed false and his '
+      + 'words as said: nothing is made, the hold that asked is taken back (it is not a note), and it returns '
+      + 'the read-back of every note and a check code. Read that back to him and ask for a clear yes. His yes '
+      + 'is another hold: only then call it again with confirmed true, the same check code, and his yes as '
+      + 'said. If the notes changed after the read-back, it refuses and gives you the new read-back. A yes '
+      + 'when you read nothing back may answer the read-back on his screen: call it with confirmed false, read '
+      + 'it back, and ask once. tce_jobs says when the new version is ready.',
     {
       type: 'object',
       properties: {
         video: VIDEO_ID,
         confirmed: { type: 'boolean', description: 'True only after he said yes to the read-back.' },
         check: { type: 'string', description: 'The check code the read-back returned.' },
+        said: SAID,
       },
       required: ['video'],
     },
-    async ({ video, confirmed, check }) => {
+    async ({ video, confirmed, check, said }) => {
       const open = await takingNotes(video);
       if (open.stop) return open.stop;
       const { video: v, sitting } = open;
       const url = `/production/talk/${sitting.session_id}/submit`;
       if (!confirmed) {
+        await takeBack(sitting.session_id, said);
         const r = await call('GET', url);
         if (!r.ok) return refused(r, 'read the notes back', 'Nothing was made.');
         const p = r.data;
+        if (p.as_of) readBacks.set(p.check, p.as_of);
         return reply(`Read this back to him about "${v.title}" and ask for a clear yes: "${p.read_back}" `
           + `Nothing is made until you call tce_video_make again with confirmed true and check ${p.check}.`,
         { ok: false, code: 'read_back', check: p.check, read_back: p.read_back, count: p.count, video: v.upload_id, made: false });
@@ -388,10 +451,15 @@ export function register(server, call, { reply, failure }) {
         return reply('There is no check code: call tce_video_make with confirmed false, read it back to him, and use the '
           + 'check code it gives. Nothing was made.', { ok: false, code: 'check_required', made: false });
       }
-      const r = await call('POST', url, { check: code, by: 'voice' });
+      // His yes came on a hold of its own: it is his answer, not a note.
+      await takeBack(sitting.session_id, said);
+      const body = { check: code, by: 'voice' };
+      if (readBacks.has(code)) body.as_of = readBacks.get(code);
+      const r = await call('POST', url, body);
       if (!r.ok) {
         const d = r.data?.detail;
         if (r.status === 409 && d && d.code === 'changed' && d.read_back) {
+          if (d.as_of) readBacks.set(d.check, d.as_of);
           return reply(`The notes changed since you read them back. Read him this and ask again: "${d.read_back}" `
             + `Nothing was made. On his yes use check ${d.check}.`,
           { ok: false, code: 'changed', check: d.check, read_back: d.read_back, made: false });
@@ -410,22 +478,26 @@ export function register(server, call, { reply, failure }) {
   server.tool(
     'tce_video_undo_version',
     'Go back to the version of the video from before his last notes were made, when he asks for that. '
-      + 'One re-render. First call it with confirmed false: nothing changes, and it says what would come '
-      + 'back and a check code (or why it cannot be done now). Read that back and ask for a clear yes. Only '
-      + 'after his yes, call it again with confirmed true and the same check code. tce_jobs says when it is back.',
+      + 'One re-render. First call it with confirmed false and his words as said: nothing changes, the hold '
+      + 'that asked is taken back (it is not a note), and it says what would come back and a check code (or '
+      + 'why it cannot be done now). Read that back and ask for a clear yes. Only after his yes, call it again '
+      + 'with confirmed true, the same check code and his yes as said. tce_jobs says when it is back.',
     {
       type: 'object',
       properties: {
         video: VIDEO_ID,
         confirmed: { type: 'boolean', description: 'True only after he said yes to the read-back.' },
         check: { type: 'string', description: 'The check code the read-back returned.' },
+        said: SAID,
       },
       required: ['video'],
     },
-    async ({ video, confirmed, check }) => {
+    async ({ video, confirmed, check, said }) => {
       const f = await findVideo(video);
       if (f.stop) return f.stop;
       const v = f.found;
+      // "Go back" and his yes came on holds in the notes he has open now: not notes.
+      if (v.live && v.live.state === 'open') await takeBack(v.live.session_id, said);
       const s = v.made;
       if (!s) {
         return reply(`No version of "${v.title}" was made from his notes, so there is nothing to go back from. Nothing was changed.`,

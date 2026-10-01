@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -347,7 +348,9 @@ async def list_library(
         if req.session_id is not None and req.state in (*WAITING_NOTE_STATES, "rejected"):
             # 30-Sep: a note in a sitting waits for "make it"; it is not a request the
             # editor is working on, and a note he took back is not one at all.
-            if req.state != "rejected" and req.session_id in taking_notes:
+            # A pin nobody spoke into is not a note waiting (1-Oct review: the card said
+            # "1 note waiting" for one a closed sheet left).
+            if req.state != "rejected" and req.session_id in taking_notes and has_words(req):
                 waiting_by_upload[req.upload_id] = waiting_by_upload.get(req.upload_id, 0) + 1
             continue
         last_by_upload[req.upload_id] = req
@@ -633,6 +636,31 @@ LEFT_OUT = "No words were caught for this note, so it was left out of the new ve
 # The new version cut the second a waiting note was pinned to: it now sits at that cut.
 NOTE_CUT_IN_NEW_VERSION = "The new version cut this moment; the note now sits where that cut is."
 
+# 1-Oct final review: every hold on the sheet is pinned, so his "that's all, make it",
+# his "yes", "no, I meant...", "scratch that" and "go back" each arrived as a note too.
+# They went into the read-back, every spoken yes changed its check code (Make never
+# started), and the batch got "make it" as a note. A hold that carried an instruction
+# is taken back by the tool that acts on it (take_command), and a yes given after the
+# read-back is never a note of that read-back (submit's `as_of`).
+COMMAND_TAKEN = "This hold was an instruction to the editor, not a note."
+AFTER_READ_BACK = "Given after the read-back you said yes to, so it was taken as your answer, not a note."
+# A pin nobody spoke into, left when the notes closed: it carries nothing of his.
+NO_WORDS_ON_CLOSE = "No words were caught for this note, so it was taken back when the notes closed."
+NOTES_CLOSED = "These notes were closed. Open the notes again to give new ones."
+# How alike his words for a hold and the words the editor was handed must be (shared
+# words over all words) to be the same hold. Both come from the same transcript of
+# the call, so the right hold scores near 1.
+SAME_HOLD = 0.4
+_WORD = re.compile(r"[\w']+")
+
+# 1-Oct final review: notes made while an earlier re-edit's plan waits for his eyes were
+# re-planned with that blocked cut still in, stopped on it, and were blamed for it.
+EDIT_WAITS = (
+    "Your editor's last re-edit wants a cut that is waiting for your eyes ({reason}), so no "
+    "new version can be made from notes until that is settled. Your notes are kept. On the "
+    "card, use Request an editing change to keep or drop that cut, then make the new version."
+)
+
 # (upload, keep) -> {word index: what the editor cannot hear for itself}
 MarksFor = Callable[[RecordingUpload, list[list[float]]], Awaitable[dict[int, str]]]
 
@@ -643,6 +671,60 @@ def _now() -> datetime:
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
+
+
+def has_words(note: EditingRequest) -> bool:
+    """His words or the editor's reading: a note that says something. A pin with
+    neither (nobody spoke into it) is not a note waiting for anything (1-Oct review)."""
+    return bool((note.request or "").strip() or (note.understood or "").strip())
+
+
+def edit_waits_for_him(upload: RecordingUpload) -> str | None:
+    """Why no new version can be made from notes right now, or None.
+
+    An earlier re-edit (Edit it again, a typed request) planned a cut the meaning check
+    blocked, so nothing rendered and the file he watches is the render before it. A
+    batch re-plans from that blocked plan and would stop on the same cut, so it is not
+    started until he settles that cut."""
+    if upload.status != "needs_review" or not upload.edited_path:
+        return None
+    reason = (upload.status_detail or "").strip()
+    reason = re.sub(r"^needs review:\s*", "", reason, flags=re.I).rstrip(" .") or "the cut would change what you said"
+    return EDIT_WAITS.format(reason=reason)[:500]
+
+
+def _word_set(text: str | None) -> set[str]:
+    return {w.strip("'") for w in _WORD.findall((text or "").lower())} - {""}
+
+
+def _alike(said: str | None, heard: str | None) -> float:
+    """Shared words over all words: 1 for the same words, 0 for none in common."""
+    a, b = _word_set(said), _word_set(heard)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _hold_saying(notes: list[EditingRequest], said: str | None) -> EditingRequest | None:
+    """The note whose words are the ones he said (`said`, as the call heard them), or
+    None. A tie goes to the newer hold."""
+    best, score = None, 0.0
+    for n in notes:  # oldest first
+        s = _alike(said, n.request)
+        if s >= SAME_HOLD and s >= score:
+            best, score = n, s
+    return best
+
+
+def _voice_unread(notes: list[EditingRequest]) -> list[EditingRequest]:
+    """Holds the editor has not read yet, oldest first. A typed note, or a typed request
+    that joined the sitting, is never read on the call (1-Oct review: it stayed the
+    oldest unread note and took every spoken note's reading)."""
+    return [
+        n
+        for n in notes
+        if n.state in WAITING_NOTE_STATES and n.created_by == "voice" and not (n.understood or "").strip()
+    ]
 
 
 def sitting_is_active(sitting: EditSession, now: datetime | None = None) -> bool:
@@ -705,13 +787,20 @@ async def joinable_sitting(
 ) -> EditSession | None:
     """The sitting a typed request joins as a held note: open and in front of him, or
     open with notes already waiting for "make it" (the sheet was closed). An old empty
-    sitting is not joined: the request would wait for a button nobody is about to press."""
+    sitting is not joined: the request would wait for a button nobody is about to press,
+    and neither is one holding only a pin nobody spoke into.
+
+    Nor is any while an earlier re-edit waits for his eyes (edit_waits_for_him): no
+    notes can be made until that is settled, and a typed request is how he settles it."""
+    upload = await _get_upload(db, ws, upload_id)
+    if edit_waits_for_him(upload):
+        return None
     now = _now()
     for sitting in await _sittings(db, ws, upload_id, ("open",)):
         if sitting_is_active(sitting, now):
             return sitting
         notes = await sitting_notes(db, ws, sitting.id)
-        if any(n.state in WAITING_NOTE_STATES for n in notes):
+        if any(n.state in WAITING_NOTE_STATES and has_words(n) for n in notes):
             return sitting
     return None
 
@@ -896,7 +985,11 @@ async def close_sitting(db: AsyncSession, ws: uuid.UUID, session_id: uuid.UUID) 
     sitting stayed "active" for two minutes after it was done, and a request he typed
     meanwhile joined it as a note). Refused (409) while a note waits there, so his
     notes are never closed away; refused once its notes are being made. Closing a
-    closed sitting changes nothing."""
+    closed sitting changes nothing.
+
+    A pin nobody spoke into is not a note: it is taken back with the close (1-Oct
+    final review: one left by a sheet closed right after an empty hold kept the
+    sitting open for good, and later typed requests waited in it)."""
     sitting = await get_sitting(db, ws, session_id)
     if sitting.state == "closed":
         return sitting
@@ -907,7 +1000,8 @@ async def close_sitting(db: AsyncSession, ws: uuid.UUID, session_id: uuid.UUID) 
             status=409,
             extra={"state": sitting.state},
         )
-    waiting = [n for n in await sitting_notes(db, ws, sitting.id) if n.state in WAITING_NOTE_STATES]
+    open_notes = [n for n in await sitting_notes(db, ws, sitting.id) if n.state in WAITING_NOTE_STATES]
+    waiting = [n for n in open_notes if has_words(n)]
     if waiting:
         raise LibraryError(
             "notes_waiting",
@@ -915,10 +1009,40 @@ async def close_sitting(db: AsyncSession, ws: uuid.UUID, session_id: uuid.UUID) 
             status=409,
             extra={"waiting": len(waiting)},
         )
+    now = _now()
+    for empty in open_notes:
+        empty.state = "rejected"
+        empty.result = {**(empty.result or {}), "left_out": NO_WORDS_ON_CLOSE}
+        empty.updated_at = empty.resolved_at = now
     sitting.state = "closed"
-    sitting.finished_at = _now()
+    sitting.finished_at = now
     await db.flush()
     return sitting
+
+
+async def _reopen_if_closed(db: AsyncSession, ws: uuid.UUID, sitting: EditSession) -> None:
+    """A hold on notes another screen closed (1-Oct final review: the desk closed the
+    sitting the phone was using, and the phone's next hold was refused as "already
+    handed to the editor"). The sitting opens again when it is still the video's newest
+    and no other takes notes on it; otherwise it stays closed and says so."""
+    if sitting.state != "closed":
+        return
+    newer = (
+        await db.execute(
+            select(EditSession.id).where(
+                EditSession.workspace_id == ws,
+                EditSession.upload_id == sitting.upload_id,
+                EditSession.id != sitting.id,
+                (EditSession.created_at > sitting.created_at)
+                | EditSession.state.in_(SITTING_LIVE_STATES),
+            )
+        )
+    ).first()
+    if newer is not None:
+        return
+    sitting.state = "open"
+    sitting.finished_at = None
+    await db.flush()
 
 
 def _notes_made_json(sitting: EditSession, notes: list[EditingRequest]) -> dict[str, Any]:
@@ -972,6 +1096,9 @@ def sitting_to_json(
         "video_status": upload.status,
         "video_step": upload.status_detail,
         "can_undo": undo_refusal(sitting, upload) is None,
+        # Why no new version can be made from notes now (an earlier re-edit waits for his
+        # eyes), said when the sheet opens rather than first at Make.
+        "blocked": edit_waits_for_him(upload),
     }
 
 
@@ -1081,7 +1208,9 @@ def _must_take_notes(sitting: EditSession) -> None:
     if sitting.state != "open":
         raise LibraryError(
             "not_open",
-            "These notes were already handed to the editor. Open the notes again for new ones.",
+            NOTES_CLOSED
+            if sitting.state == "closed"
+            else "These notes were already handed to the editor. Open the notes again for new ones.",
             status=409,
             extra={"state": sitting.state},
         )
@@ -1118,8 +1247,10 @@ async def pin_note(
     No model is asked anything: this answers at once, and his words follow (PATCH
     heard). Refused (409) when the player is on another render than the sitting, or the
     video was re-rendered under it: the sheet reloads the new one and he pauses again.
+    A hold on notes another screen closed opens them again (_reopen_if_closed).
     """
     sitting = await get_sitting(db, ws, session_id)
+    await _reopen_if_closed(db, ws, sitting)
     _must_take_notes(sitting)
     upload = await _get_upload(db, ws, sitting.upload_id)
     current_ref, _ = watched_render(upload)
@@ -1176,10 +1307,21 @@ async def update_note(
     drop: bool = False,
 ) -> EditingRequest:
     """His words (`heard`, from the page), the editor's reading (`understood`, from the
-    voice's backend), or taking the note back (`drop`). A note with either is held."""
+    voice's backend), or taking the note back (`drop`). A note with either is held.
+
+    His words for a hold that was taken back as an instruction, or left out, can land
+    after that (the editor acts on "make it" as the sheet saves the words, 1-Oct final
+    review): they are kept on that row and nothing else changes, never a refusal."""
     sitting = await get_sitting(db, ws, session_id)
-    _must_take_notes(sitting)
     note = await _note_of(db, ws, sitting, note_id)
+    late = note.state == "rejected" and {"command", "left_out"} & set(note.result or {})
+    if late and heard is not None and understood is None and not drop:
+        if heard.strip():
+            note.request = heard.strip()
+            note.updated_at = _now()
+            await db.flush()
+        return note
+    _must_take_notes(sitting)
     if note.state not in WAITING_NOTE_STATES:
         raise LibraryError(
             "not_waiting",
@@ -1205,6 +1347,57 @@ async def update_note(
     sitting.last_seen = now
     await db.flush()
     return note
+
+
+def _take_back_as_his_answer(note: EditingRequest, said: str | None, why: str, now: datetime) -> None:
+    note.state = "rejected"
+    note.result = {**(note.result or {}), "command": (said or note.request or "").strip()[:300], "taken": why}
+    note.updated_at = note.resolved_at = now
+
+
+async def take_command(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    session_id: uuid.UUID,
+    *,
+    said: str | None = None,
+    keep: uuid.UUID | None = None,
+) -> EditingRequest | None:
+    """Take back the hold that carried an instruction to the editor, not a note (1-Oct
+    final review): "that's all, make it", his "yes", "go back", and with `keep` (the
+    note it is about) "no, I meant..." or "scratch that".
+
+    Which hold: the one whose words are `said` (his words, as the call heard them).
+    When that hold was read as a note (he gave a note and said make it in one breath),
+    it is a note and nothing is taken back. When no saved words match, the newest hold
+    whose words are still on their way. With no words given, the newest unread hold.
+    With `keep`, only holds after that note count. Returns the hold taken back, or
+    None. Changes nothing on notes that are not taking notes."""
+    sitting = await get_sitting(db, ws, session_id)
+    if sitting.state != "open":
+        return None
+    notes = await sitting_notes(db, ws, sitting.id)
+    holds = [n for n in notes if n.state in WAITING_NOTE_STATES and n.created_by == "voice" and n.id != keep]
+    if keep is not None:
+        kept = next((n for n in notes if n.id == keep), None)
+        if kept is not None:
+            holds = [n for n in holds if n.created_at > kept.created_at]
+    unread = _voice_unread(holds)
+    if (said or "").strip():
+        hit = _hold_saying(holds, said)
+        if hit is not None and hit not in unread:
+            return None  # read as a note: the instruction rode on a real note
+        if hit is None:
+            on_the_way = [n for n in unread if not n.request.strip()]
+            hit = on_the_way[-1] if on_the_way else None
+    else:
+        hit = unread[-1] if unread else None
+    if hit is None:
+        return None
+    # The call's brain asked: the sheet's heartbeat is left alone, as with every tool.
+    _take_back_as_his_answer(hit, said, COMMAND_TAKEN, _now())
+    await db.flush()
+    return hit
 
 
 async def _await_words(
@@ -1259,21 +1452,29 @@ def watched_plan_words(plan: dict[str, Any] | None, keep: list[list[float]]) -> 
     return None
 
 
-def _waiting_for_reading(notes: list[EditingRequest]) -> list[EditingRequest]:
-    return [n for n in notes if n.state in WAITING_NOTE_STATES and not n.understood]
+def _note_to_read(notes: list[EditingRequest], said: str | None = None) -> EditingRequest | None:
+    """Which hold the voice's backend is asking about when it names no note.
 
+    By the words it was handed (`said`, his words on the call): the hold whose words
+    are those, so a slow brain turn answering note 1 never reads note 2. When no saved
+    words match, the newest hold whose words are still on their way (the voice handed
+    it over mid-sentence, see _await_words), else nothing. With no words given, the
+    newest hold with words, else the newest pin.
 
-def _note_to_read(pending: list[EditingRequest]) -> EditingRequest | None:
-    """Which note the voice's backend is asking about when it names none (1-Oct review).
-
-    The OLDEST note with his words: he speaks them in order, the voice hands them over
-    in that order, and a slow brain turn must not read note 2 while it is answering
-    note 1. With none spoken yet, the NEWEST pin: the voice handed it over mid-sentence
-    and his words are on their way (see _await_words). A pin he never spoke into is
-    passed over while a note with words waits."""
+    1-Oct final review: this used to take the OLDEST unread note, and a note no voice
+    ever reads (typed, joined from a typed request, one Live answered by itself, a
+    correction the brain wrote onto the earlier note) stayed the oldest for good and
+    took every later note's reading. Only holds count (_voice_unread), newest first."""
+    pending = _voice_unread(notes)
+    if (said or "").strip():
+        hit = _hold_saying(pending, said)
+        if hit is not None:
+            return hit
+        on_the_way = [n for n in pending if not n.request.strip()]
+        return on_the_way[-1] if on_the_way else None
     spoken = [n for n in pending if n.request.strip()]
     if spoken:
-        return spoken[0]
+        return spoken[-1]
     return pending[-1] if pending else None
 
 
@@ -1288,12 +1489,13 @@ async def moment(
     rules: bool = False,
     marks_for: MarksFor | None = None,
     wait_s: float | None = None,
+    said: str | None = None,
 ) -> dict[str, Any]:
     """What the editor needs to understand one note, for the voice's backend.
 
-    The note (the one named, else the one it is most likely asking about, see
-    _note_to_read, else the second `at`), his words, every note still waiting for a
-    reading (with ids, so it can take the right one), the numbered words `window`
+    The note (the one named, else the hold whose words are `said`, see _note_to_read,
+    else the second `at`), his words, every hold still waiting for a reading (with
+    ids, so it can take the right one), the numbered words `window`
     seconds either side on the edit clock with the cut words (~~) and the joins
     (/cut Ns/), what the phone or the edit did to a word, the earlier notes on this
     video, and his standing rules when `rules`.
@@ -1307,7 +1509,7 @@ async def moment(
     if note_id is not None:
         note = await _note_of(db, ws, sitting, note_id)
     elif at is None:
-        note = _note_to_read(_waiting_for_reading(await sitting_notes(db, ws, sitting.id)))
+        note = _note_to_read(await sitting_notes(db, ws, sitting.id), said)
     waited = False
     if note is not None and note.state == "listening" and not note.request.strip():
         waited = True
@@ -1315,7 +1517,12 @@ async def moment(
     edit_s = float(note.start_s) if note is not None and note.start_s is not None else at
     if note is None and edit_s is None:
         raise LibraryError(
-            "no_moment", "There is no note waiting in this sitting, and no second was given.", status=404
+            "no_moment",
+            "No hold of his waiting for a reading has those words."
+            if (said or "").strip()
+            else "There is no note waiting in this sitting, and no second was given.",
+            status=404,
+            extra={"said": bool((said or "").strip())},
         )
 
     upload = await _get_upload(db, ws, sitting.upload_id)
@@ -1385,15 +1592,16 @@ async def moment(
         "transcript": transcript,
         "words": items,
         "marks": marked,
-        # Every note still waiting for a reading, oldest first: when he gave two before
-        # the editor read the first, it matches what it was handed to the right one.
+        # Every hold still waiting for a reading, oldest first: when he gave two before
+        # the editor read the first, it matches what it was handed to the right one. A
+        # typed note is already written down and never waits for a reading on the call.
         "waiting": [
             {
                 "id": str(n.id),
                 "where": edit_request_to_json(n)["where"],
                 "heard": n.request.strip() or None,
             }
-            for n in _waiting_for_reading(await sitting_notes(db, ws, sitting.id))
+            for n in _voice_unread(await sitting_notes(db, ws, sitting.id))
         ],
         "earlier": await _earlier_notes(
             db, ws, upload.id, exclude=note.id if note is not None else None
@@ -1464,6 +1672,26 @@ async def _must_be_the_video_he_watched(
     current_ref, _ = watched_render(upload)
     if current_ref != sitting.render_ref:
         raise LibraryError("stale_render", STALE_SITTING, status=409, extra={"render_ref": current_ref})
+    waits = edit_waits_for_him(upload)
+    if waits:
+        # 1-Oct final review: refused before any job is spent, and it says whose cut it is.
+        raise LibraryError("edit_needs_you", waits, status=409)
+
+
+def _as_of(notes: list[EditingRequest]) -> str | None:
+    """The newest pin a read-back covers: a hold pinned after it came after he heard it."""
+    times = [n.created_at for n in notes if n.created_at is not None]
+    return max(times).isoformat() if times else None
+
+
+def _parse_as_of(as_of: str | None) -> datetime | None:
+    if not (as_of or "").strip():
+        return None
+    try:
+        when = datetime.fromisoformat(str(as_of).strip())
+    except ValueError as exc:
+        raise LibraryError("bad_as_of", "as_of is not a time this read-back gave", status=400) from exc
+    return when.astimezone(UTC).replace(tzinfo=None) if when.tzinfo else when
 
 
 async def submit_preview(
@@ -1474,7 +1702,11 @@ async def submit_preview(
     busy: Callable[[RecordingUpload], str | None] | None = None,
 ) -> dict[str, Any]:
     """The read-back and its check code. Nothing changes. Refused (409) while something
-    else is editing the video (`busy`, as open_sitting) or the file changed under the notes."""
+    else is editing the video (`busy`, as open_sitting), the file changed under the
+    notes, or an earlier re-edit waits for his eyes (edit_waits_for_him).
+
+    `as_of` is the newest pin the read-back saw. Said back with his yes, it lets a yes
+    he gave by holding the button (pinned after it) be taken as his answer, not a note."""
     sitting = await get_sitting(db, ws, session_id, seen=True)
     _must_take_notes(sitting)
     await _must_be_the_video_he_watched(db, ws, sitting, busy)
@@ -1490,6 +1722,7 @@ async def submit_preview(
         "count": len(ready),
         "notes": [edit_request_to_json(n) for n in ready],
         "left_out": [str(n.id) for n in left_out],
+        "as_of": _as_of(notes),
     }
 
 
@@ -1501,6 +1734,7 @@ async def submit(
     check: str,
     by: str = "ziv",
     busy: Callable[[RecordingUpload], str | None] | None = None,
+    as_of: str | None = None,
 ) -> tuple[EditSession, dict[str, Any]]:
     """He said yes to the read-back. The sitting starts thinking with exactly the notes
     he heard; the caller starts the one batch job.
@@ -1508,7 +1742,24 @@ async def submit(
     A pin with no words at this point was left out (the read-back said so): it is taken
     back now, so it never waits on a sitting that is no longer taking notes (1-Oct
     review: it stayed "listening" for ever, counted as waiting, and could not be dropped).
+
+    `as_of` (the read-back's own, sent with a spoken yes): a hold pinned after the
+    read-back that the editor never read is his answer, most likely the yes itself, so
+    it is taken back and never changes the check (1-Oct final review: every spoken yes
+    was a new note, so the check never matched). Those stay taken back even when the
+    check still differs (a note he gave after the read-back and the editor read), and
+    the route keeps that when it refuses. Without `as_of` (the sheet's Yes button) any
+    note added since the read-back changes the check.
     """
+    after = _parse_as_of(as_of)
+    if after is not None:
+        sitting = await get_sitting(db, ws, session_id)
+        _must_take_notes(sitting)
+        now = _now()
+        for note in _voice_unread(await sitting_notes(db, ws, sitting.id)):
+            if note.created_at is not None and note.created_at > after:
+                _take_back_as_his_answer(note, None, AFTER_READ_BACK, now)
+        await db.flush()
     preview = await submit_preview(db, ws, session_id, busy=busy)
     if (check or "").strip() != preview["check"]:
         raise LibraryError(
@@ -1516,7 +1767,7 @@ async def submit(
             "The notes changed since the read-back, or no check code was given. Read them back again: "
             + preview["read_back"],
             status=409,
-            extra={"check": preview["check"], "read_back": preview["read_back"]},
+            extra={"check": preview["check"], "read_back": preview["read_back"], "as_of": preview["as_of"]},
         )
     sitting = await get_sitting(db, ws, session_id)
     now = _now()

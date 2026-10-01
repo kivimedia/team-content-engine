@@ -2678,6 +2678,8 @@ async def _talk_inputs(session_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any] |
             "history": [_history_row(e) for e in earlier if e.session_id != sitting.id][-12:],
             "submitted_at": sitting.submitted_at,
             "attempt": int((sitting.result or {}).get("attempt") or 0),
+            # An earlier re-edit's cut waits for his eyes: a re-plan would stop on it again.
+            "waits": library_service.edit_waits_for_him(row),
         }
 
 
@@ -2927,6 +2929,12 @@ async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
                 return
             if not got["notes"]:
                 await _hand_back(session_id, ws, "None of these notes has words yet. Nothing was changed.")
+                return
+            if got["waits"]:
+                # 1-Oct final review: re-planned with an earlier re-edit's blocked cut still
+                # in, the batch stopped on that cut, threw the notes' changes away and
+                # blamed his notes. Handed back before any job is spent, saying whose cut.
+                await _hand_back(session_id, ws, got["waits"])
                 return
             if not got["words"] or not got["keep"]:
                 await _hand_back(

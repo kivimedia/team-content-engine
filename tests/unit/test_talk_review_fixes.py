@@ -92,15 +92,18 @@ async def test_a_sitting_with_no_note_waiting_closes_and_nothing_joins_it(client
     assert body.get("joined_sitting") is None and body.get("session_id") is None, body
     assert ran == [uuid.UUID(body["id"])]
 
-    # Nothing more is pinned there, and opening the notes again starts a new sitting.
+    # Opening the notes again starts a new sitting, and nothing more is pinned on the old
+    # one. (A hold on a closed sitting that is still the video's newest opens it again:
+    # test_talk_final_review, another screen closed it.)
+    fresh = await open_talk(client, ws, uid)
+    assert fresh["session_id"] != sid and fresh["state"] == "open" and fresh["was_active"] is False
     refused_pin = await client.post(
         f"/api/v1/production/talk/{sid}/notes",
         json={"edit_s": 1.0, "render_ref": row.render_ref},
         headers=headers(ws),
     )
     assert refused_pin.status_code == 409
-    fresh = await open_talk(client, ws, uid)
-    assert fresh["session_id"] != sid and fresh["state"] == "open" and fresh["was_active"] is False
+    assert refused_pin.json()["detail"]["message"] == library.NOTES_CLOSED
 
 
 async def test_a_sitting_whose_notes_are_being_made_is_not_closed(client, renders, tmp_path):

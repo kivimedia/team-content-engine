@@ -102,6 +102,14 @@ async def workspace_script(packet_id: str):
     return await _workspace_page()
 
 
+# 1-Oct final review: the notes sheet's own address. Without it a reload of the sheet, a
+# phone restoring the tab, a pasted link or the Back link of the voice's sign-in page
+# all landed on {"detail":"Not Found"}. The shell's <base> keeps its assets working here.
+@router.get("/library/{upload_id}/talk", response_class=HTMLResponse, include_in_schema=False)
+async def workspace_notes_sheet(upload_id: str):
+    return await _workspace_page()
+
+
 @router.get("/workspace.css", include_in_schema=False)
 async def workspace_css():
     from fastapi.responses import Response

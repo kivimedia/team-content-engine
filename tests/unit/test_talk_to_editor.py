@@ -211,12 +211,11 @@ async def open_talk(client, ws, uid) -> dict:
     return r.json()
 
 
-async def pin(client, ws, sid, edit_s, render_ref):
-    return await client.post(
-        f"/api/v1/production/talk/{sid}/notes",
-        json={"edit_s": edit_s, "render_ref": render_ref},
-        headers=headers(ws),
-    )
+async def pin(client, ws, sid, edit_s, render_ref, by=None):
+    body = {"edit_s": edit_s, "render_ref": render_ref}
+    if by:
+        body["by"] = by  # "voice": a hold on the sheet (a typed note is "ziv")
+    return await client.post(f"/api/v1/production/talk/{sid}/notes", json=body, headers=headers(ws))
 
 
 async def say(client, ws, sid, nid, **body):
@@ -380,9 +379,9 @@ async def test_the_moment_waits_for_his_words_and_shows_the_words_around_it(clie
 
     ws, uid, row = await edited(renders, tmp_path)
     sid = (await open_talk(client, ws, uid))["session_id"]
-    earlier = (await pin(client, ws, sid, 1.0, row.render_ref)).json()["note_id"]
+    earlier = (await pin(client, ws, sid, 1.0, row.render_ref, by="voice")).json()["note_id"]
     await say(client, ws, sid, earlier, heard="louder here", understood="At 0:01 you want it louder.")
-    nid = (await pin(client, ws, sid, 3.0, row.render_ref)).json()["note_id"]
+    nid = (await pin(client, ws, sid, 3.0, row.render_ref, by="voice")).json()["note_id"]
 
     async def words_arrive():
         await asyncio.sleep(0.6)
@@ -414,7 +413,7 @@ async def test_the_moment_does_not_wait_for_ever(client, renders, tmp_path, monk
     monkeypatch.setattr(library, "MOMENT_WAIT_S", 0.3)
     ws, uid, row = await edited(renders, tmp_path)
     sid = (await open_talk(client, ws, uid))["session_id"]
-    await pin(client, ws, sid, 2.0, row.render_ref)
+    await pin(client, ws, sid, 2.0, row.render_ref, by="voice")
     m = (await client.get(f"/api/v1/production/talk/{sid}/moment", headers=headers(ws))).json()
     assert m["waited_for_words"] is True and m["heard"] is None and m["note"]["state"] == "listening"
     assert "rules" not in m
@@ -629,33 +628,41 @@ def test_the_note_row_says_where_a_moment_is():
 # ---------------------------------------------------------------- review findings, 1-Oct
 
 
-async def test_the_moment_takes_the_note_he_gave_first_and_lists_every_waiting_one(
+async def test_the_moment_takes_the_note_whose_words_it_was_handed_and_lists_every_waiting_one(
     client, renders, tmp_path, monkeypatch
 ):
     # He pauses at 0:01 and says "drop the not", plays on and pauses again at 0:03
-    # before the editor has read the first: the first delegation is about the first note.
+    # before the editor has read the first: the first delegation carries the first
+    # note's words, so it reads the first note (1-Oct final review: by his words, not
+    # by age, so a note nobody read never takes another's reading).
     monkeypatch.setattr(library, "MOMENT_WAIT_S", 0.1)
     ws, uid, row = await edited(renders, tmp_path)
     sid = (await open_talk(client, ws, uid))["session_id"]
-    silent = (await pin(client, ws, sid, 0.5, row.render_ref)).json()["note_id"]  # he never spoke
-    first = (await pin(client, ws, sid, 1.0, row.render_ref)).json()["note_id"]
+    silent = (await pin(client, ws, sid, 0.5, row.render_ref, by="voice")).json()["note_id"]  # he never spoke
+    first = (await pin(client, ws, sid, 1.0, row.render_ref, by="voice")).json()["note_id"]
     await say(client, ws, sid, first, heard="drop the not")
-    second = (await pin(client, ws, sid, 3.0, row.render_ref)).json()["note_id"]
+    second = (await pin(client, ws, sid, 3.0, row.render_ref, by="voice")).json()["note_id"]
     await say(client, ws, sid, second, heard="cut the end")
     url = f"/api/v1/production/talk/{sid}/moment"
 
-    m = (await client.get(url, headers=headers(ws))).json()
+    m = (await client.get(url, params={"said": "Drop the not."}, headers=headers(ws))).json()
     assert m["note"]["id"] == first and m["heard"] == "drop the not" and m["waited_for_words"] is False
     assert [(w["id"], w["heard"]) for w in m["waiting"]] == [
         (silent, None), (first, "drop the not"), (second, "cut the end")
     ]
+    # Handed no words: the newest hold with words.
+    assert (await client.get(url, headers=headers(ws))).json()["note"]["id"] == second
     await say(client, ws, sid, first, understood="At 0:01 you want the 'not' gone.")
-    m = (await client.get(url, headers=headers(ws))).json()
+    m = (await client.get(url, params={"said": "cut the end"}, headers=headers(ws))).json()
     assert m["note"]["id"] == second
     assert [e["id"] for e in m["earlier"]] == [silent, first]
     await say(client, ws, sid, second, understood="At 0:03 you want the end cut.")
     m = (await client.get(url, headers=headers(ws))).json()
     assert m["note"]["id"] == silent and m["waited_for_words"] is True
+    # Words that match no hold, and no hold whose words are on their way: nothing to read.
+    await say(client, ws, sid, silent, drop=True)
+    gone = await client.get(url, params={"said": "louder please"}, headers=headers(ws))
+    assert gone.status_code == 404 and gone.json()["detail"]["said"] is True
 
 
 async def test_a_note_whose_second_the_new_version_cut_keeps_its_own_word(client, renders, tmp_path):

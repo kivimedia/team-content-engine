@@ -1037,6 +1037,16 @@ class TalkNotePatch(BaseModel):
 class TalkSubmit(BaseModel):
     check: str = ""
     by: str = "ziv"
+    # The read-back's own as_of, sent with a spoken yes: a hold pinned after it is his
+    # answer, not a note (library.submit).
+    as_of: str | None = None
+
+
+class TalkCommand(BaseModel):
+    # His words on the hold that carried an instruction ("that's all, make it", "yes",
+    # "scratch that"), as the call heard them; `keep` is the note it is about.
+    said: str | None = Field(default=None, max_length=2000)
+    keep: str | None = None
 
 
 def _actor(by: str) -> str:
@@ -1242,11 +1252,13 @@ async def talk_moment(
     at: float | None = Query(None, ge=0),
     window: float = Query(8.0, ge=1, le=60),
     rules: bool = Query(False),
+    said: str | None = Query(None, max_length=2000),
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
-    """What the voice's backend needs to understand one note. Waits a few seconds for a
-    note whose words are not saved yet."""
+    """What the voice's backend needs to understand one note: the one named, else the
+    hold whose words are `said` (his words, as the call heard them). Waits a few
+    seconds for a note whose words are not saved yet."""
     from tce.api.routers import production as production_routes
 
     sid = _uuid(session_id, "sitting")
@@ -1258,10 +1270,32 @@ async def talk_moment(
     async with open_session(sm) as db:
         try:
             return await library_service.moment(
-                db, ws, sid, note_id=nid, at=at, window=window, rules=rules, marks_for=marks_for
+                db, ws, sid, note_id=nid, at=at, window=window, rules=rules, marks_for=marks_for, said=said
             )
         except ServiceError as error:
             raise _http(error) from error
+
+
+@production_router.post("/talk/{session_id}/command")
+async def talk_command(
+    session_id: str,
+    body: TalkCommand,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """A hold that carried an instruction to the editor, not a note ("that's all, make
+    it", "yes", "no, I meant...", "scratch that", "go back"): taken back, so it is never
+    read back or made as a note. `taken` is that hold, or null when none was."""
+    sid = _uuid(session_id, "sitting")
+    keep = _uuid(body.keep, "note") if body.keep else None
+    async with open_session(sm) as db:
+        try:
+            taken = await library_service.take_command(db, ws, sid, said=body.said, keep=keep)
+            payload = {"taken": library_service.edit_request_to_json(taken) if taken is not None else None}
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+    return payload
 
 
 @production_router.get("/talk/{session_id}/submit")
@@ -1300,12 +1334,16 @@ async def talk_submit(
     async with open_session(sm) as db:
         try:
             sitting, preview = await library_service.submit(
-                db, ws, sid, check=body.check, by=by, busy=production_routes.upload_busy
+                db, ws, sid, check=body.check, by=by, busy=production_routes.upload_busy, as_of=body.as_of
             )
             payload = await _sitting_payload(db, ws, sitting)
             payload["read_back"] = preview["read_back"]
             await db.commit()
         except ServiceError as error:
+            if getattr(error, "code", "") == "changed" and body.as_of:
+                # The holds taken as his answer stay taken back: the new read-back he
+                # hears must not read his "yes" out as a note (1-Oct final review).
+                await db.commit()
             raise _http(error) from error
     production_routes.start_talk_session(sid, ws)
     return payload

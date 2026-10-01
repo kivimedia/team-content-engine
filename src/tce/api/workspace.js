@@ -1981,6 +1981,9 @@
     });
     startTalking(sheet, payload);
     paintMake(sheet);
+    /* 1-Oct final review: an earlier re-edit's cut waits for his eyes, so no new version
+       can be made from notes yet. He hears it now, not first at Make. */
+    if (payload.blocked) notesSay(sheet, payload.blocked, true);
   }
 
   // The hold bar and the notes list: talk-voice.js, on this sitting.
@@ -2277,7 +2280,12 @@
       sheet.sitting = payload;
       notesSay(sheet, "Your editor is reading every note now. The bar says each step, "
         + "and each note says what was done with it.");
-      if (sheet.talk) sheet.talk.refresh();
+      if (sheet.talk) {
+        // 1-Oct final review: nothing more is said on the call while the notes are made,
+        // so it ends (Live bills every minute, silence too) and the screen may sleep.
+        sheet.talk.hangUp();
+        sheet.talk.refresh();
+      }
     } catch (error) {
       if (state.notesSheet !== sheet) return;
       var d = error.detail || {};
