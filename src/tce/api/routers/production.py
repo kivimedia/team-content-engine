@@ -76,6 +76,9 @@ _CHUNK = 1024 * 1024
 _background: set[asyncio.Task] = set()
 
 BUSY_STATUSES = ("transcribing", "rendering")
+# Sitting notes that never became a change: taken back (rejected), or still waiting for
+# "make it". A typed request's history on the video leaves them out (1-Oct review).
+SITTING_NOTES_NEVER_MADE = ("rejected", "listening", "held")
 PROCESS_OWNER = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 LEASE_PREFIX = "media-lease|"
 LEASE_HEARTBEAT_S = 20.0
@@ -2269,6 +2272,11 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
                         EditingRequest.workspace_id == ws,
                         EditingRequest.id != request_id,
                         EditingRequest.created_at <= req.created_at,
+                        # 1-Oct review: a note given in a sitting that was never made (taken
+                        # back, or still waiting for "make it") is not something he asked
+                        # for; the voice test call drops one on a video every run.
+                        EditingRequest.session_id.is_(None)
+                        | EditingRequest.state.not_in(SITTING_NOTES_NEVER_MADE),
                     )
                     .order_by(EditingRequest.created_at)
                 )

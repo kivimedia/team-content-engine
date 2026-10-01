@@ -783,6 +783,37 @@ async def get_sitting(
     return row
 
 
+async def close_sitting(db: AsyncSession, ws: uuid.UUID, session_id: uuid.UUID) -> EditSession:
+    """A sitting nobody is giving notes in any more becomes `closed`: nothing joins it
+    and its gates on the video lapse at once (1-Oct review: the voice test call's
+    sitting stayed "active" for two minutes after it was done, and a request he typed
+    meanwhile joined it as a note). Refused (409) while a note waits there, so his
+    notes are never closed away; refused once its notes are being made. Closing a
+    closed sitting changes nothing."""
+    sitting = await get_sitting(db, ws, session_id)
+    if sitting.state == "closed":
+        return sitting
+    if sitting.state != "open":
+        raise LibraryError(
+            "not_open",
+            "These notes were already handed to the editor, so they cannot be closed.",
+            status=409,
+            extra={"state": sitting.state},
+        )
+    waiting = [n for n in await sitting_notes(db, ws, sitting.id) if n.state in WAITING_NOTE_STATES]
+    if waiting:
+        raise LibraryError(
+            "notes_waiting",
+            f"{len(waiting)} note{'s are' if len(waiting) != 1 else ' is'} still waiting here, so these notes stay open.",
+            status=409,
+            extra={"waiting": len(waiting)},
+        )
+    sitting.state = "closed"
+    sitting.finished_at = _now()
+    await db.flush()
+    return sitting
+
+
 def sitting_to_json(
     sitting: EditSession, notes: list[EditingRequest], upload: RecordingUpload
 ) -> dict[str, Any]:

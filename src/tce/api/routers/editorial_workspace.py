@@ -1065,8 +1065,13 @@ async def open_talk(
         # A step whose process died is not "busy": say so first, like the other routes.
         await production_routes.reconcile_interrupted_uploads(db, ws)
         try:
+            # 1-Oct review: whether a notes sheet was showing this video's sitting before
+            # this open, read before the open refreshes its heartbeat. Without it a voice
+            # test call could not tell, and pinned its test note into his sitting.
+            was_active = await library_service.active_sitting(db, ws, uid) is not None
             sitting = await library_service.open_sitting(db, ws, uid, busy=production_routes.upload_busy)
             payload = await _sitting_payload(db, ws, sitting)
+            payload["was_active"] = was_active
             await db.commit()
         except ServiceError as error:
             raise _http(error) from error
@@ -1085,6 +1090,25 @@ async def get_talk(
     async with open_session(sm) as db:
         try:
             sitting = await library_service.get_sitting(db, ws, sid, seen=True)
+            payload = await _sitting_payload(db, ws, sitting)
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+    return payload
+
+
+@production_router.post("/talk/{session_id}/close")
+async def close_talk(
+    session_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Nobody is giving notes in this sitting any more (the voice test call is done
+    with it): it closes, so nothing joins it. 409 while a note waits there."""
+    sid = _uuid(session_id, "sitting")
+    async with open_session(sm) as db:
+        try:
+            sitting = await library_service.close_sitting(db, ws, sid)
             payload = await _sitting_payload(db, ws, sitting)
             await db.commit()
         except ServiceError as error:
