@@ -126,7 +126,9 @@
     { name: "library",  pattern: /^\/library\/?$/,             title: "Library" },
     { name: "settings", pattern: /^\/settings\/?$/,            title: "Settings" },
     { name: "room",     pattern: /^\/topics\/([0-9a-f-]{36})\/?$/, title: "Topic" },
-    { name: "workshop", pattern: /^\/scripts\/([0-9a-f-]{36})\/?$/, title: "Script" }
+    { name: "workshop", pattern: /^\/scripts\/([0-9a-f-]{36})\/?$/, title: "Script" },
+    // 1-Oct: the notes sheet of one video, over its Library.
+    { name: "talk",     pattern: /^\/library\/([0-9a-f-]{36})\/talk\/?$/, title: "Library" }
   ];
 
   function parse() {
@@ -171,7 +173,7 @@
     $("pageTitle").textContent = route.title;
     var nav = $("bottomNav");
     var active = { today: "today", topics: "topics", week: "week", library: "library",
-                   room: "topics", workshop: "week" }[route.name];
+                   room: "topics", workshop: "week", talk: "library" }[route.name];
     Array.prototype.forEach.call(nav.querySelectorAll("a"), function (a) {
       if (a.dataset.route === active) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
@@ -1362,6 +1364,7 @@
   // ---------------------------------------------------------------- Library
 
   async function renderLibrary() {
+    state.libraryStale = false;
     var view = $("view");
     view.innerHTML = '<div class="page">' + working("Reading what you have recorded") + "</div>";
     var data = await api("/production/library?filter=" + encodeURIComponent(state.libraryFilter));
@@ -1418,6 +1421,8 @@
         && !(i.publishing || []).length && now - state.pubWriting[i.upload_id] < 10 * 60000;
       return LIBRARY_LIVE.indexOf(i.status) >= 0
         || (i.last_request && i.last_request.state === "in_progress")
+        // 1-Oct: his notes being made into a new version.
+        || (i.notes_made && NOTES_WORKING.indexOf(i.notes_made.state) >= 0)
         || writing
         || (i.publishing || []).some(function (p) { return p.status === "posting" || p.status === "revising"; });
     });
@@ -1479,7 +1484,17 @@
       });
       html += '</ul><p class="source">To bring one back, use Request an editing change.</p></details>';
     }
+    // 1-Oct: the last notes he gave in the notes sheet, every one with what came of it.
+    var made = item.notes_made;
+    if (made) html += notesMadeHtml(made, item);
+    // Notes given in the sheet that wait for his "make it" (the sheet was closed).
+    if (item.waiting_notes) {
+      html += '<button class="btn primary waiting-notes" type="button" data-talk-edit="' + esc(item.upload_id) + '">'
+           + esc(noteWord(item.waiting_notes)) + " waiting - Make the new version</button>";
+    }
     var last = item.last_request;
+    // A note of those sittings is already in the list above.
+    if (last && made && last.session_id && last.session_id === made.session_id) last = null;
     if (last) {
       var res = last.result || {};
       var says = last.state === "done" ? (res.reply || "Done.")
@@ -1513,6 +1528,9 @@
              + (action.key === "watch_edit" ? "Download the edit" : "Download") + "</a>";
       } else if (action.key === "captions") {
         html += '<a class="btn quiet" href="' + apiV1 + "/production/uploads/" + esc(item.upload_id) + '/captions.srt">' + esc(action.label) + "</a>";
+      } else if (action.key === "talk_edit") {
+        // 1-Oct: the notes sheet, at /library/<id>/talk.
+        html += '<button class="btn" type="button" data-talk-edit="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "request_edit") {
         html += '<button class="btn" type="button" data-edit-request="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "edit_again") {
@@ -1701,7 +1719,7 @@
     var box = card && card.querySelector(".player");
     if (!box) return;
     var src = button.getAttribute("data-watch");
-    if (!box.hidden && box.getAttribute("data-src") === src) { closePlayer(box); return; }
+    if (!box.hidden && box.getAttribute("data-src") === src) { putPlayerAway(box); return; }
     document.querySelectorAll(".player").forEach(function (other) { if (other !== box) closePlayer(other); });
     box.setAttribute("data-src", src);
     box.innerHTML = '<video controls playsinline preload="metadata" src="' + src + '"></video>'
@@ -1717,6 +1735,11 @@
     box.innerHTML = "";
     box.hidden = true;
     box.removeAttribute("data-src");
+  }
+  // He put the player away himself: a change made while it played is drawn now (refreshLibrary).
+  function putPlayerAway(box) {
+    closePlayer(box);
+    if (state.libraryStale && parse().name === "library") renderLibrary();
   }
 
   async function chooseHook(hookId) {
@@ -1756,10 +1779,599 @@
       toast(saved && saved.joined_sitting
         ? "Added to the notes you are giving on this video. It is made with them when you tap Make the new version."
         : "Asked. TCE is making the change now on your subscription; this card updates as it goes.");
-      await render();
+      // 1-Oct (design step 5): never by redrawing the page under a video he is watching.
+      await refreshLibrary();
     } catch (error) {
       toast(error.message, true);
     }
+  }
+
+  /* After a change made from a card: the Library is drawn again, unless a video is
+     playing in one of its cards. Redrawing would take that player away mid-watch
+     (it used to: "Request an editing change" called render()), so the redraw waits
+     until he puts the player away. */
+  async function refreshLibrary() {
+    if (document.querySelector(".player:not([hidden])")) {
+      state.libraryStale = true;
+      clearTimeout(state.libraryPoll);
+      state.libraryPoll = setTimeout(pollLibrary, 8000);
+      return;
+    }
+    state.libraryStale = false;
+    await renderLibrary();
+  }
+
+  // ------------------------------------------- Talk to the editor (1-Oct)
+
+  /* The notes sheet, at /library/<id>/talk (plans/30-Sep-26-talk-to-the-editor.md,
+   * section 1, build step 5). He watches the edit, pauses, says or types what is
+   * wrong, and plays on. Each note is pinned to the paused second, and nothing
+   * changes until he taps Make the new version and says yes to the read-back; then
+   * one job reads every note and the video renders once.
+   *
+   * The sheet lives outside #view, so drawing a page never touches its player:
+   * opening it again for the same video changes nothing, and only its own close,
+   * Escape or Back takes the player away. The talking half is talk-voice.js
+   * (TceTalkVoice), started when the sheet opens: it draws the hold bar and the
+   * notes, and reads the sitting every few seconds. This part owns the video,
+   * typing, Make the new version, and closing. */
+
+  var NOTE_WAITING = ["listening", "held"];
+  var NOTES_WORKING = ["thinking", "rendering"];
+  var NOTES_RETRY_MS = 5000;   // the video is being edited: try opening the notes again
+  var NOTES_SAY_MS = 9000;     // how long a sentence of the sheet's own stays
+
+  function noteWord(n) { return n + " " + plural(n, "note"); }
+
+  // 0:38, the way the pins say it (whole seconds, never rounded up).
+  function atClock(seconds) {
+    var total = Math.floor(Math.max(0, Number(seconds) || 0));
+    return Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
+  }
+
+  // Notes that go to the editor at "make it": waiting, with his words or a reading.
+  function readyNotes(sitting) {
+    return ((sitting && sitting.notes) || []).filter(function (n) {
+      return NOTE_WAITING.indexOf(n.state) >= 0
+        && (String(n.request || "").trim() || String(n.understood || "").trim());
+    });
+  }
+
+  /* The card's account of the last notes made into a new version: the batch's own
+     step while it runs, then every note with what came of it. */
+  function notesMadeHtml(made, item) {
+    var notes = made.notes || [];
+    if (NOTES_WORKING.indexOf(made.state) >= 0) {
+      return '<p class="notice"><strong>Making the new version from your ' + esc(noteWord(notes.length))
+           + ":</strong> " + esc(made.status || item.state_sentence || "Your editor is reading them.") + "</p>";
+    }
+    var needs = notes.filter(function (n) { return n.state === "needs_you"; }).length;
+    var html = '<details class="removed notes-made"' + (needs ? " open" : "") + "><summary>Your last "
+             + esc(noteWord(notes.length)) + (needs ? ": " + needs + (needs === 1 ? " needs" : " need") + " you" : "")
+             + "</summary>";
+    if (made.status) html += '<p class="source">' + esc(made.status) + "</p>";
+    html += "<ul>";
+    notes.forEach(function (n) {
+      var said = String(n.said || "").trim() || n.understood || "";
+      var outcome = n.undone ? ["Put back", "The version from before these notes was put back."]
+        : n.state === "needs_you" ? ["Needs you", n.question || n.reply || "Your editor has a question."]
+        : n.state === "done" ? ["Done", n.reply || "Done."]
+        : null;
+      html += '<li><span class="source">' + esc(n.where) + "</span>&#8220;" + esc(said) + "&#8221;";
+      if (outcome) html += "<br><strong>" + outcome[0] + ":</strong> " + esc(outcome[1]);
+      html += "</li>";
+    });
+    return html + "</ul></details>";
+  }
+
+  // The card's "Talk to the editor" (or "3 notes waiting"): the sheet gets its own address.
+  function openNotesFromCard(uploadId) {
+    window.history.pushState({ notesFrom: "library" }, "", prefix + "/library/" + uploadId + "/talk");
+    render();
+  }
+
+  async function renderNotesRoute(uploadId) {
+    // The Library stays under the sheet: closing it lands on this video's card.
+    if (!document.querySelector("[data-libfilter]")) {
+      try { await renderLibrary(); }
+      catch (error) {
+        $("view").innerHTML = '<div class="page"><div class="empty"><strong>Could not open the Library</strong>'
+          + esc(error.message) + "</div></div>";
+      }
+    }
+    openNotesSheet(uploadId);
+  }
+
+  function openNotesSheet(uploadId) {
+    var open = state.notesSheet;
+    // Never built twice: a page drawn again must not take the player away mid-sitting.
+    if (open && open.uploadId === uploadId) return;
+    if (open) closeNotesSheet();
+    // One video at a time: a player open in a card stops.
+    document.querySelectorAll(".player").forEach(function (box) { if (!box.hidden) closePlayer(box); });
+    var sheet = {
+      uploadId: uploadId, sitting: null, talk: null, video: null,
+      typed: null,       // {saving}: the typed note being written
+      readBack: null,    // {text, check, count}: waiting for his yes
+      busy: false, retry: null, sayTimer: null, noteCount: 0
+    };
+    state.notesSheet = sheet;
+    $("notesContext").textContent = libraryTitle(uploadId);
+    if (!$("notesContext").textContent) {
+      // Opened from a link, on a list that does not show this video: ask for its name.
+      api("/production/library?filter=all").then(function (data) {
+        var item = (data.items || []).filter(function (i) { return i.upload_id === uploadId; })[0];
+        if (item && state.notesSheet === sheet) $("notesContext").textContent = item.title;
+      }).catch(function () { /* the title is a nicety */ });
+    }
+    var body = $("notesBody");
+    body.className = "notes-body is-message";
+    body.innerHTML = working("Opening your notes on this video");
+    $("notesFoot").innerHTML = "";
+    $("notesFoot").hidden = true;
+    $("notesSheet").hidden = false;
+    document.body.classList.add("notes-open");
+    openSitting(sheet);
+  }
+
+  function libraryTitle(uploadId) {
+    var items = (state.library && state.library.items) || [];
+    var item = items.filter(function (i) { return i.upload_id === uploadId; })[0];
+    return item ? item.title : "";
+  }
+
+  // A sentence in place of the sheet: why the notes did not open, or what they wait for.
+  function notesMessage(sheet, title, text, step) {
+    if (state.notesSheet !== sheet) return;
+    var body = $("notesBody");
+    body.className = "notes-body is-message";
+    body.innerHTML = '<div class="empty"><strong>' + esc(title) + "</strong>" + esc(text) + "</div>"
+      + (step ? working(step) : "")
+      + '<div class="actions"><button class="btn" type="button" data-ns-leave>Back to the Library</button></div>';
+  }
+
+  async function openSitting(sheet) {
+    clearTimeout(sheet.retry);
+    var payload;
+    try {
+      payload = await api("/production/recordings/" + encodeURIComponent(sheet.uploadId) + "/talk", { method: "POST" });
+    } catch (error) {
+      if (state.notesSheet !== sheet) return;
+      if (error.status === 409 && (error.detail || {}).code === "busy") {
+        // 3-second rule: what is editing the video right now, and that the notes follow it.
+        notesMessage(sheet, "Your notes open when this is done", error.message,
+          "Checking again every few seconds");
+        sheet.retry = setTimeout(function () { openSitting(sheet); }, NOTES_RETRY_MS);
+        return;
+      }
+      notesMessage(sheet, "Your notes did not open", error.message);
+      return;
+    }
+    if (state.notesSheet !== sheet) {
+      // Closed while it opened. An empty sitting closes again; one with notes stays (409).
+      api("/production/talk/" + payload.session_id + "/close", { method: "POST" }).catch(function () {});
+      return;
+    }
+    buildNotesSheet(sheet, payload);
+  }
+
+  function buildNotesSheet(sheet, payload) {
+    sheet.sitting = payload;
+    var body = $("notesBody");
+    body.className = "notes-body";
+    /* Native fullscreen hides every button of the sheet, and picture in picture takes
+       the video out of it, so both are off. playsinline keeps it in the page. */
+    body.innerHTML =
+        '<video class="ns-player" controls playsinline webkit-playsinline controlslist="nofullscreen"'
+      + ' disablepictureinpicture preload="metadata"></video>'
+      + '<div class="ns-notes">'
+      + '<p class="notice ns-message" role="status" hidden></p>'
+      + '<div class="ns-panel ns-readback" hidden></div>'
+      + '<div class="ns-panel ns-typed" hidden></div>'
+      + '<ol class="ns-list" aria-label="Your notes on this video"></ol>'
+      + "</div>";
+    var foot = $("notesFoot");
+    foot.hidden = false;
+    foot.innerHTML = '<div class="ns-talk"></div><div class="ns-make-row"></div>';
+    sheet.video = body.querySelector(".ns-player");
+    setNotesVideo(sheet, payload.file_url);
+    // The typed note says the second it will be pinned to, as the player moves.
+    ["pause", "seeked", "timeupdate"].forEach(function (type) {
+      sheet.video.addEventListener(type, function () { if (sheet.typed) paintTypedSecond(sheet); });
+    });
+    startTalking(sheet, payload);
+    paintMake(sheet);
+  }
+
+  // The hold bar and the notes list: talk-voice.js, on this sitting.
+  function startTalking(sheet, payload) {
+    var root = $("notesFoot").querySelector(".ns-talk");
+    var list = $("notesBody").querySelector(".ns-list");
+    if (!window.TceTalkVoice) {
+      root.innerHTML = '<p class="notice is-bad">Hold to talk did not load on this page. Reload it to talk; '
+        + "Type still saves a note.</p>";
+      return;
+    }
+    sheet.noteCount = (payload.notes || []).filter(function (n) { return n.state !== "rejected"; }).length;
+    sheet.talk = window.TceTalkVoice.open({
+      root: root,
+      video: sheet.video,
+      sitting: payload,
+      notes: list,
+      api: api,
+      onSitting: function (p) { if (state.notesSheet === sheet) tookSitting(sheet, p); },
+      onStale: function (ref, p) { if (state.notesSheet === sheet) newRender(sheet, p); }
+    });
+  }
+
+  // Every fresh read of the sitting: the Make button, and the newest note in sight.
+  function tookSitting(sheet, p) {
+    var was = sheet.sitting ? sheet.sitting.state : null;
+    sheet.sitting = p;
+    var count = (p.notes || []).filter(function (n) { return n.state !== "rejected"; }).length;
+    var region = $("notesBody").querySelector(".ns-notes");
+    if (NOTES_WORKING.indexOf(was) >= 0 && (p.state === "done" || p.state === "needs_you")) {
+      // Made: the bar says so, and each note says what was done. The notes start at the first.
+      var box = region && region.querySelector(".ns-message");
+      if (box) box.hidden = true;
+      if (region) region.scrollTop = 0;
+    } else if (count > sheet.noteCount && region) {
+      // The newest note is the last one: bring it into the notes strip.
+      region.scrollTop = region.scrollHeight;
+    }
+    sheet.noteCount = count;
+    if (sheet.readBack && p.state !== "open") hideReadBack(sheet);
+    paintMake(sheet);
+  }
+
+  /* The sitting is on another render: its own new version, or the video was edited
+     again under the sheet (the pins moved with it). The player loads that file. */
+  function newRender(sheet, p) {
+    setNotesVideo(sheet, p.file_url);
+    // Its own new version needs no sentence here: the bar says it was made.
+    if (p.state === "done" || p.state === "needs_you") return;
+    notesSay(sheet, "The video was edited again, so the new version is in the player now. Your notes moved with it.");
+  }
+
+  // The address carries the render's id, so a new render never plays from the old one's cached pieces.
+  function setNotesVideo(sheet, url) {
+    var video = sheet.video;
+    if (!video) return;
+    if (!url) { notesSay(sheet, "There is no edited file to play yet.", true); return; }
+    var src = url.indexOf("/api/") === 0 ? prefix + url : url;
+    if (video.getAttribute("src") === src) return;
+    if (!video.paused) video.pause();
+    video.setAttribute("src", src);
+    video.load();
+  }
+
+  // A sentence of the sheet's own, at the top of the notes (never a toast over the bar).
+  function notesSay(sheet, text, bad) {
+    if (state.notesSheet !== sheet) return;
+    var box = $("notesBody").querySelector(".ns-message");
+    if (!box) return;
+    box.textContent = text;
+    box.classList.toggle("is-bad", Boolean(bad));
+    box.hidden = false;
+    var region = box.closest(".ns-notes");
+    if (region) region.scrollTop = 0;
+    clearTimeout(sheet.sayTimer);
+    sheet.sayTimer = setTimeout(function () { box.hidden = true; }, NOTES_SAY_MS);
+  }
+
+  // Typing or the read-back needs room: the video gives some up until it is done.
+  function roomForNotes(sheet) {
+    $("notesBody").classList.toggle("is-writing", Boolean(sheet.typed || sheet.readBack));
+  }
+
+  /* The bar's second row. Taking notes: Type, and Make the new version (N notes).
+     Read back: Not yet, and Yes, make it. Being made: what it is doing is the status
+     line above it. Made: give notes on the new version. A fixed height, so the hold
+     button above never moves whatever this says. */
+  function paintMake(sheet) {
+    var row = $("notesFoot").querySelector(".ns-make-row");
+    if (!row) return;
+    var p = sheet.sitting || {};
+    var html, one = false;
+    if (p.state === "open") {
+      if (sheet.readBack) {
+        html = '<button class="btn quiet" type="button" data-ns-not-yet>Not yet</button>'
+             + '<button class="btn primary" type="button" data-ns-confirm' + (sheet.busy ? " disabled" : "") + ">"
+             + (sheet.busy ? "Starting the new version" : "Yes, make it (" + noteWord(sheet.readBack.count) + ")")
+             + "</button>";
+      } else {
+        var n = readyNotes(p).length;
+        html = '<button class="btn" type="button" data-ns-type aria-label="Type a note at the paused second"'
+             + ' aria-pressed="' + (sheet.typed ? "true" : "false") + '">Type</button>'
+             + '<button class="btn primary" type="button" data-ns-make' + (n && !sheet.busy ? "" : " disabled") + ">"
+             + (sheet.busy ? "Reading your notes back"
+                : n ? "Make the new version (" + noteWord(n) + ")"
+                : "Make the new version (no notes yet)")
+             + "</button>";
+      }
+    } else if (NOTES_WORKING.indexOf(p.state) >= 0) {
+      var making = ((p.result || {}).notes || []).length;
+      html = '<button class="btn primary" type="button" disabled>Making the new version'
+           + (making ? " (" + noteWord(making) + ")" : "") + "</button>";
+      one = true;
+    } else {
+      html = '<button class="btn primary" type="button" data-ns-again>'
+           + (p.state === "closed" ? "Open the notes again" : "Give notes on the new version") + "</button>";
+      one = true;
+    }
+    row.classList.toggle("is-one", one);
+    if (row.innerHTML !== html) row.innerHTML = html;
+  }
+
+  function onNotesClick(event) {
+    var sheet = state.notesSheet;
+    var target = event.target.closest && event.target.closest(
+      "[data-ns-type],[data-ns-save],[data-ns-cancel],[data-ns-make],[data-ns-confirm],"
+      + "[data-ns-not-yet],[data-ns-again],[data-ns-leave]");
+    if (!target || !sheet) return;
+    var d = target.dataset;
+    if (d.nsLeave !== undefined) { leaveNotesSheet(); return; }
+    if (d.nsType !== undefined) { if (sheet.typed) cancelTyped(sheet); else startTyped(sheet); return; }
+    if (d.nsSave !== undefined) { saveTyped(sheet); return; }
+    if (d.nsCancel !== undefined) { cancelTyped(sheet); return; }
+    if (d.nsMake !== undefined) { askReadBack(sheet); return; }
+    if (d.nsConfirm !== undefined) { confirmMake(sheet); return; }
+    if (d.nsNotYet !== undefined) { hideReadBack(sheet); paintMake(sheet); return; }
+    if (d.nsAgain !== undefined) { notesAgain(sheet); return; }
+  }
+
+  // ---- typing: a note pinned to the second the player is paused on
+
+  function startTyped(sheet) {
+    if (!sheet.sitting || sheet.sitting.state !== "open") return;
+    if (sheet.video && !sheet.video.paused) sheet.video.pause();
+    hideReadBack(sheet);
+    sheet.typed = { saving: false };
+    var panel = $("notesBody").querySelector(".ns-typed");
+    panel.innerHTML =
+        '<label class="ns-typed-label" for="nsTyped">Your note at <span data-ns-at></span></label>'
+      + '<textarea id="nsTyped" rows="3" placeholder="What is wrong at this moment? For example: cut the second basically."></textarea>'
+      + '<div class="btn-row"><button class="btn quiet" type="button" data-ns-cancel>Cancel</button>'
+      + '<button class="btn primary" type="button" data-ns-save>Save the note at <span data-ns-at></span></button></div>';
+    panel.hidden = false;
+    paintTypedSecond(sheet);
+    roomForNotes(sheet);
+    paintMake(sheet);
+    var region = panel.closest(".ns-notes");
+    if (region) region.scrollTop = 0;
+    var box = $("nsTyped");
+    if (box) box.focus();
+  }
+
+  function typedSecond(sheet) { return sheet.video ? Number(sheet.video.currentTime) || 0 : 0; }
+
+  function paintTypedSecond(sheet) {
+    if (!sheet.typed || sheet.typed.saving) return;
+    var at = atClock(typedSecond(sheet));
+    $("notesBody").querySelectorAll(".ns-typed [data-ns-at]").forEach(function (el) {
+      if (el.textContent !== at) el.textContent = at;
+    });
+  }
+
+  function cancelTyped(sheet) {
+    sheet.typed = null;
+    var panel = $("notesBody").querySelector(".ns-typed");
+    if (panel) { panel.hidden = true; panel.innerHTML = ""; }
+    roomForNotes(sheet);
+    paintMake(sheet);
+  }
+
+  async function saveTyped(sheet) {
+    if (!sheet.typed || sheet.typed.saving) return;
+    var box = $("nsTyped");
+    var text = box ? box.value.trim() : "";
+    if (!text) { notesSay(sheet, "Write what is wrong at this moment first.", true); return; }
+    // The note goes where the player is paused, and the player stays paused there.
+    if (sheet.video && !sheet.video.paused) sheet.video.pause();
+    var t = typedSecond(sheet);
+    var save = $("notesBody").querySelector("[data-ns-save]");
+    sheet.typed.saving = true;
+    if (save) { save.disabled = true; save.textContent = "Saving the note at " + atClock(t); }
+    var sid = sheet.sitting.session_id;
+    var ref = sheet.talk ? sheet.talk.renderRef : sheet.sitting.render_ref;
+    var pinned = null;
+    try {
+      pinned = await api("/production/talk/" + sid + "/notes", {
+        method: "POST", body: { edit_s: Math.round(t * 100) / 100, render_ref: ref || null }
+      });
+      await api("/production/talk/" + sid + "/notes/" + pinned.note_id, {
+        method: "PATCH", body: { heard: text }
+      });
+    } catch (error) {
+      if (pinned) {
+        // The words did not land: the empty pin is taken back, and his words stay in the box.
+        api("/production/talk/" + sid + "/notes/" + pinned.note_id, { method: "PATCH", body: { drop: true } })
+          .catch(function () { /* it reads "listening" until the next try */ });
+      }
+      if (state.notesSheet !== sheet || !sheet.typed) return;
+      sheet.typed.saving = false;
+      if (save) { save.disabled = false; save.innerHTML = "Save the note at <span data-ns-at></span>"; }
+      paintTypedSecond(sheet);
+      if (error.status === 409 && (error.detail || {}).code === "stale_render") {
+        await reopenNotes(sheet);
+        notesSay(sheet, "The video was edited again, so the new version is in the player now. "
+          + "Your words are still in the box: pause where they belong and save again.", true);
+      } else {
+        notesSay(sheet, error.message || "That note could not be saved. Your words are still in the box.", true);
+      }
+      return;
+    }
+    if (state.notesSheet !== sheet) return;
+    cancelTyped(sheet);
+    notesSay(sheet, "Saved your note at " + (pinned.clock || atClock(t)) + ".");
+    if (sheet.talk) sheet.talk.refresh();
+  }
+
+  /* The video was edited under the notes: opening them again moves the sitting and its
+     notes onto the new render, and the next read of it loads that file in the player. */
+  async function reopenNotes(sheet) {
+    try {
+      await api("/production/recordings/" + encodeURIComponent(sheet.uploadId) + "/talk", { method: "POST" });
+    } catch (error) {
+      notesSay(sheet, error.message, true);
+      return;
+    }
+    if (sheet.talk) await sheet.talk.refresh();
+  }
+
+  // ---- Make the new version: read back, then his yes with the read-back's check code
+
+  async function askReadBack(sheet) {
+    if (sheet.busy || !sheet.sitting) return;
+    if (sheet.video && !sheet.video.paused) sheet.video.pause();
+    sheet.busy = true;
+    paintMake(sheet);
+    try {
+      var preview = await api("/production/talk/" + sheet.sitting.session_id + "/submit");
+      if (state.notesSheet !== sheet) return;
+      showReadBack(sheet, preview.read_back, preview.check, preview.count, false);
+    } catch (error) {
+      if (state.notesSheet !== sheet) return;
+      await makeRefused(sheet, error);
+    } finally {
+      sheet.busy = false;
+      paintMake(sheet);
+    }
+  }
+
+  function showReadBack(sheet, text, check, count, changed) {
+    if (sheet.typed && !sheet.typed.saving) cancelTyped(sheet);
+    sheet.readBack = { text: text, check: check, count: count };
+    // The read-back is the news now: an older sentence would push it out of sight.
+    var said = $("notesBody").querySelector(".ns-message");
+    if (said) said.hidden = true;
+    var panel = $("notesBody").querySelector(".ns-readback");
+    panel.innerHTML = "<h3>" + (changed ? "Your notes changed, so here they are again"
+                                        : "Make the new version from these notes?") + "</h3>"
+      + "<p>" + esc(text) + "</p>"
+      + '<p class="source">Nothing changes until you tap Yes. Then your editor reads every note, '
+      + "and the video renders once.</p>";
+    panel.hidden = false;
+    roomForNotes(sheet);
+    var region = panel.closest(".ns-notes");
+    if (region) region.scrollTop = 0;
+  }
+
+  function hideReadBack(sheet) {
+    sheet.readBack = null;
+    var panel = $("notesBody").querySelector(".ns-readback");
+    if (panel) { panel.hidden = true; panel.innerHTML = ""; }
+    roomForNotes(sheet);
+  }
+
+  async function confirmMake(sheet) {
+    if (!sheet.readBack || sheet.busy) return;
+    sheet.busy = true;
+    paintMake(sheet);
+    try {
+      var payload = await api("/production/talk/" + sheet.sitting.session_id + "/submit", {
+        method: "POST", body: { check: sheet.readBack.check }
+      });
+      if (state.notesSheet !== sheet) return;
+      hideReadBack(sheet);
+      sheet.sitting = payload;
+      notesSay(sheet, "Your editor is reading every note now. The bar says each step, "
+        + "and each note says what was done with it.");
+      if (sheet.talk) sheet.talk.refresh();
+    } catch (error) {
+      if (state.notesSheet !== sheet) return;
+      var d = error.detail || {};
+      if (error.status === 409 && d.code === "changed" && d.check && d.read_back) {
+        // A note came, went or was re-said since the read-back: he hears the new one.
+        var n = parseInt(String(d.read_back), 10);
+        showReadBack(sheet, d.read_back, d.check, isNaN(n) ? sheet.readBack.count : n, true);
+      } else {
+        hideReadBack(sheet);
+        await makeRefused(sheet, error);
+      }
+    } finally {
+      sheet.busy = false;
+      paintMake(sheet);
+    }
+  }
+
+  async function makeRefused(sheet, error) {
+    var code = (error.detail || {}).code;
+    if (error.status === 409 && code === "stale_render") {
+      await reopenNotes(sheet);
+      notesSay(sheet, "The video was edited again after these notes. They moved to the new version, "
+        + "which is in the player now: check them, then make the new version.", true);
+      return;
+    }
+    if (error.status === 409 && code === "no_notes") {
+      notesSay(sheet, "There are no notes with words yet. Hold to talk, or tap Type.", true);
+      return;
+    }
+    notesSay(sheet, error.message, true);
+    if (sheet.talk) sheet.talk.refresh();
+  }
+
+  // The notes were made: a fresh sitting on the version he has now.
+  async function notesAgain(sheet) {
+    if (sheet.busy) return;
+    sheet.busy = true;
+    var old = sheet.talk;
+    sheet.talk = null;
+    if (old) old.close();
+    var root = $("notesFoot").querySelector(".ns-talk");
+    root.innerHTML = working("Opening new notes on this version");
+    try {
+      var payload = await api("/production/recordings/" + encodeURIComponent(sheet.uploadId) + "/talk", { method: "POST" });
+      if (state.notesSheet !== sheet) return;
+      sheet.sitting = payload;
+      setNotesVideo(sheet, payload.file_url);
+      root.innerHTML = "";
+      startTalking(sheet, payload);
+    } catch (error) {
+      if (state.notesSheet !== sheet) return;
+      root.innerHTML = '<p class="notice is-bad">' + esc(error.message) + "</p>";
+    } finally {
+      sheet.busy = false;
+      paintMake(sheet);
+    }
+  }
+
+  // ---- closing: every note stays on the server
+
+  function closeNotesSheet() {
+    var sheet = state.notesSheet;
+    if (!sheet) return;
+    state.notesSheet = null;
+    clearTimeout(sheet.retry);
+    clearTimeout(sheet.sayTimer);
+    var talk = sheet.talk;
+    sheet.talk = null;
+    // The call ends once his last words have landed on their note (talk-voice.js).
+    var ended = talk ? talk.close() : null;
+    if (sheet.video) {
+      try { sheet.video.pause(); sheet.video.removeAttribute("src"); sheet.video.load(); }
+      catch (e) { /* already gone */ }
+    }
+    $("notesSheet").hidden = true;
+    $("notesBody").innerHTML = "";
+    $("notesFoot").innerHTML = "";
+    document.body.classList.remove("notes-open");
+    var sid = sheet.sitting && sheet.sitting.session_id;
+    if (!sid) return;
+    /* A sitting with nothing waiting closes, so nothing joins it and its hold on the
+       video lapses at once. One with notes waiting stays open (the route answers 409),
+       and its card says "N notes waiting - Make the new version". */
+    Promise.resolve(ended).then(function () {
+      return api("/production/talk/" + sid + "/close", { method: "POST" });
+    }).catch(function () { /* notes wait in it: it stays open, as it should */ });
+  }
+
+  function leaveNotesSheet() {
+    var fromLibrary = window.history.state && window.history.state.notesFrom === "library";
+    closeNotesSheet();
+    // Back to the Library he came from, so Back does not open the sheet again.
+    if (fromLibrary) window.history.back();
+    else go("/library", true);
   }
 
   // ---------------------------------------------------------- notifications
@@ -1944,7 +2556,7 @@
     "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
     "watch", "watch-close", "voice-undo", "voice-restore",
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise",
-    "save-rules", "archive", "unarchive", "edit-again"
+    "save-rules", "archive", "unarchive", "edit-again", "talk-edit"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -1986,7 +2598,8 @@
     if (d.restore !== undefined) { restore(parseInt(d.restore, 10)); return; }
     if (d.editRequest !== undefined) { askEditRequest(d.editRequest); return; }
     if (d.watch !== undefined) { toggleWatch(target); return; }
-    if (d.watchClose !== undefined) { closePlayer(target.closest(".player")); return; }
+    if (d.watchClose !== undefined) { putPlayerAway(target.closest(".player")); return; }
+    if (d.talkEdit !== undefined) { openNotesFromCard(d.talkEdit); return; }
     if (d.review !== undefined) { reviewFromThread(d.review); return; }
     if (d.chooseHook !== undefined) { chooseHook(d.chooseHook); return; }
     if (d.moreHooks !== undefined) { askMoreHooks(); return; }
@@ -2040,8 +2653,21 @@
 
   // Escape closes the sheet. An outside tap does not: there is a decision in it.
   document.addEventListener("keydown", function (event) {
-    if (event.key === "Escape" && !$("talkSheet").hidden) closeSheet();
+    if (event.key !== "Escape") return;
+    if (!$("talkSheet").hidden) { closeSheet(); return; }
+    var notes = state.notesSheet;
+    if (!notes) return;
+    // In the typed note, Escape puts the note away first, not the whole sheet.
+    if (notes.typed && document.activeElement && document.activeElement.id === "nsTyped") {
+      cancelTyped(notes);
+      return;
+    }
+    leaveNotesSheet();
   });
+
+  // The notes sheet's own close. Its notes stay on the server, and the card says so.
+  $("notesClose").addEventListener("click", leaveNotesSheet);
+  $("notesSheet").addEventListener("click", onNotesClick);
 
   var READER_SIZES = ["normal", "large", "largest"];
   /* A step each way that stops at the ends: the old single button cycled, so
@@ -2170,6 +2796,9 @@
 
   async function render() {
     var route = parse();
+    // The notes sheet belongs to its own address: any other page puts it away, and
+    // its notes stay on the server. On its own address nothing here touches it.
+    if (route.name !== "talk") closeNotesSheet();
     state.route = route.name;
     setChrome(route);
     $("actionBar").hidden = true;
@@ -2182,6 +2811,7 @@
       else if (route.name === "settings") await renderSettings();
       else if (route.name === "room") await renderRoom(route.id);
       else if (route.name === "workshop") await renderWorkshop(route.id);
+      else if (route.name === "talk") await renderNotesRoute(route.id);
       if (route.name === "room") $("pageTitle").textContent = "Topic";
       setTalkContext(route);
     } catch (error) {

@@ -152,6 +152,9 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
         actions.append({"key": "captions", "label": "Captions"})
     if upload.transcript:
         actions.append({"key": "transcript", "label": "Transcript"})
+    if upload.edited_path:
+        # 1-Oct: watch the edit, pause, say what is wrong; one new version at the end.
+        actions.append({"key": "talk_edit", "label": "Talk to the editor"})
     actions.append({"key": "request_edit", "label": "Request an editing change"})
     if upload.edited_path and upload.transcript and upload.status not in _LIVE_STATUSES:
         # 28-Sep: the tight cut and the word-box captions, for an edit made before them.
@@ -325,7 +328,22 @@ async def list_library(
             )
         ).scalars()
     )
+    # 1-Oct: the newest sitting whose notes were made (or are being made), per video, so
+    # the card shows every note and what came of it, not only the last one.
+    made_by_upload: dict[uuid.UUID, EditSession] = {}
+    for made in (
+        await db.execute(
+            select(EditSession)
+            .where(EditSession.workspace_id == ws, EditSession.state.in_(SITTING_MADE_STATES))
+            .order_by(EditSession.created_at.asc())
+        )
+    ).scalars():
+        made_by_upload[made.upload_id] = made
+    made_ids = {s.id for s in made_by_upload.values()}
+    notes_by_sitting: dict[uuid.UUID, list[EditingRequest]] = {}
     for req in requests.scalars().all():
+        if req.session_id in made_ids and req.state != "rejected":
+            notes_by_sitting.setdefault(req.session_id, []).append(req)
         if req.session_id is not None and req.state in (*WAITING_NOTE_STATES, "rejected"):
             # 30-Sep: a note in a sitting waits for "make it"; it is not a request the
             # editor is working on, and a note he took back is not one at all.
@@ -417,6 +435,12 @@ async def list_library(
                 "open_requests": open_count,
                 # Notes given in a sitting that wait for "Make the new version".
                 "waiting_notes": waiting_by_upload.get(upload.id, 0),
+                # The last notes made into a new version, each with its own result.
+                "notes_made": (
+                    _notes_made_json(made_by_upload[upload.id], notes_by_sitting.get(made_by_upload[upload.id].id, []))
+                    if upload.id in made_by_upload
+                    else None
+                ),
                 "actions": _actions(upload, open_count),
             }
         )
@@ -591,6 +615,8 @@ SITTING_ACTIVE_S = 120  # a sheet that checked in this recently is in front of h
 WAITING_NOTE_STATES = ("listening", "held")
 SITTING_WORKING_STATES = ("thinking", "rendering")  # its own batch is running
 SITTING_LIVE_STATES = ("open", *SITTING_WORKING_STATES)
+# Notes handed to the editor: being made, or made (the card shows each one's result).
+SITTING_MADE_STATES = (*SITTING_WORKING_STATES, "done", "needs_you")
 END_SLACK_S = 0.5  # a player a hair past the last frame is still on this edit
 MOMENT_WAIT_S = 4.0  # the voice can hand a note over before his words are saved
 MOMENT_POLL_S = 0.25
@@ -893,6 +919,34 @@ async def close_sitting(db: AsyncSession, ws: uuid.UUID, session_id: uuid.UUID) 
     sitting.finished_at = _now()
     await db.flush()
     return sitting
+
+
+def _notes_made_json(sitting: EditSession, notes: list[EditingRequest]) -> dict[str, Any]:
+    """The Library card's account of the last notes made into a new version (1-Oct):
+    while they are being made, the batch's own step; after, every note with its result."""
+    result = sitting.result or {}
+    out = []
+    for n in notes:
+        res = n.result or {}
+        out.append(
+            {
+                "id": str(n.id),
+                "where": edit_request_to_json(n)["where"],
+                "said": n.request,
+                "understood": n.understood,
+                "state": n.state,
+                "reply": str(res.get("reply") or "") or None,
+                "question": str(res.get("question") or "") or None,
+                "undone": bool(res.get("undone_at")),
+            }
+        )
+    return {
+        "session_id": str(sitting.id),
+        "state": sitting.state,
+        "status": str(result.get("status") or "") or None,
+        "finished_at": _iso(sitting.finished_at),
+        "notes": out,
+    }
 
 
 def sitting_to_json(

@@ -409,6 +409,63 @@ body.has-talk { padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) 
 .msg.is-editor .bubble { background: #e9eff6; border-color: var(--lake); }
 .msg.is-queued .bubble { border-style: dashed; color: var(--body); }
 
+/* ------------------------------------------------ talk to the editor (1-Oct) */
+
+/* The notes sheet: the same full screen shell as the conversation. Three rows of one
+   grid, so nothing in it can sit on top of anything else: the video (about 55dvh,
+   less on a short phone so the notes keep a strip of their own), the notes under it
+   scrolling on their own, and the bar (talk-voice.css draws its hold half). */
+body.notes-open { overflow: hidden; }
+.notes-sheet .sheet-head { padding-top: calc(env(safe-area-inset-top) + 6px); padding-bottom: 6px; }
+.notes-head-text { min-width: 0; }
+.notes-head-text span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notes-body {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(140px, 55dvh) minmax(120px, 1fr);
+}
+/* Typing a note or hearing the read-back: the video gives the notes room. */
+.notes-body.is-writing { grid-template-rows: minmax(120px, 30dvh) minmax(200px, 1fr); }
+.notes-body.is-message { display: block; overflow-y: auto; padding: 16px; }
+.ns-player {
+  display: block; width: 100%; height: 100%; min-height: 0;
+  background: #000; object-fit: contain;
+}
+.ns-notes {
+  min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 10px 16px 12px; border-top: 2px solid var(--ink);
+}
+.ns-message { margin: 0 0 10px; }
+.ns-panel {
+  margin: 0 0 12px; padding: 12px;
+  border: 2px solid var(--ink); border-radius: 12px; background: var(--white); color: var(--ink);
+}
+.ns-panel h3 { margin: 0 0 6px; font-family: Georgia, serif; font-size: 1.05rem; line-height: 1.25; }
+.ns-panel p { margin: 0; color: var(--ink); line-height: 1.45; overflow-wrap: anywhere; }
+.ns-panel .source { display: block; margin-top: 8px; color: var(--helper); font-size: .86rem; }
+.ns-typed-label { display: block; margin-bottom: 6px; font-weight: 800; color: var(--ink); }
+.ns-typed textarea {
+  width: 100%; min-height: 72px; padding: 10px 12px; resize: vertical;
+  border: 2px solid var(--ink); border-radius: 10px; background: #fff; color: var(--ink);
+  font: inherit; line-height: 1.45;
+}
+.ns-typed .btn-row { margin-top: 10px; }
+.notes-foot { padding-top: 10px; padding-bottom: calc(env(safe-area-inset-bottom) + 10px); }
+/* Type (narrow) and Make the new version, or Not yet and Yes. A fixed height: a label
+   that wraps to two lines never pushes the hold button up under his thumb. */
+.ns-make-row { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 8px; margin-top: 10px; }
+.ns-make-row.is-one { grid-template-columns: minmax(0, 1fr); }
+.ns-make-row .btn {
+  height: 56px; min-height: 56px; padding: 4px 12px; overflow: hidden;
+  font-size: .95rem; line-height: 1.2;
+}
+.ns-make-row .btn[aria-pressed="true"] { background: var(--ink); color: var(--white); }
+/* Waiting, not faded: a solid darker fill keeps the words readable. */
+.ns-make-row .btn[disabled] { opacity: 1; background: var(--line); color: var(--ink); border-color: var(--ink); }
+/* The Library card: notes waiting for his "make it", and the last notes made. */
+.waiting-notes { width: 100%; margin: 0 0 14px; }
+.notes-made .source { margin-top: 2px; }
+
 /* ------------------------------------------------------------------ toast */
 
 .toast {

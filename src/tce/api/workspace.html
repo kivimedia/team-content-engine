@@ -103,6 +103,25 @@
   </div>
 </section>
 
+<!-- Talk to the editor (1-Oct): the notes sheet at /library/<id>/talk. The same full
+     screen shell as the conversation, and like it, it never closes on an outside tap:
+     only its own close (or Back) puts it away, and every note stays on the server.
+     The video on top, the notes under it, and the bar with Hold to talk and Make the
+     new version at the bottom, under his thumb. -->
+<section class="sheet notes-sheet" id="notesSheet" role="dialog" aria-modal="true"
+         aria-labelledby="notesTitle" hidden>
+  <div class="sheet-head">
+    <div class="notes-head-text">
+      <strong id="notesTitle">Talk to the editor</strong>
+      <span id="notesContext"></span>
+    </div>
+    <button class="icon-button" id="notesClose" type="button"
+            aria-label="Close the notes. They stay saved.">&#10005;</button>
+  </div>
+  <div class="notes-body" id="notesBody"></div>
+  <div class="sheet-foot notes-foot" id="notesFoot"></div>
+</section>
+
 <!-- Talk to the editor (1-Oct): the hold-to-talk call for the notes sheet. Only this
      small file loads here; KM BOT's /voice-client.js loads when a sheet opens. -->
 <script src="talk-voice.js"></script>
