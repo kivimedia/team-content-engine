@@ -128,3 +128,9 @@ runs). Builder edits a mirror of src/tests on the PC and ships it with tar over 
   a pipe write is asynchronous in node, so the two new tool descriptions pushed it past
   the first 16 KB chunk and the rest was lost. Fix in the harness (write, then exit in
   the write callback). test_mcp_voice_protocol.py after the fix: 5 passed.
+- Ad hoc (not committed): a real MP4 with word-box captions through _plan_and_render with
+  the check on: edited, "Checked by Jennifer", captions mode wordbox 9 of 9.
+- 20:3x full suite on 9f1a5a1: 4 failed, 1966 passed, 3 skipped (20m24s). The 4 are the
+  browser baseline (3 notes-sheet "Your note at 0:00", 1 recording studio textBigger),
+  same as master. C2 is complete on this branch; nothing deployed, migration 058 run only
+  on the test database.
