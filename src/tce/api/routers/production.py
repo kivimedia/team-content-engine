@@ -52,7 +52,7 @@ from tce.models.editorial import (
 )
 from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingClip, RecordingSession
-from tce.production import autoedit, media, publishing, relisten, tightcut, wordbox
+from tce.production import agent_talks, autoedit, media, publishing, relisten, tightcut, wordbox
 from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
 from tce.production.retakes import (
@@ -360,6 +360,9 @@ def upload_json(u: RecordingUpload) -> dict[str, Any]:
         "video_url": f"/api/v1/production/uploads/{u.id}/video" if u.storage_path else None,
         "edited_url": f"/api/v1/production/uploads/{u.id}/edited" if u.edited_path else None,
         "render_ref": u.render_ref,
+        # 3-Oct: "agent_talk" for a filmed voice call with an agent, null for a walk.
+        "source": u.source,
+        "agent_name": u.agent_name,
         "created_at": _iso(u.created_at),
         "updated_at": _iso(u.updated_at),
     }
@@ -860,6 +863,19 @@ async def _speech_activity(path: str | Path | None) -> tightcut.Activity | None:
     return tightcut.find_activity(levels) if levels else None
 
 
+async def talk_voices(
+    row: RecordingUpload, words: list[dict[str, Any]] | None = None
+) -> agent_talks.Voices | None:
+    """Who says each word of an agent talk (3-Oct), from the call's own transcript; None
+    for a walk. Lining up a long talk takes a moment, so it runs off the event loop."""
+    if row.source != agent_talks.SOURCE:
+        return None
+    heard = list(words if words is not None else row.transcript or [])
+    return await asyncio.to_thread(
+        agent_talks.voices, heard, list(row.call_transcript or []), row.agent_name or "the agent"
+    )
+
+
 async def _compute_plan(
     db: AsyncSession, ws: uuid.UUID, row: RecordingUpload, *, pause_threshold_s: float | None = None
 ) -> None:
@@ -881,6 +897,9 @@ async def _compute_plan(
     review = previous.get("review") or {}
     word_level = is_word_level(row.transcript or [])
     activity = await _speech_activity(row.storage_path) if word_level else None
+    # 3-Oct, an agent talk: the agent's words are content, never cut by a rule or the
+    # review (only his own request can cut them).
+    voices = await talk_voices(row)
     # A long walk takes a second or more to plan: off the event loop.
     plan = await asyncio.to_thread(
         plan_edit,
@@ -892,7 +911,17 @@ async def _compute_plan(
         removals=review.get("removals") if review.get("state") == "done" else None,
         overrides=previous.get("overrides"),
         aside_names=aside_names(),
+        protected=voices.agent_words if voices is not None else (),
     )
+    if voices is not None:
+        plan["voices"] = {
+            "agent": voices.agent,
+            "agent_words": len(voices.agent_words),
+            "words": len(row.transcript or []),
+            "known": voices.known,
+            "matched": voices.matched,
+            "offset_s": voices.offset_s,
+        }
     if word_level:
         if previous.get("overrides"):
             plan["overrides"] = previous["overrides"]
@@ -1149,7 +1178,7 @@ async def auto_edit_again(
         row.edit_plan = plan
     # A live status straight away, so the Library keeps refreshing the card.
     row.status = "proofreading"
-    row.status_detail = "Editing it again: your editor's review, then the cut and the captions"
+    row.status_detail = "Editing it again: Jennifer's review, then the cut and the captions"
     await db.commit()
     await db.refresh(row)
     _spawn(auto_edit(row.id, ws))
@@ -1830,8 +1859,17 @@ def _render_lock(upload_id: uuid.UUID) -> asyncio.Lock:
     return lock
 
 
-def _review_request(words: list[dict[str, Any]], context: str) -> tuple[str, str]:
-    return autoedit.review_prompt(words, context), autoedit.review_system(aside_names())
+def _review_request(
+    words: list[dict[str, Any]], context: str, voices: agent_talks.Voices | None = None
+) -> tuple[str, str]:
+    """The review's prompt and instructions. An agent talk (3-Oct) says who speaks each
+    line and adds the conversation rules: the agent's lines are content."""
+    system = autoedit.review_system(aside_names())
+    if voices is None:
+        return autoedit.review_prompt(words, context), system
+    speakers = voices.speaker_names() if voices.known else None
+    system += "\n\n" + autoedit.conversation_rules(voices.agent, known=voices.known)
+    return autoedit.review_prompt(words, context, speakers), system
 
 
 def _review_key(upload_id: uuid.UUID, prompt: str, system: str) -> str:
@@ -1860,12 +1898,19 @@ async def _apply_review(
     answer: Any,
     *,
     fix_words: bool = True,
+    voices: agent_talks.Voices | None = None,
 ) -> dict[str, Any]:
     """Store what the editor decided. Removals are kept as time ranges, so the word
     fixes applied beside them cannot shift what they point at. `fix_words` False keeps
-    the transcript as it is (a posted video: its word indices must not move)."""
+    the transcript as it is (a posted video: its word indices must not move). In an
+    agent talk (`voices`) no removal takes the agent's words."""
     out = answer.structured or {}
-    removals, notes = autoedit.validate_removals(words, out.get("removals") or [])
+    removals, notes = autoedit.validate_removals(
+        words,
+        out.get("removals") or [],
+        protected=voices.agent_words if voices is not None else None,
+        protected_name=voices.agent if voices is not None else "the agent",
+    )
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
         current = list(row.transcript or [])
@@ -1890,10 +1935,10 @@ async def _apply_review(
         row.edit_plan = plan
         took = len(removals or [])
         row.status_detail = (
-            f"Your editor marked {took} thing{'s' if took != 1 else ''} to take out and fixed "
+            f"Jennifer marked {took} thing{'s' if took != 1 else ''} to take out and fixed "
             f"{len(applied)} misheard word{'s' if len(applied) != 1 else ''}"
             if removals is not None
-            else f"Your editor's review was not usable ({'; '.join(notes)[:200]}); cutting with the rules"
+            else f"Jennifer's review was not usable ({'; '.join(notes)[:200]}); cutting with the rules"
         )
         await s.commit()
     return review
@@ -1909,16 +1954,18 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
         row = await _load(s, upload_id, ws)
         words = list(row.transcript or [])
         context = await _script_context(s, ws, row)
+        voices = await talk_voices(row, words)
         if words and is_word_level(words):
             row.status = "proofreading"
             row.status_detail = (
-                f"Your editor is reading {len(words)} words on the subscription: misheard words, "
+                f"Jennifer is reading {len(words)} words on the subscription: misheard words, "
                 "lines said twice, talk to the dogs"
+                + (f"; {voices.agent}'s lines stay as they are" if voices is not None else "")
             )
             await s.commit()
     if not words or not is_word_level(words):
         return "skipped"
-    prompt, system = _review_request(words, context)
+    prompt, system = _review_request(words, context, voices)
     key = _review_key(upload_id, prompt, system)
     try:
         answer = await _ask(
@@ -1935,14 +1982,14 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
             {"state": "waiting" if waiting else "unavailable", "key": key,
              "since": _utcnow().isoformat(), "detail": str(exc)[:300]},
             (
-                "Your editor has not answered yet, so this edit uses the rules; it re-edits "
-                "by itself when the review lands"
+                "Jennifer has not answered yet, so this edit uses the rules; it re-edits "
+                "by itself when her review lands"
                 if waiting
-                else f"Your editor could not review this one ({why}); cutting with the rules"
+                else f"Jennifer could not review this one ({why}); cutting with the rules"
             ),
         )
         return "waiting" if waiting else "unavailable"
-    await _apply_review(upload_id, ws, words, answer)
+    await _apply_review(upload_id, ws, words, answer, voices=voices)
     return "done"
 
 
@@ -1978,7 +2025,8 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
                 return
             words = list(row.transcript or [])
             context = await _script_context(s, ws, row)
-        prompt, system = _review_request(words, context)
+            voices = await talk_voices(row, words)
+        prompt, system = _review_request(words, context, voices)
         key = _review_key(upload_id, prompt, system)
         if key != str(review.get("key") or ""):
             await _save_review(upload_id, ws, {**review, "state": "stale"}, None)
@@ -2020,14 +2068,14 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
                     await s.commit()
             if not in_front:
                 if posted:
-                    await _apply_review(upload_id, ws, words, answer, fix_words=False)
+                    await _apply_review(upload_id, ws, words, answer, fix_words=False, voices=voices)
                     await _note(
                         upload_id, ws, None,
-                        "Your editor's review arrived after this video was posted; the posted edit stays",
+                        "Jennifer's review arrived after this video was posted; the posted edit stays",
                     )
                     return
                 try:
-                    await _apply_review(upload_id, ws, words, answer)
+                    await _apply_review(upload_id, ws, words, answer, voices=voices)
                     await _plan_and_render_locked(upload_id, ws, restore_if_blocked=snapshot)
                 finally:
                     async with session_factory()() as s:
@@ -2050,7 +2098,7 @@ async def _plan_and_render(upload_id: uuid.UUID, ws: uuid.UUID) -> RecordingUplo
 
 
 _BLOCKED_SAYS = {
-    "review": "Your editor's review wants a cut that needs your eyes, so the edit you have stays: {reason}",
+    "review": "Jennifer's review wants a cut that needs your eyes, so the edit you have stays: {reason}",
     "notes": "Your notes would make a cut that needs your eyes, so the edit you have stays: {reason}",
     "undo": "Going back to the version before your notes needs your eyes, so the edit you have "
     "stays: {reason}",
@@ -2258,7 +2306,7 @@ REQUEST_WAITS_FOR_NOTES = (
     "This request is read after that, on the new version."
 )
 REQUEST_WORDS_MOVED = (
-    "The words of this video changed twice while your editor was reading this request, "
+    "The words of this video changed twice while Jennifer was reading this request, "
     "so nothing was changed. Send it again."
 )
 REQUEST_NOTES_TOOK_TOO_LONG = (
@@ -2716,9 +2764,9 @@ async def _ask_for_notes(
                 session_id,
                 ws,
                 (
-                    f"Your editor did not answer within {settings.production_review_wait_h:.0f} hours"
+                    f"Jennifer did not answer within {settings.production_review_wait_h:.0f} hours"
                     if waited
-                    else f"Your editor could not read the notes ({exc.status})"
+                    else f"Jennifer could not read the notes ({exc.status})"
                 )
                 + ". Your notes are kept and nothing was changed; make the new version again.",
             )
@@ -2727,7 +2775,7 @@ async def _ask_for_notes(
             await _hand_back(
                 session_id,
                 ws,
-                f"Your editor could not read the notes ({exc.__class__.__name__}). Your notes are kept "
+                f"Jennifer could not read the notes ({exc.__class__.__name__}). Your notes are kept "
                 "and nothing was changed; make the new version again.",
             )
             return None
@@ -2968,7 +3016,7 @@ async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
         await _hand_back(
             session_id,
             ws,
-            "The words of this video changed twice while your editor was reading your notes. "
+            "The words of this video changed twice while Jennifer was reading your notes. "
             "Your notes are kept and nothing was changed; make the new version again.",
         )
     except Exception as exc:  # noqa: BLE001 - lands on the sitting, never only in a log

@@ -339,33 +339,41 @@ REVIEW_SCHEMA = {
 }
 
 
-def review_transcript(words: list[dict[str, Any]]) -> str:
+def review_transcript(words: list[dict[str, Any]], speakers: dict[int, str] | None = None) -> str:
     """One utterance a line with its clock, and the pauses between them: a retake shows
     as the same words again after a pause, an aside as a short line among long ones.
 
     A stretch the second listen heard as another language gets its own line saying so,
     with what it sounds like in Hebrew; "[sound]" is speech it could not make into words.
+
+    `speakers` (an agent talk, 3-Oct) names who says each word: a line never holds two
+    voices, and each line starts with its speaker ("HOST:", "ATLAS:").
     """
     lines: list[str] = []
     cur: list[str] = []
     stamp = ""
     prev_end: float | None = None
     prev_lang: str | None = None
+    prev_who: str | None = None
     for i, w in enumerate(words):
         start, end = float(w["start_s"]), float(w["end_s"])
         gap = start - prev_end if prev_end is not None else 0.0
         lang = w.get("lang") or None
-        if cur and (gap >= 1.0 or len(cur) >= 24 or lang != prev_lang):
+        who = speakers.get(i) if speakers else None
+        if cur and (gap >= 1.0 or len(cur) >= 24 or lang != prev_lang or who != prev_who):
             lines.append(stamp + " ".join(cur))
             cur = []
         if gap >= 1.5:
             lines.append(f"(pause {gap:.1f} s)")
         if not cur:
             stamp = f"[{_clock(start)}] "
+            if who:
+                stamp += f"{who}: "
             if lang:
                 heard = f'; in Hebrew it sounds like "{w["heard_as"]}"' if w.get("heard_as") else ""
                 stamp += f"(NOT ENGLISH - heard as '{lang}'{heard}) "
         prev_lang = lang
+        prev_who = who
         cur.append(f"{i}:{w['text']}")
         if str(w["text"])[-1:] in ".?!":
             lines.append(stamp + " ".join(cur))
@@ -376,16 +384,61 @@ def review_transcript(words: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def review_prompt(words: list[dict[str, Any]], context: str) -> str:
+def review_prompt(
+    words: list[dict[str, Any]], context: str, speakers: dict[int, str] | None = None
+) -> str:
     return (
-        f"{context}\n\nTranscript (index:word):\n{review_transcript(words)}\n\n"
+        f"{context}\n\nTranscript (index:word):\n{review_transcript(words, speakers)}\n\n"
         "Return the removals (retakes, asides, junk) and the clearly misheard words to fix. "
         f"At most {MAX_CORRECTIONS} corrections. Empty lists are a normal answer."
     )
 
 
+def conversation_rules(agent: str, *, known: bool = True) -> str:
+    """The review's instructions for an agent talk (3-Oct): a filmed voice call between
+    him and an AI agent. The agent's lines are the other half of the conversation."""
+    name = agent.upper()
+    if not known:
+        return (
+            f"THIS VIDEO IS A CONVERSATION: a voice call between him and {agent}, an AI agent, "
+            "that he filmed. Which voice says each line could not be worked out, so nothing "
+            "may be removed from it: return no removals, only the clearly misheard words."
+        )
+    return (
+        f"THIS VIDEO IS A CONVERSATION: a voice call between him and {agent}, an AI agent, "
+        f"that he filmed. Every line starts with who says it: HOST is him, {name} is "
+        f"{agent}. {agent}'s lines are content, the other half of the conversation: never "
+        f"remove them, as a retake, a false start, an aside or junk, even when {agent} "
+        f"repeats his words, asks something twice or answers in one word. A retake is only "
+        f"ever him saying his own line again; when {agent} says something close to his "
+        f"words, that is an answer, not a retake. His own lines follow the rules above: his "
+        "talk to the dogs, his false starts and the recogniser's junk still go. The silence "
+        "while one waits for the other is cut by the edit on its own; it is not a removal."
+    )
+
+
+def _outside(first: int, last: int, protected: frozenset[int] | set[int]) -> list[tuple[int, int]]:
+    """The runs of [first, last] that hold no protected word."""
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for i in range(first, last + 1):
+        if i in protected:
+            if start is not None:
+                runs.append((start, i - 1))
+                start = None
+        elif start is None:
+            start = i
+    if start is not None:
+        runs.append((start, last))
+    return runs
+
+
 def validate_removals(
-    words: list[dict[str, Any]], removals: list[dict[str, Any]]
+    words: list[dict[str, Any]],
+    removals: list[dict[str, Any]],
+    *,
+    protected: frozenset[int] | set[int] | None = None,
+    protected_name: str = "the agent",
 ) -> tuple[list[dict[str, Any]] | None, list[str]]:
     """Removals as time ranges, each proven by quoting the words at its indices.
 
@@ -393,10 +446,16 @@ def validate_removals(
     kind allows (MAX_REMOVAL_WORDS) is dropped. If what is left would remove more than
     MAX_REMOVED_SHARE of the words, None: that is not an edit, it is a
     misunderstanding, and the rules decide instead.
+
+    `protected` (an agent talk, 3-Oct): the agent's words. A removal never takes them:
+    it shrinks to the parts around them, and one that is all the agent's is dropped,
+    with a note saying so.
     """
     valid: list[dict[str, Any]] = []
     notes: list[str] = []
-    taken: set[int] = set()
+    taken: set[int] = set()  # what the review pointed at: a second removal there is skipped
+    removed: set[int] = set()  # what is actually taken out
+    guarded = frozenset(protected or ())
     for r in removals or []:
         try:
             first, last = int(r["first"]), int(r["last"])
@@ -415,22 +474,47 @@ def validate_removals(
         if _norm(heard) != _norm(str(r.get("heard") or "")):
             notes.append(f'skipped a removal at {first}-{last}: it quoted "{r.get("heard")}"')
             continue
-        taken |= span
-        item = {
-            "start": float(words[first]["start_s"]),
-            "end": float(words[last]["end_s"]),
-            "text": heard,
-            "kind": kind,
-            "why": str(r.get("why") or "")[:200],
-        }
+        runs = _outside(first, last, guarded) if guarded else [(first, last)]
+        if not runs:
+            notes.append(
+                f"skipped a removal at {first}-{last}: those are {protected_name}'s words, "
+                "and a talk keeps both voices"
+            )
+            continue
         kept_from = r.get("kept_from")
-        if kind in ("retake", "false_start") and isinstance(kept_from, int) and 0 <= kept_from < len(words):
-            if kept_from not in span:
-                item["keeper_start"] = float(words[kept_from]["start_s"])
-        valid.append(item)
-    if words and len(taken) > MAX_REMOVED_SHARE * len(words):
+        if guarded and kind in ("retake", "false_start") and kept_from in guarded:
+            # His line, then the agent saying it back: an answer, not a second take.
+            notes.append(
+                f"skipped a removal at {first}-{last}: the take it keeps is {protected_name}'s "
+                "answer, not his line said again"
+            )
+            continue
+        if runs != [(first, last)]:
+            notes.append(f"kept {protected_name}'s words inside the removal at {first}-{last}")
+        taken |= span
+        keeper = (
+            float(words[kept_from]["start_s"])
+            if kind in ("retake", "false_start")
+            and isinstance(kept_from, int)
+            and 0 <= kept_from < len(words)
+            and kept_from not in span
+            else None
+        )
+        for a, b in runs:
+            removed |= set(range(a, b + 1))
+            item = {
+                "start": float(words[a]["start_s"]),
+                "end": float(words[b]["end_s"]),
+                "text": " ".join(str(w["text"]) for w in words[a : b + 1]),
+                "kind": kind,
+                "why": str(r.get("why") or "")[:200],
+            }
+            if keeper is not None:
+                item["keeper_start"] = keeper
+            valid.append(item)
+    if words and len(removed) > MAX_REMOVED_SHARE * len(words):
         notes.append(
-            f"the review wanted to remove {len(taken)} of {len(words)} words; used the rules instead"
+            f"the review wanted to remove {len(removed)} of {len(words)} words; used the rules instead"
         )
         return None, notes
     return sorted(valid, key=lambda v: v["start"]), notes

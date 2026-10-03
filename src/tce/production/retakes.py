@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
@@ -322,7 +322,12 @@ def plan_edit(
     removals: list[dict[str, Any]] | None = None,
     overrides: dict[str, Any] | None = None,
     aside_names: Sequence[str] = (),
+    protected: Collection[int] = (),
 ) -> dict[str, Any]:
+    """`protected` (an agent talk, 3-Oct): transcript indices of the agent's words. No
+    rule and no review removes them; only his own editing request can. The rules look
+    for retakes and asides inside one of his turns at a time, never across the agent's
+    lines."""
     precision = precision or timing_precision(timings)
     if is_word_level(timings, precision):
         return _plan_words(
@@ -336,13 +341,17 @@ def plan_edit(
             removals=removals,
             overrides=overrides,
             aside_names=aside_names,
+            protected=frozenset(protected),
         )
     coarse = precision == PRECISION_WHOLE_SECOND
     phrases = [sim_tokens(p) for p in (script_phrases or [])]
     units = group_units(timings)
     for u in units:
         _match_phrase(u, phrases)
-    _script_retakes(units)
+    if not protected:
+        # Segment timings cannot say which words in a line are whose: a talk with them
+        # keeps every line.
+        _script_retakes(units)
 
     end_bound = (
         duration_s if duration_s is not None else (max((u.end for u in units), default=0.0) + pad_s)
@@ -626,11 +635,14 @@ def _continues(a: Unit, b: Unit) -> bool:
 
 
 def _word_units(
-    rows: list[tuple[int, float, float, str]], other_lang: frozenset[int] | set[int] = frozenset()
+    rows: list[tuple[int, float, float, str]],
+    other_lang: frozenset[int] | set[int] = frozenset(),
+    agent: frozenset[int] | set[int] = frozenset(),
 ) -> list[Unit]:
     """Utterances (split at a 0.35 s gap or a sentence end), then sentences rebuilt
     from fragments a pause split apart. Words heard as another language (Hebrew to the
-    dogs, 29-Sep) are their own utterance and never join an English sentence."""
+    dogs, 29-Sep) are their own utterance and never join an English sentence. In an
+    agent talk (3-Oct) a sentence never holds both voices: `agent` is the agent's words."""
     units: list[Unit] = []
     cur: list[tuple[int, float, float, str]] = []
 
@@ -645,6 +657,7 @@ def _word_units(
             row[1] - cur[-1][2] >= WORD_GROUP_GAP_S
             or cur[-1][3].rstrip()[-1:] in ".?!"
             or (row[0] in other_lang) != (cur[-1][0] in other_lang)
+            or (row[0] in agent) != (cur[-1][0] in agent)
         ):
             close()
             cur = []
@@ -654,6 +667,9 @@ def _word_units(
 
     def foreign(u: Unit) -> bool:
         return any(i in other_lang for i in u.words)
+
+    def voice(u: Unit) -> bool:
+        return any(i in agent for i in u.words)
 
     def joined(parts: list[Unit]) -> Unit:
         text = " ".join(p.text for p in parts)
@@ -666,7 +682,12 @@ def _word_units(
     # see the pair and keep the complete one.
     groups: list[list[Unit]] = []
     for u in units:
-        if groups and _continues(joined(groups[-1]), u) and not (foreign(joined(groups[-1])) or foreign(u)):
+        if (
+            groups
+            and _continues(joined(groups[-1]), u)
+            and not (foreign(joined(groups[-1])) or foreign(u))
+            and voice(groups[-1][-1]) == voice(u)
+        ):
             if _is_restart_of(groups[-1][-1], u):
                 if len(groups[-1]) > 1:
                     groups.append([groups[-1].pop()])
@@ -785,6 +806,24 @@ def _junk_words(rows: list[tuple[int, float, float, str]]) -> set[int]:
     return junk
 
 
+def _turns(sentences: list[Unit], agent: frozenset[int] | set[int]) -> list[list[Unit]]:
+    """His sentences in runs between the agent's lines (one run when there is no agent)."""
+    if not agent:
+        return [sentences]
+    turns: list[list[Unit]] = []
+    cur: list[Unit] = []
+    for s in sentences:
+        if any(i in agent for i in s.words):
+            if cur:
+                turns.append(cur)
+            cur = []
+        else:
+            cur.append(s)
+    if cur:
+        turns.append(cur)
+    return turns
+
+
 def _removal_units(
     removals: list[dict[str, Any]],
     rows: list[tuple[int, float, float, str]],
@@ -828,6 +867,7 @@ def _plan_words(
     removals: list[dict[str, Any]] | None,
     overrides: dict[str, Any] | None,
     aside_names: Sequence[str],
+    protected: frozenset[int] = frozenset(),
 ) -> dict[str, Any]:
     rows: list[tuple[int, float, float, str]] = []
     for i, t in enumerate(timings or []):
@@ -845,7 +885,7 @@ def _plan_words(
     phrases = [sim_tokens(p) for p in (script_phrases or [])]
     # A sound is cut whoever decides; left in a sentence it would hide the restart it
     # marks from the retake rules and show "[sound]" in unit captions.
-    sentences = _word_units([r for r in rows if r[0] not in sounds], other_lang)
+    sentences = _word_units([r for r in rows if r[0] not in sounds], other_lang, protected)
     for u in sentences:
         _match_phrase(u, phrases)
 
@@ -857,9 +897,13 @@ def _plan_words(
         by_word, review_units = _removal_units(removals or [], rows, sentences, len(sentences))
         reason.update(by_word)
     else:
-        _script_retakes(sentences)
-        _prefix_retakes(sentences)
-        _asides(sentences, aside_names)
+        # An agent talk (3-Oct): the rules look inside one of his turns at a time. A line
+        # of his that the agent's answer follows is a turn of the conversation, not a
+        # take he said again, and the agent's own lines are never a take or an aside.
+        for turn in _turns(sentences, protected):
+            _script_retakes(turn)
+            _prefix_retakes(turn)
+            _asides(turn, aside_names)
         for u in sentences:
             # A short line heard as another language is talk to the dogs; a long one
             # may be English the recogniser doubted, and stays for the editor to judge.
@@ -887,6 +931,12 @@ def _plan_words(
     for i, _s, _e, text in rows:
         if re.sub(r"[^\w']+", "", text).lower() in FILLERS:
             reason[i] = reason[i] or "filler"
+    # The agent's words are the other half of the conversation: whatever a rule or the
+    # review said, they stay. A "[sound]" the second listen split off is not a word and
+    # goes as before.
+    for i in protected:
+        if i in reason and reason[i] not in (None, "sound"):
+            reason[i] = None
     # His editing requests win over every rule above.
     for key, value in (("cut", "requested_cut"), ("restore", None)):
         for a, b in (overrides or {}).get(key) or []:
