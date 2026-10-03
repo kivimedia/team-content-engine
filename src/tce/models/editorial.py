@@ -325,6 +325,11 @@ class RecordingUpload(_PrivateWorkspaceMixin, Base):
     # edit reads it to tell the two voices apart (production/agent_talks.py).
     agent_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
     call_transcript: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONType, nullable=True)
+    # 3-Oct, Jennifer's check (migration 058): what she found on the render he would be
+    # watching: {"state": passed|fixed|held|checking|report|unchecked, "render_ref",
+    # "line", "numbers", "checks", "fixes", "at"}. Every check is also a `render_checks`
+    # row; this is the newest, so the card reads it without another query.
+    qc: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
 
 
 class VideoPublication(_PrivateWorkspaceMixin, Base):

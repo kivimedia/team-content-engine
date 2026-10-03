@@ -40,6 +40,7 @@ from tce.models.editorial_workspace import (
 )
 from tce.models.founder_voice_profile import FounderVoiceProfile
 from tce.models.image_asset import ImageAsset
+from tce.models.jennifer import EditorRule, RenderCheck
 from tce.models.learning_event import LearningEvent
 from tce.models.llm_job import LLMJob
 from tce.models.narration_script import NarrationScript
@@ -100,6 +101,7 @@ __all__ = [
     "EditorialChangeSet",
     "EditorialMessage",
     "EditorialThread",
+    "EditorRule",
     "DMFulfillmentLog",
     "EditorialFeedback",
     "ExportIntent",
@@ -132,6 +134,7 @@ __all__ = [
     "NewsItem",
     "NewsMatch",
     "NewsWatchlist",
+    "RenderCheck",
     "RenderQueueJob",
     "RepoBrief",
     "ResearchBrief",

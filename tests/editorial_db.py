@@ -18,6 +18,7 @@ from tce.models import (  # noqa: F401
     content_run,
     editorial,
     editorial_workspace,
+    jennifer,
     llm_job,
     news,
     recording_session,
@@ -63,6 +64,9 @@ TABLE_NAMES = (
     "editing_requests",
     # Talk to the editor: one sitting of notes on a video (migration 056)
     "edit_sessions",
+    # Jennifer: what she found on each render, and the rules she learned (migration 058)
+    "render_checks",
+    "editor_rules",
     "notification_subscriptions",
     "notification_events",
     # Voice agent research (migration 047)
