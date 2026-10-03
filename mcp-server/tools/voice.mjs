@@ -1299,8 +1299,11 @@ export function register(server, call, { reply, failure, shortId }) {
       const queue = await call('GET', '/production/recording-queue');
       const live = queue.ok ? (queue.data?.ideas || [])
         .filter((i) => ['recording', 'finalizing'].includes(i.active_session_status)) : [];
-      const videos = items.map((v) => ({ id: shortId(v.upload_id), title: v.title, stage: stageOf(v.status),
-        detail: v.state_sentence || '', edited: v.status === 'edited', recorded_at: v.recorded_at }));
+      // 3-Oct: a video Jennifer is holding says so, with her one line (it is in detail).
+      const videos = items.map((v) => ({ id: shortId(v.upload_id), title: v.title,
+        stage: v.qc && v.qc.state === 'held' ? 'edited, held by Jennifer' : stageOf(v.status),
+        detail: v.state_sentence || '', edited: v.status === 'edited', recorded_at: v.recorded_at,
+        check: v.qc ? v.qc.line || null : null }));
       const n = videos.length;
       const head = all
         ? `There ${n === 1 ? 'is one recording' : `are ${n} recordings`} in your library.`
@@ -1414,7 +1417,8 @@ const POST_STATE = { draft: 'a draft', posting: 'going out now', scheduled: 'sch
 /** The library's status in his words. */
 export function stageOf(status) {
   if (status === 'uploaded') return 'uploading';
-  if (['transcribing', 'transcribed', 'proofreading', 'planned', 'rendering'].includes(status)) return 'in editing';
+  // 3-Oct: 'checking' is Jennifer's check of a finished render (it may re-render once).
+  if (['transcribing', 'transcribed', 'proofreading', 'planned', 'rendering', 'checking'].includes(status)) return 'in editing';
   if (status === 'needs_review') return 'edited, waiting for your review';
   if (status === 'edited') return 'editing done';
   if (['failed', 'interrupted', 'unavailable'].includes(status)) return 'stopped with a problem';

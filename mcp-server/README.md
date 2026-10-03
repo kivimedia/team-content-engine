@@ -91,6 +91,8 @@ it.
 | `tce_video_notes` | The notes on a video and where each stands |
 | `tce_video_make` | Read every note back with a check code, then on his yes one job and one render |
 | `tce_video_undo_version` | Read back, then on his yes the version from before his notes comes back |
+| `tce_video_check` | What Jennifer's own check found on the edit, and why she is holding it when she is |
+| `tce_video_rules` | The rules Jennifer learned from his notes, to read out |
 
 Every write is recorded as `voice` and listed on Today under "Changes by voice".
 The video tools never open a sitting or pin a note: only his notes sheet does,

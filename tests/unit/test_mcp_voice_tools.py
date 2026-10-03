@@ -191,6 +191,9 @@ def test_the_voice_family_registers_every_tool():
             "tce_video_notes",
             "tce_video_make",
             "tce_video_undo_version",
+            # 3-Oct: what Jennifer's check found, and the rules she learned.
+            "tce_video_check",
+            "tce_video_rules",
         ]
     )
 
@@ -3333,7 +3336,9 @@ def test_the_installer_syncs_tools_and_contexts_and_keeps_what_only_the_box_has(
         "added ['video']" in proc.stdout
         and "kept as they are on this box ['legacy']" in proc.stdout
     )
-    assert "tools 18 -> 23" in proc.stdout
+    # 3-Oct: the repo seat also has tce_video_check and tce_video_rules (Jennifer's check
+    # and her rules); the box seat this test builds carries the tools before the video five.
+    assert "tools 20 -> 25" in proc.stdout
 
     # Run again on what it wrote: nothing to do, and nothing written.
     again, second = _install(tmp_path, after, name="second.json")

@@ -110,6 +110,13 @@ async def workspace_notes_sheet(upload_id: str):
     return await _workspace_page()
 
 
+# 3-Oct: "Jennifer's rules", the rules she learned from his notes, each with the video it
+# came from and a Delete button. Its own address, so a reload or a pasted link lands on it.
+@router.get("/library/rules", response_class=HTMLResponse, include_in_schema=False)
+async def workspace_rules():
+    return await _workspace_page()
+
+
 @router.get("/workspace.css", include_in_schema=False)
 async def workspace_css():
     from fastapi.responses import Response

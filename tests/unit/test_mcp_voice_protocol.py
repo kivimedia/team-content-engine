@@ -202,6 +202,9 @@ VOICE_TOOLS = [
     "tce_video_notes",
     "tce_video_make",
     "tce_video_undo_version",
+    # 3-Oct: what Jennifer's check found, and the rules she learned.
+    "tce_video_check",
+    "tce_video_rules",
 ]
 
 OLDER_TOOLS = [

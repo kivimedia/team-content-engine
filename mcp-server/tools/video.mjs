@@ -16,6 +16,9 @@
  *                            one job reads every note and the video renders once
  *   tce_video_undo_version   the read-back, then, on his yes, the version from
  *                            before his notes comes back
+ *   tce_video_check          what her own check found on the edit, and why she is
+ *                            holding it when she is (3-Oct)
+ *   tce_video_rules          the rules she learned from his notes, to read out (3-Oct)
  *
  * Save, then say back (not ask, then save): nothing renders until he says make it,
  * and that one irreversible step has its own read-back, check code and undo.
@@ -528,6 +531,71 @@ export function register(server, call, { reply, failure }) {
       trackJob({ kind: 'video_undo', title: v.title, video: v.upload_id, session_id: s.session_id });
       return reply(`Putting back the version of "${v.title}" from before his notes now: one re-render. `
         + 'tce_jobs will say when it is back.', { ok: true, undone: 'started', session_id: s.session_id, video: v.upload_id });
+    },
+  );
+
+  /*
+   * 3-Oct: Jennifer checks every edit and learns from his notes. These two tools read
+   * what she found and what she learned; neither changes anything.
+   */
+  server.tool(
+    'tce_video_check',
+    'What your own check found on the edit of this video: the pauses, anything left in that is not said to '
+      + 'the viewer, whether every word is heard, the captions, the loudness. Use it when he asks whether the '
+      + 'edit was checked, why a video is held, or what you measured. If you are holding the video it gives '
+      + 'the one line that says why. It never changes anything.',
+    {
+      type: 'object',
+      properties: { video: VIDEO_ID },
+      required: ['video'],
+    },
+    async ({ video }) => {
+      const f = await findVideo(video);
+      if (f.stop) return f.stop;
+      const v = f.found;
+      const c = v.check;
+      if (!c) {
+        return reply(`The edit of "${v.title}" he has now was not checked: it was made before you checked edits, `
+          + 'or it is a newer render than the one you checked. He can ask for a check on its card in the Library.',
+        { video: v.upload_id, checked: false });
+      }
+      if (c.state === 'checking') {
+        return reply(`You are checking the edit of "${v.title}" right now.`, { video: v.upload_id, checked: false, state: c.state });
+      }
+      const lines = [sentence(c.line) ? `${sentence(c.line)}.` : `The check of "${v.title}" ended ${c.state}.`];
+      const more = (c.problems || []).slice(1, 5).map((p) => sentence(p)).filter(Boolean);
+      if (more.length) lines.push(`Also found: ${more.join('; ')}.`);
+      if (v.held) {
+        lines.push('He can give you a note to fix it, or let it through on the card in the Library if it is fine as it is.');
+      }
+      return reply(lines.join('\n'), { video: v.upload_id, checked: true, state: c.state, held: Boolean(v.held),
+        numbers: c.numbers || {}, problems: c.problems || [] });
+    },
+  );
+
+  server.tool(
+    'tce_video_rules',
+    'The rules you learned from his notes on earlier videos, newest first, each with the video it came from '
+      + 'and how many videos it was applied on. Use it when he asks what you learned, what your rules are, or '
+      + 'to read your rules out. You apply them on every next video. He deletes a rule on the page Jennifer\'s '
+      + 'rules in the Library; you cannot delete one from the call. It never changes anything.',
+    { type: 'object', properties: {} },
+    async () => {
+      const r = await call('GET', '/production/editor-rules');
+      if (!r.ok) return failure(r, 'read your rules');
+      const rules = r.data?.rules || [];
+      if (!rules.length) {
+        return reply('You have no learned rules yet. A note he gives on a video becomes a rule when it is about '
+          + 'more than that one video.', { count: 0, rules: [] });
+      }
+      const lines = rules.slice(0, 20).map((x, i) => {
+        const from = x.source_title ? ` From his note on "${x.source_title}".` : '';
+        const used = x.times_applied ? ` Applied on ${x.times_applied} video${x.times_applied === 1 ? '' : 's'}.` : '';
+        return `${i + 1}. ${sentence(x.text)}.${from}${used}`;
+      });
+      if (rules.length > 20) lines.push(`And ${rules.length - 20} more on the rules page.`);
+      return reply([`You have ${rules.length} learned rule${rules.length === 1 ? '' : 's'}:`, ...lines].join('\n'),
+        { count: rules.length, rules: rules.map((x) => ({ text: x.text, from: x.source_title, times_applied: x.times_applied })) });
     },
   );
 }
