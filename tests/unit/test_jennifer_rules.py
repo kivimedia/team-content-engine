@@ -439,7 +439,7 @@ async def test_the_rules_page_lists_each_rule_with_its_source_video_and_delete_s
     assert first == {
         "id": str(new_id), "text": "Cut every call to the dogs.", "created_at": first["created_at"],
         "times_applied": 3, "source_upload_id": str(upload_id), "source_title": "Selling is the first step",
-        "source_has_edit": True, "source_note": "always cut the dogs",
+        "source_has_edit": True, "source_note": "always cut the dogs", "in_use": True,
     }
     assert body["rules"][1]["source_upload_id"] is None and body["rules"][1]["source_title"] is None
     gone = await client.delete(f"/api/v1/production/editor-rules/{new_id}", headers=auth(ws))

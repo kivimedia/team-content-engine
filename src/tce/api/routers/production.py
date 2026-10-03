@@ -2090,6 +2090,21 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
             ),
         )
         return "waiting" if waiting else "unavailable"
+    if rules:
+        async with session_factory()() as s:
+            in_force = {r[0] for r in await editor_rules.prompt_rules(s, ws)}
+        if not {r[0] for r in rules} <= in_force:
+            # 3-Oct review: he deleted a rule while this review read it, and a deleted
+            # rule is never applied. The answer is not used; the review waits like a late
+            # one, and the waiter asks again with the rules in force (_await_review).
+            await _save_review(
+                upload_id, ws,
+                {"state": "waiting", "key": key, "since": _utcnow().isoformat(), "rules": rules,
+                 "detail": "a rule it read was deleted while it read"},
+                "You deleted one of Jennifer's rules while she was reading this video, so this edit "
+                "is cut without her review for now; she reads it again without that rule",
+            )
+            return "waiting"
     await _apply_review(upload_id, ws, words, answer, voices=voices, rules=rules)
     return "done"
 
@@ -2127,8 +2142,20 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             words = list(row.transcript or [])
             context = await _script_context(s, ws, row)
             voices = await talk_voices(row, words)
+            in_force = await editor_rules.prompt_rules(s, ws)
         # The rules the waiting job was asked with, not the rules as they are now.
         rules = [list(r) for r in review.get("rules") or []]
+        if rules and not {r[0] for r in rules} <= {r[0] for r in in_force}:
+            # 3-Oct review: he deleted a rule this job was asked with, so its answer may
+            # follow it. A deleted rule is never applied: ask again with the rules in
+            # force now (a new job); the old answer is never used.
+            rules = in_force
+            prompt, system = _review_request(words, context, voices, rules)
+            key = _review_key(upload_id, prompt, system)
+            review = {**review, "key": key, "rules": rules, "asked_again": "a rule it read was deleted"}
+            if not rules:
+                review.pop("rules")
+            await _save_review(upload_id, ws, review, None)
         prompt, system = _review_request(words, context, voices, rules)
         key = _review_key(upload_id, prompt, system)
         if key != str(review.get("key") or ""):
@@ -2157,6 +2184,10 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
                     return
                 if [w.get("text") for w in row.transcript or []] != [w.get("text") for w in words]:
                     return
+                if rules and not {r[0] for r in rules} <= {r[0] for r in await editor_rules.prompt_rules(s, ws)}:
+                    # 3-Oct review: a rule this answer read was deleted while it was on
+                    # its way. It is not used; the top of the loop asks again without it.
+                    continue
                 # 30-Sep: he is giving notes on this edit right now. Swapping the file
                 # under his player would move every second he pins: keep waiting.
                 in_front = await library_service.active_sitting(s, ws, upload_id) is not None
@@ -2368,6 +2399,13 @@ async def _qc_asides(
     except (LLMUnavailable, QueueError) as exc:
         why = getattr(exc, "status", exc.__class__.__name__)
         return qc.skipped(f"Jennifer's reading of the words did not come back ({why})")
+    if rule_ids:
+        async with session_factory()() as s:
+            in_force = {r[0] for r in await editor_rules.prompt_rules(s, ws)}
+        if not set(rule_ids) <= in_force:
+            # 3-Oct review: a deleted rule is never applied, not even by a reading that
+            # was asked before he deleted it.
+            return qc.skipped("a rule she read was deleted while she read, so that reading is not used")
     found = qc.check_asides(
         kept, answer.structured or {}, protected=voices.agent_words if voices is not None else None
     )
@@ -2605,7 +2643,7 @@ async def _check_render(
                 **verdict,
                 "state": "held",
                 "fixes": {},
-                "line": f"Jennifer is holding this video: {stopped}."[:500],
+                "line": qc.plain(f"Jennifer is holding this video: {stopped}.")[:500],
             }
             return await _qc_record(upload_id, ws, held, final=True)
         round_no = 1
@@ -2642,7 +2680,7 @@ async def _check_now(upload_id: uuid.UUID, ws: uuid.UUID, *, fix: bool, resume: 
                 row.status_detail = (row.qc or {}).get("render_detail") or row.status_detail
             row.qc = {
                 "version": qc.QC_VERSION, "state": "unchecked", "render_ref": row.render_ref,
-                "line": f"Jennifer's check stopped with an error: {str(exc)[:200]}. The edit is as it was.",
+                "line": qc.plain(f"Jennifer's check stopped with an error: {str(exc)[:200]}. The edit is as it was."),
                 "at": _utcnow().isoformat(),
             }
             await s.commit()
@@ -3740,7 +3778,9 @@ async def learn_from_notes(ws: uuid.UUID, upload_id: uuid.UUID, note_ids: list[u
             if not notes:
                 return
             context = await _script_context(s, ws, row)
-            have = await editor_rules.prompt_rules(s, ws)
+            # The rules she reads, capped like every prompt that lists them: a long list
+            # never blows up this job (3-Oct review).
+            have = editor_rules.in_block(await editor_rules.prompt_rules(s, ws))
             now = _utcnow()
             began = now
             for n in notes:
@@ -3798,11 +3838,14 @@ async def learn_from_notes(ws: uuid.UUID, upload_id: uuid.UUID, note_ids: list[u
                     continue
                 if ((note.result or {}).get("learned") or {}).get("state") != "asking":
                     continue  # another run of this decided it already
+                # What she decided is recorded with her reason, whichever it was: a note
+                # never turns into a rule for every video without the record saying so.
                 if d["kind"] == "rule":
                     rule = await editor_rules.add_rule(s, ws, d["rule"], upload_id=upload_id, note_id=note_id)
-                    learned = {"state": "rule", "rule_id": str(rule.id), "text": rule.text}
+                    learned = {"state": "rule", "rule_id": str(rule.id), "text": rule.text, "why": d["why"]}
                 elif d["kind"] == "covered":
-                    learned = {"state": "covered", "rule_id": have[d["covered_by"]][0], "text": d["rule"]}
+                    learned = {"state": "covered", "rule_id": have[d["covered_by"]][0], "text": d["rule"],
+                               "why": d["why"]}
                 elif d["kind"] == "unread":
                     learned = {"state": "unread"}
                 else:
@@ -3995,6 +4038,18 @@ async def resume_auto_work() -> None:
             log.info("production.jennifer_resumed", checks=len(checks), learning=len(learning))
     except Exception:
         log.warning("production.jennifer_resume_failed", exc_info=True)
+    # 3-Oct review: an agent talk whose finish never came (the relay died with the call)
+    # is finished here once it has been idle for hours, so it still becomes a video.
+    try:
+        from tce.api.routers import agent_talks as agent_talk_routes
+
+        async with session_factory()() as s:
+            idle_talks = await agent_talk_routes._idle_talks(s, None)
+        if idle_talks:
+            _spawn(agent_talk_routes.finish_idle_talks())
+            log.info("production.idle_talks_finishing", talks=len(idle_talks))
+    except Exception:
+        log.warning("production.idle_talks_failed", exc_info=True)
     if not settings.production_auto_edit:
         return
     try:

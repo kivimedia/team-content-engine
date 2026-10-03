@@ -31,6 +31,7 @@ import bisect
 import hashlib
 import os
 import re
+import shutil
 import statistics
 import uuid
 from collections.abc import Awaitable, Callable
@@ -51,6 +52,25 @@ TIMEZONE = "Asia/Jerusalem"  # his clock, for the date in a talk's title
 # this only stops something that is not a slice.
 MAX_CHUNK_BYTES = 64 * 1024 * 1024
 MAX_SEQUENCE = 1_000_000
+# The disk the pieces land on is shared with the database and every other service on
+# the box. A talk never takes it below this much free space: a piece that would is
+# refused (507) and the relay keeps it to send again; a join that would is refused
+# before it writes anything, and the pieces stay (3-Oct review).
+MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024
+# How many missing sequence numbers a talk's record keeps (the count is always kept).
+MAX_MISSING_KEPT = 200
+
+
+def free_bytes(path: Path) -> int:
+    """Free space on the disk that holds `path` (or its nearest existing parent)."""
+    probe = Path(path)
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return shutil.disk_usage(probe).free
+
+
+def _gb(n: int) -> str:
+    return f"{n / (1024 ** 3):.1f} GB"
 
 # The recorder's type -> the container its pieces make.
 CONTAINERS = {
@@ -219,6 +239,13 @@ def store_piece(folder: Path, sequence: int, data: bytes) -> Stored:
                 status=409,
             )
     else:
+        free = free_bytes(path.parent)
+        if free - len(data) < MIN_FREE_BYTES:
+            raise TalkError(
+                f"The server's disk is nearly full ({_gb(free)} free), so piece {sequence} was not "
+                "kept. Send it again once space is freed.",
+                status=507,
+            )
         # Written aside and renamed: a crash never leaves half a piece under its number.
         part = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
         part.write_bytes(data)
@@ -239,7 +266,8 @@ class Joined:
     proof: dict[str, Any]
     pieces: int
     bytes: int
-    missing: list[int] = field(default_factory=list)
+    missing: list[int] = field(default_factory=list)  # the first MAX_MISSING_KEPT
+    missing_count: int = 0
 
 
 Prober = Callable[[str | Path], Awaitable[dict[str, Any]]]
@@ -341,7 +369,18 @@ async def join(folder: Path, extension: str, *, prober: Prober = probe_media) ->
             "cannot be made without it",
             status=409,
         )
-    missing = sorted(set(range(numbers[-1] + 1)) - set(numbers))
+    missing, missing_count = _missing(numbers)
+    # The join writes the pieces once more (the raw join) and once again (the remux)
+    # before it removes them: room for both, over the floor, or nothing is written.
+    size = sum(path.stat().st_size for _n, path in items)
+    free = free_bytes(folder)
+    if free - 2 * size < MIN_FREE_BYTES:
+        raise TalkError(
+            f"The server's disk is nearly full ({_gb(free)} free; joining this talk needs "
+            f"{_gb(2 * size)} more), so it was not joined yet. The pieces are kept; finish it "
+            "again once space is freed.",
+            status=507,
+        )
     raw = folder / f"talk.raw.{extension}"
     # A long talk is gigabytes: written off the event loop, so the server keeps answering.
     total = await asyncio.to_thread(_concatenate, [path for _n, path in items], raw)
@@ -360,7 +399,24 @@ async def join(folder: Path, extension: str, *, prober: Prober = probe_media) ->
     except OSError:
         pass  # a piece that arrived meanwhile stays where it is
     return Joined(path=out, container=container, proof=proof, pieces=len(items), bytes=total,
-                  missing=missing)
+                  missing=missing, missing_count=missing_count)
+
+
+def _missing(numbers: list[int]) -> tuple[list[int], int]:
+    """The sequence numbers that never arrived, from the sorted numbers that did: the
+    first MAX_MISSING_KEPT of them and how many in all. Counted gap by gap, so a number
+    far out (up to MAX_SEQUENCE) never builds a list of a million (3-Oct review)."""
+    kept: list[int] = []
+    count = 0
+    prev = -1
+    for n in numbers:
+        if n > prev + 1:
+            count += n - prev - 1
+            room = MAX_MISSING_KEPT - len(kept)
+            if room > 0:
+                kept.extend(range(prev + 1, min(n, prev + 1 + room)))
+        prev = n
+    return kept, count
 
 
 def sha256_of(path: Path) -> str:

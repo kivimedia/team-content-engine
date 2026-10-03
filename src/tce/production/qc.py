@@ -62,6 +62,15 @@ ASIDES_PROMPT_VERSION = "qc-asides-v1"
 
 _BARE = re.compile(r"[^\w']+")
 _NORM = re.compile(r"[^\w']+")
+# A dash in a sentence he reads: an em or en dash, or a double hyphen used as one. Her
+# lines quote words the recogniser wrote, captions and the subscription's own reasons,
+# and any of them can carry one (3-Oct review).
+_DASH = re.compile(r"\s*[‒–—―]\s*|\s+--\s+|(?<=\w)--(?=\w)")
+
+
+def plain(text: str) -> str:
+    """A line as he reads it: no em or en dashes and no double hyphens, a comma instead."""
+    return " ".join(_DASH.sub(", ", str(text or "")).split())
 
 
 def _norm(text: str) -> str:
@@ -773,7 +782,7 @@ def check_asides(
             for r in runs
         ]
         text = " ".join(str(by_index[i]["text"]) for i in mine)
-        why = str(a.get("why") or "").strip().rstrip(".")[:120]
+        why = plain(str(a.get("why") or "")).strip().rstrip(".")[:120]
         problems.append(
             _problem(
                 "aside",
@@ -903,9 +912,12 @@ def decide(
         "version": QC_VERSION,
         "state": state,
         "round": round_no,
-        "line": line[:500],
+        "line": plain(line)[:500],
         "numbers": n,
-        "problems": [{k: v for k, v in p.items() if k != "fix"} for p in problems][:40],
+        # The card shows these too: plain like the line.
+        "problems": [
+            {k: (plain(v) if k == "detail" else v) for k, v in p.items() if k != "fix"} for p in problems
+        ][:40],
         "fixes": fixes,
         "fixed": list(fixed or []),
         "checks": {
@@ -927,4 +939,4 @@ def fix_sentences(problems: list[dict[str, Any]]) -> list[str]:
             out.append(f"took out {p['detail'].split(' is not said')[0]}")
         elif p["kind"] == "clipped":
             out.append("gave a clipped word more room")
-    return out[:6]
+    return [plain(s) for s in out[:6]]

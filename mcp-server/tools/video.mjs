@@ -588,14 +588,19 @@ export function register(server, call, { reply, failure }) {
         return reply('You have no learned rules yet. A note he gives on a video becomes a rule when it is about '
           + 'more than that one video.', { count: 0, rules: [] });
       }
-      const lines = rules.slice(0, 20).map((x, i) => {
+      const shown = rules.slice(0, 20);
+      const lines = shown.map((x, i) => {
         const from = x.source_title ? ` From his note on "${x.source_title}".` : '';
         const used = x.times_applied ? ` Applied on ${x.times_applied} video${x.times_applied === 1 ? '' : 's'}.` : '';
-        return `${i + 1}. ${sentence(x.text)}.${from}${used}`;
+        // 3-Oct review: an old rule past the cap is not applied, and you say so.
+        const idle = x.in_use === false ? ' Not used right now: it is older than the newest rules you read.' : '';
+        return `${i + 1}. ${sentence(x.text)}.${from}${used}${idle}`;
       });
       if (rules.length > 20) lines.push(`And ${rules.length - 20} more on the rules page.`);
+      // The payload carries the same 20 as the text, never the whole list.
       return reply([`You have ${rules.length} learned rule${rules.length === 1 ? '' : 's'}:`, ...lines].join('\n'),
-        { count: rules.length, rules: rules.map((x) => ({ text: x.text, from: x.source_title, times_applied: x.times_applied })) });
+        { count: rules.length, rules: shown.map((x) => ({ text: x.text, from: x.source_title, times_applied: x.times_applied,
+          in_use: x.in_use !== false })) });
     },
   );
 }

@@ -53,6 +53,16 @@ def block(rules: list[list[str]] | None) -> tuple[str, list[str]]:
     return text, [rules[i][0] for i in used]
 
 
+def in_block(rules: list[list[str]] | None) -> list[list[str]]:
+    """The rules a prompt holds, oldest first: the newest that fit under the cap
+    (rules.MAX_RULES_BLOCK_CHARS). Every prompt that lists her rules (the review, her
+    check, the distilling job, her voice seat) lists these and no more, so a long list
+    of rules can never blow up a prompt (3-Oct review)."""
+    rules = [r for r in rules or [] if len(r) == 2]
+    _text, used = rule_text.rules_block([r[1] for r in rules])
+    return [rules[i] for i in used]
+
+
 async def add_rule(
     db: AsyncSession,
     ws: uuid.UUID,
@@ -110,7 +120,8 @@ async def mark_applied(
                 select(EditorRule).where(EditorRule.workspace_id == ws, EditorRule.id == rid)
             )
         ).scalar_one_or_none()
-        if row is None or video in (row.applied_uploads or []):
+        # A rule he deleted meanwhile is not counted: it is not applied any more.
+        if row is None or not row.active or video in (row.applied_uploads or []):
             continue
         row.applied_uploads = [*(row.applied_uploads or []), video][-MAX_APPLIED_KEPT:]
         row.times_applied = int(row.times_applied or 0) + 1
@@ -122,8 +133,13 @@ async def mark_applied(
 
 async def list_rules(db: AsyncSession, ws: uuid.UUID) -> dict[str, Any]:
     """The rules page: every active rule, newest first, with the video it came from (and
-    whether that video still has an edit to open), his note, and how often it applied."""
-    rows = list(reversed(await active_rules(db, ws)))
+    whether that video still has an edit to open), his note, and how often it applied.
+
+    `in_use` False: the rule is older than the newest rules that fit in a prompt, so it
+    is not applied right now; the page says so instead of letting it look applied."""
+    oldest_first = await active_rules(db, ws)
+    applied_now = {r[0] for r in in_block([[str(r.id), r.text] for r in oldest_first])}
+    rows = list(reversed(oldest_first))
     upload_ids = [r.source_upload_id for r in rows if r.source_upload_id]
     note_ids = [r.source_note_id for r in rows if r.source_note_id]
     videos: dict[uuid.UUID, dict[str, Any]] = {}
@@ -157,6 +173,7 @@ async def list_rules(db: AsyncSession, ws: uuid.UUID) -> dict[str, Any]:
                 "source_title": video["title"] if video else None,
                 "source_has_edit": bool(video and video["has_edit"]),
                 "source_note": notes.get(r.source_note_id) if r.source_note_id else None,
+                "in_use": str(r.id) in applied_now,
             }
         )
-    return {"rules": items, "total": len(items)}
+    return {"rules": items, "total": len(items), "in_use": len(applied_now)}

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -173,6 +173,12 @@ async def create_agent_talk(
         if found is None:
             raise
         return JSONResponse(status_code=200, content=talk_json(found))
+    # 3-Oct review: a new talk is the moment to finish this workspace's talks whose
+    # finish never came (in the background; this answer does not wait for it).
+    if await _idle_talks(db, ws):
+        from tce.api.routers import production as production_routes
+
+        production_routes._spawn(finish_idle_talks(ws))
     return talk_json(row, pieces=0, bytes_total=0)
 
 
@@ -184,6 +190,21 @@ async def get_agent_talk(
 ):
     """Where a talk stands: the pieces that arrived, and the video once there is one."""
     return talk_json(await _talk(db, ws, talk_id))
+
+
+_TOO_BIG = f"The piece is larger than {agent_talks.MAX_CHUNK_BYTES // (1024 * 1024)} MB"
+
+
+async def _read_piece(request: Request) -> bytes:
+    """The piece's bytes, never more than MAX_CHUNK_BYTES of them held (3-Oct review): a
+    body sent without a length (chunked) is read in parts and refused the moment it
+    passes the limit, instead of being read whole into memory first."""
+    data = bytearray()
+    async for part in request.stream():
+        data += part
+        if len(data) > agent_talks.MAX_CHUNK_BYTES:
+            raise HTTPException(status_code=413, detail=_TOO_BIG)
+    return bytes(data)
 
 
 @router.put("/{talk_id}/chunks/{seq}")
@@ -207,11 +228,8 @@ async def put_agent_talk_chunk(
         )
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > agent_talks.MAX_CHUNK_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"The piece is larger than {agent_talks.MAX_CHUNK_BYTES // (1024 * 1024)} MB",
-        )
-    data = await request.body()
+        raise HTTPException(status_code=413, detail=_TOO_BIG)
+    data = await _read_piece(request)
     try:
         stored = await asyncio.to_thread(agent_talks.store_piece, _folder(row), seq, data)
     except TalkError as exc:
@@ -271,12 +289,13 @@ async def _finished_again(
     return _finished(row, upload)
 
 
-def _missing_line(missing: list[int]) -> str:
-    if not missing:
+def _missing_line(missing: list[int], count: int | None = None) -> str:
+    count = len(missing) if count is None else max(count, len(missing))
+    if not count:
         return ""
-    shown = ", ".join(str(n) for n in missing[:8]) + (" and more" if len(missing) > 8 else "")
+    shown = ", ".join(str(n) for n in missing[:8]) + (" and more" if count > 8 else "")
     return (
-        f" {len(missing)} {'piece' if len(missing) == 1 else 'pieces'} never arrived "
+        f" {count} {'piece' if count == 1 else 'pieces'} never arrived "
         f"(number {shown}), so the video skips there."
     )
 
@@ -288,8 +307,16 @@ async def finish_agent_talk(
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    body = body or AgentTalkFinish()
     row = await _talk(db, ws, talk_id)
+    return await finish_talk(db, ws, row, body or AgentTalkFinish())
+
+
+async def finish_talk(
+    db: AsyncSession, ws: uuid.UUID, row: AgentTalk, body: AgentTalkFinish
+) -> dict[str, Any]:
+    """Join the talk's pieces into its library video and start the edit (the finish
+    route, and TCE's own backstop for a talk whose finish never came)."""
+    talk_id = row.id
     if row.upload_id is not None:  # finished before: the same video, as it stands now
         return await _finished_again(db, ws, row, body)
     async with _finish_lock(talk_id):
@@ -320,6 +347,7 @@ async def finish_agent_talk(
             "pieces": joined.pieces,
             "bytes": joined.bytes,
             "missing": joined.missing,
+            "missing_count": joined.missing_count,
             "container": joined.container,
             "streams": joined.proof.get("streams") or [],
             "joined_at": _utcnow().isoformat(),
@@ -356,7 +384,7 @@ async def finish_agent_talk(
                         if joined.pieces
                         else f"Agent talk with {name}, joined without re-encoding."
                     )
-                    + _missing_line(joined.missing)
+                    + _missing_line(joined.missing, joined.missing_count)
                     + (
                         " Jennifer starts the edit now: transcribing first."
                         if auto
@@ -375,7 +403,7 @@ async def finish_agent_talk(
         row.status_detail = (
             f"Finished: the talk with {name} is in the library as “"
             f"{agent_talks.talk_title(row.agent, row.started_at)}”."
-            + _missing_line(joined.missing)
+            + _missing_line(joined.missing, joined.missing_count)
         )[:500]
         await db.commit()
         upload_id = upload.id
@@ -388,3 +416,80 @@ async def finish_agent_talk(
         production_routes.start_auto_edit(upload_id, ws)
     result["edit_started"] = bool(created and settings.production_auto_edit)
     return result
+
+
+# ---------------------------------------------------------------------------
+# A talk whose finish never came (3-Oct review)
+#
+# The KM BOT side finishes a talk when the call ends, and its sweeper finishes one that
+# has been idle ten minutes (C4). If neither ever arrives (the relay died with the
+# call), the pieces would sit on this disk forever and the talk would never become a
+# video, with nobody told. TCE's own backstop finishes a talk that has had no piece for
+# IDLE_FINISH_S, far past the relay's sweeper so the two never race: at startup, and
+# whenever a new talk is created. A later finish from the relay still brings the call's
+# transcript onto the video (_finished_again).
+
+IDLE_FINISH_S = 6 * 3600
+
+
+def _idle_since(row: AgentTalk) -> datetime:
+    return row.last_chunk_at or row.created_at or row.started_at
+
+
+async def _idle_talks(
+    db: AsyncSession, ws: uuid.UUID | None, now: datetime | None = None
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """(talk, workspace) of every talk still recording with no piece for IDLE_FINISH_S."""
+    cutoff = (now or _utcnow()) - timedelta(seconds=IDLE_FINISH_S)
+    q = select(AgentTalk).where(AgentTalk.status == "recording", AgentTalk.upload_id.is_(None))
+    if ws is not None:
+        q = q.where(AgentTalk.workspace_id == ws)
+    return [
+        (r.id, r.workspace_id)
+        for r in (await db.execute(q)).scalars().all()
+        if _idle_since(r) is not None and _idle_since(r) < cutoff
+    ]
+
+
+async def finish_idle_talks(ws: uuid.UUID | None = None, *, now: datetime | None = None) -> list[uuid.UUID]:
+    """Finish every talk still recording with no piece for IDLE_FINISH_S (one workspace,
+    or all). Returns the talks it finished. Never raises: a talk it cannot finish says
+    why on its own row."""
+    import structlog
+
+    from tce.api.routers import production as production_routes
+
+    log = structlog.get_logger()
+    done: list[uuid.UUID] = []
+    try:
+        async with production_routes.session_factory()() as db:
+            idle = await _idle_talks(db, ws, now)
+    except Exception:  # noqa: BLE001 - a backstop never stops what called it
+        log.warning("agent_talks.idle_scan_failed", exc_info=True)
+        return done
+    for talk_id, talk_ws in idle:
+        try:
+            async with production_routes.session_factory()() as db:
+                row = await _talk(db, talk_ws, talk_id)
+                if row.status != "recording" or row.upload_id is not None or _finish_lock(talk_id).locked():
+                    continue
+                try:
+                    await finish_talk(db, talk_ws, row, AgentTalkFinish())
+                    done.append(talk_id)
+                except HTTPException as exc:
+                    if exc.status_code == 409:  # nothing to join, or piece 0 never came
+                        await db.refresh(row)
+                        row.status = "failed"
+                        row.status_detail = (
+                            f"No piece arrived for {IDLE_FINISH_S // 3600} hours and the talk with "
+                            f"{agent_talks.display_name(row.agent)} could not be made into a video: "
+                            f"{exc.detail}"
+                        )[:500]
+                        await db.commit()
+                    # 507 (disk) and 503 (no ffmpeg) leave it recording for the next sweep.
+                    log.warning("agent_talks.idle_finish_refused", talk=str(talk_id), status=exc.status_code)
+        except Exception:  # noqa: BLE001
+            log.warning("agent_talks.idle_finish_failed", talk=str(talk_id), exc_info=True)
+    if done:
+        log.info("agent_talks.idle_finished", talks=len(done))
+    return done

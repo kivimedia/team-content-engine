@@ -1734,12 +1734,13 @@ async def learned_rules_text(db: AsyncSession, ws: uuid.UUID) -> str:
     them: after the skill file, one a line. Empty when there are none."""
     from tce.editorial import editor_rules
 
-    learned = await editor_rules.active_rules(db, ws)
+    learned = editor_rules.in_block([[str(r.id), r.text] for r in await editor_rules.active_rules(db, ws)])
     if not learned:
         return ""
+    # The same cap as her prompts (3-Oct review): the newest rules that fit, never all.
     return (
         "\n\n## Rules you learned from his notes on earlier videos\n"
-        + "\n".join(f"- {r.text}" for r in learned)
+        + "\n".join(f"- {text}" for _id, text in learned)
     )
 
 

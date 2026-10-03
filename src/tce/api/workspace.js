@@ -1748,6 +1748,11 @@
           ? "Applied on " + r.times_applied + " " + plural(r.times_applied, "video")
           : "Not applied on a video yet";
         html += '<p class="source">' + esc(used) + (r.created_at ? " &middot; learned " + esc(when(r.created_at)) : "") + "</p>";
+        if (r.in_use === false) {
+          // 3-Oct review: older than the newest rules that fit in what she reads.
+          html += '<p class="source">Not used right now: Jennifer reads only the newest rules that fit, '
+                + "and this one is older. Delete a rule you no longer need to bring it back.</p>";
+        }
         if (r.source_note) {
           html += '<p class="source">From your note: &#8220;' + esc(r.source_note) + "&#8221;</p>";
         }

@@ -134,3 +134,43 @@ runs). Builder edits a mirror of src/tests on the PC and ships it with tar over 
   browser baseline (3 notes-sheet "Your note at 0:00", 1 recording studio textBigger),
   same as master. C2 is complete on this branch; nothing deployed, migration 058 run only
   on the test database.
+
+# C3 step log: adversarial review and fixes of C1 + C2
+
+Reviewer: C3. Start: branch at 16562a0, clean tree, local == origin. Same runner (.tmp/run-tests.sh).
+- 20:23 start: read the plan (DECIDED 6 to 8, C4), the full diff vs origin/master (src 5874 lines,
+  tests 3045 lines), C1 and C2 reports. Disk at start: 55 GB free (91%).
+- Baseline before any change (8 files C1/C2 own: agent talks, voices, migration, jennifer qc/flow/rules/name,
+  production media): 121 passed in 143.8 s (.tmp/c3-base.log).
+- Hygiene scan of git diff origin/master...HEAD: no emails, IPs or personal paths in added lines; names
+  only Maple/Rain (already in 3 master src files) and the C4 wire value "ziv" (contract, 5 lines);
+  commit identity is the repo's own (same as master). Dashes only in detection constants.
+- Findings and fixes (this round):
+  F1 a waiting review asked with a rule he later deleted re-used its saved rules: the deleted rule
+     reached the review and its cut was applied. Fixed: _await_review asks again with the rules in
+     force; _review drops an answer whose rule was deleted while it read (waits, re-asks); her asides
+     reading is not used when a rule it read was deleted; mark_applied skips an inactive rule.
+  F2 the distilling job and her voice seat listed EVERY active rule (no cap): a long list blew up
+     those prompts. Fixed: editor_rules.in_block, the same 3000-char cap as the review; the rules page
+     says which rules are past the cap ("Not used right now"), the voice tool payload is capped at 20.
+  F3 her hold line could carry an em dash from the subscription's own reason or a quoted caption.
+     Fixed: qc.plain on every line, problem detail and fix sentence; also the error and stop lines.
+  F4 a chunk PUT without Content-Length was read whole into memory before the 64 MB check. Fixed:
+     streamed with the limit.
+  F5 pieces and joins could fill the disk (VPS at 91%). Fixed: a 2 GB free-space floor (507) on a
+     piece, and a join refused before it writes when 2x the talk would cross the floor; pieces kept.
+  F6 a talk whose finish never came stayed pieces on disk forever, never a video. Fixed: TCE backstop
+     finishes talks idle 6 h (startup, and when a new talk is created); a later relay finish still
+     brings the transcript. No-piece talks say so (failed).
+  F7 a far-out sequence number built a list of up to a million missing numbers in join_meta. Fixed:
+     counted gap by gap, first 200 kept plus missing_count.
+  F8 the rule record did not say why a note became a rule. Fixed: learned.why for rule and covered.
+- Proof of the two-voice rule: tests/unit/test_agent_talk_dog_lines.py (agent says "Um, sorry, my
+  dog question first. I heard Maple, come here." and his own "Maple, come here!"): rules path, review
+  path, her asides check and the whole auto edit keep every agent word and cut his call.
+- Independent QC numbers: tests/unit/test_jennifer_qc_guards.py re-reads loudness, peak, longest pause,
+  dead air and the caption count with ffmpeg ebur128/silencedetect and the .srt; all agree.
+- 20:43 targeted run after the fixes: 130 passed in 91 s (.tmp/c3-t1.log). The same new tests on the
+  pre-fix code (worktree .tmp/c3-pre at 16562a0): 17 failed, 35 passed, each failure for the bug it
+  guards (whole body read, deleted rule in the review system text, 'done' instead of 'waiting',
+  em dash in her line, rule counted after delete, no floor/backstop/cap functions).
