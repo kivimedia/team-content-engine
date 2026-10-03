@@ -121,3 +121,10 @@ runs). Builder edits a mirror of src/tests on the PC and ships it with tar over 
   check refuses an answer over 25% of the words, so fixtures need longer talk.
 - 19:25 targeted (test_jennifer_qc, test_jennifer_flow, test_jennifer_rules,
   test_production_media, the installer test): 83 passed.
+- 19:3x committed f6dbbcb, 307355a, 26f6d80, 708f5ac, a8c8f97 and pushed.
+- 19:47 full suite on a8c8f97: 7 failed, 1963 passed, 3 skipped (26m37s, box loaded).
+  4 = browser baseline. 3 new in test_mcp_voice_protocol (JSONDecodeError at about
+  16.3 KB): the harness printed the tool list with console.log and exited at once, and
+  a pipe write is asynchronous in node, so the two new tool descriptions pushed it past
+  the first 16 KB chunk and the rest was lost. Fix in the harness (write, then exit in
+  the write callback). test_mcp_voice_protocol.py after the fix: 5 passed.

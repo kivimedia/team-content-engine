@@ -107,15 +107,16 @@ for (const step of scenario.steps || []) {
 }
 await client.close();
 api.close();
-console.log(JSON.stringify({
+// Exit only once the line is written: stdout to a pipe is asynchronous, and an exit
+// right after console.log cut a long tool list at 16 KB (3-Oct, two more video tools).
+process.stdout.write(JSON.stringify({
   tools: listed.map((t) => ({
     name: t.name, description: t.description, inputSchema: t.inputSchema,
   })),
   results,
   sent,
   stderr: stderr.join(''),
-}));
-process.exit(0);
+}) + '\n', () => process.exit(0));
 """
 
 
