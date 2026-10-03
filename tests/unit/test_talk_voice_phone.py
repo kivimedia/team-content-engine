@@ -81,7 +81,7 @@ def test_the_hold_bar_is_served_and_linked_and_the_voice_client_is_not():
     assert 'src="/voice-client.js"' not in html and 'src="voice-client.js"' not in html
     source = js.text
     assert 'VOICE_SCRIPT = "/voice-client.js"' in source
-    for option in ('seat: "tce"', 'api: "live"', "greet: false", "startMuted: true"):
+    for option in ('seat: "tce"', 'api: "live"', "greet: false", "startMuted: !listening()"):
         assert option in source, option
 
 
@@ -1359,8 +1359,72 @@ def test_a_client_login_gets_typed_notes_only_with_no_mic_and_no_kmbot_sign_in(h
         browser.close()
 
 
+HANDS_FREE = "window.__openOpts = { handsFree: true };"
+
+
+def _mic(page) -> bool:
+    return page.evaluate("() => window.__voice.starts[0].muted")
+
+
+def test_hands_free_listens_while_paused_and_his_words_make_the_note_without_a_button():
+    """Ziv, 3-Oct-2026: "I do not want to click a button to talk. It should just listen,
+    and as soon as I pause it switches to answering, then back to listening." With the
+    video paused the mic is open and there is no button; his first words pin the
+    paused second, the voice handing his words over lets the note go, and the mic
+    stays open for the next one. Play mutes it, pause opens it again."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, page, errors = _bar_page(pw, BASE, before=HANDS_FREE)
+        phone = Phone(page)
+        assert page.evaluate("() => window.__voice.starts[0].opts.startMuted") is False
+        assert page.locator(".tv-hold").is_hidden()
+        phone.emit(0, "ear", {"open": True})
+        phone.wait_status("Listening. Say what is wrong here")
+        assert page.evaluate("() => window.__posts") == 0
+
+        phone.emit(0, "hearing", {"text": "Cut the long pause"})
+        page.wait_for_function("() => window.__posts === 1")
+        phone.wait_status("Listening at 0:00")
+        phone.emit(0, "said", {"text": "Cut the long pause here"})
+        page.wait_for_function(
+            "() => window.__calls.some(c => c.method === 'PATCH' && c.body"
+            " && String(c.body.heard || '').includes('Cut the long pause'))")
+        # Words still arriving while that note settles stay on it: no second pin.
+        phone.emit(0, "hearing", {"text": "please"})
+        page.wait_for_timeout(300)
+        assert page.evaluate("() => window.__posts") == 1
+        # The mic never closes while it is paused, even after the grace period.
+        page.wait_for_timeout(1800)
+        assert _mic(page) is False
+
+        page.evaluate("() => document.getElementById('player').dispatchEvent(new Event('play'))")
+        assert _mic(page) is True
+        page.evaluate("() => document.getElementById('player').dispatchEvent(new Event('pause'))")
+        assert _mic(page) is False
+
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
 def test_the_workspace_opens_the_notes_sheet_typed_only_for_a_client_login():
     js = (API_DIR / "workspace.js").read_text(encoding="utf-8")
     assert "typedOnly: Boolean(window.TCE_SCOPED)" in js
     he = (API_DIR / "i18n-he.js").read_text(encoding="utf-8")
     assert '"Pause where something is wrong, then tap Type to write a note."' in he
+
+
+def test_hands_free_off_keeps_the_hold_to_talk_sheet():
+    """handsFree:false is the sheet as it was: the call starts muted and the button shows."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, page, errors = _bar_page(pw, BASE)
+        assert page.evaluate("() => window.__voice.starts[0].opts.startMuted") is True
+        assert page.locator(".tv-hold").is_visible()
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()

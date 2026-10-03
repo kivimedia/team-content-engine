@@ -348,6 +348,8 @@ def _phone(browser):
     context = browser.new_context(viewport=PHONE, device_scale_factor=2, is_mobile=True, has_touch=True)
     context.set_default_timeout(20_000)
     context.add_init_script(WAKE_STUB)
+    # This walk-through is the hold-to-talk sheet; hands-free has its own tests.
+    context.add_init_script("window.__tceHoldToTalk = true;")
     page = context.new_page()
     errors: list[str] = []
     page.on("pageerror", lambda e: errors.append(str(e)))
