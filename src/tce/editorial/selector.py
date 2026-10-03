@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce import llm as _llm
 from tce.editorial import lineup, news_rules
 from tce.editorial.common import (
+    ORIGIN_AGENT_TALK,
     ORIGIN_SELECTOR,
     ORIGIN_SELECTOR_REJECTED,
     WEEK_TIMEZONE,
@@ -1826,6 +1827,8 @@ async def select_candidates(
                         # so this week's own list is checked too.
                         true() if adds_only else TopicCandidate.week_start != start,
                         TopicCandidate.status.in_(LIVE_STATUSES),
+                        # A filmed talk with an agent is a video's name, not an idea.
+                        TopicCandidate.origin != ORIGIN_AGENT_TALK,
                     )
                     .order_by(TopicCandidate.week_start.desc())
                     .limit(ON_THE_LIST_LIMIT)

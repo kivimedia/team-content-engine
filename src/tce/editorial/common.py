@@ -26,6 +26,10 @@ ORIGIN_CALIBRATION = "calibration"
 # A row created to prove the pipeline end to end, not an idea. It must never
 # appear anywhere Ziv reads.
 ORIGIN_TECHNICAL_VALIDATION = "technical_validation"
+# 3-Oct: the topic row a filmed voice call with an agent hangs on ("Talk with Atlas,
+# 3 Oct"). It names the video in the library; it is not an idea, so the idea lists
+# (inbox, the week's candidates, the selector's "already on his list") leave it out.
+ORIGIN_AGENT_TALK = "agent_talk"
 
 
 @asynccontextmanager

@@ -42,7 +42,7 @@ from tce.models.editorial_workspace import (
     EditingRequest,
     EditSession,
 )
-from tce.production import autoedit
+from tce.production import agent_talks, autoedit
 from tce.production.retakes import edit_join, edit_length, frame_keep, map_to_edit, map_to_source
 
 # Library filters, in the order the chips are shown. Each maps to upload states.
@@ -155,7 +155,8 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
         actions.append({"key": "transcript", "label": "Transcript"})
     if upload.edited_path:
         # 1-Oct: watch the edit, pause, say what is wrong; one new version at the end.
-        actions.append({"key": "talk_edit", "label": "Talk to the editor"})
+        # 3-Oct: the editor is Jennifer.
+        actions.append({"key": "talk_edit", "label": f"Talk to {EDITOR_NAME}"})
     actions.append({"key": "request_edit", "label": "Request an editing change"})
     if upload.edited_path and upload.transcript and upload.status not in _LIVE_STATUSES:
         # 28-Sep: the tight cut and the word-box captions, for an edit made before them.
@@ -167,8 +168,26 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
                 "label": f"{open_requests} open request{'s' if open_requests != 1 else ''}",
             }
         )
-    actions.append({"key": "re_record", "label": "Record it again"})
+    # A talk with an agent was a conversation, not a script: there is nothing to record
+    # again, so the button would lead nowhere.
+    if upload.source != agent_talks.SOURCE:
+        actions.append({"key": "re_record", "label": "Record it again"})
     return actions
+
+
+def source_json(upload: RecordingUpload) -> dict[str, Any]:
+    """Where a video came from, for the card: a walk he recorded (no label), or an agent
+    talk: "Agent talk with Atlas" and a line saying what it is."""
+    if upload.source != agent_talks.SOURCE:
+        return {"source": upload.source, "source_label": None, "agent": None, "source_line": None}
+    agent = upload.agent_name or "an agent"
+    return {
+        "source": agent_talks.SOURCE,
+        "source_label": agent_talks.SOURCE_LABEL,
+        "agent": upload.agent_name,
+        "source_line": f"{agent_talks.SOURCE_LABEL} with {agent}: a voice call you filmed. "
+        f"Jennifer keeps {agent}'s lines and cuts the dead air.",
+    }
 
 
 PUBLISH_ORDER = ("instagram", "facebook", "youtube", "linkedin")
@@ -216,14 +235,19 @@ def _has_preview(upload: RecordingUpload) -> bool:
         return False
 
 
+# 3-Oct: the editor has a name. "Talk to the video editor" is Jennifer, who also checks
+# every edit; every sentence he reads about the editor says Jennifer. Internal names
+# (autoedit.AGENT_NAME "video_editor", the routes) stay as they are.
+EDITOR_NAME = "Jennifer"
+
 REVIEW_SENTENCES = {
-    "waiting": "Your editor has not answered yet, so this edit used the rules. "
-    "It edits itself again when the review lands.",
-    "unavailable": "Your editor could not review this one, so the rules decided what to cut.",
-    "rules": "Your editor's answer was not usable, so the rules decided what to cut.",
-    "blocked": "Your editor's review wants a cut that would change what you said, so the "
-    "edit you have stays. Edit it again to see the review's cut and decide.",
-    "stale": "You changed the words after your editor started reading, so that review was "
+    "waiting": "Jennifer has not answered yet, so this edit used the rules. "
+    "It edits itself again when her review lands.",
+    "unavailable": "Jennifer could not review this one, so the rules decided what to cut.",
+    "rules": "Jennifer's answer was not usable, so the rules decided what to cut.",
+    "blocked": "Jennifer's review wants a cut that would change what you said, so the "
+    "edit you have stays. Edit it again to see her cut and decide.",
+    "stale": "You changed the words after Jennifer started reading, so that review was "
     "not used. Edit it again for a fresh one.",
 }
 
@@ -445,6 +469,8 @@ async def list_library(
                     else None
                 ),
                 "actions": _actions(upload, open_count),
+                # 3-Oct: "Agent talk" and who it was with, for a filmed voice call.
+                **source_json(upload),
             }
         )
 
@@ -642,7 +668,7 @@ NOTE_CUT_IN_NEW_VERSION = "The new version cut this moment; the note now sits wh
 # started), and the batch got "make it" as a note. A hold that carried an instruction
 # is taken back by the tool that acts on it (take_command), and a yes given after the
 # read-back is never a note of that read-back (submit's `as_of`).
-COMMAND_TAKEN = "This hold was an instruction to the editor, not a note."
+COMMAND_TAKEN = "This hold was an instruction to Jennifer, not a note."
 AFTER_READ_BACK = "Given after the read-back you said yes to, so it was taken as your answer, not a note."
 # A pin nobody spoke into, left when the notes closed: it carries nothing of his.
 NO_WORDS_ON_CLOSE = "No words were caught for this note, so it was taken back when the notes closed."
@@ -656,7 +682,7 @@ _WORD = re.compile(r"[\w']+")
 # 1-Oct final review: notes made while an earlier re-edit's plan waits for his eyes were
 # re-planned with that blocked cut still in, stopped on it, and were blamed for it.
 EDIT_WAITS = (
-    "Your editor's last re-edit wants a cut that is waiting for your eyes ({reason}), so no "
+    "Jennifer's last re-edit wants a cut that is waiting for your eyes ({reason}), so no "
     "new version can be made from notes until that is settled. Your notes are kept. On the "
     "card, use Request an editing change to keep or drop that cut, then make the new version."
 )

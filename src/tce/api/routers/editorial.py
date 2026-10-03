@@ -22,6 +22,7 @@ from tce.editorial import more_ideas as more_ideas_service
 from tce.editorial import status as job_status
 from tce.editorial.common import (
     CANDIDATE_STATUSES,
+    ORIGIN_AGENT_TALK,
     ORIGIN_SELECTOR_REJECTED,
     candidate_to_json,
     feedback_to_json,
@@ -299,6 +300,8 @@ async def list_candidates(
         q = q.where(TopicCandidate.status != "withdrawn")
     if not include_rejections:
         q = q.where(TopicCandidate.origin != ORIGIN_SELECTOR_REJECTED)
+    # A filmed talk with an agent names a library video; it is not one of the week's ideas.
+    q = q.where(TopicCandidate.origin != ORIGIN_AGENT_TALK)
     async with open_session(sm) as db:
         cands = (await db.execute(q)).scalars().all()
         ids = [c.id for c in cands]

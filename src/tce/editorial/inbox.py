@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.editorial import briefs
 from tce.editorial.common import (
+    ORIGIN_AGENT_TALK,
     ORIGIN_SELECTOR_REJECTED,
     ORIGIN_TECHNICAL_VALIDATION,
 )
@@ -64,8 +65,9 @@ FILTER_LABELS = {
     "away": "Put away",
 }
 
-# Origins that are engine bookkeeping, never topics for a human to decide on.
-HIDDEN_ORIGINS = (ORIGIN_SELECTOR_REJECTED, ORIGIN_TECHNICAL_VALIDATION)
+# Origins that are engine bookkeeping, never topics for a human to decide on. A filmed
+# talk with an agent (3-Oct) names a library video; it is not an idea to decide on.
+HIDDEN_ORIGINS = (ORIGIN_SELECTOR_REJECTED, ORIGIN_TECHNICAL_VALIDATION, ORIGIN_AGENT_TALK)
 
 
 class InboxError(Exception):
