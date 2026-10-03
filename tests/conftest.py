@@ -6,6 +6,23 @@ import pytest
 pytest_plugins = ["tests.editorial_db"]
 
 
+@pytest.fixture(autouse=True)
+def jennifer_only_where_asked(monkeypatch):
+    """Jennifer's check and her learning are on in production and off in this suite
+    unless a test turns them on.
+
+    After every render the check runs ffmpeg meters, asks the local recogniser and waits
+    for a subscription job; after every applied note the learning waits for another.
+    A test about a render, a sitting or a request would otherwise wait on a worker that
+    is not there. The tests about Jennifer (tests/unit/test_jennifer_*.py) switch them
+    on and stand in for the worker.
+    """
+    from tce.settings import settings
+
+    monkeypatch.setattr(settings, "production_qc", "off")
+    monkeypatch.setattr(settings, "production_learn_rules", False)
+
+
 @pytest.fixture
 def sample_post_example() -> dict:
     """A sample post example for testing."""

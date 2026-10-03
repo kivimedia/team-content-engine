@@ -42,6 +42,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.editorial.common import ORIGIN_TECHNICAL_VALIDATION
+from tce.editorial.library import qc_hold as library_qc_hold
 from tce.models.editorial import RecordingPacket, RecordingUpload, TopicCandidate
 from tce.models.editorial_workspace import NotificationEvent, NotificationSubscription
 
@@ -235,6 +236,18 @@ async def collect_events(db: AsyncSession, ws: uuid.UUID) -> list[dict[str, Any]
                     "dedupe_key": f"edit_ready:{upload.id}",
                     "title": "Your edit is ready",
                     "body": title,
+                    "path": "/library",
+                }
+            )
+        elif upload.status == "needs_review" and library_qc_hold(upload):
+            # 3-Oct: the edit is made and Jennifer is holding it for something her
+            # check found. One notice per render she holds, with her one line.
+            events.append(
+                {
+                    "kind": "needs_review",
+                    "dedupe_key": f"qc_hold:{upload.id}:{upload.render_ref}",
+                    "title": "Jennifer is holding a video",
+                    "body": f"“{title}”: {library_qc_hold(upload)}"[:300],
                     "path": "/library",
                 }
             )

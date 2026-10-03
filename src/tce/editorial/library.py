@@ -51,7 +51,7 @@ from tce.production.retakes import edit_join, edit_length, frame_keep, map_to_ed
 LIBRARY_FILTERS: dict[str, tuple[str, ...]] = {
     "todo": (),
     "uploading": ("uploaded",),
-    "editing": ("transcribing", "transcribed", "proofreading", "planned", "rendering"),
+    "editing": ("transcribing", "transcribed", "proofreading", "planned", "rendering", "checking"),
     "needs_review": ("needs_review",),
     "ready": ("edited",),
     "published": (),
@@ -62,7 +62,8 @@ LIBRARY_FILTERS: dict[str, tuple[str, ...]] = {
 # A post in one of these states has gone out, or will without anyone touching it.
 _OUT_STATUSES = ("posted", "scheduled")
 
-_LIVE_STATUSES = ("transcribing", "transcribed", "proofreading", "planned", "rendering")
+# 3-Oct: "checking" is Jennifer's check of a finished render (it may re-render once).
+_LIVE_STATUSES = ("transcribing", "transcribed", "proofreading", "planned", "rendering", "checking")
 
 FILTER_LABELS = {
     "todo": "Still to do",
@@ -82,6 +83,7 @@ STATE_SENTENCES = {
     "transcribed": "Transcribed. Proofreading and the cut come next.",
     "proofreading": "Being proofread on your subscription.",
     "rendering": "Being cut and captioned.",
+    "checking": "Jennifer is checking the edit.",
     "planned": "The cut is planned and waiting to be rendered.",
     "needs_review": "The cut would change what you said. It needs your eyes.",
     "edited": "Edited and ready.",
@@ -161,6 +163,12 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
     if upload.edited_path and upload.transcript and upload.status not in _LIVE_STATUSES:
         # 28-Sep: the tight cut and the word-box captions, for an edit made before them.
         actions.append({"key": "edit_again", "label": "Edit it again"})
+    if upload.edited_path and (upload.status == "edited" or qc_hold(upload)):
+        # 3-Oct: Jennifer's check, on demand; and his way past a hold of hers. Not while
+        # a cut the meaning check blocked waits for his eyes (that is settled first).
+        if qc_hold(upload):
+            actions.append({"key": "release_hold", "label": "It is fine, let it through"})
+        actions.append({"key": "check_again", "label": "Ask Jennifer to check it again"})
     if open_requests:
         actions.append(
             {
@@ -250,6 +258,53 @@ REVIEW_SENTENCES = {
     "stale": "You changed the words after Jennifer started reading, so that review was "
     "not used. Edit it again for a fresh one.",
 }
+
+
+# What her check ended as, for the card's tag. A check that is still running has none.
+QC_LABELS = {
+    "passed": "Checked by Jennifer",
+    "fixed": "Checked and fixed by Jennifer",
+    "held": "Jennifer is holding this",
+    "report": "Jennifer found something",
+    "released": "You let it through",
+    "unchecked": "Not checked",
+}
+
+
+def qc_hold(upload: Any) -> str | None:
+    """Jennifer's one line when she is holding this video, else None.
+
+    A hold is hers only while it is about the file he would watch (the render she
+    checked is the render he has) and the video says needs_review for it. A plan the
+    meaning check blocked is not her hold: that one is edit_waits_for_him's."""
+    found = getattr(upload, "qc", None) or {}
+    if found.get("state") != "held" or getattr(upload, "status", None) != "needs_review":
+        return None
+    if found.get("render_ref") != getattr(upload, "render_ref", None) or not getattr(upload, "edited_path", None):
+        return None
+    return str(found.get("line") or "Jennifer is holding this video.")
+
+
+def qc_json(upload: Any) -> dict[str, Any] | None:
+    """What Jennifer found on the render he would be watching, for the card and her
+    voice seat: the verdict, her one line, the numbers. None when this render was never
+    checked (an edit from before 3-Oct, or a newer render than the one she checked)."""
+    found = getattr(upload, "qc", None) or {}
+    state = str(found.get("state") or "")
+    if not state or not getattr(upload, "edited_path", None):
+        return None
+    if state != "checking" and found.get("render_ref") != getattr(upload, "render_ref", None):
+        return None
+    return {
+        "state": state,
+        "label": QC_LABELS.get(state),
+        "line": found.get("line"),
+        "numbers": found.get("numbers") or {},
+        "problems": [str(p.get("detail") or "") for p in (found.get("problems") or [])[:8]],
+        "fixed": list(found.get("fixed") or []),
+        "round": found.get("round"),
+        "at": found.get("at"),
+    }
 
 
 def _removed(upload: RecordingUpload) -> list[dict[str, Any]]:
@@ -429,11 +484,15 @@ async def list_library(
                 "duration_s": upload.duration_s,
                 "status": upload.status,
                 # While a step runs, say exactly what it is doing (3-second rule).
+                # 3-Oct: a video Jennifer is holding says her one line, not the sentence of
+                # a blocked cut.
                 "state_sentence": (
                     upload.status_detail
                     if upload.status in _LIVE_STATUSES and upload.status_detail
-                    else STATE_SENTENCES.get(upload.status, upload.status_detail or "")
+                    else qc_hold(upload) or STATE_SENTENCES.get(upload.status, upload.status_detail or "")
                 ),
+                # What her check found on this render: "Checked by Jennifer" and its numbers.
+                "qc": qc_json(upload),
                 # What the subscription proofread changed, so no word moves unseen.
                 "proofread": list((upload.edit_plan or {}).get("proofread") or []),
                 "removed": _removed(upload),
@@ -713,6 +772,10 @@ def edit_waits_for_him(upload: RecordingUpload) -> str | None:
     batch re-plans from that blocked plan and would stop on the same cut, so it is not
     started until he settles that cut."""
     if upload.status != "needs_review" or not upload.edited_path:
+        return None
+    if qc_hold(upload) is not None:
+        # 3-Oct: Jennifer is holding a finished render for something her check found.
+        # No cut waits for his eyes, and a note is exactly how he gets it fixed.
         return None
     reason = (upload.status_detail or "").strip()
     reason = re.sub(r"^needs review:\s*", "", reason, flags=re.I).rstrip(" .") or "the cut would change what you said"
@@ -1071,6 +1134,27 @@ async def _reopen_if_closed(db: AsyncSession, ws: uuid.UUID, sitting: EditSessio
     await db.flush()
 
 
+def learned_json(learned: Any) -> dict[str, Any] | None:
+    """What Jennifer took from an applied note, as the card says it: a rule for every
+    next video, a rule she already had, or only about this video. None while nothing
+    was decided (never asked, or the worker has not answered)."""
+    if not isinstance(learned, dict):
+        return None
+    state = learned.get("state")
+    if state == "rule":
+        return {"state": "rule", "line": f"Jennifer learned a rule from this: {learned.get('text')}",
+                "rule_id": learned.get("rule_id")}
+    if state == "covered":
+        return {"state": "covered", "line": f"Jennifer already has a rule for this: {learned.get('text')}",
+                "rule_id": learned.get("rule_id")}
+    if state == "this_video":
+        return {"state": "this_video", "line": "Jennifer took this as only about this video.", "rule_id": None}
+    if state == "asking":
+        return {"state": "asking", "line": "Jennifer is working out whether this is a rule for every video.",
+                "rule_id": None}
+    return None
+
+
 def _notes_made_json(sitting: EditSession, notes: list[EditingRequest]) -> dict[str, Any]:
     """The Library card's account of the last notes made into a new version (1-Oct):
     while they are being made, the batch's own step; after, every note with its result."""
@@ -1088,6 +1172,8 @@ def _notes_made_json(sitting: EditSession, notes: list[EditingRequest]) -> dict[
                 "reply": str(res.get("reply") or "") or None,
                 "question": str(res.get("question") or "") or None,
                 "undone": bool(res.get("undone_at")),
+                # 3-Oct: what Jennifer took from this note for the next videos.
+                "learned": learned_json(res.get("learned")),
             }
         )
     return {
@@ -1633,9 +1719,28 @@ async def moment(
             db, ws, upload.id, exclude=note.id if note is not None else None
         ),
     }
+    # 3-Oct: what Jennifer's own check found on the render he is watching, so on the
+    # call she can say why she is holding it, or what she measured.
+    found = qc_json(upload)
+    if found is not None:
+        payload["check"] = {"state": found["state"], "line": found["line"]}
     if rules:
-        payload["rules"] = autoedit.editor_skill()
+        payload["rules"] = autoedit.editor_skill() + await learned_rules_text(db, ws)
     return payload
+
+
+async def learned_rules_text(db: AsyncSession, ws: uuid.UUID) -> str:
+    """The rules she learned from his notes on earlier videos, as her voice seat reads
+    them: after the skill file, one a line. Empty when there are none."""
+    from tce.editorial import editor_rules
+
+    learned = await editor_rules.active_rules(db, ws)
+    if not learned:
+        return ""
+    return (
+        "\n\n## Rules you learned from his notes on earlier videos\n"
+        + "\n".join(f"- {r.text}" for r in learned)
+    )
 
 
 def _ready_notes(notes: list[EditingRequest]) -> list[EditingRequest]:

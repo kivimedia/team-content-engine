@@ -178,6 +178,20 @@ class Settings(BaseSettings):
     production_aside_names: str = "Maple,Rain"
     # How long a late editor review is still waited for after the edit rendered without it.
     production_review_wait_h: float = 12.0
+    # 3-Oct: Jennifer checks every edit after it renders (pauses, leftover asides, every
+    # word heard, captions, loudness). "fix" = she fixes what a cut can fix with one
+    # re-render and holds what she cannot; "report" = she only measures and says;
+    # "off" = no check. A pause longer than production_pause_threshold_s is a gap.
+    production_qc: str = "fix"
+    # How long her check waits for the subscription worker to read the words for
+    # leftover asides before it goes on without that reading (and says so on the card).
+    production_qc_asides_wait_s: float = 600.0
+    # Transcribe the finished video again on the local recogniser, to find words that
+    # cannot be heard. Off = she relies on the level reading at each cut.
+    production_qc_listen: bool = True
+    # A note of his that was applied becomes a rule for every next video (or is
+    # recorded as only about that video), decided by one subscription job.
+    production_learn_rules: bool = True
     # 26-Sep: TCE publishes the edited video through the schedule-* skills on this box.
     production_skills_dir: str = "/home/ziv/skills"
     production_linkedin_env_file: str = "/home/ziv/.kmboards-li.env"

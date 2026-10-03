@@ -494,3 +494,27 @@ def apply_holds(
         else:
             merged.append([a, b])
     return [[round(a, 3), round(b, 3)] for a, b in merged]
+
+
+def apply_trims(keep: list[list[float]], trims: list[list[float]]) -> list[list[float]]:
+    """Dead air taken out of the kept ranges (3-Oct, Jennifer's check).
+
+    The cut is planned from the words, so a `cut` override only ever drops words: a
+    quiet stretch with no word in it (a noise the level reading took for speech, a word
+    the recogniser stretched over silence) stays whatever is cut. A `trim` is a range
+    of the recording removed from the keep itself. A piece left shorter than a frame is
+    dropped, as the render would drop it.
+    """
+    out = [[float(a), float(b)] for a, b in keep]
+    for ts, te in sorted([float(a), float(b)] for a, b in trims or []):
+        nxt: list[list[float]] = []
+        for s, e in out:
+            if te <= s or ts >= e:
+                nxt.append([s, e])
+                continue
+            if s < ts:
+                nxt.append([s, ts])
+            if te < e:
+                nxt.append([te, e])
+        out = nxt
+    return [[round(a, 3), round(b, 3)] for a, b in out if (b - a) * FPS >= 1 - 1e-6]

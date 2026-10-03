@@ -281,7 +281,10 @@ MAX_REMOVAL_WORDS = {"retake": 80, "false_start": 80, "aside": 30, "junk": 40}
 MAX_REMOVED_SHARE = 0.6
 
 
-def review_system(dog_names: list[str]) -> str:
+def review_system(dog_names: list[str], rules: str = "") -> str:
+    """The review's instructions. `rules` (3-Oct): the block of rules Jennifer learned
+    from his notes on earlier videos (production/rules.py), placed after the
+    hand-written skill file. Empty leaves the instructions exactly as they were."""
     dogs = " and ".join(dog_names) if dog_names else "his dogs"
     return (
         "You edit Ziv Raviv's walking videos. He films himself on his phone while he walks, "
@@ -324,6 +327,7 @@ def review_system(dog_names: list[str]) -> str:
         "word of the take you keep (-1 otherwise). Every correction quotes the exact words it "
         "replaces by index; replacement '' deletes."
         + (f"\n\nHIS STANDING RULES (the editor's skill file):\n{editor_skill()}" if editor_skill() else "")
+        + (f"\n\n{rules}" if rules else "")
     )
 
 
@@ -1006,6 +1010,8 @@ def apply_overrides(plan: dict[str, Any], overrides: dict[str, Any] | None) -> d
         return plan
     keep = _merge([list(r) for r in plan.get("keep") or []] + [list(r) for r in overrides.get("restore") or []])
     keep = _subtract(keep, [list(r) for r in overrides.get("cut") or []])
+    # 3-Oct: dead air Jennifer's check took out of the finished file.
+    keep = _subtract(keep, [list(r) for r in overrides.get("trim") or []])
     keep = [[round(s, 3), round(e, 3)] for s, e in keep if e - s > 0.05]
     units = []
     for u in plan.get("units") or []:
@@ -1022,9 +1028,14 @@ def merge_overrides(
     cut: list[list[float]],
     restore: list[list[float]],
     hold: list[list[Any]] | None = None,
+    trim: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     """The newest instruction wins: restoring what an earlier request cut lifts that cut,
-    and a new hold on the same word edge replaces the old one."""
+    and a new hold on the same word edge replaces the old one.
+
+    `trim` (3-Oct, Jennifer's check): dead air taken out of the finished file, as
+    ranges on the recording. Trims survive every later change, like the cuts; a restore
+    over the same stretch lifts the trim there, because his word wins over her check."""
     old = old or {}
     old_cut = _subtract([list(r) for r in old.get("cut") or []], restore)
     old_restore = _subtract([list(r) for r in old.get("restore") or []], cut)
@@ -1032,6 +1043,11 @@ def merge_overrides(
     holds = {(round(float(h[0]), 3), h[1]): h for h in (old.get("hold") or []) + (hold or [])}
     if holds:
         out["hold"] = sorted(holds.values())
+    trims = _subtract(
+        [list(r) for r in old.get("trim") or []] + [list(r) for r in trim or []], restore
+    )
+    if trims:
+        out["trim"] = [[round(s, 3), round(e, 3)] for s, e in trims]
     return out
 
 

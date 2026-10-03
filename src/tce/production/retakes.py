@@ -45,7 +45,14 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
-from tce.production.tightcut import Activity, apply_holds, pause_stats, retime, tight_keep
+from tce.production.tightcut import (
+    Activity,
+    apply_holds,
+    apply_trims,
+    pause_stats,
+    retime,
+    tight_keep,
+)
 
 EN_NEGATIONS = frozenset(
     {
@@ -996,6 +1003,14 @@ def _plan_words(
     holds = (overrides or {}).get("hold") or []
     if holds:
         keep = apply_holds(keep, holds, end_bound)  # his "give that word more room"
+    trims = (overrides or {}).get("trim") or []
+    if trims:
+        # 3-Oct, Jennifer's check: dead air she found in the finished file, taken out of
+        # the keep itself (a cut override only drops words).
+        keep = apply_trims(keep, trims)
+        # A kept word whose middle sat in the trimmed air goes with the nearest piece
+        # that is left, so it keeps its caption.
+        timed = retime(words_sorted, kept_flags, keep, activity.regions if activity is not None else [])
     for w in timed:
         w["index"] = rows[w["index"]][0]  # position in `rows` -> index in the transcript
 

@@ -124,6 +124,8 @@
     { name: "topics",   pattern: /^\/topics\/?$/,              title: "Topics" },
     { name: "week",     pattern: /^\/week\/?$/,                title: "This week" },
     { name: "library",  pattern: /^\/library\/?$/,             title: "Library" },
+    // 3-Oct: the rules Jennifer learned from his notes, each with its source video.
+    { name: "rules",    pattern: /^\/library\/rules\/?$/,      title: "Jennifer's rules" },
     { name: "settings", pattern: /^\/settings\/?$/,            title: "Settings" },
     { name: "room",     pattern: /^\/topics\/([0-9a-f-]{36})\/?$/, title: "Topic" },
     { name: "workshop", pattern: /^\/scripts\/([0-9a-f-]{36})\/?$/, title: "Script" },
@@ -173,7 +175,7 @@
     $("pageTitle").textContent = route.title;
     var nav = $("bottomNav");
     var active = { today: "today", topics: "topics", week: "week", library: "library",
-                   room: "topics", workshop: "week", talk: "library" }[route.name];
+                   room: "topics", workshop: "week", talk: "library", rules: "library" }[route.name];
     Array.prototype.forEach.call(nav.querySelectorAll("a"), function (a) {
       if (a.dataset.route === active) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
@@ -1372,7 +1374,10 @@
 
     var html = '<div class="page">';
     html += '<div class="page-head"><p class="kicker">Editorial workspace</p><h1>Library</h1>';
-    html += '<p class="lede">' + esc(LIBRARY_LEDE[data.filter] || LIBRARY_LEDE.all) + "</p></div>";
+    html += '<p class="lede">' + esc(LIBRARY_LEDE[data.filter] || LIBRARY_LEDE.all) + "</p>";
+    // 3-Oct: Jennifer checks every edit and learns from his notes; her rules have a page.
+    html += '<p class="lede"><a href="library/rules" data-go="/library/rules">Jennifer\'s rules</a>'
+          + ": what she learned from your notes, and applies to every next video.</p></div>";
 
     html += '<div class="chips" role="group" aria-label="Filter recordings">';
     (data.filters || []).forEach(function (f) {
@@ -1413,7 +1418,7 @@
   /* TCE edits by itself now (25-Sep), so a card changes while he looks at it. While
      anything is being edited, re-read quietly every 8 s and redraw only when
      something changed and no video is playing. */
-  var LIBRARY_LIVE = ["transcribing", "transcribed", "proofreading", "planned", "rendering"];
+  var LIBRARY_LIVE = ["transcribing", "transcribed", "proofreading", "planned", "rendering", "checking"];
   function libraryBusy(items) {
     var now = Date.now();
     return items.some(function (i) {
@@ -1458,6 +1463,7 @@
          + (item.duration_s ? " &middot; " + clock(item.duration_s) : "") + "</span>";
     html += '<p class="big-idea">' + esc(item.state_sentence) + "</p>";
     if (item.source_line) html += '<p class="source">' + esc(item.source_line) + "</p>";
+    html += checkHtml(item);
     (item.issues || []).forEach(function (issue) {
       html += '<p class="notice is-bad">' + esc(issue) + "</p>";
     });
@@ -1541,6 +1547,11 @@
         html += '<button class="btn" type="button" data-edit-request="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "edit_again") {
         html += '<button class="btn quiet" type="button" data-edit-again="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
+      } else if (action.key === "check_again") {
+        // 3-Oct: Jennifer's check, on demand.
+        html += '<button class="btn quiet" type="button" data-check-again="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
+      } else if (action.key === "release_hold") {
+        html += '<button class="btn" type="button" data-release-hold="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "re_record" && item.candidate_id) {
         // To this topic, not to the list: the studio lists only what is left to
         // film, so a topic he filmed is reached by name (28-Sep review).
@@ -1662,6 +1673,111 @@
       });
       toast(schedule ? "Scheduling. The card shows each one as it is booked." : "Posting. The card shows each link as it goes live.");
       renderLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  /* 3-Oct: what Jennifer found when she checked this edit. A pass shows "Checked by
+     Jennifer" with its numbers; a hold shows her one line as the thing that needs him
+     (the card's own sentence already says it, so here are only the other findings);
+     while she checks, the card's sentence is her live step. */
+  function checkHtml(item) {
+    var c = item.qc;
+    if (!c || c.state === "checking") return "";
+    if (c.state === "held") {
+      var more = (c.problems || []).slice(1);
+      var held = '<p class="notice is-bad"><strong>' + esc(c.label || "Jennifer is holding this") + ".</strong> "
+               + "Give her a note to fix it, or let it through if it is fine as it is.</p>";
+      if (more.length) {
+        held += '<details class="removed"><summary>' + more.length + " more " + plural(more.length, "thing")
+              + " she found</summary><ul>";
+        more.forEach(function (p) { held += "<li>" + esc(p) + "</li>"; });
+        held += "</ul></details>";
+      }
+      return held;
+    }
+    var good = c.state === "passed" || c.state === "fixed";
+    return '<p class="notice' + (good ? " is-good" : "") + '">' + esc(c.line || c.label || "") + "</p>";
+  }
+
+  async function checkAgain(uploadId) {
+    try {
+      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/check", { method: "POST" });
+      toast("Jennifer is checking this edit. The card shows each thing she checks as she goes.");
+      await refreshLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function releaseHold(uploadId) {
+    if (!window.confirm("Let this video through as it is? Jennifer's finding stays on its record.")) return;
+    try {
+      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/check/release", { method: "POST" });
+      toast("Let through. The video is ready, and its posts are being written.");
+      await refreshLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  // ------------------------------------------------- Jennifer's rules (3-Oct)
+
+  /* "Every note to Jennifer becomes a rule applied to every next video; a Jennifer's
+     rules page lists each rule with its source video; he can delete any rule."
+     Delete switches the rule off on the server (the row is kept there). */
+  async function renderRules() {
+    var view = $("view");
+    view.innerHTML = '<div class="page">' + working("Reading the rules Jennifer learned from your notes") + "</div>";
+    var data = await api("/production/editor-rules");
+    var rules = data.rules || [];
+    var html = '<div class="page">';
+    html += '<div class="page-head"><p class="kicker">Library</p><h1>Jennifer\'s rules</h1>';
+    html += '<p class="lede">Each rule came from a note you gave on a video. Jennifer applies them to every '
+          + "next video, when she edits it and when she checks it. Delete one and she stops using it.</p></div>";
+    if (!rules.length) {
+      html += '<div class="empty"><strong>No rules yet</strong>'
+            + "When a note you give Jennifer on a video is about more than that one video, it shows up here.</div>";
+    } else {
+      html += '<div class="card-list">';
+      rules.forEach(function (r) {
+        html += '<article class="card rule-card">';
+        html += "<h3>" + esc(r.text) + "</h3>";
+        var used = r.times_applied
+          ? "Applied on " + r.times_applied + " " + plural(r.times_applied, "video")
+          : "Not applied on a video yet";
+        html += '<p class="source">' + esc(used) + (r.created_at ? " &middot; learned " + esc(when(r.created_at)) : "") + "</p>";
+        if (r.source_note) {
+          html += '<p class="source">From your note: &#8220;' + esc(r.source_note) + "&#8221;</p>";
+        }
+        html += '<div class="actions">';
+        if (r.source_upload_id && r.source_has_edit) {
+          // One link, one destination: that video's own notes sheet, not the list.
+          html += '<button class="btn" type="button" data-go="/library/' + esc(r.source_upload_id) + '/talk">'
+                + "Open the video it came from: " + esc(r.source_title || "untitled") + "</button>";
+        } else if (r.source_title) {
+          html += '<span class="source">From the video: ' + esc(r.source_title) + "</span>";
+        } else {
+          html += '<span class="source">The video it came from is no longer in your Library.</span>';
+        }
+        html += '<button class="btn quiet" type="button" data-rule-delete="' + esc(r.id) + '">Delete this rule</button>';
+        html += "</div></article>";
+      });
+      html += "</div>";
+    }
+    html += '<div class="actions"><button class="btn" type="button" data-go="/library">Back to the Library</button></div>';
+    html += "</div>";
+    view.innerHTML = html;
+    status(rules.length + " " + plural(rules.length, "rule"));
+  }
+
+  async function deleteRule(ruleId) {
+    if (!window.confirm("Delete this rule? Jennifer stops applying it from the next video on.")) return;
+    try {
+      await api("/production/editor-rules/" + encodeURIComponent(ruleId), { method: "DELETE" });
+      toast("Deleted. Jennifer no longer applies that rule.");
+      await renderRules();
     } catch (error) {
       toast(error.message, true);
     }
@@ -1865,6 +1981,10 @@
         : null;
       html += '<li><span class="source">' + esc(n.where) + "</span>&#8220;" + esc(said) + "&#8221;";
       if (outcome) html += "<br><strong>" + outcome[0] + ":</strong> " + esc(outcome[1]);
+      // 3-Oct: what Jennifer took from this note for the next videos.
+      if (n.learned && n.learned.line && !n.undone) {
+        html += '<br><span class="source">' + esc(n.learned.line) + "</span>";
+      }
       html += "</li>";
     });
     return html + "</ul></details>";
@@ -2597,6 +2717,9 @@
     if (d.archive !== undefined) { archiveRecording(d.archive, true); return; }
     if (d.unarchive !== undefined) { archiveRecording(d.unarchive, false); return; }
     if (d.editAgain !== undefined) { editAgain(d.editAgain); return; }
+    if (d.checkAgain !== undefined) { checkAgain(d.checkAgain); return; }
+    if (d.releaseHold !== undefined) { releaseHold(d.releaseHold); return; }
+    if (d.ruleDelete !== undefined) { deleteRule(d.ruleDelete); return; }
     if (d.filter !== undefined) { state.topicFilter = d.filter; render(); return; }
     if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; render(); return; }
     if (d.wtab !== undefined) { state.workshopTab = d.wtab; render(); return; }
@@ -2822,6 +2945,7 @@
       else if (route.name === "topics") await renderTopics();
       else if (route.name === "week") await renderWeek();
       else if (route.name === "library") await renderLibrary();
+      else if (route.name === "rules") await renderRules();
       else if (route.name === "settings") await renderSettings();
       else if (route.name === "room") await renderRoom(route.id);
       else if (route.name === "workshop") await renderWorkshop(route.id);

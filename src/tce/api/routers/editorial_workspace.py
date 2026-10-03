@@ -1151,6 +1151,10 @@ async def find_talk(
             "upload_id": str(upload.id),
             "title": title or "(untitled recording)",
             "status": upload.status,
+            # 3-Oct: what Jennifer's check found on the render he would be watching, and
+            # her one line when she is holding the video.
+            "check": library_service.qc_json(upload),
+            "held": library_service.qc_hold(upload),
             "live": await _sitting_payload(db, ws, live) if live is not None else None,
             "made": await _sitting_payload(db, ws, made) if made is not None else None,
         }

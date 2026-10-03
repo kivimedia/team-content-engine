@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.api.private_access import require_private_workspace
 from tce.db.session import get_db
+from tce.editorial import editor_rules
 from tce.editorial import library as library_service
 from tce.editorial.common import ORIGIN_TECHNICAL_VALIDATION
 from tce.models.editorial import (
@@ -50,13 +51,25 @@ from tce.models.editorial import (
     TopicCandidate,
     VideoPublication,
 )
+from tce.models.jennifer import RenderCheck
 from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingClip, RecordingSession
-from tce.production import agent_talks, autoedit, media, publishing, relisten, tightcut, wordbox
+from tce.production import (
+    agent_talks,
+    autoedit,
+    media,
+    publishing,
+    qc,
+    relisten,
+    tightcut,
+    wordbox,
+)
+from tce.production import rules as rule_text
 from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
 from tce.production.retakes import (
     build_cues,
+    edit_join,
     fmt_ts,
     frame_keep,
     is_word_level,
@@ -360,6 +373,8 @@ def upload_json(u: RecordingUpload) -> dict[str, Any]:
         "video_url": f"/api/v1/production/uploads/{u.id}/video" if u.storage_path else None,
         "edited_url": f"/api/v1/production/uploads/{u.id}/edited" if u.edited_path else None,
         "render_ref": u.render_ref,
+        # 3-Oct: what Jennifer found on this render (the verdict, one line, the numbers).
+        "qc": library_service.qc_json(u),
         # 3-Oct: "agent_talk" for a filmed voice call with an agent, null for a walk.
         "source": u.source,
         "agent_name": u.agent_name,
@@ -1008,6 +1023,33 @@ def render_ref(rendered_keep: list[list[float]], captions: str, attempt: str) ->
     return hashlib.sha256(body.encode()).hexdigest()[:16]
 
 
+def render_sidecar(edited: str | Path) -> Path:
+    """What a render was made from (its caption data, what it did about loudness),
+    beside the edit: "<name>-edited.render.json"."""
+    p = Path(edited)
+    return p.with_name(f"{p.stem}.render.json")
+
+
+def _write_render_sidecar(edited: Path, data: dict[str, Any]) -> None:
+    """Written aside and renamed, like the edit. Never fails a render: without it the
+    check says the captions could not be checked."""
+    target = render_sidecar(edited)
+    part = target.with_name(f".{target.name}.{os.urandom(4).hex()}.part")
+    try:
+        part.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(part, target)
+    except (OSError, TypeError, ValueError):
+        part.unlink(missing_ok=True)
+
+
+def _read_render_sidecar(edited: str | Path) -> dict[str, Any]:
+    try:
+        data = json.loads(render_sidecar(edited).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str) -> None:
     async def report(text: str) -> None:
         await _set_status(upload_id, ws, "rendering", text, attempt)
@@ -1041,13 +1083,16 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         else:
             spoken = list(plan.get("words") or [])
         on_edit = wordbox.on_edit_timeline(spoken, keep)
+        pages = None
         if not audio_only and on_edit and wordbox.usable(on_edit):
             await report(f"Drawing {len(on_edit)} caption words, each boxed while you say it")
+            pages = wordbox.pages(on_edit)
             # Hundreds of images: drawn off the event loop so the API keeps answering.
             band = await asyncio.to_thread(
                 wordbox.render_band,
-                wordbox.pages(on_edit), size[0], size[1], band_dir, sum(e - s for s, e in keep),
+                pages, size[0], size[1], band_dir, sum(e - s for s, e in keep),
             )
+        made: dict[str, Any] = {}
         try:
             await media.render_edit(
                 src,
@@ -1058,12 +1103,25 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
                 srt_text=srt_text,
                 caption_band=band,
                 make_preview=not audio_only,
+                report=made,
             )
         finally:
             shutil.rmtree(band_dir, ignore_errors=True)
         srt = src.with_name(f"{src.stem}-edited.srt")
         srt.write_text(srt_text, encoding="utf-8")
         src.with_name(f"{src.stem}-edited.vtt").write_text(to_vtt(cues), encoding="utf-8")
+        # 3-Oct, Jennifer's check: what this render's captions were drawn from, and what
+        # the render did about loudness, kept beside the file. The check reads the
+        # render's own data, never a plan that may have moved on since.
+        _write_render_sidecar(
+            out,
+            {
+                "mode": mode,
+                "keep": frame_keep(keep),
+                "captions": qc.caption_data(on_edit, pages if band else None, cues),
+                "loudness": made.get("loudness"),
+            },
+        )
         async with session_factory()() as s:
             row = await _load(s, upload_id, ws)
             if not _owns(row, attempt):
@@ -1138,6 +1196,8 @@ def upload_busy(row: RecordingUpload) -> str | None:
     """What is editing this video right now, in his words; None when nothing is."""
     if row.status in BUSY_STATUSES or AUTO_MARK in (row.job_ids or []) or _render_lock(row.id).locked():
         return row.status_detail or "This video is being edited right now."
+    if row.status == QC_STATUS:  # 3-Oct: her check may still re-render it once
+        return row.status_detail or "Jennifer is checking this edit right now."
     running = _requests_running.get(row.id)
     if running:
         return request_busy_sentence(list(running.values())[-1])
@@ -1240,11 +1300,9 @@ async def render_upload(
         _active_attempts.discard(attempt)
         raise
     await db.refresh(row)
-    _spawn(
-        _run_leased(
-            row.id, ws, "rendering", attempt, lambda: _run_render(row.id, ws, attempt, body.mode)
-        )
-    )
+    # 3-Oct: a render he starts by hand is checked too; Jennifer measures and says,
+    # and changes nothing about a render he chose himself.
+    _spawn(_render_then_check(row.id, ws, attempt, body.mode))
     return upload_json(row)
 
 
@@ -1861,6 +1919,14 @@ SITTING_RECHECK_S = 30.0
 _render_locks: dict[uuid.UUID, asyncio.Lock] = {}
 
 
+def _rendered_since(row: RecordingUpload, before_ref: str | None) -> bool:
+    """A new render of this video exists since the one stamped `before_ref`: the video
+    says edited, or (3-Oct) Jennifer is holding the new file for something she found."""
+    if row.render_ref == before_ref:
+        return False
+    return row.status == "edited" or library_service.qc_hold(row) is not None
+
+
 def _render_lock(upload_id: uuid.UUID) -> asyncio.Lock:
     """One plan-and-render of a video at a time in this process (review, 28-Sep: a late
     review landing during another render started a second ffmpeg on the same files)."""
@@ -1871,11 +1937,16 @@ def _render_lock(upload_id: uuid.UUID) -> asyncio.Lock:
 
 
 def _review_request(
-    words: list[dict[str, Any]], context: str, voices: agent_talks.Voices | None = None
+    words: list[dict[str, Any]],
+    context: str,
+    voices: agent_talks.Voices | None = None,
+    rules: list[list[str]] | None = None,
 ) -> tuple[str, str]:
     """The review's prompt and instructions. An agent talk (3-Oct) says who speaks each
-    line and adds the conversation rules: the agent's lines are content."""
-    system = autoedit.review_system(aside_names())
+    line and adds the conversation rules: the agent's lines are content. `rules` are the
+    rules Jennifer learned from his notes ([[id, text], ...], editor_rules.prompt_rules),
+    written after the skill file; none leaves the instructions as they were."""
+    system = autoedit.review_system(aside_names(), editor_rules.block(rules)[0])
     if voices is None:
         return autoedit.review_prompt(words, context), system
     speakers = voices.speaker_names() if voices.known else None
@@ -1910,11 +1981,14 @@ async def _apply_review(
     *,
     fix_words: bool = True,
     voices: agent_talks.Voices | None = None,
+    rules: list[list[str]] | None = None,
 ) -> dict[str, Any]:
     """Store what the editor decided. Removals are kept as time ranges, so the word
     fixes applied beside them cannot shift what they point at. `fix_words` False keeps
     the transcript as it is (a posted video: its word indices must not move). In an
-    agent talk (`voices`) no removal takes the agent's words."""
+    agent talk (`voices`) no removal takes the agent's words. `rules` are the learned
+    rules the review was given: one a removal names in its reason, like (R2), counts
+    this video as one it was applied on."""
     out = answer.structured or {}
     removals, notes = autoedit.validate_removals(
         words,
@@ -1942,6 +2016,13 @@ async def _apply_review(
             "model": answer.model,
             "at": _utcnow().isoformat(),
         }
+        rule_ids = editor_rules.block(rules)[1]
+        if rule_ids and removals:
+            named = rule_text.rules_named([str(r.get("why") or "") for r in removals], len(rule_ids))
+            used = [rule_ids[n - 1] for n in named]
+            if used:
+                review["rules_used"] = used
+                await editor_rules.mark_applied(s, ws, used, upload_id)
         plan["review"] = review
         row.edit_plan = plan
         took = len(removals or [])
@@ -1966,6 +2047,8 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
         words = list(row.transcript or [])
         context = await _script_context(s, ws, row)
         voices = await talk_voices(row, words)
+        # 3-Oct: the rules she learned from his notes on earlier videos.
+        rules = await editor_rules.prompt_rules(s, ws)
         if words and is_word_level(words):
             row.status = "proofreading"
             row.status_detail = (
@@ -1976,7 +2059,7 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
             await s.commit()
     if not words or not is_word_level(words):
         return "skipped"
-    prompt, system = _review_request(words, context, voices)
+    prompt, system = _review_request(words, context, voices, rules)
     key = _review_key(upload_id, prompt, system)
     try:
         answer = await _ask(
@@ -1987,11 +2070,18 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
     except (LLMUnavailable, QueueError) as exc:
         waiting = isinstance(exc, LLMUnavailable) and exc.status in ("timeout", "waiting_capacity")
         why = getattr(exc, "status", exc.__class__.__name__)
+        waiting_on: dict[str, Any] = {
+            "state": "waiting" if waiting else "unavailable", "key": key,
+            "since": _utcnow().isoformat(), "detail": str(exc)[:300],
+        }
+        if rules:
+            # The rules this job was asked with: a rule learned while it waits must not
+            # move its key and throw the answer away.
+            waiting_on["rules"] = rules
         await _save_review(
             upload_id,
             ws,
-            {"state": "waiting" if waiting else "unavailable", "key": key,
-             "since": _utcnow().isoformat(), "detail": str(exc)[:300]},
+            waiting_on,
             (
                 "Jennifer has not answered yet, so this edit uses the rules; it re-edits "
                 "by itself when her review lands"
@@ -2000,7 +2090,7 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
             ),
         )
         return "waiting" if waiting else "unavailable"
-    await _apply_review(upload_id, ws, words, answer, voices=voices)
+    await _apply_review(upload_id, ws, words, answer, voices=voices, rules=rules)
     return "done"
 
 
@@ -2037,7 +2127,9 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             words = list(row.transcript or [])
             context = await _script_context(s, ws, row)
             voices = await talk_voices(row, words)
-        prompt, system = _review_request(words, context, voices)
+        # The rules the waiting job was asked with, not the rules as they are now.
+        rules = [list(r) for r in review.get("rules") or []]
+        prompt, system = _review_request(words, context, voices, rules)
         key = _review_key(upload_id, prompt, system)
         if key != str(review.get("key") or ""):
             await _save_review(upload_id, ws, {**review, "state": "stale"}, None)
@@ -2079,14 +2171,16 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
                     await s.commit()
             if not in_front:
                 if posted:
-                    await _apply_review(upload_id, ws, words, answer, fix_words=False, voices=voices)
+                    await _apply_review(
+                        upload_id, ws, words, answer, fix_words=False, voices=voices, rules=rules
+                    )
                     await _note(
                         upload_id, ws, None,
                         "Jennifer's review arrived after this video was posted; the posted edit stays",
                     )
                     return
                 try:
-                    await _apply_review(upload_id, ws, words, answer, voices=voices)
+                    await _apply_review(upload_id, ws, words, answer, voices=voices, rules=rules)
                     await _plan_and_render_locked(upload_id, ws, restore_if_blocked=snapshot)
                 finally:
                     async with session_factory()() as s:
@@ -2149,13 +2243,528 @@ async def _plan_and_render_locked(
     if status != "planned":  # the meaning check wants his eyes: never render past it
         async with session_factory()() as s:
             return await _load(s, upload_id, ws)
-    return await _step(
+    row = await _step(
         upload_id,
         ws,
         "rendering",
         "Cutting and burning in your captions",
         lambda attempt: _run_render(upload_id, ws, attempt, "cut"),
     )
+    if row.status == "edited":
+        # 3-Oct: Jennifer checks every edit, fixes what a cut can fix (one re-render),
+        # and holds only what she cannot.
+        row = await _check_render(upload_id, ws)
+    return row
+
+
+# ---------------------------------------------------------------------------
+# Jennifer's check (3-Oct). "Jennifer is the editor and QCs every edit: gaps, dog
+# asides, every word audible, captions present and matching, loudness; fixes what she
+# can and re-renders; holds only what she cannot fix, with a one-line reason."
+#
+# It runs after every render, under the render lock that render held, and on demand
+# (POST /uploads/{id}/check). The measuring and the decision are production/qc.py; here
+# are the jobs, the statuses and the one re-render. While it runs the video says
+# "checking" with what she is doing right now; it ends "edited" with "Checked by
+# Jennifer" and its numbers, or "needs_review" with her one line.
+
+QC_STATUS = "checking"
+QC_MARK = "jennifer-check"  # on job_ids while a check runs, so a restart picks it up
+QC_LISTEN_TIMEOUT_S = 900.0
+QC_UNREADABLE = "Jennifer could not check this edit: the rendered file could not be read."
+
+
+def _qc_mode() -> str:
+    mode = str(settings.production_qc or "").strip().lower()
+    return mode if mode in qc.MODES else "fix"
+
+
+async def _qc_step(
+    upload_id: uuid.UUID, ws: uuid.UUID, round_no: int, doing: str, fixed: list[str] | None = None
+) -> None:
+    """What she is doing right now, on the card (3-second rule)."""
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        if row.status != QC_STATUS:
+            # The first step of a check: keep the render's own line to put back after.
+            # `fixed` (the re-check) is what her one fix did, so a restart still knows.
+            row.qc = {
+                "state": "checking",
+                "round": round_no,
+                "render_ref": row.render_ref,
+                "render_detail": row.status_detail,
+                "fixed": list(fixed or []),
+            }
+            row.status = QC_STATUS
+            row.job_ids = [j for j in row.job_ids or [] if j != QC_MARK] + [QC_MARK]
+        again = "again, after her fix" if round_no else ""
+        row.status_detail = f"Jennifer is checking this edit{' ' + again if again else ''}: {doing}"[:500]
+        await s.commit()
+
+
+async def _qc_listen(edited: Path, duration_s: float) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """The render transcribed again by the local recogniser: the words a viewer's ear
+    would get. (None, why) when it cannot be asked or does not answer; never a stop."""
+    url = settings.production_transcribe_ws_url
+    if not settings.production_qc_listen:
+        return None, "listening again is switched off"
+    if not url:
+        return None, "no local recogniser is set up on this server"
+    try:
+        data = await media.transcribe_clip(
+            edited, 0.0, duration_s, ws_url=url,
+            language=settings.production_transcribe_language or None,
+            timeout_s=QC_LISTEN_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 - the check goes on without the second listen
+        return None, f"the recogniser did not answer ({exc.__class__.__name__})"
+    heard = [
+        {"text": str(w.get("word") or w.get("text") or ""), "start": w.get("start"), "end": w.get("end")}
+        for w in data.get("words") or []
+        if isinstance(w, dict)
+    ]
+    if not heard:
+        return None, "the recogniser heard no words"
+    return heard, None
+
+
+def _asides_key(upload_id: uuid.UUID, prompt: str, system: str) -> str:
+    """Everything the asides job reads is in its key, like _review_key."""
+    body = "\x1f".join([qc.ASIDES_PROMPT_VERSION, system, prompt])
+    return f"qc-asides:{upload_id}:{hashlib.sha256(body.encode()).hexdigest()[:24]}"
+
+
+async def _qc_asides(
+    upload_id: uuid.UUID,
+    ws: uuid.UUID,
+    kept: list[dict[str, Any]],
+    context: str,
+    voices: agent_talks.Voices | None,
+    rules: list[list[str]],
+) -> dict[str, Any]:
+    """One subscription job over the words still in the video. A worker that is away
+    leaves the check unmade (and said so on the card), never a hold."""
+    from tce.llm import LLMUnavailable
+    from tce.llm.queue import QueueError
+
+    if not kept:
+        return qc.skipped("this video has no word-by-word transcript to read")
+    if voices is not None and not voices.known:
+        return qc.skipped(f"who says each line of this talk with {voices.agent} could not be worked out")
+    block, rule_ids = editor_rules.block(rules)
+    system = qc.asides_system(
+        aside_names(),
+        skill=autoedit.editor_skill(),
+        rules=block,
+        talk=autoedit.conversation_rules(voices.agent) if voices is not None else "",
+    )
+    prompt = qc.asides_prompt(kept, context, voices.speaker_names() if voices is not None else None)
+    try:
+        answer = await _ask(
+            qc.ASIDES_JOB, prompt, system, qc.ASIDES_SCHEMA, ws, _asides_key(upload_id, prompt, system),
+            wait_timeout_s=settings.production_qc_asides_wait_s,
+            prompt_version=qc.ASIDES_PROMPT_VERSION, max_tokens=1500,
+        )
+    except (LLMUnavailable, QueueError) as exc:
+        why = getattr(exc, "status", exc.__class__.__name__)
+        return qc.skipped(f"Jennifer's reading of the words did not come back ({why})")
+    found = qc.check_asides(
+        kept, answer.structured or {}, protected=voices.agent_words if voices is not None else None
+    )
+    if rule_ids and found.get("problems"):
+        named = rule_text.rules_named([str(p.get("why") or "") for p in found["problems"]], len(rule_ids))
+        used = [rule_ids[n - 1] for n in named]
+        if used:
+            async with session_factory()() as s:
+                await editor_rules.mark_applied(s, ws, used, upload_id)
+                await s.commit()
+            found["rules_used"] = used
+    return found
+
+
+async def _qc_measure(
+    upload_id: uuid.UUID, ws: uuid.UUID, round_no: int, fixed: list[str] | None = None
+) -> dict[str, dict[str, Any]] | None:
+    """Every check on the render he would be watching. None when that file cannot be
+    read at all (then nothing is claimed about it, and nothing else is asked)."""
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        edited = Path(row.edited_path) if row.edited_path else None
+        keep = [list(r) for r in row.rendered_keep or []]
+    ff = media.ffmpeg_path()
+    if not ff or edited is None or not edited.exists() or not keep:
+        return None
+    try:
+        levels = await tightcut.measure_levels(str(edited), ff)
+    except RuntimeError:
+        levels = []
+    if not levels:
+        return None
+    await _qc_step(upload_id, ws, round_no, "reading the finished video", fixed)
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        src = row.storage_path
+        words = list(row.transcript or [])
+        plan = dict(row.edit_plan or {})
+        context = await _script_context(s, ws, row)
+        voices = await talk_voices(row, words)
+        rules = await editor_rules.prompt_rules(s, ws)
+    duration = len(levels) * tightcut.HOP_S
+    sidecar = _read_render_sidecar(edited)
+    if sidecar.get("keep") != keep:
+        sidecar = {}  # left by an older render of this video: not this file's data
+    uncut = sidecar.get("mode") == "uncut"
+    # The words in the file: the plan's, only while the plan is still what made it.
+    plan_words = library_service.watched_plan_words(plan, keep)
+    kept = qc.kept_on_edit(plan_words, keep) if plan_words and not uncut else []
+    caption_words = (sidecar.get("captions") or {}).get("words") or kept
+    checks: dict[str, dict[str, Any]] = {}
+
+    # The second witness for two checks: the render transcribed again.
+    heard: list[dict[str, Any]] | None = None
+    why: str | None = "nothing was cut from this one" if uncut else "this video has no word-by-word transcript"
+    if kept:
+        await _qc_step(
+            upload_id, ws, round_no, f"listening to it again on this server ({len(kept)} words to hear)"
+        )
+        heard, why = await _qc_listen(edited, duration)
+
+    await _qc_step(upload_id, ws, round_no, "measuring the pauses in the finished video")
+    checks["gaps"] = (
+        qc.skipped("nothing was cut from this one, so its pauses are his own")
+        if uncut
+        else qc.check_gaps(
+            levels, caption_words, max_gap_s=settings.production_pause_threshold_s, keep=keep, heard=heard
+        )
+    )
+
+    await _qc_step(upload_id, ws, round_no, "measuring how loud it is")
+    checks["loudness"] = qc.check_loudness(await qc.measure_loudness(str(edited), ff), duration)
+
+    await _qc_step(upload_id, ws, round_no, "checking that every word has its caption")
+    # What the edit keeps, from the plan (not from the caption data it is checked against).
+    expected = (
+        [
+            {"text": str(w["text"]), "start": edit_join(float(w["start"]), keep)}
+            for w in plan_words
+            if str(w.get("text") or "") != "[sound]"
+        ]
+        if plan_words and not uncut
+        else None
+    )
+    checks["captions"] = qc.check_captions(sidecar.get("captions"), expected)
+
+    if kept:
+        await _qc_step(upload_id, ws, round_no, "checking that every word is heard whole")
+        marks = await word_marks_for(src, words, keep)
+        checks["audibility"] = qc.check_audibility(kept, marks, heard, levels, why_not_heard=why)
+    else:
+        checks["audibility"] = qc.skipped(why or "this video has no word-by-word transcript")
+
+    if uncut:
+        checks["asides"] = qc.skipped("nothing was cut from this one")
+    else:
+        await _qc_step(
+            upload_id, ws, round_no,
+            "reading the words still in it for talk to the dogs or off the topic, on the subscription",
+        )
+        checks["asides"] = await _qc_asides(upload_id, ws, kept, context, voices, rules)
+    return checks
+
+
+async def _qc_record(
+    upload_id: uuid.UUID, ws: uuid.UUID, verdict: dict[str, Any], *, final: bool
+) -> RecordingUpload:
+    """Store one check. `final` ends the check: the video says edited (with her line)
+    or needs_review (held, with her one line)."""
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        before = dict(row.qc or {})
+        result = {
+            **verdict,
+            "render_ref": row.render_ref,
+            "render_detail": before.get("render_detail") or (row.status_detail if row.status == "edited" else None),
+            "at": _utcnow().isoformat(),
+        }
+        s.add(
+            RenderCheck(
+                workspace_id=ws,
+                upload_id=upload_id,
+                render_ref=row.render_ref,
+                round=int(verdict.get("round") or 0),
+                state=str(verdict["state"]),
+                line=str(verdict.get("line") or "")[:500],
+                result={
+                    k: v for k, v in result.items() if k not in ("line", "state", "round", "render_detail")
+                },
+            )
+        )
+        if final:
+            row.qc = result
+            row.job_ids = [j for j in row.job_ids or [] if j != QC_MARK]
+            prior = before.get("prior") or {}
+            if verdict["state"] == "held":
+                row.status = "needs_review"
+                row.status_detail = str(verdict["line"])[:500]
+            elif verdict["state"] == "unchecked" and prior.get("state") == "held":
+                # A check on demand that could not read the file: her hold stands.
+                row.qc = prior
+                row.status = "needs_review"
+                row.status_detail = str(prior.get("line") or "")[:500]
+            elif row.status == QC_STATUS:
+                row.status = "edited"
+                row.status_detail = before.get("render_detail") or "Edited and ready."
+        else:
+            row.qc = {**before, **result, "state": "checking", "render_detail": before.get("render_detail")}
+        await s.commit()
+        return row
+
+
+async def _qc_fix(upload_id: uuid.UUID, ws: uuid.UUID, fixes: dict[str, list[Any]]) -> str | None:
+    """Her one fix: the overrides his own notes write (a cut for a leftover aside, a
+    hold for a clipped word, a trim for dead air), then ONE re-render. None when the new
+    file is there; otherwise why not, with the edit he had put back as it was."""
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        plan_before = dict(row.edit_plan or {})
+        detail_before = (row.qc or {}).get("render_detail")
+        plan = dict(plan_before)
+        plan["overrides"] = autoedit.merge_overrides(
+            plan.get("overrides"), fixes.get("cut") or [], [], fixes.get("hold"), fixes.get("trim")
+        )
+        row.edit_plan = plan
+        await _compute_plan(s, ws, row)
+        if row.status != "planned":
+            # The meaning check wants his eyes on her cut: the edit he has stays.
+            reason = (row.status_detail or "the cut would change what you said").rstrip(". ")
+            row.edit_plan = plan_before
+            row.status, row.status_detail = QC_STATUS, detail_before
+            await s.commit()
+            return f"a cut she wanted to make needs your eyes ({reason})"
+        after_overrides = (row.edit_plan or {}).get("overrides")
+        await s.commit()
+    row = await _step(
+        upload_id,
+        ws,
+        "rendering",
+        "Jennifer is rendering once more with her fixes: cutting and burning in your captions",
+        lambda attempt: _run_render(upload_id, ws, attempt, "cut"),
+    )
+    async with session_factory()() as s:
+        if row.status != "edited":
+            stopped = (row.status_detail or "the render stopped").rstrip(". ")
+            row = await _load(s, upload_id, ws)
+            row.edit_plan = plan_before
+            row.status, row.status_detail = QC_STATUS, detail_before
+            await s.commit()
+            return f"the render with her fixes stopped ({stopped})"
+        # A sitting whose notes made this version: going back from it compares the
+        # overrides its batch wrote, and her fix is part of that version.
+        sitting = await library_service.working_sitting(s, ws, upload_id)
+        if sitting is not None and sitting.before:
+            sitting.before = {**sitting.before, "after_overrides": after_overrides}
+            await s.commit()
+    return None
+
+
+async def _check_render(
+    upload_id: uuid.UUID, ws: uuid.UUID, *, fix: bool = True, start_round: int = 0,
+    fixed: list[str] | None = None,
+) -> RecordingUpload:
+    """Check the render he would be watching; fix what a cut can fix with ONE re-render
+    and one re-check; hold what is still wrong. The caller holds the render lock.
+
+    `fix` False (he rendered it by hand, or the setting says report) only measures and
+    says. A render that cannot be read is left exactly as it was, marked unchecked.
+    """
+    mode = _qc_mode()
+    if mode == "off":
+        async with session_factory()() as s:
+            return await _load(s, upload_id, ws)
+    if not fix:
+        mode = "report"
+    fixed = list(fixed or [])
+    round_no = start_round
+    while True:
+        checks = await _qc_measure(upload_id, ws, round_no, fixed)
+        if checks is None:
+            return await _qc_record(
+                upload_id, ws,
+                {"version": qc.QC_VERSION, "state": "unchecked", "round": round_no, "line": QC_UNREADABLE},
+                final=True,
+            )
+        verdict = qc.decide(checks, round_no=round_no, mode=mode, fixed=fixed)
+        if verdict["state"] != "fixing":
+            return await _qc_record(upload_id, ws, verdict, final=True)
+        fixed = qc.fix_sentences([p for c in checks.values() for p in c.get("problems") or []])
+        verdict["fixed"] = fixed
+        await _qc_record(upload_id, ws, verdict, final=False)
+        stopped = await _qc_fix(upload_id, ws, verdict["fixes"])
+        if stopped is not None:
+            held = {
+                **verdict,
+                "state": "held",
+                "fixes": {},
+                "line": f"Jennifer is holding this video: {stopped}."[:500],
+            }
+            return await _qc_record(upload_id, ws, held, final=True)
+        round_no = 1
+
+
+async def _check_now(upload_id: uuid.UUID, ws: uuid.UUID, *, fix: bool, resume: bool = False) -> None:
+    """A check on demand, or (`resume`) one a restart cut short: under the render lock,
+    then the posts when the video ends edited. A resumed check that finds the video no
+    longer waiting for it (another step re-rendered and checked it meanwhile) does nothing."""
+    try:
+        async with _render_lock(upload_id):
+            async with session_factory()() as s:
+                row = await _load(s, upload_id, ws)
+                resumed = dict(row.qc or {}) if row.status == QC_STATUS else {}
+                if resume and row.status != QC_STATUS:
+                    return
+                if not row.edited_path or row.status not in ("edited", "needs_review", QC_STATUS):
+                    # Something else has the video now (a render a restart cut short).
+                    row.job_ids = [j for j in row.job_ids or [] if j != QC_MARK]
+                    await s.commit()
+                    return
+            row = await _check_render(
+                upload_id, ws, fix=fix,
+                start_round=int(resumed.get("round") or 0), fixed=resumed.get("fixed"),
+            )
+        if row.status == "edited":
+            start_draft_posts(upload_id, ws)
+    except Exception as exc:  # noqa: BLE001 - lands on the row, never only in a log
+        async with session_factory()() as s:
+            row = await _load(s, upload_id, ws)
+            row.job_ids = [j for j in row.job_ids or [] if j != QC_MARK]
+            if row.status == QC_STATUS:
+                row.status = "edited"
+                row.status_detail = (row.qc or {}).get("render_detail") or row.status_detail
+            row.qc = {
+                "version": qc.QC_VERSION, "state": "unchecked", "render_ref": row.render_ref,
+                "line": f"Jennifer's check stopped with an error: {str(exc)[:200]}. The edit is as it was.",
+                "at": _utcnow().isoformat(),
+            }
+            await s.commit()
+
+
+async def _render_then_check(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str) -> None:
+    """A render he started by hand, then her check of it: she measures and says, and
+    changes nothing (he chose this render himself)."""
+    await _run_leased(upload_id, ws, "rendering", attempt, lambda: _run_render(upload_id, ws, attempt, mode))
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        done = row.status == "edited"
+    if done and _qc_mode() != "off":
+        async with _render_lock(upload_id):
+            await _check_render(upload_id, ws, fix=False)
+
+
+@router.post("/uploads/{upload_id}/check", status_code=202)
+async def check_upload(
+    upload_id: uuid.UUID,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Jennifer checks this edit again, now. She fixes what a cut can fix (one
+    re-render) and holds what she cannot. Refused while the video is being edited or he
+    is giving notes on it."""
+    await reconcile_interrupted_uploads(db, ws)
+    row = await _upload(db, ws, upload_id)
+    if not row.edited_path or not Path(row.edited_path).exists():
+        raise HTTPException(status_code=409, detail="There is no edit of this video to check yet")
+    if _qc_mode() == "off":
+        raise HTTPException(status_code=409, detail="Jennifer's check is switched off on this server")
+    busy = upload_busy(row)
+    if busy or row.status == QC_STATUS:
+        raise HTTPException(status_code=409, detail=busy or "Jennifer is already checking this edit")
+    if row.status != "edited" and not library_service.qc_hold(row):
+        # A cut the meaning check blocked waits for his eyes: a pass of the old file
+        # must not mark the video ready over it.
+        raise HTTPException(
+            status_code=409,
+            detail=library_service.edit_waits_for_him(row) or "This video is not ready for a check right now",
+        )
+    await _refuse_while_sitting(db, ws, row.id)
+    row.qc = {
+        "state": "checking", "round": 0, "render_ref": row.render_ref,
+        "render_detail": (
+            row.status_detail if row.status == "edited" else (row.qc or {}).get("render_detail")
+        ),
+        # Her hold, when this is a second look at a video she is holding.
+        "prior": dict(row.qc) if library_service.qc_hold(row) else None,
+    }
+    row.status = QC_STATUS
+    row.status_detail = "Jennifer is checking this edit: starting"
+    row.job_ids = [j for j in row.job_ids or [] if j != QC_MARK] + [QC_MARK]
+    await db.commit()
+    await db.refresh(row)
+    _spawn(_check_now(row.id, ws, fix=True))
+    return upload_json(row)
+
+
+@router.post("/uploads/{upload_id}/check/release")
+async def release_hold(
+    upload_id: uuid.UUID,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """He looked at what Jennifer held and it is fine as it is: the video is ready, and
+    its record says he let it through."""
+    row = await _upload(db, ws, upload_id)
+    reason = library_service.qc_hold(row)
+    if reason is None:
+        raise HTTPException(status_code=409, detail="Jennifer is not holding this video")
+    row.qc = {
+        **(row.qc or {}),
+        "state": "released",
+        "held_line": reason,
+        "line": (
+            "You let this one through. Jennifer had held it: "
+            + reason.removeprefix("Jennifer is holding this video: ")
+        )[:500],
+        "released_at": _utcnow().isoformat(),
+    }
+    row.status = "edited"
+    row.status_detail = (row.qc or {}).get("render_detail") or "Edited and ready. You let it through Jennifer's check."
+    db.add(
+        RenderCheck(
+            workspace_id=ws, upload_id=row.id, render_ref=row.render_ref, round=int((row.qc or {}).get("round") or 0),
+            state="released", line=str(row.qc["line"])[:500], result={"held_line": reason},
+        )
+    )
+    await db.commit()
+    await db.refresh(row)
+    start_draft_posts(row.id, ws)
+    return upload_json(row)
+
+
+# ---------------------------------------------------------------------------
+# Jennifer's rules (3-Oct): "Every note to Jennifer becomes a rule applied to every next
+# video; a Jennifer's rules page lists each rule with its source video; he can delete
+# any rule."
+
+
+@router.get("/editor-rules")
+async def list_editor_rules(
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    return await editor_rules.list_rules(db, ws)
+
+
+@router.delete("/editor-rules/{rule_id}")
+async def delete_editor_rule(
+    rule_id: uuid.UUID,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete on the rules page: the rule is no longer applied. The row is kept."""
+    row = await editor_rules.deactivate(db, ws, rule_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="That rule is not here")
+    await db.commit()
+    return {"id": str(row.id), "active": False, "text": row.text}
 
 
 async def _second_listen(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
@@ -2573,8 +3182,12 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             "file": f"/api/v1/production/uploads/{upload_id}/edited",
             "model": answer.model,
         }
-        if row.status == "edited":
-            await settle("done", result)
+        held = library_service.qc_hold(row)
+        if row.status == "edited" or held:
+            # 3-Oct: his change was made. When Jennifer is holding the new file, her line
+            # goes with the reply; it is her finding, not a failed request.
+            await settle("done", {**result, "held": held} if held else result)
+            start_rule_learning(ws, upload_id, [request_id])
         else:
             await settle("needs_you", {**result, "question": f"The re-render stopped: {row.status_detail}"})
     except Exception as exc:  # noqa: BLE001 - lands on the request
@@ -2887,8 +3500,11 @@ async def _settle_talk(session_id: uuid.UUID, ws: uuid.UUID, *, stopped: str | N
         outcomes = list(result.get("outcomes") or [])
         before = dict(sitting.before or {})
         fp = library_service.transcript_fingerprint
-        new_render = row.status == "edited" and row.render_ref != before.get("render_ref")
+        new_render = _rendered_since(row, before.get("render_ref"))
         rendered = bool(before) and stopped is None and new_render
+        # 3-Oct: the new version exists, and Jennifer is holding it for something her
+        # check found. His notes were made; her line says what she is holding it for.
+        held = library_service.qc_hold(row) if rendered else None
         stop = None
         if before and not rendered:
             stop = stopped or row.status_detail or "the render did not finish"
@@ -2908,6 +3524,7 @@ async def _settle_talk(session_id: uuid.UUID, ws: uuid.UUID, *, stopped: str | N
         }
         now = _utcnow()
         needs = 0
+        applied: list[uuid.UUID] = []  # notes that changed the video: what she learns from
         for o in outcomes:
             note = notes.get(str(o.get("id")))
             if note is None:
@@ -2916,12 +3533,14 @@ async def _settle_talk(session_id: uuid.UUID, ws: uuid.UUID, *, stopped: str | N
             note.state, note.result = state, res
             note.updated_at = note.resolved_at = now
             needs += state == "needs_you"
+            if state == "done" and rendered and o.get("outcome") == "change":
+                applied.append(note.id)
         notes_said = f"{len(outcomes)} note{'s' if len(outcomes) != 1 else ''}"
         waiting = f" {needs} of them need{'s' if needs == 1 else ''} you." if needs else ""
         if stop:
             status = f"The re-render stopped: {stop}"
         elif rendered:
-            status = f"New version made from your {notes_said}.{waiting}"
+            status = f"New version made from your {notes_said}.{waiting}" + (f" {held}" if held else "")
         else:
             status = f"Nothing in the video needed changing for your {notes_said}.{waiting}"
         if rendered:
@@ -2934,7 +3553,11 @@ async def _settle_talk(session_id: uuid.UUID, ws: uuid.UUID, *, stopped: str | N
         sitting.result = result
         sitting.state = "needs_you" if needs else "done"
         sitting.finished_at = now
+        upload_id = sitting.upload_id
         await s.commit()
+    if applied:
+        # 3-Oct: every note that was applied teaches Jennifer, or is only about this video.
+        start_rule_learning(ws, upload_id, applied)
 
 
 async def _render_notes_locked(session_id: uuid.UUID, ws: uuid.UUID, upload_id: uuid.UUID) -> None:
@@ -2946,7 +3569,7 @@ async def _render_notes_locked(session_id: uuid.UUID, ws: uuid.UUID, upload_id: 
             return
         before = dict(sitting.before or {})
         row = await _load(s, upload_id, ws)
-        finished = row.status == "edited" and row.render_ref != before.get("render_ref")
+        finished = _rendered_since(row, before.get("render_ref"))
     if before and not finished:
         await _talk_status(session_id, ws, "Cutting and burning in your captions")
         await _plan_and_render_locked(
@@ -3054,6 +3677,148 @@ def start_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
     _spawn(run_talk_session(session_id, ws))
 
 
+# ---------------------------------------------------------------------------
+# Jennifer learns from his notes (3-Oct). "Every note to Jennifer becomes a rule applied
+# to every next video." When a note he gave has been applied (a sitting's note that
+# changed the video, a typed request carried out), one subscription job reads it and
+# says: a rule for every next video, or only about this video. The note's own result
+# records which (`learned`), and a rule becomes an editor_rules row.
+
+RULE_ASK_WAIT_S = 120.0  # one wait on the worker before looking at the clock again
+RULE_RETRY_S = 60.0
+
+
+def rule_key(upload_id: uuid.UUID, prompt: str, system: str) -> str:
+    """Everything the job reads is in its key, like _review_key."""
+    body = "\x1f".join([rule_text.DISTILL_PROMPT_VERSION, system, prompt])
+    return f"rule-distill:{upload_id}:{hashlib.sha256(body.encode()).hexdigest()[:24]}"
+
+
+async def _set_learned(ws: uuid.UUID, note_ids: list[uuid.UUID], learned: dict[str, Any]) -> None:
+    from tce.models.editorial_workspace import EditingRequest
+
+    async with session_factory()() as s:
+        rows = (
+            await s.execute(
+                select(EditingRequest).where(EditingRequest.workspace_id == ws, EditingRequest.id.in_(note_ids))
+            )
+        ).scalars()
+        for note in rows:
+            note.result = {**(note.result or {}), "learned": {**learned, "at": _utcnow().isoformat()}}
+        await s.commit()
+
+
+async def learn_from_notes(ws: uuid.UUID, upload_id: uuid.UUID, note_ids: list[uuid.UUID]) -> None:
+    """Distill applied notes into rules, or record that they are only about this video.
+
+    Restart-safe: a note being asked about says so (`learned.state` asking, with when it
+    began), startup asks again with the same key (the queued job is reused), and a note
+    already decided is never asked about twice. A note he undid teaches nothing.
+    """
+    import structlog
+
+    from tce.llm import LLMUnavailable
+    from tce.llm.queue import QueueError
+    from tce.models.editorial_workspace import EditingRequest
+
+    try:
+        async with session_factory()() as s:
+            row = await _load(s, upload_id, ws)
+            found = (
+                await s.execute(
+                    select(EditingRequest)
+                    .where(EditingRequest.workspace_id == ws, EditingRequest.id.in_(note_ids))
+                    .order_by(EditingRequest.created_at)
+                )
+            ).scalars().all()
+            notes = [
+                n for n in found
+                if n.state == "done"
+                and not (n.result or {}).get("undone_at")
+                and ((n.result or {}).get("learned") or {}).get("state") in (None, "asking")
+            ]
+            if not notes:
+                return
+            context = await _script_context(s, ws, row)
+            have = await editor_rules.prompt_rules(s, ws)
+            now = _utcnow()
+            began = now
+            for n in notes:
+                since = ((n.result or {}).get("learned") or {}).get("since")
+                try:
+                    began = min(began, datetime.fromisoformat(since)) if since else began
+                except ValueError:
+                    pass
+                n.result = {**(n.result or {}), "learned": {"state": "asking", "since": since or now.isoformat()}}
+            ids = [n.id for n in notes]
+            items = [
+                {
+                    "said": n.request,
+                    "understood": n.understood,
+                    "where": library_service.edit_request_to_json(n)["where"],
+                    "reply": (n.result or {}).get("reply"),
+                }
+                for n in notes
+            ]
+            await s.commit()
+        texts = [r[1] for r in have]
+        prompt = rule_text.distill_prompt(context, items, texts)
+        key = rule_key(upload_id, prompt, rule_text.DISTILL_SYSTEM)
+        deadline = began + timedelta(hours=settings.production_review_wait_h)
+        while True:
+            try:
+                answer = await _ask(
+                    rule_text.DISTILL_JOB, prompt, rule_text.DISTILL_SYSTEM, rule_text.DISTILL_SCHEMA, ws, key,
+                    wait_timeout_s=RULE_ASK_WAIT_S, prompt_version=rule_text.DISTILL_PROMPT_VERSION,
+                    max_tokens=min(4000, 500 + 250 * len(items)), requeue_failed=True,
+                )
+                break
+            except LLMUnavailable as exc:
+                if exc.status in ("timeout", "waiting_capacity") and _utcnow() < deadline:
+                    await asyncio.sleep(RULE_RETRY_S)
+                    continue
+                await _set_learned(ws, ids, {"state": "unavailable", "why": str(exc.status)})
+                return
+            except QueueError as exc:
+                await _set_learned(ws, ids, {"state": "unavailable", "why": exc.__class__.__name__})
+                return
+        decided = rule_text.read_distill(answer.structured or {}, len(items), texts)
+        async with session_factory()() as s:
+            by_id = {
+                n.id: n
+                for n in (
+                    await s.execute(
+                        select(EditingRequest).where(EditingRequest.workspace_id == ws, EditingRequest.id.in_(ids))
+                    )
+                ).scalars()
+            }
+            for note_id, d in zip(ids, decided, strict=True):
+                note = by_id.get(note_id)
+                if note is None or (note.result or {}).get("undone_at"):
+                    continue
+                if ((note.result or {}).get("learned") or {}).get("state") != "asking":
+                    continue  # another run of this decided it already
+                if d["kind"] == "rule":
+                    rule = await editor_rules.add_rule(s, ws, d["rule"], upload_id=upload_id, note_id=note_id)
+                    learned = {"state": "rule", "rule_id": str(rule.id), "text": rule.text}
+                elif d["kind"] == "covered":
+                    learned = {"state": "covered", "rule_id": have[d["covered_by"]][0], "text": d["rule"]}
+                elif d["kind"] == "unread":
+                    learned = {"state": "unread"}
+                else:
+                    learned = {"state": "this_video", "why": d["why"]}
+                note.result = {**(note.result or {}), "learned": {**learned, "at": _utcnow().isoformat()}}
+            await s.commit()
+    except Exception:  # noqa: BLE001 - learning never stops an edit; the log says why
+        structlog.get_logger().warning("production.rule_learning_failed", upload=str(upload_id), exc_info=True)
+
+
+def start_rule_learning(ws: uuid.UUID, upload_id: uuid.UUID, note_ids: list[uuid.UUID]) -> None:
+    """After his notes were applied: Jennifer learns from them, in the background."""
+    if settings.production_learn_rules and note_ids:
+        _spawn(learn_from_notes(ws, upload_id, list(note_ids)))
+
+
 async def run_talk_undo(session_id: uuid.UUID, ws: uuid.UUID) -> None:
     """Put back the version from before a sitting's notes, then one re-render.
 
@@ -3125,7 +3890,7 @@ async def run_talk_undo(session_id: uuid.UUID, ws: uuid.UUID) -> None:
             async with session_factory()() as s:
                 sitting = await _load_sitting(s, session_id, ws)
                 now = _utcnow()
-                if row.status == "edited" and row.render_ref != ref:
+                if _rendered_since(row, ref):
                     sitting.before = None
                     sitting.result = {
                         **(sitting.result or {}),
@@ -3199,6 +3964,37 @@ async def resume_auto_work() -> None:
             log.info("production.talk_resumed", sittings=len(sittings), undos=len(undos))
     except Exception:
         log.warning("production.talk_resume_failed", exc_info=True)
+    # 3-Oct: a check of Jennifer's that a restart cut short carries on (the edit it was
+    # checking is on disk), and so does learning from notes that were being read. A
+    # video an automatic edit still holds is left to that edit, which checks its own render.
+    try:
+        async with session_factory()() as s:
+            checking = (
+                await s.execute(select(RecordingUpload).where(RecordingUpload.status == QC_STATUS))
+            ).scalars().all()
+            checks = [
+                (r.id, r.workspace_id) for r in checking if AUTO_MARK not in (r.job_ids or [])
+            ]
+            learning: dict[tuple[uuid.UUID, uuid.UUID], list[uuid.UUID]] = {}
+            if settings.production_learn_rules:
+                recent = _utcnow() - timedelta(hours=settings.production_review_wait_h)
+                for note in (
+                    await s.execute(
+                        select(EditingRequest).where(
+                            EditingRequest.state == "done", EditingRequest.updated_at >= recent
+                        )
+                    )
+                ).scalars():
+                    if ((note.result or {}).get("learned") or {}).get("state") == "asking":
+                        learning.setdefault((note.workspace_id, note.upload_id), []).append(note.id)
+        for upload_id, ws in checks:
+            _spawn(_check_now(upload_id, ws, fix=True, resume=True))
+        for (ws, upload_id), note_ids in learning.items():
+            _spawn(learn_from_notes(ws, upload_id, note_ids))
+        if checks or learning:
+            log.info("production.jennifer_resumed", checks=len(checks), learning=len(learning))
+    except Exception:
+        log.warning("production.jennifer_resume_failed", exc_info=True)
     if not settings.production_auto_edit:
         return
     try:
@@ -3631,10 +4427,18 @@ async def publish_route(
         raise HTTPException(status_code=409, detail="There is no edited video to post")
     # 28-Sep review: a post tapped while the video is being edited again would upload
     # the edit that is about to be replaced.
-    if AUTO_MARK in (row.job_ids or []) or row.status in ("proofreading", "planned", "rendering"):
+    if AUTO_MARK in (row.job_ids or []) or row.status in ("proofreading", "planned", "rendering", QC_STATUS):
         raise HTTPException(
             status_code=409,
             detail="This video is being edited again. Post it when the new edit is ready.",
+        )
+    # 3-Oct: a video Jennifer is holding does not go out until he has looked: a note
+    # that fixes it, or "It is fine, let it through" on the card.
+    held = library_service.qc_hold(row)
+    if held:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{held} Give her a note, or let it through on the card, then post it.",
         )
     unknown = [p for p in body.platforms if p not in publishing.PLATFORMS]
     if unknown:
