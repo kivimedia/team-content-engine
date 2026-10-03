@@ -174,3 +174,11 @@ Reviewer: C3. Start: branch at 16562a0, clean tree, local == origin. Same runner
   pre-fix code (worktree .tmp/c3-pre at 16562a0): 17 failed, 35 passed, each failure for the bug it
   guards (whole body read, deleted rule in the review system text, 'done' instead of 'waiting',
   em dash in her line, rule counted after delete, no floor/backstop/cap functions).
+- Commit e240f98 pushed. Full suite on e240f98 (.tmp/c3-full1.log): 4 failed, 1997 passed, 3 skipped in
+  8m12s (1966 + 31 new). The 4 are the browser baseline; I ran those 4 on master 5495cee myself
+  (.tmp/master-wt): the same 4 fail with the same assertions ("Your note at 0:00" x3, textBigger
+  covered by the topbar).
+- 20:57 second round: an auth test for every new Jennifer route (check, release, rules list, rule delete:
+  401 without the key or with a wrong one); the dash regexes in qc.py and rules.py written with \u
+  escapes, so the source holds no dash characters. QC + rules files: 70 passed.
+- Live folder /home/ziv/team-content-engine read only: HEAD 5495cee, untracked files only, untouched.

@@ -65,7 +65,7 @@ _NORM = re.compile(r"[^\w']+")
 # A dash in a sentence he reads: an em or en dash, or a double hyphen used as one. Her
 # lines quote words the recogniser wrote, captions and the subscription's own reasons,
 # and any of them can carry one (3-Oct review).
-_DASH = re.compile(r"\s*[‒–—―]\s*|\s+--\s+|(?<=\w)--(?=\w)")
+_DASH = re.compile(r"\s*[\u2012-\u2015]\s*|\s+--\s+|(?<=\w)--(?=\w)")
 
 
 def plain(text: str) -> str:

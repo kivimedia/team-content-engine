@@ -59,6 +59,23 @@ async def _row(sm, ws, uid):
 
 
 # ---------------------------------------------------------------------------
+# Every new route needs the private key
+
+
+async def test_every_new_jennifer_route_needs_the_private_key(client):
+    uid, rid, ws = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    for method, url in (
+        ("post", f"/api/v1/production/uploads/{uid}/check"),
+        ("post", f"/api/v1/production/uploads/{uid}/check/release"),
+        ("get", "/api/v1/production/editor-rules"),
+        ("delete", f"/api/v1/production/editor-rules/{rid}"),
+    ):
+        for headers in ({"X-Workspace-Id": str(ws)}, {"Authorization": "Bearer not-the-key", "X-Workspace-Id": str(ws)}):
+            r = await getattr(client, method)(url, headers=headers)
+            assert r.status_code == 401, (method, url, r.status_code)
+
+
+# ---------------------------------------------------------------------------
 # A deleted rule is never applied
 
 

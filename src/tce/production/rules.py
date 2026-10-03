@@ -108,7 +108,7 @@ def distill_prompt(context: str, notes: list[dict[str, Any]], rules: list[str]) 
     )
 
 
-_DASHES = re.compile(r"\s*[‒–—―]\s*|\s+--\s+")
+_DASHES = re.compile(r"\s*[\u2012-\u2015]\s*|\s+--\s+")
 _STAMP = re.compile(r"\b\d{1,2}:\d{2}\b")
 
 
