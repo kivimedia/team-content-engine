@@ -182,3 +182,6 @@ Reviewer: C3. Start: branch at 16562a0, clean tree, local == origin. Same runner
   401 without the key or with a wrong one); the dash regexes in qc.py and rules.py written with \u
   escapes, so the source holds no dash characters. QC + rules files: 70 passed.
 - Live folder /home/ziv/team-content-engine read only: HEAD 5495cee, untracked files only, untouched.
+- 21:07 final full suite on ab3ad9a (.tmp/c3-full2.log): 4 failed, 1998 passed, 3 skipped in 9m36s; the 4
+  are the browser baseline that fails the same way on master. Branch pushed. Left for cleanup (recursive
+  delete is gated): the worktree .tmp/c3-pre (git worktree prune after), and the PC scratch folder c3.
