@@ -314,6 +314,21 @@ async def test_the_kill_switch_keeps_the_talk_but_starts_no_edit(client, editori
 
 
 @needs_ffmpeg
+async def test_a_transcript_that_comes_with_a_later_finish_is_kept(client, editorial_sessionmaker, tmp_path):
+    """The sweeper finishes an idle talk without the call's transcript; the page's own
+    finish brings it a moment later. The video keeps it for its next plan."""
+    data = _record(tmp_path / "source.webm", "webm", seconds=2.0)
+    talk = await _new_talk(client, call_id="call-swept")
+    await _send(client, talk, data, shuffle=False)
+    first = await client.post(f"{BASE}/{talk}/finish", headers=AUTH, json={})
+    later = await client.post(f"{BASE}/{talk}/finish", headers=AUTH, json={"transcript": TRANSCRIPT})
+    assert later.json()["upload_id"] == first.json()["upload_id"]
+    async with editorial_sessionmaker() as s:
+        upload = await s.get(RecordingUpload, uuid.UUID(first.json()["upload_id"]))
+    assert [line["text"] for line in upload.call_transcript] == [line["text"] for line in TRANSCRIPT]
+
+
+@needs_ffmpeg
 async def test_the_library_shows_an_agent_talk_and_the_idea_lists_do_not(client, editorial_sessionmaker,
                                                                           tmp_path):
     data = _record(tmp_path / "source.webm", "webm", seconds=2.0)

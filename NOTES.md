@@ -1,6 +1,7 @@
 # C1 step log: Agent talk intake (C4, TCE side) + Jennifer name
 
-Branch: feat/agent-talk-jennifer. Plan: kmbot plans/03-Oct-26-jack-cto-selfie-jennifer.md (C4).
+Branch: feat/agent-talk-jennifer. Plan: the KM BOT build plan of 3-Oct-2026, contract C4
+(agent-talk intake) and the Jennifer name.
 Test runner: .tmp/run-tests.sh (dead Postgres URL so nothing can reach a real DB; PYTHONPATH =
 src + .testdeps; the live app runs on the system python3, there is no .venv).
 
@@ -48,4 +49,16 @@ src + .testdeps; the live app runs on the system python3, there is no .venv).
     (worktree .tmp/master-wt, log .tmp/master-browser.log): environment, not this branch.
 - 17:0x also: speakers ("HOST:", "ATLAS:") in the typed-request and sitting prompts, a
   talk context line in every job's context, finish recovers a joined file after a crash
-  between the join and the row. Targeted run: 159 passed.
+  between the join and the row. Targeted run: 159 passed. Commit 1844488, branch pushed.
+- 17:05 full suite #2 (1844488): 4 failed, 1892 passed, 3 skipped (8m42s). The 4 are the
+  browser tests that fail identically on master (see above). Everything else green.
+- 17:1x a later finish that brings the call's transcript keeps it on the video (the
+  sweeper may finish first without it); the voice tools' own text says "your standing
+  rules for you, his video editor" and "Last word on the edit" (Jennifer reads them).
+
+## Attempt 3 (started 18:00 Israel time)
+- 18:00 Read NOTES.md and the uncommitted diff: the last step of attempt 2 was complete in
+  the tree (a later finish keeps the call's transcript; the voice tools' text).
+- 18:05 targeted run (agent talk, voices, Jennifer and every test file that names them):
+  254 passed, 3 failed, 3 skipped. The 3 are the notes-sheet browser tests that fail the
+  same way on master. Committed and pushed; full suite #3 follows.

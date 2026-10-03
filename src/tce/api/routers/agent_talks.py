@@ -257,6 +257,20 @@ async def _upload_of(db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID | Non
     ).scalar_one_or_none()
 
 
+async def _finished_again(
+    db: AsyncSession, ws: uuid.UUID, row: AgentTalk, body: AgentTalkFinish
+) -> dict[str, Any]:
+    """A finish for a talk that already has its video answers with that video. If the
+    first finish came without the call's transcript (the sweeper finishing an idle talk)
+    and this one brings it, the video keeps it: the next plan tells the voices apart."""
+    upload = await _upload_of(db, ws, row.upload_id)
+    lines = [line.model_dump() for line in body.transcript or []]
+    if upload is not None and lines and not upload.call_transcript:
+        upload.call_transcript = lines
+        await db.commit()
+    return _finished(row, upload)
+
+
 def _missing_line(missing: list[int]) -> str:
     if not missing:
         return ""
@@ -277,11 +291,11 @@ async def finish_agent_talk(
     body = body or AgentTalkFinish()
     row = await _talk(db, ws, talk_id)
     if row.upload_id is not None:  # finished before: the same video, as it stands now
-        return _finished(row, await _upload_of(db, ws, row.upload_id))
+        return await _finished_again(db, ws, row, body)
     async with _finish_lock(talk_id):
         await db.refresh(row)
         if row.upload_id is not None:  # another finish made it while this one waited
-            return _finished(row, await _upload_of(db, ws, row.upload_id))
+            return await _finished_again(db, ws, row, body)
         try:
             ended = agent_talks.parse_instant(body.ended_at) or _utcnow()
         except TalkError as exc:

@@ -212,7 +212,7 @@ export function register(server, call, { reply, failure }) {
     'START HERE for every note he gives on a video he is reviewing (his call opened on video:<id>). '
       + 'Reads one note: the second he paused at, his words, the words of the video around that second '
       + '(cut words and joins marked), what his phone or the edit did to a word, his earlier notes on this '
-      + 'video, and, the first time, his standing rules for the editor. Every hold of the button is pinned: '
+      + 'video, and, the first time, his standing rules for you, his video editor. Every hold of the button is pinned: '
       + 'pass his words on this hold as said, and it reads the hold with those words (with no words and no '
       + 'note id, his newest hold). It waits a few seconds when his words are still being saved. Pass the note '
       + 'id when you know which note you mean. Then save your reading with tce_video_note. Never for a hold '
@@ -280,7 +280,7 @@ export function register(server, call, { reply, failure }) {
         ? `Save what he wants at this second in one line with tce_video_note (note ${m.note.id}), then say back the line it gives you. `
           + 'Do not ask him first: nothing changes until he says make it. If his words are unclear, say what you heard and ask him to hold and say it again.'
         : 'This is the video at that second; there is no note to save here.');
-      if (m.rules) lines.push('His standing rules for the editor are in rules: follow them when you read a note.');
+      if (m.rules) lines.push('His standing rules for you, his video editor, are in rules: follow them when you read a note.');
       const data = {
         video: m.video,
         session_id: m.session_id,
@@ -394,7 +394,7 @@ export function register(server, call, { reply, failure }) {
         head = kept.length
           ? `${kept.length} note${kept.length === 1 ? '' : 's'} on "${v.title}"; nothing changes until he says make it.`
           : `His notes on "${v.title}" are open, with no note yet.`;
-        if (status) head += ` Last word from the editor: ${status}.`;
+        if (status) head += ` Last word on the edit: ${status}.`;
       } else if (s.state === 'thinking' || s.state === 'rendering') {
         head = `His notes on "${v.title}" are being made into a new version right now${status ? ` (${status})` : ''}.`;
       } else {
