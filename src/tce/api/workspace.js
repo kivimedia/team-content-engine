@@ -1997,6 +1997,8 @@
     }
     sheet.noteCount = (payload.notes || []).filter(function (n) { return n.state !== "rejected"; }).length;
     sheet.talk = window.TceTalkVoice.open({
+      // Hands-free unless ?hold=1 asks for the hold-to-talk button (Ziv, 3-Oct-2026).
+      handsFree: !/[?&]hold=1(&|$)/.test(window.location.search) && window.__tceHoldToTalk !== true,
       root: root,
       video: sheet.video,
       sitting: payload,
