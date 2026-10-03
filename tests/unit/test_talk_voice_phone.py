@@ -166,6 +166,7 @@ window.__openSheet = async function (uploadId) {
   var r = await fetch("/api/v1/production/recordings/" + uploadId + "/talk", { method: "POST" });
   var sitting = await r.json();
   window.talk = TceTalkVoice.open({
+    handsFree: false,   // these tests are the hold-to-talk sheet; hands-free has its own
     root: document.getElementById("bar"),
     video: document.getElementById("player"),
     sitting: sitting,
@@ -1012,6 +1013,7 @@ OPEN_FAKE = """(payload) => {
   window.__posts = 0;
   window.__calls = [];
   window.talk = TceTalkVoice.open(Object.assign({
+    handsFree: false,   // these tests are the hold-to-talk sheet; hands-free has its own
     root: document.getElementById('bar'),
     video: document.getElementById('player'),
     notes: document.getElementById('notes'),

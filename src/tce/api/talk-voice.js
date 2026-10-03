@@ -393,6 +393,24 @@
 
     // Voice states in which a hold cannot be used at all.
     var NO_HOLD = ["loading", "signin", "unavailable", "old", "off"];
+    /* Hands-free (Ziv, 3-Oct-2026): "I do not want to click a button to talk. It should
+       just listen, and as soon as I pause it switches to answering, then back to
+       listening." On by default; handsFree:false gives the hold-to-talk sheet back.
+       While the video is paused the mic is open. His first words open a hold pinned to
+       the paused second, exactly as a press did, and the voice's end of his utterance
+       ("said") lets it go. While the video plays the mic is muted, as before. */
+    var handsFree = opts.handsFree !== false;
+    function listening() {
+      return handsFree && !gone() && takingNotes() && NO_HOLD.indexOf(voice) < 0
+        && !(video && !video.paused);
+    }
+    function listen() {
+      if (!listening()) return;
+      if (!call) { startCall(); return; }
+      clearTimeout(muteTimer);
+      muteTimer = null;
+      if (!hold) call.mute(false);
+    }
 
     function say(text) {
       if (gone()) return;
@@ -443,9 +461,11 @@
       if (voice === "dropped") return DROPPED;
       if (voice === "failed") return (voiceWhy || EDITOR + "'s voice stopped").replace(/\.$/, "") + ". Hold to try again.";
       if (voice === "connecting") return "Connecting " + EDITOR + "'s voice...";
-      if (playing()) return EDITOR + " stays quiet while the video plays. Pause, then hold to talk.";
+      if (playing()) return handsFree ? EDITOR + " stays quiet while the video plays. Pause, then just talk."
+        : EDITOR + " stays quiet while the video plays. Pause, then hold to talk.";
       if (speaking) return EDITOR + " is answering out loud. Her answer is written on the note below.";
-      return "Pause where something is wrong, then hold to talk.";
+      return handsFree ? "Listening. Say what is wrong here, then carry on."
+        : "Pause where something is wrong, then hold to talk.";
     }
 
     // The words of the note the status line is about: the one he holds, else the one being saved.
@@ -468,12 +488,15 @@
       wordsEl.classList.toggle("is-empty", !words);
       wordsEl.textContent = words ? "“" + tail(words) + "”"
         : hold ? "Say what is wrong at " + clock(hold.t) + "."
+        : handsFree ? "Pause the video and just talk."
         : "Your words show here while you hold.";
       var usable = takingNotes() && NO_HOLD.indexOf(voice) < 0;
       button.disabled = !usable && !hold;
       button.setAttribute("aria-pressed", hold ? "true" : "false");
       button.classList.toggle("is-holding", Boolean(hold));
-      button.textContent = hold ? "Listening - let go when done"
+      button.hidden = handsFree && !hold && voice !== "dropped" && voice !== "failed";
+      button.textContent = handsFree && hold ? "Listening"
+        : hold ? "Listening - let go when done"
         : voice === "dropped" || voice === "failed" ? "Hold to reconnect"
         : "Hold to talk";
     }
@@ -597,7 +620,7 @@
           context: "video:" + sitting.upload,
           api: "live",
           greet: false,       // nothing talks until he does
-          startMuted: true,   // and he talks only while he holds
+          startMuted: !listening(),   // he talks while he holds, or (hands-free) while it is paused
           on: function (type, data) { if (callToken === token) onVoice(type, data || {}); }
         });
       } catch (error) {
@@ -701,6 +724,8 @@
     function onVoice(type, d) {
       // His words, first: they still land on his last note while the sheet closes.
       if (type === "hearing") {
+        // Hands-free: his first words while it is paused are the press.
+        if (handsFree && d.text && !hold && !settling && listening()) press();
         capture.hearing(d.text);
         if (settling && capture.owner === settling.h) armQuiet();
         paint();
@@ -711,7 +736,7 @@
         // Flushed: the voice handed his words over (or the call is closing). A note
         // being saved is complete now; a note being held is saved so far.
         if (settling && capture.owner === settling.h) { finishSettle(); return; }
-        if (hold && capture.owner === hold) { saveWords(hold); paint(); }
+        if (hold && capture.owner === hold) { saveWords(hold); if (handsFree) release(); paint(); }
         return;
       }
       if (gone()) return;   // the sheet is closed: nothing else is shown
@@ -834,7 +859,7 @@
       hold = null;
       // The video is still paused: his answer may be heard now.
       if (call && !playing()) call.quiet(false);
-      if (!keep && Date.now() - h.at < TAP_MS) {
+      if (!keep && !handsFree && Date.now() - h.at < TAP_MS) {
         muteNow();
         if (capture.owner === h) capture.stop();
         h.pinning.then(function (id) { if (id) dropNote(id); });
@@ -857,7 +882,7 @@
       clearTimeout(muteTimer);
       muteTimer = setTimeout(function () {
         muteTimer = null;
-        if (!hold && call) call.mute(true);
+        if (!hold && call && !listening()) call.mute(true);
         paint();
       }, RELEASE_GRACE_MS);
     }
@@ -1006,6 +1031,7 @@
     function onPause() {
       // The answer may be heard again, but never while he holds: his press paused it.
       if (call && !gone() && !hold) call.quiet(false);
+      listen();
       paint();
     }
 
