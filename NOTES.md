@@ -62,3 +62,6 @@ src + .testdeps; the live app runs on the system python3, there is no .venv).
 - 18:05 targeted run (agent talk, voices, Jennifer and every test file that names them):
   254 passed, 3 failed, 3 skipped. The 3 are the notes-sheet browser tests that fail the
   same way on master. Committed and pushed; full suite #3 follows.
+- 18:11 full suite #3 (bca484d): 4 failed, 1893 passed, 3 skipped (8m43s). The same 4
+  browser tests as on master (3 notes-sheet "Your note at 0:00", 1 recording studio
+  textBigger covered). Nothing else red. C1 is complete on this branch.
