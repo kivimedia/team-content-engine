@@ -65,3 +65,59 @@ src + .testdeps; the live app runs on the system python3, there is no .venv).
 - 18:11 full suite #3 (bca484d): 4 failed, 1893 passed, 3 skipped (8m43s). The same 4
   browser tests as on master (3 notes-sheet "Your note at 0:00", 1 recording studio
   textBigger covered). Nothing else red. C1 is complete on this branch.
+
+# C2 step log: Jennifer checks every edit, and learns rules from his notes (phase 6)
+
+Same branch, same runner (.tmp/run-tests.sh for the full suite; .tmp/c2rt.sh for targeted
+runs). Builder edits a mirror of src/tests on the PC and ships it with tar over ssh.
+
+## Attempt 1 (started about 18:40 Israel time)
+- Read C1's report (complete, branch at c361a90, clean tree) and the code the role names:
+  tightcut.pause_stats, autoedit (word_marks, apply_batch, review prompt), retakes,
+  media.render_edit, wordbox, relisten, llm provider/queue, alembic 056/057, the skill file.
+- Design:
+  - production/qc.py: pure checks on the RENDERED file. gaps (10 ms levels of the
+    render, quiet runs minus kept words, plus "nobody speaks" stretches when the
+    recogniser's second listen has times), loudness (ffmpeg ebur128 I and true peak),
+    captions (the caption data the render was drawn from, written beside the edit as
+    <name>.render.json, checked against the plan's kept words), audibility (word_marks
+    clipped and phone-cut, plus the render re-transcribed through the local ASR worker in
+    clip mode; a word is inaudible only when the recogniser missed it AND the level at
+    that word stays under speech level), leftover asides (one llm job, video_qc_asides,
+    proven by quoting, agent words protected, more than 25% = not a check).
+  - Fix or hold: loudness is fixed INSIDE the render (two-pass loudnorm, -14 LUFS, TP
+    -1, filter aims at -1.5; the first pass only listens to the cut audio, so the picture
+    is encoded once). Gaps become a new override "trim" (a cut only drops words, so dead
+    air between words needed its own override; merge_overrides keeps it, a restore lifts
+    it), asides become "cut", clipped words become "hold". Then ONE re-render and one
+    re-check (round 1). Anything still failing, or unfixable (phone-cut word, inaudible
+    word, caption missing or mismatched, loudness off after the render), holds the video
+    as needs_review with ONE line. Pass = "Checked by Jennifer: <numbers>".
+  - Status "checking" while she works (live step on the card), recording_uploads.qc holds
+    the newest verdict, render_checks keeps every check. Held videos cannot be posted
+    until a note fixes them or he taps "It is fine, let it through". Settings:
+    production_qc (fix | report | off), production_qc_asides_wait_s, production_qc_listen,
+    production_learn_rules. The suite's conftest switches qc and learning off; the
+    Jennifer tests switch them on.
+  - Rules: production/rules.py (distill job editor_rule_distill: rule | this_video |
+    covered, cleaned to one plain sentence, no time stamps), editorial/editor_rules.py
+    (rows, deactivate, applied counts per video once), injected after the skill file in
+    the review and the asides check, numbered R1..Rn, capped at 3000 chars with the
+    oldest left out and a log line (editor_rules.cap_hit). A removal or aside whose why
+    names (Rn) counts that video for the rule. Learning runs after an applied typed
+    request and after a sitting whose notes changed the video; restart-safe
+    (learned.state asking).
+  - Migration 058: recording_uploads.qc, render_checks, editor_rules. Additive.
+  - UI: card shows her line (green when checked, red when held), "Ask Jennifer to check
+    it again", "It is fine, let it through", what she learned from each note; new page
+    /library/rules (Jennifer's rules) with source video link and Delete. Voice: tools
+    tce_video_check and tce_video_rules, seat brief and tce.json updated, the moment's
+    rules include her learned rules, tce_recordings says "held by Jennifer".
+- 18:51 full suite on the first cut (qc off in conftest): 6 failed, 1891 passed, 3 skipped.
+  4 = the browser baseline. 2 mine: test_render_edit_cuts_kept_ranges (new status line,
+  updated) and the seat installer count (tools 20 -> 25, updated).
+- Fixture lessons: lavfi aevalsrc needs the expression quoted (commas); a tone has no
+  "s", so words ending on a hiss are flagged phone-cut (fixtures avoid them); the asides
+  check refuses an answer over 25% of the words, so fixtures need longer talk.
+- 19:25 targeted (test_jennifer_qc, test_jennifer_flow, test_jennifer_rules,
+  test_production_media, the installer test): 83 passed.
