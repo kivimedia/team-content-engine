@@ -3049,7 +3049,7 @@ def test_the_notes_say_where_each_stands_and_a_short_id_is_found_in_the_library(
             where="at 1:31",
             state="rejected",
             request="yes",
-            result={"command": "yes", "taken": "This hold was an instruction to the editor, not a note."},
+            result={"command": "yes", "taken": "This hold was an instruction to Jennifer, not a note."},
         ),
     ]
     lib = {

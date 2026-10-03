@@ -433,7 +433,7 @@ def test_the_notes_sheet_from_the_card_to_one_new_version(host, tmp_path):
         page.goto(f"{host['base']}/library")
         card = page.locator("article.card", has_text=TITLE)
         card.wait_for()
-        talk = card.locator("button[data-talk-edit]", has_text="Talk to the editor")
+        talk = card.locator("button[data-talk-edit]", has_text="Talk to Jennifer")
         assert talk.count() == 1
         assert card.locator(".waiting-notes").count() == 0
 

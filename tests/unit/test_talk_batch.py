@@ -429,7 +429,7 @@ async def test_a_failed_job_hands_the_notes_back_unchanged(wired, tmp_path):
     await prod.run_talk_session(sid, ws)
     row, sitting, notes = await state_of(sm, ws, uid, sid)
     assert sitting.state == "open" and sitting.submitted_at is None
-    assert sitting.result["status"].startswith("Your editor could not read the notes (failed)")
+    assert sitting.result["status"].startswith("Jennifer could not read the notes (failed)")
     assert notes[n1].state == "held" and wired["renders"] == []
     assert kept(row, 12)
 

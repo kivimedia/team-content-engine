@@ -4,7 +4,8 @@
  * section 2 (the call is KM BOT's tce seat, embedded) and section 6 (failure modes).
  * This is build step 8, "Sheet, talking".
  *
- * The sheet (the Library player's "Talk to the editor" page) owns the video, the
+ * The sheet (the Library player's "Talk to Jennifer" page; 3-Oct, the editor is Jennifer)
+ * owns the video, the
  * typed notes and "Make the new version". This file owns the call:
  *
  *   var talk = TceTalkVoice.open({
@@ -91,14 +92,16 @@
   var HANGUP_WAIT_MS = 10000;  // the notes left the sheet: the editor has this long to start saying so
   var DROPPED = "Voice dropped - hold to reconnect";
   // In place of the voice client's raw "Voice error: {json}" (the whole error is logged).
-  var VOICE_PROBLEM = "The editor's voice reported a problem. Your notes are saved.";
+  // 3-Oct: the editor has a name. Every sentence he reads says Jennifer.
+  var EDITOR = "Jennifer";
+  var VOICE_PROBLEM = EDITOR + "'s voice reported a problem. Your notes are saved.";
   // KM BOT's voice client on this box has no mute or quiet for the call yet (K1).
-  var OLD_VOICE = "The editor's voice on this box is older than the notes sheet, so holding to talk "
+  var OLD_VOICE = EDITOR + "'s voice on this box is older than the notes sheet, so holding to talk "
     + "waits for its update. Typing still works.";
   var CLOSED_ELSEWHERE = "These notes were closed on another screen. Hold to talk opens them again.";
   var NO_WORDS_HERE = "No words were caught here.";
   // Design section 6: a note the editor never read still goes to it as he said it.
-  var UNCONFIRMED = "The editor has not confirmed this one. It is still made as you said it.";
+  var UNCONFIRMED = EDITOR + " has not confirmed this one. It is still made as you said it.";
   var NOT_A_NOTE = "That hold was not kept as a note.";
 
   var prefix = global.location.pathname.indexOf("/tce/") === 0 ? "/tce" : "";
@@ -264,7 +267,7 @@
     } else if (note.state === "in_progress" || note.state === "queued") {
       view.answer = r.status || "Being made into the new version."; view.kind = "working";
     } else if (!note.understood && WAITING.indexOf(note.state) >= 0 && view.said) {
-      if (pending === "reading") { view.answer = "The editor is reading this note."; view.kind = "reading"; }
+      if (pending === "reading") { view.answer = EDITOR + " is reading this note."; view.kind = "reading"; }
       else if (pending === "unconfirmed") {
         /* 1-Oct final review: "hold and say it again" pinned a second copy, which also
            went unread. The note already goes to the editor as he said it. */
@@ -299,7 +302,7 @@
       if (said) html += '<p class="tv-said">' + said + "</p>";
       if (v.answer) {
         html += '<p class="tv-answer">' + (v.kind === "understood"
-          ? "<strong>The editor:</strong> “" + esc(v.answer) + "”"
+          ? "<strong>" + EDITOR + ":</strong> “" + esc(v.answer) + "”"
           : esc(v.answer)) + "</p>";
       }
       if (v.moved) html += '<p class="tv-moved">' + esc(v.moved) + "</p>";
@@ -407,20 +410,20 @@
       }
       if (!takingNotes()) {
         // How it ended ("New version made from your 3 notes. 1 of them needs you.").
-        return sitting.status || "These notes were handed to the editor. Open the notes again for new ones.";
+        return sitting.status || "These notes were handed to " + EDITOR + ". Open the notes again for new ones.";
       }
-      if (voice === "loading") return "Loading the editor's voice";
+      if (voice === "loading") return "Loading " + EDITOR + "'s voice";
       if (voice === "signin") {
-        return "The editor's voice needs its own sign-in on this phone. Sign in, then come back. Typing still works.";
+        return EDITOR + "'s voice needs its own sign-in on this phone. Sign in, then come back. Typing still works.";
       }
       if (voice === "unavailable") {
-        return "The editor's voice did not load" + (voiceWhy ? " (" + voiceWhy + ")" : "") + ". Typing still works.";
+        return EDITOR + "'s voice did not load" + (voiceWhy ? " (" + voiceWhy + ")" : "") + ". Typing still works.";
       }
       if (voice === "old") return OLD_VOICE;
       if (hold) {
         var at = clock(hold.t);
         if (voice === "ready") return "Listening at " + at;
-        return "Connecting the editor's voice. Keep holding: listening at " + at + " starts when it is ready.";
+        return "Connecting " + EDITOR + "'s voice. Keep holding: listening at " + at + " starts when it is ready.";
       }
       if (settling) {
         return (muteTimer ? "Finishing what you said at " : "Saving what you said at ") + clock(settling.h.t);
@@ -428,10 +431,10 @@
       if (notice && notice.until > Date.now()) return notice.text;
       if (state === "closed") return CLOSED_ELSEWHERE;
       if (voice === "dropped") return DROPPED;
-      if (voice === "failed") return (voiceWhy || "The editor's voice stopped").replace(/\.$/, "") + ". Hold to try again.";
-      if (voice === "connecting") return "Connecting the editor's voice...";
-      if (playing()) return "The editor stays quiet while the video plays. Pause, then hold to talk.";
-      if (speaking) return "The editor is answering out loud. Its answer is written on the note below.";
+      if (voice === "failed") return (voiceWhy || EDITOR + "'s voice stopped").replace(/\.$/, "") + ". Hold to try again.";
+      if (voice === "connecting") return "Connecting " + EDITOR + "'s voice...";
+      if (playing()) return EDITOR + " stays quiet while the video plays. Pause, then hold to talk.";
+      if (speaking) return EDITOR + " is answering out loud. Her answer is written on the note below.";
       return "Pause where something is wrong, then hold to talk.";
     }
 
@@ -960,7 +963,7 @@
             refreshSoon();
             return;
           }
-          if (final) say("Saved at " + clock(h.t) + ". The editor answers out loud, and in writing on the note.");
+          if (final) say("Saved at " + clock(h.t) + ". " + EDITOR + " answers out loud, and in writing on the note.");
           refreshSoon();
         } catch (error) {
           delete saved[id];

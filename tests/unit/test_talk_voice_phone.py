@@ -462,7 +462,7 @@ def test_hold_to_talk_pins_the_second_saves_his_words_and_writes_the_editors_ans
         }
         assert call["muted"] is True
         # 3-second rule: while it connects, the bar says what is happening.
-        phone.wait_status("Connecting the editor's voice")
+        phone.wait_status("Connecting Jennifer's voice")
         assert page.evaluate("() => window.__wake.requested") == ["screen"]
         phone.emit(0, "ear", {"open": True})
         phone.wait_status("Pause where something is wrong, then hold to talk.")
@@ -471,7 +471,7 @@ def test_hold_to_talk_pins_the_second_saves_his_words_and_writes_the_editors_ans
         # ---- play: the editor is hushed and kept quiet, and the mic stays muted
         phone.video("v.play()")
         page.wait_for_function("() => document.getElementById('player').currentTime > 1.3")
-        phone.wait_status("The editor stays quiet while the video plays")
+        phone.wait_status("Jennifer stays quiet while the video plays")
         call = phone.voice()[0]
         assert call["quieted"] is True and call["muted"] is True
         assert "hush" in call["log"]
@@ -522,11 +522,11 @@ def test_hold_to_talk_pins_the_second_saves_his_words_and_writes_the_editors_ans
         )
         row = page.locator(f'.tv-note[data-note-id="{pin["note_id"]}"]')
         assert row.locator(".tv-when").inner_text() == at
-        assert row.locator(".tv-answer").inner_text() == "The editor is reading this note."
+        assert row.locator(".tv-answer").inner_text() == "Jennifer is reading this note."
 
         # ---- the editor talks: its speech is never drawn; its written answer is the row
         phone.emit(0, "partial", {"text": "Sure thing, I will SNIP IT OUT right away"})
-        phone.wait_status("The editor is answering out loud")
+        phone.wait_status("Jennifer is answering out loud")
         understood = f"At {at} you want the second 'basically' gone."
         status = page.evaluate(
             """async ([sid, nid, u]) => (await fetch('/api/v1/production/talk/' + sid + '/notes/' + nid, {
@@ -540,7 +540,7 @@ def test_hold_to_talk_pins_the_second_saves_his_words_and_writes_the_editors_ans
             "(u) => [...document.querySelectorAll('.tv-answer')].some(p => p.textContent.includes(u))",
             arg=understood,
         )
-        assert row.locator(".tv-answer").inner_text() == f"The editor: “{understood}”"
+        assert row.locator(".tv-answer").inner_text() == f"Jennifer: “{understood}”"
         assert "SNIP IT OUT" not in page.locator("body").inner_text()
 
         # ---- phone layout
@@ -658,7 +658,7 @@ def test_a_dropped_voice_says_so_and_the_next_hold_is_a_fresh_call_on_the_same_s
         again = phone.voice()[1]
         assert again["opts"]["context"] == f"video:{host['upload']}" and again["opts"]["greet"] is False
         assert again["muted"] is False, "he is holding: the new call must hear him once it connects"
-        phone.wait_status("Connecting the editor's voice. Keep holding")
+        phone.wait_status("Connecting Jennifer's voice. Keep holding")
         phone.emit(1, "ear", {"open": True})
         phone.wait_status(f"Listening at {pinned.value.json()['clock']}")
         phone.emit(1, "hearing", {"text": "Tighten the gap here"})
@@ -724,7 +724,7 @@ def test_a_voice_that_asks_for_its_own_sign_in_links_to_it_and_typing_still_work
         host["voice"]["status"] = 200
         page.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")
         page.wait_for_function("() => window.__voice && window.__voice.starts.length === 1")
-        phone.wait_status("Connecting the editor's voice")
+        phone.wait_status("Connecting Jennifer's voice")
         assert page.locator(".tv-hold").is_enabled()
         assert page.locator(".tv-signin").is_hidden()
 
@@ -779,7 +779,7 @@ def test_his_words_for_a_note_are_what_came_after_the_press():
     assert got["when"] == "0:38"
     # 1-Oct final review: "hold and say it again" pinned a second copy of the note; the
     # note already goes to the editor as he said it.
-    assert got["answer"] == "The editor has not confirmed this one. It is still made as you said it."
+    assert got["answer"] == "Jennifer has not confirmed this one. It is still made as you said it."
 
 
 # ------------------------------------------------------- 1-Oct review fixes
@@ -831,7 +831,7 @@ def test_a_press_over_the_editor_keeps_it_silent_and_the_mic_closes_a_moment_aft
 
         # The editor is answering out loud on the paused video.
         phone.emit(0, "partial", {"text": "At 0:01 you want the"})
-        phone.wait_status("The editor is answering out loud")
+        phone.wait_status("Jennifer is answering out loud")
         assert phone.voice()[0]["audible"] is True
 
         # He presses over it: cut off, and silent for the whole hold.
@@ -1078,7 +1078,7 @@ def test_the_bar_never_moves_the_button_and_says_a_voice_problem_plainly():
     with sync_playwright() as pw:
         browser, page, errors = _bar_page(pw, BASE)
         phone = Phone(page)
-        phone.wait_status("Connecting the editor's voice")
+        phone.wait_status("Connecting Jennifer's voice")
 
         layouts = {"idle": page.evaluate(BAR_LAYOUT)}
         page.mouse.move(*phone.hold_point())
@@ -1105,7 +1105,7 @@ def test_the_bar_never_moves_the_button_and_says_a_voice_problem_plainly():
         raw = 'Voice error: {"type":"error","error":{"type":"invalid_request_error","message":"Unknown event"}}'
         phone.emit(0, "error", {"text": raw})
         page.wait_for_timeout(200)
-        assert phone.status() == "The editor's voice reported a problem. Your notes are saved.", phone.status()
+        assert phone.status() == "Jennifer's voice reported a problem. Your notes are saved.", phone.status()
         problem = page.evaluate(BAR_LAYOUT)
         assert round(problem["offset"], 1) == offsets["idle"] and problem["statusFits"], problem
 
@@ -1129,7 +1129,7 @@ def test_the_bar_says_what_the_notes_are_doing_and_when_the_editor_has_stopped()
 
         # The editor stops "answering" when its words stop: no turn_end comes on Live.
         phone.emit(0, "partial", {"text": "At 0:00 you want the pause kept."})
-        phone.wait_status("The editor is answering out loud")
+        phone.wait_status("Jennifer is answering out loud")
         phone.wait_status("Pause where something is wrong, then hold to talk.", timeout=4_000)
         assert page.evaluate("() => window.talk.speaking") is False
 
@@ -1139,7 +1139,7 @@ def test_the_bar_says_what_the_notes_are_doing_and_when_the_editor_has_stopped()
 
         away = "Waiting for the subscription worker (waiting_capacity)"
         assert status_for(dict(BASE, state="thinking", result={"status": away})) == away
-        handed = "Your editor could not read the notes, so nothing was changed. Make the new version again."
+        handed = "Jennifer could not read the notes, so nothing was changed. Make the new version again."
         assert status_for(dict(BASE, state="open", result={"status": handed})) == handed
         reading = "Reading your 3 notes on the subscription"
         assert status_for(dict(BASE, state="thinking", result={"status": reading})) == reading
@@ -1215,7 +1215,7 @@ def test_a_hold_taken_back_as_an_instruction_says_so_not_saved():
     pytest.importorskip("playwright.sync_api")
     from playwright.sync_api import sync_playwright
 
-    taken = "This hold was an instruction to the editor, not a note."
+    taken = "This hold was an instruction to Jennifer, not a note."
     with sync_playwright() as pw:
         browser, page, errors = _bar_page(pw, BASE)
         phone = Phone(page)
@@ -1261,7 +1261,7 @@ def test_once_the_notes_are_handed_over_the_call_hangs_up_and_the_screen_may_sle
         assert page.locator(".tv-hold").is_disabled()
 
         # Handed back (nothing changed): the next hold starts a fresh call, and the screen stays on.
-        handed = "Your editor could not read the notes, so nothing was changed. Make the new version again."
+        handed = "Jennifer could not read the notes, so nothing was changed. Make the new version again."
         page.evaluate("(p) => { window.__payload = p; return window.talk.refresh(); }",
                       dict(BASE, state="open", result={"status": handed}))
         phone.wait_status(handed)

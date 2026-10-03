@@ -1447,11 +1447,17 @@
   function libraryCard(item) {
     var html = '<article class="card">';
     html += "<h3>" + esc(item.title) + "</h3>";
+    // 3-Oct: a voice call with an agent he filmed says so, and with whom.
+    if (item.source === "agent_talk") {
+      html += '<span class="tag is-talk">' + esc(item.source_label || "Agent talk")
+           + (item.agent ? " with " + esc(item.agent) : "") + "</span> ";
+    }
     // The edit is what he comes here for: say so on the card (25-Sep).
     if (item.has_edit) html += '<span class="tag is-ready">Edited video</span> ';
     html += '<span class="source">' + esc(when(item.recorded_at))
          + (item.duration_s ? " &middot; " + clock(item.duration_s) : "") + "</span>";
     html += '<p class="big-idea">' + esc(item.state_sentence) + "</p>";
+    if (item.source_line) html += '<p class="source">' + esc(item.source_line) + "</p>";
     (item.issues || []).forEach(function (issue) {
       html += '<p class="notice is-bad">' + esc(issue) + "</p>";
     });
@@ -1768,7 +1774,7 @@
   }
 
   async function askEditRequest(uploadId) {
-    var text = window.prompt("What should change about this video?\n\nSay it the way you would say it to an editor.");
+    var text = window.prompt("What should change about this video?\n\nSay it the way you would say it to Jennifer, your video editor.");
     if (text === null || !text.trim()) return;
     try {
       var saved = await api("/production/recordings/" + encodeURIComponent(uploadId) + "/edit-requests", {
@@ -1843,7 +1849,7 @@
     var notes = made.notes || [];
     if (NOTES_WORKING.indexOf(made.state) >= 0) {
       return '<p class="notice"><strong>Making the new version from your ' + esc(noteWord(notes.length))
-           + ":</strong> " + esc(made.status || item.state_sentence || "Your editor is reading them.") + "</p>";
+           + ":</strong> " + esc(made.status || item.state_sentence || "Jennifer is reading them.") + "</p>";
     }
     var needs = notes.filter(function (n) { return n.state === "needs_you"; }).length;
     var html = '<details class="removed notes-made"' + (needs ? " open" : "") + "><summary>Your last "
@@ -1854,7 +1860,7 @@
     notes.forEach(function (n) {
       var said = String(n.said || "").trim() || n.understood || "";
       var outcome = n.undone ? ["Put back", "The version from before these notes was put back."]
-        : n.state === "needs_you" ? ["Needs you", n.question || n.reply || "Your editor has a question."]
+        : n.state === "needs_you" ? ["Needs you", n.question || n.reply || "Jennifer has a question."]
         : n.state === "done" ? ["Done", n.reply || "Done."]
         : null;
       html += '<li><span class="source">' + esc(n.where) + "</span>&#8220;" + esc(said) + "&#8221;";
@@ -2252,7 +2258,7 @@
     panel.innerHTML = "<h3>" + (changed ? "Your notes changed, so here they are again"
                                         : "Make the new version from these notes?") + "</h3>"
       + "<p>" + esc(text) + "</p>"
-      + '<p class="source">Nothing changes until you tap Yes. Then your editor reads every note, '
+      + '<p class="source">Nothing changes until you tap Yes. Then Jennifer reads every note, '
       + "and the video renders once.</p>";
     panel.hidden = false;
     roomForNotes(sheet);
@@ -2278,7 +2284,7 @@
       if (state.notesSheet !== sheet) return;
       hideReadBack(sheet);
       sheet.sitting = payload;
-      notesSay(sheet, "Your editor is reading every note now. The bar says each step, "
+      notesSay(sheet, "Jennifer is reading every note now. The bar says each step, "
         + "and each note says what was done with it.");
       if (sheet.talk) {
         // 1-Oct final review: nothing more is said on the call while the notes are made,

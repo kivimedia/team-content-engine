@@ -764,7 +764,7 @@ async def test_make_it_is_refused_while_something_else_edits_the_video_or_it_cha
     check = (await client.get(url, headers=headers(ws))).json()["check"]
 
     # He closed the sheet and tapped Edit it again; a still-loaded sheet taps Make.
-    doing = "Editing it again: your editor's review, then the cut and the captions"
+    doing = "Editing it again: Jennifer's review, then the cut and the captions"
     async with renders["sm"]() as s:
         up = await prod._load(s, uid, ws)
         up.job_ids, up.status_detail = [prod.AUTO_MARK], doing
