@@ -311,6 +311,55 @@ PREVIEW_VIDEO = ["-vf", "scale='min(720,iw)':-2", "-c:v", "libx264", "-preset", 
                  "-maxrate", "1400k", "-bufsize", "2800k", "-g", str(2 * FPS), "-pix_fmt", "yuv420p"]
 
 
+# 3-Oct, Jennifer's check: every edit goes out at one loudness. Two passes of ffmpeg's
+# loudnorm: the first only listens to the cut audio (no picture is decoded into a file),
+# the second is the render itself with what the first measured, so the video is still
+# encoded exactly once. The filter aims half a decibel under the peak ceiling because
+# the AAC encoder can lift a peak by about that much on its way out.
+LOUDNESS_LUFS = -14.0
+LOUDNESS_PEAK_DB = -1.0
+LOUDNESS_RANGE = 11.0
+LOUDNORM_PEAK_DB = LOUDNESS_PEAK_DB - 0.5
+LOUDNESS_SILENT_LUFS = -60.0  # quieter than this is not speech to bring up
+
+_LOUDNORM_JSON = re.compile(r"\{[^{}]*\"input_i\"[^{}]*\}", re.S)
+
+
+def loudnorm_filter(measured: dict[str, float] | None = None) -> str:
+    """The loudnorm filter: the listening pass without `measured`, the correcting pass
+    with it (linear when the target can be reached without touching the dynamics)."""
+    base = f"loudnorm=I={LOUDNESS_LUFS:g}:TP={LOUDNORM_PEAK_DB:g}:LRA={LOUDNESS_RANGE:g}"
+    if measured is None:
+        return base + ":print_format=json"
+    return (
+        base
+        + f":measured_I={measured['input_i']:.2f}:measured_TP={measured['input_tp']:.2f}"
+        + f":measured_LRA={measured['input_lra']:.2f}:measured_thresh={measured['input_thresh']:.2f}"
+        + f":offset={measured['target_offset']:.2f}:linear=true:print_format=summary"
+    )
+
+
+def parse_loudnorm(stderr: str) -> dict[str, float] | None:
+    """What the listening pass measured, from ffmpeg's log. None when it printed nothing
+    usable or the audio is near silence (nothing there to bring up to a level)."""
+    found = _LOUDNORM_JSON.findall(stderr or "")
+    if not found:
+        return None
+    try:
+        raw = json.loads(found[-1])
+        out = {
+            key: float(raw[key])
+            for key in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    if any(v != v or v in (float("inf"), float("-inf")) for v in out.values()):
+        return None
+    if out["input_i"] < LOUDNESS_SILENT_LUFS:
+        return None
+    return out
+
+
 def preview_path(edited: str | Path) -> Path:
     """The light copy the Library player streams, beside the edit."""
     p = Path(edited)
@@ -327,8 +376,16 @@ async def render_edit(
     srt_text: str | None = None,
     caption_band: dict[str, Any] | None = None,
     make_preview: bool = False,
+    loudness: bool = True,
+    report: dict[str, Any] | None = None,
 ) -> Path:
     """Cut the kept ranges into `out_path` (MP4 when captions are given).
+
+    `loudness` (3-Oct): the cut audio is brought to LOUDNESS_LUFS with its peaks under
+    LOUDNESS_PEAK_DB inside this one render. A first pass only listens to the cut audio;
+    the render then carries the correction, so the picture is encoded once. When the
+    listening pass cannot measure the audio (near silence, an ffmpeg without the filter)
+    the render goes out as it was and `report["loudness"]` says why.
 
     Video is put on a 30 fps grid first and every range is trimmed by frame number,
     audio by sample number, so each piece's picture and sound are exactly as long as
@@ -360,24 +417,29 @@ async def render_edit(
     per_frame = SAMPLE_RATE // FPS
     parts: list[str] = []
     labels: list[str] = []
+    # The cut audio alone, for the pass that only listens (loudness).
+    heard: list[str] = []
     if not audio_only:
         parts.append(
             f"[0:v]fps={FPS}:start_time=0,split={n}" + "".join(f"[vs{i}]" for i in range(n))
         )
-    parts.append(
-        f"[0:a]aresample={SAMPLE_RATE}:first_pts=0,asplit={n}" + "".join(f"[as{i}]" for i in range(n))
-    )
+    split = f"[0:a]aresample={SAMPLE_RATE}:first_pts=0,asplit={n}" + "".join(f"[as{i}]" for i in range(n))
+    parts.append(split)
+    heard.append(split)
     for i, (a, b) in enumerate(frames):
         dur = (b - a) / FPS
         fade = min(FADE_S, dur / 4)
         if not audio_only:
             parts.append(f"[vs{i}]trim=start_frame={a}:end_frame={b},setpts=PTS-STARTPTS[v{i}]")
-        parts.append(
+        piece = (
             f"[as{i}]atrim=start_sample={a * per_frame}:end_sample={b * per_frame},"
             f"asetpts=PTS-STARTPTS,afade=t=in:d={fade:.4f},"
             f"afade=t=out:st={dur - fade:.4f}:d={fade:.4f}[a{i}]"
         )
+        parts.append(piece)
+        heard.append(piece)
         labels.append(f"[a{i}]" if audio_only else f"[v{i}][a{i}]")
+    heard.append("".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[outa]")
     inputs = ["-i", str(src)]
     if audio_only:
         parts.append("".join(labels) + f"concat=n={n}:v=0:a=1[outa]")
@@ -396,7 +458,25 @@ async def render_edit(
     soft = out.parent / f"{tmp_tag}.srt"
     part = out.parent / f"{tmp_tag}{out.suffix}"
     graph = out.parent / f"{tmp_tag}.graph"
+    listen = out.parent / f"{tmp_tag}.listen"
+    audio_out = "[outa]"
     try:
+        if loudness:
+            await on_status(
+                f"Listening to the cut audio to set its loudness to {LOUDNESS_LUFS:g} LUFS"
+            )
+            measured, why = await _measure_loudnorm(ff, src, heard, listen, out.parent)
+            if measured is not None:
+                # loudnorm works at 192 kHz inside; back to the edit's own rate after it.
+                parts.append(f"[outa]{loudnorm_filter(measured)},aresample={SAMPLE_RATE}[outn]")
+                audio_out = "[outn]"
+            if report is not None:
+                report["loudness"] = (
+                    {"applied": True, "measured": measured, "target_lufs": LOUDNESS_LUFS,
+                     "target_peak_db": LOUDNESS_PEAK_DB}
+                    if measured is not None
+                    else {"applied": False, "why": why}
+                )
         maps: list[str] = []
         if video is not None and ass_text is not None and not caption_band:
             burn.write_text(ass_text, encoding="utf-8")
@@ -415,7 +495,7 @@ async def render_edit(
             video = "[capv]"
         if video is not None:
             maps += ["-map", video]
-        maps += ["-map", "[outa]"]
+        maps += ["-map", audio_out]
         codecs: list[str] = []
         if captioned:
             codecs += MASTER_VIDEO + ["-c:a", "aac", "-b:a", "160k", "-ar", str(SAMPLE_RATE)]
@@ -455,12 +535,36 @@ async def render_edit(
             finally:
                 light_part.unlink(missing_ok=True)
     finally:
-        for f in (burn, soft, part, graph):
+        for f in (burn, soft, part, graph, listen):
             f.unlink(missing_ok=True)
     return out
 
 
-async def _ffmpeg(ff: str, args: list[str], *, cwd: Path) -> None:
+async def _measure_loudnorm(
+    ff: str, src: Path, heard: list[str], listen: Path, cwd: Path
+) -> tuple[dict[str, float] | None, str | None]:
+    """The listening pass: the cut audio through loudnorm into nothing. Returns what it
+    measured, or (None, why). Never raises: a render does not fail for its loudness."""
+    listen.write_text(
+        ";\n".join([*heard, f"[outa]{loudnorm_filter()}[heard]"]), encoding="utf-8"
+    )
+    try:
+        log = await _ffmpeg(
+            ff,
+            ["-hide_banner", "-nostats", "-i", str(src), "-filter_complex_script", listen.name,
+             "-map", "[heard]", "-f", "null", "-"],
+            cwd=cwd,
+        )
+    except RuntimeError as exc:
+        return None, f"the audio could not be measured ({str(exc)[:160]})"
+    measured = parse_loudnorm(log)
+    if measured is None:
+        return None, "there is no sound loud enough to set a level from"
+    return measured, None
+
+
+async def _ffmpeg(ff: str, args: list[str], *, cwd: Path) -> str:
+    """Run ffmpeg; its log comes back (the loudness pass prints what it measured there)."""
     proc = await asyncio.create_subprocess_exec(
         ff, *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(cwd)
     )
@@ -468,3 +572,4 @@ async def _ffmpeg(ff: str, args: list[str], *, cwd: Path) -> None:
     if proc.returncode != 0:
         tail = err.decode(errors="replace").strip().splitlines()[-1:] or ["no output"]
         raise RuntimeError(f"ffmpeg exited {proc.returncode}: {tail[0][:200]}")
+    return err.decode(errors="replace")

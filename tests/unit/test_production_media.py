@@ -95,7 +95,11 @@ async def test_render_edit_cuts_kept_ranges(tmp_path):
     )
     duration = await media.probe_duration(out)
     assert duration is not None and abs(duration - 2.0) < 0.15
-    assert statuses == ["Cutting 2 kept ranges with ffmpeg"]
+    # 3-Oct: the cut audio is listened to first, to set its loudness inside this render.
+    assert statuses == [
+        "Listening to the cut audio to set its loudness to -14 LUFS",
+        "Cutting 2 kept ranges with ffmpeg",
+    ]
 
 
 def test_fmt_duration():
