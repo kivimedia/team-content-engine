@@ -868,12 +868,18 @@ async def talk_voices(
 ) -> agent_talks.Voices | None:
     """Who says each word of an agent talk (3-Oct), from the call's own transcript; None
     for a walk. Lining up a long talk takes a moment, so it runs off the event loop."""
-    if row.source != agent_talks.SOURCE:
+    if getattr(row, "source", None) != agent_talks.SOURCE:
         return None
     heard = list(words if words is not None else row.transcript or [])
     return await asyncio.to_thread(
         agent_talks.voices, heard, list(row.call_transcript or []), row.agent_name or "the agent"
     )
+
+
+async def _speakers(row: RecordingUpload) -> dict[int, str] | None:
+    """An agent talk's speaker for each word, for what Jennifer reads with his notes."""
+    voices = await talk_voices(row)
+    return voices.speaker_names() if voices is not None and voices.known else None
 
 
 async def _compute_plan(
@@ -1803,7 +1809,12 @@ async def _script_context(s: AsyncSession, ws: uuid.UUID, row: RecordingUpload) 
             )
         ).scalar_one_or_none()
         title = cand.title if cand else None
-    return autoedit.script_context(packet, title)
+    context = autoedit.script_context(packet, title)
+    if getattr(row, "source", None) == agent_talks.SOURCE:
+        # 3-Oct: every job that reads an agent talk (the review, a request, a sitting's
+        # notes) knows it is a conversation and who the other voice is.
+        context += "\n\n" + autoedit.talk_context(row.agent_name or "the agent")
+    return context
 
 
 async def _ask(
@@ -2403,6 +2414,7 @@ async def _request_inputs(request_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any
             "keep": [list(r) for r in (row.edit_plan or {}).get("keep") or []],
             "kept": list((row.edit_plan or {}).get("words") or []),
             "context": await _script_context(s, ws, row),
+            "speakers": await _speakers(row),
             "text": req.request,
             "scope": req.scope,
             "start_s": req.start_s,
@@ -2503,6 +2515,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             prompt = autoedit.edit_request_prompt(
                 words, keep, got["context"], got["text"], scope=got["scope"], start_s=got["start_s"],
                 end_s=got["end_s"], kept=got["kept"], marks=marks, history=got["history"],
+                speakers=got.get("speakers"),
             )
             system = autoedit.edit_request_system()
             try:
@@ -2720,6 +2733,7 @@ async def _talk_inputs(session_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any] |
             "kept": kept or [],
             "plan_moved": bool(watched) and bool(plan_keep) and kept is None,
             "context": await _script_context(s, ws, row),
+            "speakers": await _speakers(row),
             "src": row.storage_path,
             "note_ids": [n.id for n in notes],
             "notes": [_talk_note(n) for n in notes],
@@ -2995,6 +3009,7 @@ async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
             prompt = autoedit.edit_batch_prompt(
                 got["words"], got["keep"], got["context"], got["notes"],
                 kept=got["kept"], marks=marks, history=got["history"], plan_moved=got["plan_moved"],
+                speakers=got.get("speakers"),
             )
             system = autoedit.edit_batch_system()
             key = talk_key(session_id, prompt, system, got["attempt"])

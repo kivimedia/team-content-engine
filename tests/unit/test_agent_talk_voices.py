@@ -285,6 +285,36 @@ async def test_a_talk_with_no_worker_goes_out_on_the_rules_and_keeps_both_voices
     assert kept.count("Continue to phase three.") == 2 and "Maple" not in kept
 
 
+async def test_his_typed_request_on_a_talk_reads_who_says_what_and_can_cut_the_agent(wired):
+    from tce.models.editorial_workspace import EditingRequest
+
+    words, _agent = heard()
+    ws, uid = await seed_talk(wired["sm"], call())
+    await prod.auto_edit(uid, ws)  # edited on the rules first
+    first_one = _span(words, "The first one wants to continue to phase three.")
+    async with wired["sm"]() as s:
+        req = EditingRequest(workspace_id=ws, upload_id=uid, scope="whole",
+                             request="cut what Atlas says about the first one", state="open")
+        s.add(req)
+        await s.commit()
+    wired["answers"][autoedit.EDIT_REQUEST_JOB] = {
+        "reply": "Cut Atlas's line about the first one.", "needs_you": False, "question": "",
+        "corrections": [], "cut": [{"first": first_one[0], "last": first_one[1]}], "restore": [], "hold": [],
+    }
+    await prod.run_edit_request(req.id, ws)
+    kind, prompt, _system = wired["asked"][-1]
+    assert kind == autoedit.EDIT_REQUEST_JOB
+    assert "This video is a voice call between him and Atlas" in prompt
+    assert any(" ATLAS: " in line and ":Sure." in line for line in prompt.splitlines()), prompt
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        req = await s.get(EditingRequest, req.id)
+    assert req.state == "done", req.result
+    # His own request wins over the protection: the agent's line he asked about is gone.
+    assert "wants to continue" not in row.edit_plan["kept_text"]
+    assert "Sure. Two are waiting for you." in row.edit_plan["kept_text"]
+
+
 async def test_a_talk_whose_call_sent_no_transcript_cuts_nothing_but_pauses(wired):
     ws, uid = await seed_talk(wired["sm"], [])
     await prod.auto_edit(uid, ws)

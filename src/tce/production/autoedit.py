@@ -66,8 +66,12 @@ def numbered_transcript(
     marks: dict[int, str] | None = None,
     span: tuple[int, int] | None = None,
     pins: dict[int, list[int]] | None = None,
+    speakers: dict[int, str] | None = None,
 ) -> str:
     """One sentence a line, every word tagged with its index.
+
+    `speakers` (an agent talk, 3-Oct): who says each word. A line never holds two
+    voices, and each starts with its speaker after the clock ("HOST:", "ATLAS:").
 
     `span` (first, last) writes only those words, keeping their real indexes: the few
     seconds around the moment he paused on (talk to the editor, 30-Sep).
@@ -90,16 +94,24 @@ def numbered_transcript(
     cur: list[str] = []
     stamp = ""
     last_piece: int | None = None
+    prev_who: str | None = None
     for i, w in enumerate(words):
         if span is not None and not span[0] <= i <= span[1]:
             continue
         start = timed.get(i, float(w["start_s"]))
+        who = speakers.get(i) if speakers else None
+        if cur and who != prev_who:
+            lines.append(stamp + " ".join(cur))
+            cur = []
+        prev_who = who
         if not cur:
             if keep is None:
                 stamp = f"[{_clock(start)}] "
             else:
                 edited = map_to_edit(start, keep)
                 stamp = f"[{_clock(edited)} in the edit] " if edited is not None else "[cut] "
+            if who:
+                stamp += f"{who}: "
         token = f"{i}:{w['text']}"
         removed = keep is not None and (
             i not in timed if timed else map_to_edit((start + float(w["end_s"])) / 2, keep) is None
@@ -394,6 +406,16 @@ def review_prompt(
     )
 
 
+def talk_context(agent: str) -> str:
+    """What every job reading an agent talk is told about it (3-Oct)."""
+    return (
+        f"This video is a voice call between him and {agent}, an AI agent, that he filmed. "
+        f"Where the transcript says who speaks, HOST is him and {agent.upper()} is {agent}. "
+        f"{agent}'s lines are the other half of the conversation; cut one only when his note "
+        "asks for it."
+    )
+
+
 def conversation_rules(agent: str, *, known: bool = True) -> str:
     """The review's instructions for an agent talk (3-Oct): a filmed voice call between
     him and an AI agent. The agent's lines are the other half of the conversation."""
@@ -582,6 +604,7 @@ def edit_request_prompt(
     kept: list[dict[str, Any]] | None = None,
     marks: dict[int, str] | None = None,
     history: list[dict[str, str]] | None = None,
+    speakers: dict[int, str] | None = None,
 ) -> str:
     where = ""
     if scope == "timestamp" and start_s is not None and end_s is not None:
@@ -589,7 +612,7 @@ def edit_request_prompt(
     return (
         f"{context}\n\n{_earlier_block(history)}His request now:\n{request.strip()}{where}\n\n"
         f"Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join):\n"
-        f"{numbered_transcript(words, keep, kept, marks)}"
+        f"{numbered_transcript(words, keep, kept, marks, speakers=speakers)}"
     )
 
 
@@ -703,6 +726,7 @@ def edit_batch_prompt(
     marks: dict[int, str] | None = None,
     history: list[dict[str, Any]] | None = None,
     plan_moved: bool = False,
+    speakers: dict[int, str] | None = None,
 ) -> str:
     """Every note of the sitting, numbered in the order he gave them.
 
@@ -732,7 +756,7 @@ def edit_batch_prompt(
         + (PLAN_MOVED_LINE + "\n\n" if plan_moved else "")
         + "Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
         "<note N> is where the video was when he paused for note N):\n"
-        f"{numbered_transcript(words, keep, kept, marks, pins=pins)}"
+        f"{numbered_transcript(words, keep, kept, marks, pins=pins, speakers=speakers)}"
     )
 
 

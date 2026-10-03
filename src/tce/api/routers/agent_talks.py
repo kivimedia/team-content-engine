@@ -34,8 +34,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.api.private_access import require_private_workspace
 from tce.db.session import get_db
-from tce.editorial.common import ORIGIN_AGENT_TALK
-from tce.models.editorial import RecordingUpload, TopicCandidate
+from tce.editorial.agent_talk_topics import talk_topic
+from tce.models.editorial import RecordingUpload
 from tce.models.recording_session import AgentTalk
 from tce.production import agent_talks
 from tce.production.agent_talks import TalkError
@@ -320,22 +320,9 @@ async def finish_agent_talk(
         ).scalar_one_or_none()
         created = upload is None
         if created:
-            title = agent_talks.talk_title(row.agent, row.started_at)
-            candidate = TopicCandidate(
-                workspace_id=ws,
-                week_start=agent_talks.week_label(row.started_at),
-                moment_ids=[],
-                title=title,
-                lesson="",
-                audience="both",
-                reasons_to_care=[],
-                public_angle="",
-                gates={},
-                citations_private=[],
-                status="recorded",
-                origin=ORIGIN_AGENT_TALK,
-                editor_notes=f"A voice call with {name}, filmed on the call's page.",
-            )
+            # The library names a video by its topic row: one of the agent-talk kind,
+            # which no list of ideas shows (editorial/agent_talk_topics.py).
+            candidate = talk_topic(ws, row.agent, row.started_at)
             db.add(candidate)
             await db.flush()
             auto = bool(settings.production_auto_edit)
@@ -349,8 +336,12 @@ async def finish_agent_talk(
                 duration_s=duration,
                 status="uploaded",
                 status_detail=(
-                    f"Agent talk with {name}, joined from {joined.pieces} "
-                    f"{'piece' if joined.pieces == 1 else 'pieces'} without re-encoding."
+                    (
+                        f"Agent talk with {name}, joined from {joined.pieces} "
+                        f"{'piece' if joined.pieces == 1 else 'pieces'} without re-encoding."
+                        if joined.pieces
+                        else f"Agent talk with {name}, joined without re-encoding."
+                    )
                     + _missing_line(joined.missing)
                     + (
                         " Jennifer starts the edit now: transcribing first."

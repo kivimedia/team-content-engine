@@ -33,3 +33,19 @@ src + .testdeps; the live app runs on the system python3, there is no .venv).
 - 16:4x step 1 committed (244e45a): table + migration 057 + migration test (4 passed).
 - 17:0x intake tests: tests/unit/test_agent_talks.py 12 passed (real ffmpeg webm and
   fragmented mp4 joins, idempotent create and pieces, kill switch, library card).
+- 16:4x voices + Jennifer tests 21 passed; commits 293cee9 (intake), 83513f1 (voices),
+  6bcc94f (Jennifer).
+- 16:45 full suite #1 (branch): 7 failed, 1887 passed, 3 skipped (7m39s). NOTE the box
+  now HAS the Playwright Chromium (baseline had 30 skipped and 8 browser failures; those
+  8 now pass). Failures:
+  - 2 mine: _compute_plan on a SimpleNamespace row (no .source) -> getattr. Fixed.
+  - 1 mine: test_no_ungated_topic_source forbids TopicCandidate(...) outside the
+    selector and the calibration writer. Moved the talk's row into
+    editorial/agent_talk_topics.py (origin and status pinned), added it to the guard's
+    allowed set with a new pinning test (origin agent_talk, status recorded, hidden).
+  - 4 browser tests (3 test_workspace_talk_sheet_phone "Your note at 0:00", 1
+    test_recording_studio_mobile textBigger covered) FAIL THE SAME WAY ON MASTER 5495cee
+    (worktree .tmp/master-wt, log .tmp/master-browser.log): environment, not this branch.
+- 17:0x also: speakers ("HOST:", "ATLAS:") in the typed-request and sitting prompts, a
+  talk context line in every job's context, finish recovers a joined file after a crash
+  between the join and the row. Targeted run: 159 passed.

@@ -375,3 +375,7 @@ async def test_a_piece_missing_in_the_middle_is_named_and_the_rest_is_joined(tmp
     joined = await agent_talks.join(folder, "mp4")
     assert joined.missing == [2] and joined.pieces == len(pieces) - 1
     assert joined.proof["has_video"] and joined.proof["has_audio"]
+    # A finish that stopped after the join (a restart before the video's row) finds the
+    # joined file the next time: the pieces are gone, the talk is not.
+    again = await agent_talks.join(folder, "mp4")
+    assert again.path == joined.path and again.pieces == 0 and again.proof["has_audio"]

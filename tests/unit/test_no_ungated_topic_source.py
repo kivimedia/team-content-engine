@@ -172,18 +172,22 @@ def test_the_blocklist_exemption_is_narrow():
 def test_every_topic_candidate_write_goes_through_the_selector():
     """The structural guarantee: one writer, and it is the gated one.
 
-    `TopicCandidate(...)` is constructed in exactly two places:
+    `TopicCandidate(...)` is constructed in exactly three places:
 
     - `editorial/selector.py`, which runs `enforce_candidates()` before it saves
-      anything, and
+      anything,
     - `editorial/feedback.py`, which inserts the calibration items the editor
       accepted by hand in September 2026. That one is a human decision being
-      recorded, not a generator, and the next test pins it to that role.
+      recorded, not a generator, and the next test pins it to that role, and
+    - `editorial/agent_talk_topics.py` (3-Oct), the row a filmed voice call with an
+      agent hangs on so the library can name the video. It is not an idea: its origin
+      is pinned to agent_talk and its status to recorded (pinned below), and no list
+      of ideas shows that origin.
 
-    Any third module constructing one is a second ungated path to the recorder,
+    Any other module constructing one is a second ungated path to the recorder,
     whatever it is called.
     """
-    allowed = {"editorial/selector.py", "editorial/feedback.py"}
+    allowed = {"editorial/selector.py", "editorial/feedback.py", "editorial/agent_talk_topics.py"}
     offenders: list[str] = []
     for path in _python_files():
         try:
@@ -234,6 +238,32 @@ def test_the_calibration_writer_can_only_write_calibration_rows():
             f"feedback.py:{call.lineno} writes origin={name}. "
             "The calibration writer may only produce calibration rows."
         )
+
+
+def test_the_agent_talk_writer_can_only_write_agent_talk_rows_that_no_idea_list_shows():
+    """The third allowed writer stays what it is: one row per filmed talk, origin
+    agent_talk, status recorded, and that origin is hidden from every list of ideas."""
+    path = SRC / "editorial" / "agent_talk_topics.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (getattr(node.func, "id", None) or getattr(node.func, "attr", None)) == "TopicCandidate"
+    ]
+    assert len(calls) == 1, "the agent talk writer should build exactly one kind of row"
+    keywords = {kw.arg: kw.value for kw in calls[0].keywords}
+    origin = keywords.get("origin")
+    assert origin is not None and getattr(origin, "id", None) == "ORIGIN_AGENT_TALK"
+    status = keywords.get("status")
+    assert isinstance(status, ast.Constant) and status.value == "recorded"
+
+    from tce.editorial.common import ORIGIN_AGENT_TALK
+    from tce.editorial.inbox import HIDDEN_ORIGINS
+
+    assert ORIGIN_AGENT_TALK in HIDDEN_ORIGINS
+    for rel in ("api/routers/editorial.py", "editorial/selector.py"):
+        assert "ORIGIN_AGENT_TALK" in (SRC / rel).read_text(encoding="utf-8"), rel
 
 
 def test_selector_still_enforces_the_four_settled_gates():

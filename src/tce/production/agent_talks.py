@@ -324,6 +324,15 @@ async def join(folder: Path, extension: str, *, prober: Prober = probe_media) ->
         raise TalkError("ffmpeg is not installed on this server", status=503)
     items = pieces(folder)
     if not items:
+        # A finish that joined the pieces and then stopped (a restart before the video's
+        # row was written) left the joined file: that file is the talk.
+        for container in (*_REMUX_ORDER, *_SOUND_ORDER):
+            done = folder / f"talk.{container}"
+            if done.exists() and done.stat().st_size:
+                proof = await prober(done)
+                if proof.get("has_audio"):
+                    return Joined(path=done, container=container, proof=proof, pieces=0,
+                                  bytes=done.stat().st_size)
         raise TalkError("No piece of this talk arrived, so there is nothing to join", status=409)
     numbers = [n for n, _ in items]
     if numbers[0] != 0:
