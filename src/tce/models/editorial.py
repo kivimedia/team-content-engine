@@ -317,6 +317,14 @@ class RecordingUpload(_PrivateWorkspaceMixin, Base):
     status: Mapped[str] = mapped_column(String(20), default="uploaded")
     status_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
     job_ids: Mapped[list[str]] = mapped_column(JSONType, default=list)
+    # 3-Oct, agent talks (migration 057): where the video came from. NULL is a walk he
+    # recorded or uploaded; "agent_talk" is a voice call with an agent that he filmed.
+    source: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # The agent he talked with, as the library shows it ("Atlas"), and the call's own
+    # transcript as the call sent it: [{"who": "ziv"|"agent", "text", "t_ms"}]. The
+    # edit reads it to tell the two voices apart (production/agent_talks.py).
+    agent_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    call_transcript: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONType, nullable=True)
 
 
 class VideoPublication(_PrivateWorkspaceMixin, Base):

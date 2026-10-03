@@ -43,6 +43,8 @@ TABLE_NAMES = (
     "recording_sessions",
     "recording_clips",
     "recording_chunks",
+    # A filmed voice call with an agent, sent in pieces (migration 057)
+    "agent_talks",
     "voice_samples",
     # Editorial workspace (migration 043)
     "candidate_brief_versions",

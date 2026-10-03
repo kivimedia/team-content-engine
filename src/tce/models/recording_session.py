@@ -72,6 +72,42 @@ class RecordingClip(Base):
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class AgentTalk(Base):
+    """One filmed voice call with an agent (3-Oct, contract C4, migration 057).
+
+    The call's page records a selfie video with both voices and sends it in pieces while
+    the call runs. The pieces live on disk beside each other (one file per sequence
+    number); finishing the talk joins them, makes a library video with source
+    "agent_talk", and starts its edit. A create sent twice (a retry) is the same talk:
+    the call, its start and the agent identify it.
+    """
+
+    __tablename__ = "agent_talks"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "agent", "call_id", "started_at", name="uq_agent_talk_identity"
+        ),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    agent: Mapped[str] = mapped_column(String(80))
+    call_id: Mapped[str] = mapped_column(String(200), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime)
+    mime_type: Mapped[str] = mapped_column(String(120))
+    file_extension: Mapped[str] = mapped_column(String(12))
+    # recording | finished | failed
+    status: Mapped[str] = mapped_column(String(20), default="recording", index=True)
+    status_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_chunk_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # What the finish found: pieces, bytes, missing sequence numbers, the container.
+    join_meta: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    upload_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("recording_uploads.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+
 class RecordingChunk(Base):
     __tablename__ = "recording_chunks"
     __table_args__ = (

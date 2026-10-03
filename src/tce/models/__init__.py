@@ -58,7 +58,12 @@ from tce.models.post_example import PostExample
 from tce.models.post_package import PostPackage
 from tce.models.prompt_version import PromptVersion
 from tce.models.qa_scorecard import QAScorecard
-from tce.models.recording_session import RecordingChunk, RecordingClip, RecordingSession
+from tce.models.recording_session import (
+    AgentTalk,
+    RecordingChunk,
+    RecordingClip,
+    RecordingSession,
+)
 from tce.models.render_queue import RenderQueueJob
 from tce.models.repo_brief import RepoBrief
 from tce.models.research_brief import ResearchBrief
@@ -79,6 +84,7 @@ from tce.models.workspace_context import (
 )
 
 __all__ = [
+    "AgentTalk",
     "AuditLog",
     "BrandProfile",
     "CompetitorPostSnapshot",
