@@ -428,3 +428,18 @@ def test_owner_gates_constant_untouched():
         "concrete_supported_substance",
         "connects_to_ziv_work",
     )
+
+
+def test_lane_workspace_never_drafts_with_the_owner_packet_writer(lanes_on):
+    """Review 5-Oct: build_packet's prompt is Ziv's (English, coaching, his own
+    first-person experience). A lane workspace's drafting/exporting must refuse
+    instead of writing invented first-person stories for the performer."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from tce.api.routers.content_runs import _execute_stage
+
+    run = SimpleNamespace(workspace_id=MATAN, source_ids_private=[], id=uuid.uuid4())
+    for stage in ("drafting", "exporting"):
+        with pytest.raises(ValueError, match="final_stage 'ranking'"):
+            asyncio.run(_execute_stage(None, run, stage))

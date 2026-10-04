@@ -229,6 +229,18 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str, attempt: int = 1)
     from tce.production.export import export_packet_durable
     from tce.settings import settings
 
+    if stage in ("drafting", "exporting"):
+        from tce.editorial.lane_profile import profile_for
+
+        # The packet writer is the owner's (Ziv, English, coaching, "his own
+        # first-person experience"): run for a lane workspace it would put invented
+        # first-person stories in the performer's mouth. Such a workspace stops at
+        # ranking until it has a packet writer of its own.
+        if profile_for(run.workspace_id) is not None:
+            raise ValueError(
+                "this workspace has idea lanes and no packet writer of its own yet; "
+                "schedule it with final_stage 'ranking'"
+            )
     source_ids = await _source_ids_for_run(sm, run)
     if stage in WORKER_STAGES:
         await _require_worker(sm)

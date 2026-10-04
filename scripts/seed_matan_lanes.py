@@ -80,8 +80,6 @@ FEEDS: list[tuple[str, str, str, str, str | None]] = [
      "event industry news"),
     ("Blooloop (attractions, worldwide)", "https://blooloop.com/feed/", "rss", "1b", "blooloop"),
     ("SoraNews24 (Japan trends)", "https://soranews24.com/feed/", "rss", "1b", "soranews24"),
-    ("Japan Today entertainment", "https://japantoday.com/category/entertainment/feed", "rss",
-     "1b", "japan today"),
     ("event partner (Germany)", "https://www.event-partner.de/feed/", "rss", "1b",
      "event partner"),
     ("Genii Magazine (magic)", "https://geniimagazine.com/feed/", "rss", "1b", "genii"),
@@ -151,9 +149,6 @@ CLIPS: list[tuple[str, str, str, str, str, str]] = [
     ("clairvoyants-agt", "The Clairvoyants", "America's Got Talent audition", "2016",
      "https://www.youtube.com/watch?v=RvyK-HTNJL8",
      "צמד מנטליזם עם דרמה וקצב - איך זוג על הבמה יוצר מתח שאי אפשר ליצור לבד."),
-    ("asi-wind-fool-us", "Asi Wind", "Penn & Teller: Fool Us", "2020 upload",
-     "https://www.youtube.com/watch?v=fg0CC99hVK8",
-     "קוסם יליד ישראל שמשחק עם הציפייה של הקהל ומשאיר גם את המומחים בלי תשובה."),
     ("eric-chien-fism", "Eric Chien", "FISM Grand Prix act", "2018",
      "https://www.youtube.com/watch?v=CvzMqIQLiXE",
      "מופע תחרותי ברמה עולמית - דיוק, אסתטיקה ואיך קסם נראה כשהוא כמו מחול."),
@@ -169,9 +164,6 @@ CLIPS: list[tuple[str, str, str, str, str, str]] = [
     ("colin-cloud-agt", "Colin Cloud", "Real-life Sherlock Holmes, America's Got Talent", "2017",
      "https://www.youtube.com/watch?v=R5uZQxEUyMc",
      "מנטליסט עם דמות ברורה - איך פרסונה חזקה עושה את קריאת המחשבות לבלתי נשכחת."),
-    ("yann-frisch-fism", "Yann Frisch", "Baltass, FISM Grand Prix act", "2012",
-     "https://www.youtube.com/watch?v=9w7QAr13FP0",
-     "כוסות וכדורים כתיאטרון מטורף - קסם קלאסי שהופך לדמות ולהומור."),
     ("mat-franco-agt", "Mat Franco", "America's Got Talent audition", "2014",
      "https://www.youtube.com/watch?v=5-uZsYGFJMk",
      "קסם קלפים שמספר סיפור אישי - הקהל זוכר את הסיפור יותר מהקלפים."),
@@ -294,7 +286,7 @@ def print_plan(ws: str) -> None:
 def print_live_steps(ws: str) -> None:
     print("\nAfter --apply, create the schedules through the API (not SQL), as ziv on the VPS:")
     for name, cadence, at, final in (
-        ("weekly-content", "weekly", "07:30", "exporting"),
+        ("weekly-content", "weekly", "07:30", "ranking"),
         ("daily-evidence", "daily", "07:15", "extracting"),
     ):
         body = (
