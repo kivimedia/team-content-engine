@@ -11,10 +11,14 @@ the workspace explicitly.
    -> 201 {"talk_id","status":"recording"} (200 with the same talk when it was sent before)
 2. PUT /production/agent-talks/{talk_id}/chunks/{seq} raw bytes, seq from 0
    -> {"ok":true,"bytes_total":N}; the same piece again changes nothing
-3. POST /production/agent-talks/{talk_id}/finish {"ended_at","duration_ms","transcript"}
-   -> {"upload_id","status"}: the pieces joined (remuxed, never re-encoded), a library
-   video with source "agent_talk" titled "Talk with <Agent>, <date>", and its edit
-   started unless TCE_PRODUCTION_AUTO_EDIT is off. Finishing again returns the same video.
+3. POST /production/agent-talks/{talk_id}/finish {"ended_at","duration_ms","transcript","edit"}
+   -> {"upload_id","status","edit","archived"}: the pieces joined (remuxed, never
+   re-encoded), a library video with source "agent_talk" titled "Talk with <Agent>,
+   <date>". With "edit": true (or no "edit", for an older caller) its edit starts unless
+   TCE_PRODUCTION_AUTO_EDIT is off. With "edit": false (4-Oct, C4.1: he chose "Archive,
+   don't edit") the video is stored archived: no edit, no check by Jennifer, not in
+   Still to do; the Library's Archived list offers "Edit this now". Finishing again
+   returns the same video and keeps the first choice, and says so.
 """
 
 from __future__ import annotations
@@ -80,6 +84,9 @@ class AgentTalkFinish(BaseModel):
     ended_at: str | None = Field(default=None, max_length=64)
     duration_ms: int | None = Field(default=None, ge=0)
     transcript: list[TranscriptLine] | None = Field(default=None, max_length=50000)
+    # 4-Oct (C4.1): his choice after Stop. False keeps the video archived and unedited.
+    # Missing means True, so a caller from before the choice is edited as it always was.
+    edit: bool | None = None
 
 
 def _http(exc: TalkError) -> HTTPException:
@@ -252,6 +259,12 @@ async def put_agent_talk_chunk(
     }
 
 
+def _chosen_edit(row: AgentTalk) -> bool:
+    """The choice the first finish carried. A talk finished before the choice existed
+    (no "edit" in its join_meta) was edited, so it reads as True."""
+    return (row.join_meta or {}).get("edit", True) is not False
+
+
 def _finished(row: AgentTalk, upload: RecordingUpload | None) -> dict[str, Any]:
     return {
         "upload_id": str(row.upload_id) if row.upload_id else None,
@@ -260,7 +273,13 @@ def _finished(row: AgentTalk, upload: RecordingUpload | None) -> dict[str, Any]:
         "title": agent_talks.talk_title(row.agent, row.started_at),
         "detail": upload.status_detail if upload is not None else row.status_detail,
         "missing_pieces": list((row.join_meta or {}).get("missing") or []),
+        "edit": _chosen_edit(row),
+        "archived": bool(upload is not None and upload.archived_at is not None),
     }
+
+
+def _choice_words(edit: bool) -> str:
+    return "send it to be edited" if edit else "archive it without an edit"
 
 
 async def _upload_of(db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID | None) -> RecordingUpload | None:
@@ -286,7 +305,19 @@ async def _finished_again(
     if upload is not None and lines and not upload.call_transcript:
         upload.call_transcript = lines
         await db.commit()
-    return _finished(row, upload)
+    result = _finished(row, upload)
+    # 4-Oct (C4.1): the first finish's choice stands; a later one never flips it (the
+    # page and the sweeper can both finish the same talk). The answer says so.
+    first = result["edit"]
+    asked = None if body.edit is None else body.edit is not False
+    result["already_finished"] = True
+    result["choice_kept"] = asked is not None and asked != first
+    result["note"] = (
+        f"This talk was already finished, and its first choice stands: {_choice_words(first)}."
+        + (f" This finish asked to {_choice_words(asked)}, and nothing changed." if result["choice_kept"] else "")
+    )
+    result["edit_started"] = False
+    return result
 
 
 def _missing_line(missing: list[int], count: int | None = None) -> str:
@@ -311,12 +342,29 @@ async def finish_agent_talk(
     return await finish_talk(db, ws, row, body or AgentTalkFinish())
 
 
+ARCHIVED_BY_CHOICE = (
+    " Archived as you chose: it is not edited. To edit it, open Archived in the Library"
+    " and tap Edit this now."
+)
+ARCHIVED_BY_BACKSTOP = (
+    " No choice came for it, so it is archived and not edited. To edit it, open Archived"
+    " in the Library and tap Edit this now."
+)
+
+
 async def finish_talk(
-    db: AsyncSession, ws: uuid.UUID, row: AgentTalk, body: AgentTalkFinish
+    db: AsyncSession,
+    ws: uuid.UUID,
+    row: AgentTalk,
+    body: AgentTalkFinish,
+    *,
+    archived_line: str = ARCHIVED_BY_CHOICE,
 ) -> dict[str, Any]:
-    """Join the talk's pieces into its library video and start the edit (the finish
-    route, and TCE's own backstop for a talk whose finish never came)."""
+    """Join the talk's pieces into its library video and, when he chose to (C4.1), start
+    the edit (the finish route, and TCE's own backstop for a talk whose finish never
+    came, which archives)."""
     talk_id = row.id
+    edit = body.edit is not False
     if row.upload_id is not None:  # finished before: the same video, as it stands now
         return await _finished_again(db, ws, row, body)
     async with _finish_lock(talk_id):
@@ -351,6 +399,8 @@ async def finish_talk(
             "container": joined.container,
             "streams": joined.proof.get("streams") or [],
             "joined_at": _utcnow().isoformat(),
+            # 4-Oct (C4.1): the choice this first finish carried; a later one keeps it.
+            "edit": edit,
         }
         # The same bytes are already a video here (uq_recording_upload_sha): that one it is.
         upload = (
@@ -368,6 +418,12 @@ async def finish_talk(
             db.add(candidate)
             await db.flush()
             auto = bool(settings.production_auto_edit)
+            if not edit:
+                tail = archived_line
+            elif auto:
+                tail = " Jennifer starts the edit now: transcribing first."
+            else:
+                tail = " Automatic editing is switched off on this server, so it waits as it is."
             upload = RecordingUpload(
                 workspace_id=ws,
                 candidate_id=candidate.id,
@@ -385,16 +441,15 @@ async def finish_talk(
                         else f"Agent talk with {name}, joined without re-encoding."
                     )
                     + _missing_line(joined.missing, joined.missing_count)
-                    + (
-                        " Jennifer starts the edit now: transcribing first."
-                        if auto
-                        else " Automatic editing is switched off on this server, so it waits as it is."
-                    )
+                    + tail
                 )[:500],
                 job_ids=[],
                 source=agent_talks.SOURCE,
                 agent_name=name,
                 call_transcript=lines,
+                # Archived the way the Library's own Archive button does it: kept, out
+                # of Still to do, listed under Archived (library.set_archived).
+                archived_at=None if edit else _utcnow(),
             )
             db.add(upload)
             await db.flush()
@@ -403,18 +458,21 @@ async def finish_talk(
         row.status_detail = (
             f"Finished: the talk with {name} is in the library as “"
             f"{agent_talks.talk_title(row.agent, row.started_at)}”."
+            + ("" if edit else " It is archived, not edited.")
             + _missing_line(joined.missing, joined.missing_count)
         )[:500]
         await db.commit()
         upload_id = upload.id
         result = _finished(row, upload)
-    if created:
+    if created and edit:
         # The edit runs in the background and sees the committed video. The kill switch
         # (TCE_PRODUCTION_AUTO_EDIT) is read inside start_auto_edit.
         from tce.api.routers import production as production_routes
 
         production_routes.start_auto_edit(upload_id, ws)
-    result["edit_started"] = bool(created and settings.production_auto_edit)
+    result["edit_started"] = bool(created and edit and settings.production_auto_edit)
+    result["already_finished"] = False
+    result["choice_kept"] = False
     return result
 
 
@@ -427,7 +485,8 @@ async def finish_talk(
 # video, with nobody told. TCE's own backstop finishes a talk that has had no piece for
 # IDLE_FINISH_S, far past the relay's sweeper so the two never race: at startup, and
 # whenever a new talk is created. A later finish from the relay still brings the call's
-# transcript onto the video (_finished_again).
+# transcript onto the video (_finished_again). 4-Oct (C4.1): no choice came with it, so
+# the backstop archives the video instead of editing it.
 
 IDLE_FINISH_S = 6 * 3600
 
@@ -474,7 +533,12 @@ async def finish_idle_talks(ws: uuid.UUID | None = None, *, now: datetime | None
                 if row.status != "recording" or row.upload_id is not None or _finish_lock(talk_id).locked():
                     continue
                 try:
-                    await finish_talk(db, talk_ws, row, AgentTalkFinish())
+                    # 4-Oct (C4.1): no choice ever came, so it is archived, never edited
+                    # ("before sending me ask me if to archive or send"). Edit this now
+                    # in the Library's Archived list starts the edit.
+                    await finish_talk(
+                        db, talk_ws, row, AgentTalkFinish(edit=False), archived_line=ARCHIVED_BY_BACKSTOP
+                    )
                     done.append(talk_id)
                 except HTTPException as exc:
                     if exc.status_code == 409:  # nothing to join, or piece 0 never came

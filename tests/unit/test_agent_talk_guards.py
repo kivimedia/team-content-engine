@@ -165,7 +165,9 @@ async def test_a_talk_idle_for_hours_is_finished_by_tce_itself(client, editorial
     assert rows[fresh].status == "recording" and rows[fresh].upload_id is None
     # Nothing ever arrived for this one: it says so instead of waiting forever.
     assert rows[empty].status == "failed" and "No piece arrived for 6 hours" in rows[empty].status_detail
-    assert [c.__name__ for c in spawned] == ["auto_edit"]
+    # 4-Oct (C4.1): no choice ever came for it, so it is archived, never edited.
+    assert spawned == []
+    assert upload.archived_at is not None and "No choice came for it" in upload.status_detail
 
     # The relay comes back later with the call's transcript: the same video keeps it.
     r = await client.post(f"{BASE}/{idle}/finish", headers=AUTH,
