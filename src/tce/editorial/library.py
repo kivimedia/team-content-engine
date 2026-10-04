@@ -135,6 +135,20 @@ async def get_upload(db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID) -> R
     return await _get_upload(db, ws, upload_id)
 
 
+ARCHIVED_UNEDITED = "Archived without an edit. Nothing is done to it until you tap Edit this now."
+
+
+def never_edited_archive(upload: RecordingUpload) -> bool:
+    """An archived recording that was never edited and is not being edited now: the one
+    the Archived list offers "Edit this now" for."""
+    return (
+        upload.archived_at is not None
+        and not upload.edited_path
+        and bool(upload.storage_path)
+        and upload.status not in _LIVE_STATUSES
+    )
+
+
 def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]]:
     """Only actions with a real destination.
 
@@ -142,6 +156,10 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
     again. `re_record` is last because it is the expensive one.
     """
     actions: list[dict[str, str]] = []
+    if never_edited_archive(upload):
+        # 4-Oct (C4.1): archived without an edit, by his choice after Stop. One tap
+        # starts the normal edit and takes it out of Archived.
+        actions.append({"key": "edit_now", "label": "Edit this now"})
     if upload.edited_path:
         actions.append({"key": "watch_edit", "label": "Watch the edit"})
     if upload.storage_path:
@@ -489,6 +507,9 @@ async def list_library(
                 "state_sentence": (
                     upload.status_detail
                     if upload.status in _LIVE_STATUSES and upload.status_detail
+                    # 4-Oct: archived without an edit says so, and what brings it back.
+                    else ARCHIVED_UNEDITED
+                    if never_edited_archive(upload) and upload.status == "uploaded"
                     else qc_hold(upload) or STATE_SENTENCES.get(upload.status, upload.status_detail or "")
                 ),
                 # What her check found on this render: "Checked by Jennifer" and its numbers.

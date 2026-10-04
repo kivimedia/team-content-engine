@@ -378,6 +378,8 @@ def upload_json(u: RecordingUpload) -> dict[str, Any]:
         # 3-Oct: "agent_talk" for a filmed voice call with an agent, null for a walk.
         "source": u.source,
         "agent_name": u.agent_name,
+        # 4-Oct (C4.1): kept under the Library's Archived list, out of Still to do.
+        "archived": u.archived_at is not None,
         "created_at": _iso(u.created_at),
         "updated_at": _iso(u.updated_at),
     }
@@ -1242,9 +1244,22 @@ async def auto_edit_again(
     plan = dict(row.edit_plan or {})
     if plan.pop("review", None) is not None:
         row.edit_plan = plan
+    # 4-Oct (C4.1): "Edit this now" on a recording archived without an edit. It leaves
+    # Archived, so the card he is waiting on sits in Still to do with its steps.
+    first_edit = not row.edited_path
+    was_archived = row.archived_at is not None
+    row.archived_at = None
     # A live status straight away, so the Library keeps refreshing the card.
     row.status = "proofreading"
-    row.status_detail = "Editing it again: Jennifer's review, then the cut and the captions"
+    if first_edit:
+        row.status_detail = (
+            ("Taken out of Archived. " if was_archived else "")
+            + "Editing it now: "
+            + ("transcribing first, then " if not row.transcript else "")
+            + "Jennifer's review, the cut and the captions"
+        )
+    else:
+        row.status_detail = "Editing it again: Jennifer's review, then the cut and the captions"
     await db.commit()
     await db.refresh(row)
     _spawn(auto_edit(row.id, ws))

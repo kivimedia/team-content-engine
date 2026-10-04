@@ -1390,6 +1390,9 @@
     if (!items.length && data.filter === "todo") {
       html += '<div class="empty"><strong>Nothing waiting on you</strong>'
             + "Everything you recorded has gone out. Published videos are under Published.</div>";
+    } else if (!items.length && data.filter === "archived") {
+      html += '<div class="empty"><strong>Nothing archived</strong>'
+            + "A recording you archive, or choose not to edit after a talk, waits here.</div>";
     } else if (!items.length && data.filter === "published") {
       html += '<div class="empty"><strong>Nothing published yet</strong>'
             + "A video moves here once one of its posts goes out or is scheduled.</div>";
@@ -1412,7 +1415,9 @@
   var LIBRARY_LEDE = {
     todo: "What still needs you: recorded, being edited, or waiting to go out.",
     published: "Videos that have gone out, or are scheduled to.",
-    all: "Everything you have recorded, and what happened to it."
+    all: "Everything you have recorded, and what happened to it.",
+    // 4-Oct: a talk he chose to archive after Stop lands here, unedited.
+    archived: "Recordings you set aside. Nothing here is edited or posted. Edit this now starts the edit of one that was never edited."
   };
 
   /* TCE edits by itself now (25-Sep), so a card changes while he looks at it. While
@@ -1545,6 +1550,9 @@
         html += '<button class="btn" type="button" data-talk-edit="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "request_edit") {
         html += '<button class="btn" type="button" data-edit-request="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
+      } else if (action.key === "edit_now") {
+        // 4-Oct: archived without an edit (his choice after Stop). One tap edits it.
+        html += '<button class="btn primary" type="button" data-edit-now="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "edit_again") {
         html += '<button class="btn quiet" type="button" data-edit-again="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "check_again") {
@@ -1793,6 +1801,16 @@
     try {
       await api("/production/uploads/" + encodeURIComponent(uploadId) + "/auto-edit", { method: "POST" });
       toast("Editing it again. The card shows each step as it happens.");
+      renderLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function editNow(uploadId) {
+    try {
+      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/auto-edit", { method: "POST" });
+      toast("Editing it now. It left Archived: find it under Still to do, where the card shows each step.");
       renderLibrary();
     } catch (error) {
       toast(error.message, true);
@@ -2695,7 +2713,7 @@
     "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
     "watch", "watch-close", "voice-undo", "voice-restore",
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise",
-    "save-rules", "archive", "unarchive", "edit-again", "talk-edit"
+    "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -2722,6 +2740,7 @@
     if (d.archive !== undefined) { archiveRecording(d.archive, true); return; }
     if (d.unarchive !== undefined) { archiveRecording(d.unarchive, false); return; }
     if (d.editAgain !== undefined) { editAgain(d.editAgain); return; }
+    if (d.editNow !== undefined) { editNow(d.editNow); return; }
     if (d.checkAgain !== undefined) { checkAgain(d.checkAgain); return; }
     if (d.releaseHold !== undefined) { releaseHold(d.releaseHold); return; }
     if (d.ruleDelete !== undefined) { deleteRule(d.ruleDelete); return; }
