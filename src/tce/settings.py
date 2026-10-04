@@ -147,6 +147,10 @@ class Settings(BaseSettings):
     # only these and NULL-workspace rows, never a client workspace. Empty = the
     # editor default workspace plus the original owner workspace.
     owner_workspace_ids: str = ""
+    # Per-workspace content language (comma list of <workspace uuid>:<code>), e.g.
+    # TCE_WORKSPACE_LANGUAGES=40c0f179-7d5e-4397-b4de-b0b2f3e96fc2:he. A workspace not
+    # listed is "en" and behaves exactly as before. Only "he" changes anything today.
+    workspace_languages: str = ""
 
     # Web push. Absent keys simply mean no notifications are sent; nothing else
     # in the app depends on them, and the reconciler stays asleep.

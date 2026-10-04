@@ -38,9 +38,11 @@ is tight (tightcut.py); without them, the padded cut below.
 
 from __future__ import annotations
 
+import contextvars
 import re
 import unicodedata
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
@@ -156,13 +158,39 @@ EN_STOPWORDS = frozenset(
     "every some more most much many one yes ok okay um uh like well gonna actually basically".split()
 )
 HE_STOPWORDS = frozenset("של את על עם זה זו גם כי אם או הוא היא הם אני אנחנו אתם יש מה".split())
+# A Hebrew workspace (4-Oct) also treats these common words as glue, not content, so
+# a retake that only drops "אז" or "כן" still counts as said again.
+HE_WORKSPACE_STOPWORDS = HE_STOPWORDS | frozenset(
+    "לא אז כן רק עוד אבל כל היה הייתה יותר פה שם עכשיו ככה כמו בסדר טוב נו אתה את "
+    "לי לך לו לה לנו לכם להם שלי שלך שלו שלה שלנו אחד אחת הזה הזאת האלה אלה מאוד ממש "
+    "בעצם כאילו יעני סתם".split()
+)
+HE_WORKSPACE_FILLERS = frozenset({"אה", "אמ", "אממ", "אהה", "אההה", "אממם", "ממ", "אום"})
+
+_language: contextvars.ContextVar[str] = contextvars.ContextVar("retakes_language", default="en")
+
+
+@contextmanager
+def language_scope(language: str) -> Iterator[None]:
+    """Plan in a workspace's language ("en" = exactly as before; "he" = Hebrew fillers,
+    stopwords and sentence joins)."""
+    token = _language.set(language or "en")
+    try:
+        yield
+    finally:
+        _language.reset(token)
+
+
+def _he() -> bool:
+    return _language.get() == "he"
 
 
 def _content_forms(text: str) -> list[tuple[str, set[str]]]:
     """Content words with their accepted spellings (Hebrew one-letter prefixes stripped)."""
     out = []
+    he_stop = HE_WORKSPACE_STOPWORDS if _he() else HE_STOPWORDS
     for tok in sim_tokens(text):
-        if tok in EN_STOPWORDS or tok in HE_STOPWORDS or len(tok) < 3 or negations_in(tok):
+        if tok in EN_STOPWORDS or tok in he_stop or len(tok) < 3 or negations_in(tok):
             continue  # negations have their own, more specific check
         forms = {tok}
         cand = tok
@@ -330,11 +358,34 @@ def plan_edit(
     overrides: dict[str, Any] | None = None,
     aside_names: Sequence[str] = (),
     protected: Collection[int] = (),
+    language: str = "en",
 ) -> dict[str, Any]:
     """`protected` (an agent talk, 3-Oct): transcript indices of the agent's words. No
     rule and no review removes them; only his own editing request can. The rules look
     for retakes and asides inside one of his turns at a time, never across the agent's
-    lines."""
+    lines. `language` (4-Oct): the workspace's; "en" plans exactly as before."""
+    with language_scope(language):
+        return _plan_edit(
+            timings, script_phrases, pause_threshold_s=pause_threshold_s, pad_s=pad_s,
+            duration_s=duration_s, precision=precision, activity=activity, removals=removals,
+            overrides=overrides, aside_names=aside_names, protected=protected,
+        )
+
+
+def _plan_edit(
+    timings: list[dict[str, Any]],
+    script_phrases: list[str] | None,
+    *,
+    pause_threshold_s: float,
+    pad_s: float,
+    duration_s: float | None,
+    precision: str | None,
+    activity: Activity | None,
+    removals: list[dict[str, Any]] | None,
+    overrides: dict[str, Any] | None,
+    aside_names: Sequence[str],
+    protected: Collection[int],
+) -> dict[str, Any]:
     precision = precision or timing_precision(timings)
     if is_word_level(timings, precision):
         return _plan_words(
@@ -638,6 +689,10 @@ def _continues(a: Unit, b: Unit) -> bool:
         return False
     first = b.text.lstrip()
     head = raw_tokens(first)[:1]
+    if _he() and first and not first[0].isascii():
+        # Hebrew has no capitals: an open sentence followed soon by more of his
+        # Hebrew carries on.
+        return True
     return bool(first) and (first[0].islower() or (head and head[0] in _I_FORMS))
 
 
@@ -936,7 +991,7 @@ def _plan_words(
             for i in u.words:
                 reason[i] = reason[i] or "junk"
     for i, _s, _e, text in rows:
-        if re.sub(r"[^\w']+", "", text).lower() in FILLERS:
+        if re.sub(r"[^\w']+", "", text).lower() in (FILLERS | HE_WORKSPACE_FILLERS if _he() else FILLERS):
             reason[i] = reason[i] or "filler"
     # The agent's words are the other half of the conversation: whatever a rule or the
     # review said, they stay. A "[sound]" the second listen split off is not a word and

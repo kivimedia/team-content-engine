@@ -90,6 +90,43 @@ def sha256_hex(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# A Hebrew workspace (4-Oct): every job it sends is written in spoken Israeli Hebrew.
+# Appended to the job's own instructions, so every prompt (ideas, scripts, openings,
+# post copy, the editor's review and edits) gets it from one place; owner workspaces
+# never see it and their prompts stay byte-for-byte as they were.
+HEBREW_STYLE = (
+    "LANGUAGE: this workspace works in Hebrew. Write every piece of text meant for a "
+    "person (ideas, titles, lessons, scripts, openings, captions, post copy, notes, "
+    "explanations, replies) in natural spoken Israeli Hebrew, the way an Israeli talks on "
+    "camera to a friend: not translated from English, not formal or literary. Quote the "
+    "transcript's words exactly as they are written. Keep JSON keys, enum values, ids, "
+    "numbers and timestamps exactly as the schema asks."
+)
+HEBREW_VERSION_SUFFIX = ".he"
+
+
+def localize_request(req: LLMRequest) -> LLMRequest:
+    """The request as its workspace's language needs it. Not a Hebrew workspace: the
+    same object, untouched. Hebrew: the language line after the instructions and ".he"
+    on the prompt version (a cached English answer is never reused). Idempotent, so a
+    replayed job rebuilt from its stored request is not changed twice."""
+    from dataclasses import replace
+
+    from tce.db.workspace_filter import workspace_language
+
+    if workspace_language(req.workspace_id) != "he":
+        return req
+    system = req.system or ""
+    if HEBREW_STYLE not in system:
+        system = f"{system}\n\n{HEBREW_STYLE}" if system else HEBREW_STYLE
+    version = req.prompt_version
+    if version and not version.endswith(HEBREW_VERSION_SUFFIX):
+        version += HEBREW_VERSION_SUFFIX
+    if system == req.system and version == req.prompt_version:
+        return req
+    return replace(req, system=system, prompt_version=version)
+
+
 def compute_input_hash(req: LLMRequest) -> str:
     return sha256_hex(
         canonical_json(

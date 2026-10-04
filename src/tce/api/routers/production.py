@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.api.private_access import require_private_workspace
 from tce.db.session import get_db
+from tce.db.workspace_filter import workspace_language
 from tce.editorial import editor_rules
 from tce.editorial import library as library_service
 from tce.editorial.common import ORIGIN_TECHNICAL_VALIDATION
@@ -715,6 +716,30 @@ async def _run_leased(upload_id: uuid.UUID, ws: uuid.UUID, step: str, attempt: s
         _active_attempts.discard(attempt)
 
 
+def _asr_language(ws: uuid.UUID | None) -> str | None:
+    """The language the recogniser is asked for: Hebrew in a Hebrew workspace (4-Oct,
+    never auto-detected, so a Hebrew stretch is never heard as English), else the
+    server setting, exactly as before."""
+    if workspace_language(ws) == "he":
+        return "he"
+    return settings.production_transcribe_language or None
+
+
+def _main_language(ws: uuid.UUID | None, words: list[dict[str, Any]]) -> str:
+    """The second listen's main language. A Hebrew workspace is Hebrew: no stretch of
+    it is tagged as another language, so none is dropped as an aside."""
+    if workspace_language(ws) == "he":
+        return "he"
+    latin = sum(1 for w in words if wordbox.usable([{"text": w.get("text")}]))
+    return "en" if latin >= 0.8 * len(words) else "other"
+
+
+def _clip_language(ws: uuid.UUID | None) -> dict[str, str]:
+    """Extra arguments for a clip heard again: Hebrew in a Hebrew workspace; none (auto,
+    as before) elsewhere."""
+    return {"language": "he"} if workspace_language(ws) == "he" else {}
+
+
 async def _run_transcription(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str) -> None:
     async def report(text: str) -> None:
         await _set_status(upload_id, ws, "transcribing", text, attempt)
@@ -726,7 +751,7 @@ async def _run_transcription(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str) 
         timings = await media.transcribe_local(
             path,
             ws_url=settings.production_transcribe_ws_url,
-            language=settings.production_transcribe_language or None,
+            language=_asr_language(ws),
             duration_s=duration,
             on_status=report,
         )
@@ -935,6 +960,7 @@ async def _compute_plan(
         overrides=previous.get("overrides"),
         aside_names=aside_names(),
         protected=voices.agent_words if voices is not None else (),
+        language=workspace_language(ws),
     )
     if voices is not None:
         plan["voices"] = {
@@ -1086,13 +1112,14 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             spoken = list(plan.get("words") or [])
         on_edit = wordbox.on_edit_timeline(spoken, keep)
         pages = None
-        if not audio_only and on_edit and wordbox.usable(on_edit):
+        lang = workspace_language(ws)
+        if not audio_only and on_edit and wordbox.usable(on_edit, lang):
             await report(f"Drawing {len(on_edit)} caption words, each boxed while you say it")
-            pages = wordbox.pages(on_edit)
+            pages = wordbox.pages(on_edit, lang)
             # Hundreds of images: drawn off the event loop so the API keeps answering.
             band = await asyncio.to_thread(
                 wordbox.render_band,
-                pages, size[0], size[1], band_dir, sum(e - s for s, e in keep),
+                pages, size[0], size[1], band_dir, sum(e - s for s, e in keep), lang,
             )
         made: dict[str, Any] = {}
         try:
@@ -1960,12 +1987,15 @@ def _review_request(
     context: str,
     voices: agent_talks.Voices | None = None,
     rules: list[list[str]] | None = None,
+    *,
+    language: str = "en",
 ) -> tuple[str, str]:
     """The review's prompt and instructions. An agent talk (3-Oct) says who speaks each
     line and adds the conversation rules: the agent's lines are content. `rules` are the
     rules Jennifer learned from his notes ([[id, text], ...], editor_rules.prompt_rules),
-    written after the skill file; none leaves the instructions as they were."""
-    system = autoedit.review_system(aside_names(), editor_rules.block(rules)[0])
+    written after the skill file; none leaves the instructions as they were. `language`
+    (4-Oct): "he" for a Hebrew workspace."""
+    system = autoedit.review_system(aside_names(), editor_rules.block(rules)[0], language=language)
     if voices is None:
         return autoedit.review_prompt(words, context), system
     speakers = voices.speaker_names() if voices.known else None
@@ -2078,7 +2108,7 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
             await s.commit()
     if not words or not is_word_level(words):
         return "skipped"
-    prompt, system = _review_request(words, context, voices, rules)
+    prompt, system = _review_request(words, context, voices, rules, language=workspace_language(ws))
     key = _review_key(upload_id, prompt, system)
     try:
         answer = await _ask(
@@ -2169,13 +2199,13 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             # follow it. A deleted rule is never applied: ask again with the rules in
             # force now (a new job); the old answer is never used.
             rules = in_force
-            prompt, system = _review_request(words, context, voices, rules)
+            prompt, system = _review_request(words, context, voices, rules, language=workspace_language(ws))
             key = _review_key(upload_id, prompt, system)
             review = {**review, "key": key, "rules": rules, "asked_again": "a rule it read was deleted"}
             if not rules:
                 review.pop("rules")
             await _save_review(upload_id, ws, review, None)
-        prompt, system = _review_request(words, context, voices, rules)
+        prompt, system = _review_request(words, context, voices, rules, language=workspace_language(ws))
         key = _review_key(upload_id, prompt, system)
         if key != str(review.get("key") or ""):
             await _save_review(upload_id, ws, {**review, "state": "stale"}, None)
@@ -2352,7 +2382,9 @@ async def _qc_step(
         await s.commit()
 
 
-async def _qc_listen(edited: Path, duration_s: float) -> tuple[list[dict[str, Any]] | None, str | None]:
+async def _qc_listen(
+    edited: Path, duration_s: float, ws: uuid.UUID | None = None
+) -> tuple[list[dict[str, Any]] | None, str | None]:
     """The render transcribed again by the local recogniser: the words a viewer's ear
     would get. (None, why) when it cannot be asked or does not answer; never a stop."""
     url = settings.production_transcribe_ws_url
@@ -2363,7 +2395,7 @@ async def _qc_listen(edited: Path, duration_s: float) -> tuple[list[dict[str, An
     try:
         data = await media.transcribe_clip(
             edited, 0.0, duration_s, ws_url=url,
-            language=settings.production_transcribe_language or None,
+            language=_asr_language(ws),
             timeout_s=QC_LISTEN_TIMEOUT_S,
         )
     except Exception as exc:  # noqa: BLE001 - the check goes on without the second listen
@@ -2407,6 +2439,7 @@ async def _qc_asides(
         skill=autoedit.editor_skill(),
         rules=block,
         talk=autoedit.conversation_rules(voices.agent) if voices is not None else "",
+        language=workspace_language(ws),
     )
     prompt = qc.asides_prompt(kept, context, voices.speaker_names() if voices is not None else None)
     try:
@@ -2484,7 +2517,7 @@ async def _qc_measure(
         await _qc_step(
             upload_id, ws, round_no, f"listening to it again on this server ({len(kept)} words to hear)"
         )
-        heard, why = await _qc_listen(edited, duration)
+        heard, why = await _qc_listen(edited, duration, ws)
 
     await _qc_step(upload_id, ws, round_no, "measuring the pauses in the finished video")
     checks["gaps"] = (
@@ -2840,8 +2873,7 @@ async def _second_listen(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
     url = settings.production_transcribe_ws_url
     if done or not url or not words or not is_word_level(words) or not src or not Path(src).exists():
         return
-    latin = sum(1 for w in words if wordbox.usable([{"text": w.get("text")}]))
-    main_language = "en" if latin >= 0.8 * len(words) else "other"
+    main_language = _main_language(ws, words)
     wins = relisten.windows(words)
     heard: list[dict[str, Any] | None] = []
     failures = 0
@@ -2859,7 +2891,7 @@ async def _second_listen(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             heard.append(None)  # the worker is not answering: leave the rest as heard
             continue
         try:
-            res = await media.transcribe_clip(src, win.start, win.end, ws_url=url)
+            res = await media.transcribe_clip(src, win.start, win.end, ws_url=url, **_clip_language(ws))
             if main_language == "en" and not relisten.english(res):
                 he = await media.transcribe_clip(src, win.start, win.end, ws_url=url, language="he")
                 res["hebrew"] = said(he)

@@ -281,10 +281,52 @@ MAX_REMOVAL_WORDS = {"retake": 80, "false_start": 80, "aside": 30, "junk": 40}
 MAX_REMOVED_SHARE = 0.6
 
 
-def review_system(dog_names: list[str], rules: str = "") -> str:
+_HE_REVIEW_SWAPS = (
+    ("You edit Ziv Raviv's walking videos.", "You edit these walking videos."),
+    ("speaks English with an Israeli accent.", "speaks everyday spoken Israeli Hebrew."),
+    (
+        "He calls the dogs in Hebrew too (for example בואו, 'come'), "
+        "which the recogniser writes as 'boy', 'bo' or 'bow', or translates into English "
+        "('from here', 'we're here'). ",
+        "He speaks Hebrew to the viewer, so Hebrew is never an aside because it is Hebrew; "
+        "only what is said to the dogs, to people around him or to himself is (for example "
+        "בואו, 'come', said to the dogs). ",
+    ),
+    (
+        "A line marked NOT ENGLISH was heard as another language when listened to again on its "
+        "own: that is Hebrew he says to the dogs or to himself, and the English words on it are "
+        "the recogniser's guess. Remove it as an aside unless the English on it plainly belongs to "
+        "his point. ",
+        "The transcript is Hebrew. ",
+    ),
+    (
+        "Every correction quotes the exact words it replaces by index; replacement '' deletes.",
+        "Every correction quotes the exact words it replaces by index; replacement '' deletes. "
+        "A replacement is written in Hebrew, exactly as he says it.",
+    ),
+)
+
+
+def _to_hebrew(text: str, swaps: tuple[tuple[str, str], ...]) -> str:
+    """The Hebrew-workspace version of an instruction written for an English speaker.
+    A swap that no longer finds its sentence fails loudly (a test pins each one)."""
+    for old, new in swaps:
+        if old not in text:
+            raise ValueError(f"Hebrew instruction swap lost its sentence: {old[:60]!r}")
+        text = text.replace(old, new)
+    return text
+
+
+def review_system(dog_names: list[str], rules: str = "", *, language: str = "en") -> str:
     """The review's instructions. `rules` (3-Oct): the block of rules Jennifer learned
     from his notes on earlier videos (production/rules.py), placed after the
-    hand-written skill file. Empty leaves the instructions exactly as they were."""
+    hand-written skill file. Empty leaves the instructions exactly as they were.
+    `language` "he" (4-Oct): a Hebrew workspace, with no English-only rule."""
+    text = _review_system_en(dog_names, rules)
+    return _to_hebrew(text, _HE_REVIEW_SWAPS) if language == "he" else text
+
+
+def _review_system_en(dog_names: list[str], rules: str = "") -> str:
     dogs = " and ".join(dog_names) if dog_names else "his dogs"
     return (
         "You edit Ziv Raviv's walking videos. He films himself on his phone while he walks, "

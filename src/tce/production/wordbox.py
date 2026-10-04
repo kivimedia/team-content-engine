@@ -30,6 +30,9 @@ from pathlib import Path
 from typing import Any
 
 FONT_PATH = Path(__file__).resolve().parent / "fonts" / "Roboto-Bold.ttf"
+# A Hebrew workspace (4-Oct): Heebo (OFL, variable; drawn at its Bold instance) has
+# Hebrew, Latin and digits, so a Hebrew line with "AI" or "2026" in it still draws.
+HEBREW_FONT_PATH = Path(__file__).resolve().parent / "fonts" / "Heebo-Variable.ttf"
 
 WHITE = (255, 255, 255, 255)
 ORANGE = (255, 118, 45, 255)  # #FF762D, sampled from his reels
@@ -53,10 +56,33 @@ LINGER_S = 0.35  # the page stays this long after its last word when he pauses
 HOLD_GAP_S = 0.2  # the box stays on through a gap shorter than this
 
 FILLERS = {"um", "uh", "ah", "er", "erm", "hmm", "mm", "umm", "uhh", "ehh", "uhm"}
+HEBREW_FILLERS = {"אה", "אמ", "אממ", "אהה", "אההה", "אממם", "ממ", "אום"}
 _BARE = re.compile(r"[^\w']+")
 # The bundled Roboto is the Latin-1 build (review, 28-Sep: ā, č, ł drew as empty
 # boxes); a word it cannot draw keeps the plain libass captions.
 _LATIN = re.compile(r"^[\x00-\xff\u2018-\u201f\u2026]*$")
+# Heebo: Latin-1, Hebrew letters and points, maqaf/geresh/gershayim, dashes, quotes.
+_HEBREW = re.compile(r"^[\x00-\xff\u0590-\u05ff\u2010-\u2014\u2018-\u201f\u2026]*$")
+
+
+def font_path(language: str = "en") -> Path:
+    return HEBREW_FONT_PATH if language == "he" else FONT_PATH
+
+
+def _fillers(language: str) -> set[str]:
+    return FILLERS | HEBREW_FILLERS if language == "he" else FILLERS
+
+
+def _rtl_ok() -> bool:
+    """Pillow shapes right-to-left text only with libraqm; without it a Hebrew word
+    would draw backwards, so the plain captions (libass, which reorders with fribidi)
+    are used instead."""
+    try:
+        from PIL import features
+
+        return bool(features.check("raqm"))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def shown(text: str) -> str:
@@ -69,8 +95,11 @@ def shown(text: str) -> str:
     return trimmed or text
 
 
-def usable(words: list[dict[str, Any]]) -> bool:
-    """Every caption word has its own timing and can be drawn in Roboto."""
+def usable(words: list[dict[str, Any]], language: str = "en") -> bool:
+    """Every caption word has its own timing and can be drawn in the caption font
+    (Roboto; Heebo, right to left, in a Hebrew workspace)."""
+    if language == "he":
+        return bool(words) and _rtl_ok() and all(_HEBREW.match(str(w.get("text") or "")) for w in words)
     return bool(words) and all(_LATIN.match(str(w.get("text") or "")) for w in words)
 
 
@@ -89,11 +118,12 @@ def _ends_sentence(text: str) -> bool:
     return str(text).rstrip().rstrip("\"')]").endswith((".", "?", "!"))
 
 
-def pages(words: list[dict[str, Any]]) -> list[Page]:
+def pages(words: list[dict[str, Any]], language: str = "en") -> list[Page]:
     """Group words already on the EDITED timeline ({text, start, end}) into pages."""
+    fillers = _fillers(language)
     spoken = [
         w for w in words
-        if str(w.get("text") or "").strip() and _BARE.sub("", str(w["text"])).lower() not in FILLERS
+        if str(w.get("text") or "").strip() and _BARE.sub("", str(w["text"])).lower() not in fillers
     ]
     out: list[Page] = []
     cur: Page | None = None
@@ -167,8 +197,12 @@ def timeline(items: list[Page]) -> list[tuple[float, float, int | None, int | No
 
 
 class _Layout:
-    def __init__(self, frame_w: int, frame_h: int) -> None:
+    def __init__(self, frame_w: int, frame_h: int, language: str = "en") -> None:
         self.w, self.h = frame_w, frame_h
+        self.rtl = language == "he"
+        self.font_path = font_path(language)
+        # Pillow's shaping options: only a right-to-left line passes any.
+        self.opts: dict[str, Any] = {"direction": "rtl"} if self.rtl else {}
         self.size = FONT_SIZE * frame_w / BASE_W
         self.center = frame_h * CENTER_Y
         pitch = LINE_PITCH_EM * self.size
@@ -182,7 +216,10 @@ class _Layout:
         from PIL import ImageFont
 
         if size not in self._fonts:
-            self._fonts[size] = ImageFont.truetype(str(FONT_PATH), size)
+            font = ImageFont.truetype(str(self.font_path), size)
+            if self.rtl:
+                font.set_variation_by_name("Bold")
+            self._fonts[size] = font
         return self._fonts[size]
 
     def place(self, page: Page) -> tuple[int, list[tuple[float, float, dict[str, Any]]]]:
@@ -192,7 +229,7 @@ class _Layout:
             font = self.font(size)
             space = font.getlength(" ")
             widths = [
-                sum(font.getlength(shown(w["text"])) for w in line) + space * (len(line) - 1)
+                sum(font.getlength(shown(w["text"]), **self.opts) for w in line) + space * (len(line) - 1)
                 for line in page.lines
             ]
             if max(widths) <= self.w * MAX_LINE_WIDTH or size <= self.size * 0.6:
@@ -203,6 +240,15 @@ class _Layout:
         placed: list[tuple[float, float, dict[str, Any]]] = []
         for li, (line, width) in enumerate(zip(page.lines, widths, strict=True)):
             baseline = self.center + (li - (n - 1) / 2) * pitch - self.band_y
+            if self.rtl:
+                # Right to left: the first word said is the rightmost; each word is one
+                # right-to-left run, drawn on its own.
+                x = (self.w + width) / 2
+                for w in line:
+                    x -= font.getlength(shown(w["text"]), **self.opts)
+                    placed.append((x, baseline, w))
+                    x -= space
+                continue
             x = (self.w - width) / 2
             for w in line:
                 placed.append((x, baseline, w))
@@ -219,25 +265,26 @@ class _Layout:
         sd = ImageDraw.Draw(shadow)
         dy = SHADOW_DY_EM * size
         for x, y, w in placed:
-            sd.text((x, y + dy), shown(w["text"]), font=font, fill=SHADOW, anchor="ls")
+            sd.text((x, y + dy), shown(w["text"]), font=font, fill=SHADOW, anchor="ls", **self.opts)
         image.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(SHADOW_BLUR_EM * size)))
         draw = ImageDraw.Draw(image)
         if boxed is not None:
             x, y, w = placed[boxed]
             pad = BOX_PAD_EM * size
             draw.rounded_rectangle(
-                (x - pad, y - BOX_UP_EM * size, x + font.getlength(shown(w["text"])) + pad,
+                (x - pad, y - BOX_UP_EM * size, x + font.getlength(shown(w["text"]), **self.opts) + pad,
                  y + BOX_DOWN_EM * size),
                 radius=BOX_RADIUS_EM * size,
                 fill=ORANGE,
             )
         for x, y, w in placed:
-            draw.text((x, y), shown(w["text"]), font=font, fill=WHITE, anchor="ls")
+            draw.text((x, y), shown(w["text"]), font=font, fill=WHITE, anchor="ls", **self.opts)
         image.save(path, compress_level=1)
 
 
 def render_band(
-    items: list[Page], frame_w: int, frame_h: int, folder: Path, duration_s: float
+    items: list[Page], frame_w: int, frame_h: int, folder: Path, duration_s: float,
+    language: str = "en",
 ) -> dict[str, Any]:
     """Draw every caption state and write the ffconcat list that times them.
 
@@ -247,7 +294,7 @@ def render_band(
     from PIL import Image
 
     folder.mkdir(parents=True, exist_ok=True)
-    layout = _Layout(frame_w, frame_h)
+    layout = _Layout(frame_w, frame_h, language)
     blank = folder / "blank.png"
     Image.new("RGBA", (frame_w, layout.band_h), (0, 0, 0, 0)).save(blank)
     names: dict[tuple[int, int | None], str] = {}

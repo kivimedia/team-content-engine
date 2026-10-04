@@ -126,6 +126,39 @@ def owner_workspace_ids() -> set[uuid.UUID]:
     )
 
 
+SUPPORTED_LANGUAGES = frozenset({"en", "he"})
+
+
+def workspace_languages() -> dict[uuid.UUID, str]:
+    """TCE_WORKSPACE_LANGUAGES parsed: {workspace: language}. Bad entries are skipped."""
+    from tce.settings import settings
+
+    out: dict[uuid.UUID, str] = {}
+    for part in (getattr(settings, "workspace_languages", "") or "").split(","):
+        ws_text, _, code = part.strip().partition(":")
+        code = code.strip().lower()
+        if code not in SUPPORTED_LANGUAGES:
+            continue
+        try:
+            out[uuid.UUID(ws_text.strip())] = code
+        except ValueError:
+            continue
+    return out
+
+
+def workspace_language(workspace_id: uuid.UUID | str | None = None) -> str:
+    """The content language of a workspace ("en" unless TCE_WORKSPACE_LANGUAGES says
+    otherwise). With no workspace given, the one in the request context."""
+    ws = workspace_id if workspace_id is not None else get_workspace_context()
+    if ws is None:
+        return "en"
+    try:
+        ws = ws if isinstance(ws, uuid.UUID) else uuid.UUID(str(ws))
+    except ValueError:
+        return "en"
+    return workspace_languages().get(ws, "en")
+
+
 def workspace_scope_clause(model: Any, workspace_id: uuid.UUID | None = None) -> Any:
     """WHERE clause limiting `model` to the rows a pick may see.
 

@@ -662,10 +662,32 @@ ASIDES_SCHEMA = {
 }
 
 
-def asides_system(dog_names: list[str], *, skill: str = "", rules: str = "", talk: str = "") -> str:
+_HE_ASIDES_SWAPS = (
+    ("speaks English with an Israeli accent.", "speaks everyday spoken Israeli Hebrew."),
+    (
+        "He calls them in Hebrew too, which the recogniser "
+        "writes as 'boy', 'bo' or 'bow', or as English that makes no sense where it stands.",
+        "He speaks Hebrew to the viewer, so Hebrew is never an aside because it is Hebrew "
+        "(בואו, 'come', said to the dogs is).",
+    ),
+)
+
+
+def asides_system(
+    dog_names: list[str], *, skill: str = "", rules: str = "", talk: str = "", language: str = "en"
+) -> str:
     """Jennifer's instructions for the leftover-asides check. `skill` is the hand-written
     skill file, `rules` the block of rules she learned from his notes (after it), `talk`
-    the conversation rules of an agent talk."""
+    the conversation rules of an agent talk. `language` "he" (4-Oct): a Hebrew workspace."""
+    text = _asides_system_en(dog_names, skill=skill, rules=rules, talk=talk)
+    if language == "he":
+        from tce.production.autoedit import _to_hebrew
+
+        return _to_hebrew(text, _HE_ASIDES_SWAPS)
+    return text
+
+
+def _asides_system_en(dog_names: list[str], *, skill: str = "", rules: str = "", talk: str = "") -> str:
     dogs = " and ".join(dog_names) if dog_names else "his dogs"
     text = (
         "You are Jennifer, the video editor. You are checking an edit that is already cut. "

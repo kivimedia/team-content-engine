@@ -126,6 +126,9 @@ async def _get_by_key(session: AsyncSession, key: str) -> LLMJob | None:
 async def enqueue(
     session: AsyncSession, req: LLMRequest, *, requeue_failed: bool = False
 ) -> LLMJob:
+    from tce.llm.provider import localize_request
+
+    req = localize_request(req)  # a Hebrew workspace's jobs carry its language line
     key = compute_idempotency_key(req)
     existing = await _get_by_key(session, key)
     if existing is None:
