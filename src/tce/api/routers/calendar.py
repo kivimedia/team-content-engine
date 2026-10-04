@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import async_session, get_db
+from tce.db.workspace_filter import scoped_pick, scoped_rows
 from tce.models.content_calendar import ContentCalendarEntry
 from tce.models.guide_option import GuideOption
 from tce.models.slot_option import SlotOption
@@ -329,9 +330,7 @@ async def plan_week_deep(
 
                 # Load founder voice
                 fv_result = await bg_db.execute(
-                    select(FounderVoiceProfile).order_by(
-                        FounderVoiceProfile.created_at.desc()
-                    ).limit(1)
+                    scoped_pick(FounderVoiceProfile)
                 )
                 founder_voice = fv_result.scalar_one_or_none()
                 if founder_voice:
@@ -346,7 +345,7 @@ async def plan_week_deep(
 
                 # Load creator profiles
                 cr_result = await bg_db.execute(
-                    select(CreatorProfile).order_by(CreatorProfile.creator_name)
+                    scoped_rows(CreatorProfile).order_by(CreatorProfile.creator_name)
                 )
                 creators = cr_result.scalars().all()
                 if creators:

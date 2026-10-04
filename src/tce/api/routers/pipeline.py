@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.api.deps import verify_service_auth
 from tce.db.session import async_session, get_db
+from tce.db.workspace_filter import scoped_pick
 from tce.models.pattern_template import PatternTemplate
 from tce.models.pipeline_run import PipelineRun
 from tce.models.video_lead_script import VideoLeadScript
@@ -587,9 +588,7 @@ async def generate_week(
 
                 async with async_session() as fv_db:
                     fv_result = await fv_db.execute(
-                        select(FounderVoiceProfile).order_by(
-                            FounderVoiceProfile.created_at.desc()
-                        ).limit(1)
+                        scoped_pick(FounderVoiceProfile)
                     )
                     fv = fv_result.scalar_one_or_none()
                     if fv:

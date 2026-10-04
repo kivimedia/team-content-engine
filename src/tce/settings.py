@@ -143,6 +143,10 @@ class Settings(BaseSettings):
     # Private evidence / editorial / production routes (see api/private_access.py)
     private_access_key: SecretStr = SecretStr("")
     editor_default_workspace_id: str = ""
+    # Owner workspaces (comma list). A profile pick with no workspace context reads
+    # only these and NULL-workspace rows, never a client workspace. Empty = the
+    # editor default workspace plus the original owner workspace.
+    owner_workspace_ids: str = ""
 
     # Web push. Absent keys simply mean no notifications are sent; nothing else
     # in the app depends on them, and the reconciler stays asleep.

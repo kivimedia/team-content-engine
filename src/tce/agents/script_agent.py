@@ -137,13 +137,11 @@ class ScriptAgent(AgentBase):
         # Auto-load founder voice from DB if not already in context (pipeline mode)
         if "founder_voice" not in context:
             try:
-                from sqlalchemy import select
+                from tce.db.workspace_filter import scoped_pick
                 from tce.models.founder_voice_profile import FounderVoiceProfile
 
                 fv_result = await self.db.execute(
-                    select(FounderVoiceProfile)
-                    .order_by(FounderVoiceProfile.created_at.desc())
-                    .limit(1)
+                    scoped_pick(FounderVoiceProfile)
                 )
                 fv = fv_result.scalar_one_or_none()
                 if fv:

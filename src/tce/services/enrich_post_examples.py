@@ -34,6 +34,7 @@ import structlog
 from sqlalchemy import and_, or_, select
 
 from tce.db.session import async_session
+from tce.db.workspace_filter import scoped_pick
 from tce.llm import get_llm_client
 from tce.models.creator_profile import CreatorProfile
 from tce.models.post_example import PostExample
@@ -172,9 +173,9 @@ async def enrich_creator(
 
     async with async_session() as db:
         cr_result = await db.execute(
-            select(CreatorProfile).where(CreatorProfile.creator_name == creator_name)
+            scoped_pick(CreatorProfile, CreatorProfile.creator_name == creator_name)
         )
-        creator = cr_result.scalar_one_or_none()
+        creator = cr_result.scalars().first()
         if not creator:
             print(f"ERROR: creator '{creator_name}' not found. Run instaiq_import first.")
             return stats

@@ -13,6 +13,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tce.db.workspace_filter import scoped_pick, scoped_rows
 from tce.models.creator_profile import CreatorProfile
 from tce.models.founder_voice_profile import FounderVoiceProfile
 from tce.models.pattern_template import PatternTemplate
@@ -44,7 +45,9 @@ class CachePrefixBuilder:
         if self._profiles is not None:
             return
 
-        result = await self.db.execute(select(CreatorProfile).order_by(CreatorProfile.creator_name))
+        result = await self.db.execute(
+            scoped_rows(CreatorProfile).order_by(CreatorProfile.creator_name)
+        )
         self._profiles = list(result.scalars().all())
 
         result = await self.db.execute(
@@ -55,7 +58,7 @@ class CachePrefixBuilder:
         self._templates = list(result.scalars().all())
 
         result = await self.db.execute(
-            select(FounderVoiceProfile).order_by(FounderVoiceProfile.created_at.desc()).limit(1)
+            scoped_pick(FounderVoiceProfile)
         )
         self._voice = result.scalars().first()
 

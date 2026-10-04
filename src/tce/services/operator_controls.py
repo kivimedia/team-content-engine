@@ -15,6 +15,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tce.db.workspace_filter import scoped_pick
 from tce.models.creator_profile import CreatorProfile
 from tce.models.pattern_template import PatternTemplate
 from tce.models.source_document import SourceDocument
@@ -150,9 +151,9 @@ class OperatorControlService:
             return {"error": "Weight must be between 0.0 and 1.0"}
 
         result = await self.db.execute(
-            select(CreatorProfile).where(CreatorProfile.creator_name == creator_name)
+            scoped_pick(CreatorProfile, CreatorProfile.creator_name == creator_name)
         )
-        profile = result.scalar_one_or_none()
+        profile = result.scalars().first()
         if not profile:
             return None
 

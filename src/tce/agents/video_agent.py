@@ -437,12 +437,12 @@ class VideoAgent(AgentBase):
             return None
 
         try:
-            from sqlalchemy import select
+            from tce.db.workspace_filter import scoped_pick
             from tce.models.brand_profile import BrandProfile
 
             # Try creator-specific brand first
             creator_name = context.get("creator_name", "")
-            stmt = select(BrandProfile).order_by(BrandProfile.created_at.desc()).limit(1)
+            stmt = scoped_pick(BrandProfile)
             result = await self.db.execute(stmt)
             brand = result.scalar_one_or_none()
 

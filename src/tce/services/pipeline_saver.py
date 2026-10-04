@@ -10,6 +10,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tce.db.workspace_filter import scoped_pick
 from tce.models.creator_profile import CreatorProfile
 from tce.models.image_asset import ImageAsset
 from tce.models.pattern_template import PatternTemplate
@@ -92,9 +93,9 @@ class PipelineResultSaver:
     async def _get_or_create_creator(self, creator_name: str) -> uuid.UUID:
         """Find existing creator by name or create a new one."""
         result = await self.db.execute(
-            select(CreatorProfile).where(CreatorProfile.creator_name == creator_name)
+            scoped_pick(CreatorProfile, CreatorProfile.creator_name == creator_name)
         )
-        existing = result.scalar_one_or_none()
+        existing = result.scalars().first()
         if existing:
             return existing.id
 

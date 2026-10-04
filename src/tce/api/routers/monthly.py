@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import async_session, get_db
+from tce.db.workspace_filter import scoped_pick, scoped_rows
 from tce.models.content_calendar import ContentCalendarEntry
 from tce.models.guide_option import GuideOption
 from tce.models.monthly_plan import MonthlyPlan
@@ -93,7 +94,7 @@ async def plan_month(
 
             async with async_session() as bg_db:
                 # Load voice context (shared across all 4 weeks)
-                fv_result = await bg_db.execute(select(FounderVoiceProfile).limit(1))
+                fv_result = await bg_db.execute(scoped_pick(FounderVoiceProfile))
                 fv = fv_result.scalar_one_or_none()
                 founder_voice = None
                 if fv:
@@ -106,7 +107,7 @@ async def plan_month(
                         "metaphor_families": fv.metaphor_families or [],
                     }
 
-                cr_result = await bg_db.execute(select(CreatorProfile))
+                cr_result = await bg_db.execute(scoped_rows(CreatorProfile))
                 creators = cr_result.scalars().all()
                 creator_profiles = [
                     {

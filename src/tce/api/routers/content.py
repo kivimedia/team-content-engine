@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import get_db
+from tce.db.workspace_filter import scoped_pick
 from tce.models.post_package import PostPackage
 from tce.models.story_brief import StoryBrief
 from tce.models.tracked_repo import TrackedRepo
@@ -831,9 +832,7 @@ async def _regenerate_guide_task(
         try:
             from tce.models.founder_voice_profile import FounderVoiceProfile
             fv_result = await db.execute(
-                select(FounderVoiceProfile).order_by(
-                    FounderVoiceProfile.created_at.desc()
-                ).limit(1)
+                scoped_pick(FounderVoiceProfile)
             )
             fv = fv_result.scalar_one_or_none()
             if fv:
@@ -1233,9 +1232,7 @@ async def _generate_from_post_task(
         try:
             from tce.models.founder_voice_profile import FounderVoiceProfile
             fv_result = await db.execute(
-                select(FounderVoiceProfile).order_by(
-                    FounderVoiceProfile.created_at.desc()
-                ).limit(1)
+                scoped_pick(FounderVoiceProfile)
             )
             fv = fv_result.scalar_one_or_none()
             if fv:

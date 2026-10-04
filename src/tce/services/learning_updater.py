@@ -12,6 +12,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tce.db.workspace_filter import scoped_pick
 from tce.models.pattern_template import PatternTemplate
 from tce.models.system_version import SystemVersion
 
@@ -107,9 +108,9 @@ class LearningUpdater:
         applied = {}
         for name, delta in adjustments.items():
             result = await self.db.execute(
-                select(CreatorProfile).where(CreatorProfile.creator_name == name)
+                scoped_pick(CreatorProfile, CreatorProfile.creator_name == name)
             )
-            profile = result.scalar_one_or_none()
+            profile = result.scalars().first()
             if profile:
                 old_weight = profile.allowed_influence_weight
                 new_weight = max(0.0, min(1.0, old_weight + delta))
@@ -147,9 +148,7 @@ class LearningUpdater:
         from tce.models.founder_voice_profile import FounderVoiceProfile
 
         result = await self.db.execute(
-            select(FounderVoiceProfile)
-            .order_by(FounderVoiceProfile.created_at.desc())
-            .limit(1)
+            scoped_pick(FounderVoiceProfile)
         )
         profile = result.scalar_one_or_none()
         if not profile:

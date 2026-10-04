@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import contextvars
 import uuid
+from typing import Any
 
-from sqlalchemy import event, or_
+from sqlalchemy import Select, case, event, or_, select
 from sqlalchemy.orm import ORMExecuteState
 
 from tce.db.base import Base
@@ -93,3 +94,68 @@ def install_workspace_filter(session_class: type | object) -> None:
     """
     from sqlalchemy.orm import Session
     event.listen(Session, "do_orm_execute", _apply_workspace_filter)
+
+
+# Workspaces that belong to the owner (Ziv / Kivi). A pick made with no workspace
+# context may read these and the NULL-workspace legacy rows, never a client's.
+_OWNER_WORKSPACE_FALLBACK = "30c13a7e-432f-4c3a-bade-52483262d793"
+
+
+def _parse_uuids(raw: str) -> set[uuid.UUID]:
+    out: set[uuid.UUID] = set()
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(uuid.UUID(part))
+        except ValueError:
+            continue
+    return out
+
+
+def owner_workspace_ids() -> set[uuid.UUID]:
+    """TCE_OWNER_WORKSPACE_IDS (comma list), else the editor default + the owner fallback."""
+    from tce.settings import settings
+
+    configured = _parse_uuids(getattr(settings, "owner_workspace_ids", "") or "")
+    if configured:
+        return configured
+    return _parse_uuids(
+        f"{getattr(settings, 'editor_default_workspace_id', '') or ''},{_OWNER_WORKSPACE_FALLBACK}"
+    )
+
+
+def workspace_scope_clause(model: Any, workspace_id: uuid.UUID | None = None) -> Any:
+    """WHERE clause limiting `model` to the rows a pick may see.
+
+    With a workspace: that workspace's rows plus NULL-workspace (global) rows.
+    Without one: NULL-workspace rows plus the owner workspaces - never a client's.
+    """
+    col = model.workspace_id
+    if workspace_id is not None:
+        return or_(col == workspace_id, col.is_(None))
+    return or_(col.is_(None), col.in_(owner_workspace_ids()))
+
+
+def scoped_rows(model: Any, *where: Any) -> Select:
+    """`select(model)` for listing rows, limited like a pick (see workspace_scope_clause)."""
+    return select(model).where(workspace_scope_clause(model, get_workspace_context()), *where)
+
+
+def scoped_pick(model: Any, *where: Any, newest: bool = True) -> Select:
+    """`select(model)` for picking ONE profile-like row, workspace-safe.
+
+    Uses the current workspace context. With a context, a row of that workspace
+    wins over a global (NULL) row; within a tier the newest wins. Always LIMIT 1,
+    so a name shared across workspaces can never raise MultipleResultsFound.
+    """
+    ws = get_workspace_context()
+    stmt = select(model).where(workspace_scope_clause(model, ws), *where)
+    order: list[Any] = []
+    if ws is not None:
+        order.append(case((model.workspace_id == ws, 0), else_=1))
+    if newest:
+        order.append(model.created_at.desc())
+    order.append(model.id)
+    return stmt.order_by(*order).limit(1)

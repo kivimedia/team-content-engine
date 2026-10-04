@@ -28,6 +28,7 @@ import structlog
 from sqlalchemy import select
 
 from tce.db.session import async_session
+from tce.db.workspace_filter import scoped_pick
 from tce.models.creator_profile import CreatorProfile
 from tce.models.post_example import PostExample
 from tce.models.source_document import SourceDocument
@@ -95,9 +96,9 @@ async def import_instaiq_run(
     async with async_session() as db:
         # Upsert CreatorProfile
         result = await db.execute(
-            select(CreatorProfile).where(CreatorProfile.creator_name == creator_name)
+            scoped_pick(CreatorProfile, CreatorProfile.creator_name == creator_name)
         )
-        creator = result.scalar_one_or_none()
+        creator = result.scalars().first()
         if creator is None:
             creator = CreatorProfile(
                 creator_name=creator_name,

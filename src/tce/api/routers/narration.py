@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import get_db
+from tce.db.workspace_filter import scoped_pick
 from tce.models.narration_script import NarrationScript
 from tce.models.post_package import PostPackage
 from tce.models.research_brief import ResearchBrief
@@ -294,9 +295,7 @@ async def generate_script(
     # Load founder voice profile for script voice matching
     from tce.models.founder_voice_profile import FounderVoiceProfile
     fv_result = await db.execute(
-        select(FounderVoiceProfile).order_by(
-            FounderVoiceProfile.created_at.desc()
-        ).limit(1)
+        scoped_pick(FounderVoiceProfile)
     )
     founder_voice = fv_result.scalar_one_or_none()
     if founder_voice:
@@ -389,9 +388,7 @@ async def generate_video_lead_from_package(
     # Founder voice
     from tce.models.founder_voice_profile import FounderVoiceProfile
     fv_result = await db.execute(
-        select(FounderVoiceProfile).order_by(
-            FounderVoiceProfile.created_at.desc()
-        ).limit(1)
+        scoped_pick(FounderVoiceProfile)
     )
     fv = fv_result.scalar_one_or_none()
     if fv:
