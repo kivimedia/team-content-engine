@@ -1551,7 +1551,7 @@
       } else if (action.key === "request_edit") {
         html += '<button class="btn" type="button" data-edit-request="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "edit_now") {
-        // 4-Oct: archived without an edit (his choice after Stop). One tap edits it.
+        // 4-Oct: never edited, archived by his choice after Stop or brought back. One tap edits it.
         html += '<button class="btn primary" type="button" data-edit-now="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "edit_again") {
         html += '<button class="btn quiet" type="button" data-edit-again="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
@@ -1807,13 +1807,23 @@
     }
   }
 
+  // 4-Oct review: one tap, one edit. A second tap while the first is on its way does
+  // nothing here, and the server answers a repeat with the edit already running.
+  var editNowSent = {};
   async function editNow(uploadId) {
+    if (editNowSent[uploadId]) return;
+    editNowSent[uploadId] = true;
     try {
-      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/auto-edit", { method: "POST" });
-      toast("Editing it now. It left Archived: find it under Still to do, where the card shows each step.");
+      var row = await api("/production/uploads/" + encodeURIComponent(uploadId) + "/auto-edit", { method: "POST" });
+      var fromArchive = String((row && row.status_detail) || "").indexOf("Taken out of Archived") === 0;
+      toast(fromArchive
+        ? "Editing it now. It left Archived: find it under Still to do, where the card shows each step."
+        : "Editing it now. The card shows each step as it happens.");
       renderLibrary();
     } catch (error) {
       toast(error.message, true);
+    } finally {
+      delete editNowSent[uploadId];
     }
   }
 

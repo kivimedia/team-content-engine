@@ -136,16 +136,36 @@ async def get_upload(db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID) -> R
 
 
 ARCHIVED_UNEDITED = "Archived without an edit. Nothing is done to it until you tap Edit this now."
+# production.AUTO_MARK (production imports this module): an automatic edit holds the video.
+AUTO_EDIT_MARK = "auto-edit"
+
+
+def _idle_and_never_edited(upload: RecordingUpload) -> bool:
+    return (
+        not upload.edited_path
+        and bool(upload.storage_path)
+        and upload.status not in _LIVE_STATUSES
+        and AUTO_EDIT_MARK not in (upload.job_ids or [])
+    )
 
 
 def never_edited_archive(upload: RecordingUpload) -> bool:
     """An archived recording that was never edited and is not being edited now: the one
     the Archived list offers "Edit this now" for."""
+    return upload.archived_at is not None and _idle_and_never_edited(upload)
+
+
+def offers_edit_now(upload: RecordingUpload) -> bool:
+    """Archived without an edit, or (4-Oct review) a talk he brought back from Archived
+    without one: Bring it back used to leave a card in Still to do that nothing would
+    ever edit, with no button that does."""
+    if never_edited_archive(upload):
+        return True
     return (
-        upload.archived_at is not None
-        and not upload.edited_path
-        and bool(upload.storage_path)
-        and upload.status not in _LIVE_STATUSES
+        upload.archived_at is None
+        and upload.source == agent_talks.SOURCE
+        and upload.status == "uploaded"
+        and _idle_and_never_edited(upload)
     )
 
 
@@ -156,9 +176,9 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
     again. `re_record` is last because it is the expensive one.
     """
     actions: list[dict[str, str]] = []
-    if never_edited_archive(upload):
-        # 4-Oct (C4.1): archived without an edit, by his choice after Stop. One tap
-        # starts the normal edit and takes it out of Archived.
+    if offers_edit_now(upload):
+        # 4-Oct (C4.1): archived without an edit, by his choice after Stop, or brought
+        # back without one. One tap starts the normal edit (and takes it out of Archived).
         actions.append({"key": "edit_now", "label": "Edit this now"})
     if upload.edited_path:
         actions.append({"key": "watch_edit", "label": "Watch the edit"})

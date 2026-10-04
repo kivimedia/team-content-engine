@@ -1249,6 +1249,10 @@ async def auto_edit_again(
     first_edit = not row.edited_path
     was_archived = row.archived_at is not None
     row.archived_at = None
+    # 4-Oct review: the edit counts as running from his tap, not from when its task first
+    # runs. A second tap finds it busy (one edit, not two), and a restart in between
+    # resumes it (resume_auto_work) instead of leaving the card on "Editing it now".
+    row.job_ids = [j for j in row.job_ids or [] if j != AUTO_MARK] + [AUTO_MARK]
     # A live status straight away, so the Library keeps refreshing the card.
     row.status = "proofreading"
     if first_edit:
@@ -2930,8 +2934,17 @@ async def _second_listen(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
         await s.commit()
 
 
+# 4-Oct review: one automatic edit per video at a time in this process. A second start of
+# the same video (a tap racing the finish's own start, or a restart's resume) finds the
+# first running and leaves it alone: one transcription, one review, one render.
+_auto_editing: set[uuid.UUID] = set()
+
+
 async def auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
     """Transcribe -> the editor's review -> plan -> render, for a session he just finished."""
+    if upload_id in _auto_editing:
+        return
+    _auto_editing.add(upload_id)
     review_state = "skipped"
     try:
         async with session_factory()() as s:
@@ -2957,6 +2970,10 @@ async def auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
     except Exception as exc:  # noqa: BLE001 - lands on the row
         await _note(upload_id, ws, "failed", f"Automatic edit stopped: {str(exc)[:300]}. The recording is safe.")
     finally:
+        # Let go of the video in this process before its mark is cleared: a start that
+        # finds no mark then never finds this edit still holding it (it would skip, and
+        # leave the mark it just wrote with nothing running).
+        _auto_editing.discard(upload_id)
         async with session_factory()() as s:
             row = await _load(s, upload_id, ws)
             row.job_ids = [j for j in row.job_ids or [] if j != AUTO_MARK]

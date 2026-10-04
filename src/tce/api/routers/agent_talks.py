@@ -314,7 +314,11 @@ async def _finished_again(
     result["choice_kept"] = asked is not None and asked != first
     result["note"] = (
         f"This talk was already finished, and its first choice stands: {_choice_words(first)}."
-        + (f" This finish asked to {_choice_words(asked)}, and nothing changed." if result["choice_kept"] else "")
+        + (
+            f" This finish asked to {_choice_words(asked)}, and nothing changed."
+            if result["choice_kept"]
+            else ""
+        )
     )
     result["edit_started"] = False
     return result

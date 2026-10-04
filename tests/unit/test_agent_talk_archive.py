@@ -10,11 +10,13 @@ routes and test app as test_agent_talks.py; synthetic data only.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
 
 from tce.api.routers import agent_talks as talk_routes
+from tce.api.routers import production as prod
 from tce.editorial import library
 from tce.editorial import today as today_service
 from tce.models.editorial import RecordingUpload
@@ -183,3 +185,167 @@ def test_the_backstop_and_the_page_use_plain_words():
     for text in (talk_routes.ARCHIVED_BY_CHOICE, talk_routes.ARCHIVED_BY_BACKSTOP, library.ARCHIVED_UNEDITED):
         assert "—" not in text and "–" not in text and "--" not in text
         assert "Edit this now" in text
+
+
+# ---------------------------------------------------------------------------
+# Review (4-Oct): Edit this now runs once and survives a restart, a restart never edits
+# an archived talk, and a talk brought back without an edit keeps its way to an edit.
+
+
+async def test_edit_this_now_tapped_twice_starts_one_edit(client, editorial_sessionmaker, tmp_path, spawned):
+    _talk, body = await _finished_talk(client, tmp_path, "call-double-tap", edit=False)
+    url = f"/api/v1/production/uploads/{body['upload_id']}/auto-edit"
+    first = await client.post(url, headers=AUTH)
+    second = await client.post(url, headers=AUTH)  # the second tap, before the edit's task ran
+    assert first.status_code == 202 and second.status_code == 202, second.text
+    assert [c.__name__ for c in spawned] == ["auto_edit"]  # one edit, not two
+    assert second.json()["status"] == "proofreading" and second.json()["archived"] is False
+
+
+async def test_a_restart_right_after_edit_this_now_still_edits_it(client, editorial_sessionmaker, tmp_path, spawned):
+    """His tap is saved before the edit's task first runs. A restart in between used to
+    leave the card on "Editing it now" for ever: out of Archived, nothing running, and no
+    button left that edits it."""
+    _talk, body = await _finished_talk(client, tmp_path, "call-restart-tap", edit=False)
+    r = await client.post(f"/api/v1/production/uploads/{body['upload_id']}/auto-edit", headers=AUTH)
+    assert r.status_code == 202
+    for coro in spawned:  # the process stops before the edit ran
+        coro.close()
+    spawned.clear()
+    await prod.resume_auto_work()
+    assert [c.__name__ for c in spawned].count("auto_edit") == 1
+
+
+async def test_a_restart_never_edits_or_checks_an_archived_talk(client, editorial_sessionmaker, tmp_path, spawned):
+    _talk, body = await _finished_talk(client, tmp_path, "call-restart", edit=False)
+    await prod.resume_auto_work()
+    started = {c.__name__ for c in spawned}
+    assert not started & {"auto_edit", "_await_review", "_check_now", "run_edit_request"}, started
+    upload = await _upload(editorial_sessionmaker, body["upload_id"])
+    assert upload.archived_at is not None and upload.status == "uploaded" and not upload.job_ids
+
+
+async def test_one_video_is_edited_by_one_automatic_edit_at_a_time(
+    client, editorial_sessionmaker, tmp_path, monkeypatch
+):
+    """A second start of the same video's edit while the first runs (a tap racing the
+    finish's own start, or a tap racing a restart) does nothing; the first carries on."""
+    _talk, body = await _finished_talk(client, tmp_path, "call-once", edit=False)
+    uid = uuid.UUID(body["upload_id"])
+    async with editorial_sessionmaker() as s:
+        row = await s.get(RecordingUpload, uid)
+        row.transcript = [{"text": "Hello", "start": 0.0, "end": 0.4}]  # no transcription step
+        await s.commit()
+    gate = asyncio.Event()
+    listened: list = []
+
+    async def second_listen(upload_id, ws):
+        listened.append(upload_id)
+        await gate.wait()
+
+    async def review(upload_id, ws, *, wait_timeout_s=None):
+        return "skipped"
+
+    async def plan_and_render(upload_id, ws):
+        return await _upload(editorial_sessionmaker, str(upload_id))
+
+    monkeypatch.setattr(prod, "_second_listen", second_listen)
+    monkeypatch.setattr(prod, "_review", review)
+    monkeypatch.setattr(prod, "_plan_and_render", plan_and_render)
+    first = asyncio.create_task(prod.auto_edit(uid, WS))
+    for _ in range(500):
+        if listened:
+            break
+        await asyncio.sleep(0.01)
+    assert listened == [uid]
+    try:
+        await asyncio.wait_for(prod.auto_edit(uid, WS), timeout=2)  # returns at once
+        assert listened == [uid]
+        assert prod.AUTO_MARK in (await _upload(editorial_sessionmaker, str(uid))).job_ids  # the first's
+    finally:
+        gate.set()
+        await asyncio.wait_for(first, timeout=5)
+    assert prod.AUTO_MARK not in ((await _upload(editorial_sessionmaker, str(uid))).job_ids or [])
+
+
+async def test_the_edit_lets_go_of_the_video_before_its_mark_clears(
+    client, editorial_sessionmaker, tmp_path, monkeypatch
+):
+    """A start that finds no mark must never find the old edit still holding the video:
+    it would skip, and leave the mark it just wrote with nothing running."""
+    _talk, body = await _finished_talk(client, tmp_path, "call-let-go", edit=False)
+    uid = uuid.UUID(body["upload_id"])
+    async with editorial_sessionmaker() as s:
+        row = await s.get(RecordingUpload, uid)
+        row.transcript = [{"text": "Hello", "start": 0.0, "end": 0.4}]  # no transcription step
+        await s.commit()
+    held_at_load: list[bool] = []
+    real_load = prod._load
+
+    async def load(s, upload_id, ws):
+        held_at_load.append(upload_id in prod._auto_editing)
+        return await real_load(s, upload_id, ws)
+
+    async def second_listen(upload_id, ws):
+        return None
+
+    async def review(upload_id, ws, *, wait_timeout_s=None):
+        return "skipped"
+
+    async def plan_and_render(upload_id, ws):
+        return await _upload(editorial_sessionmaker, str(upload_id))
+
+    monkeypatch.setattr(prod, "_load", load)
+    monkeypatch.setattr(prod, "_second_listen", second_listen)
+    monkeypatch.setattr(prod, "_review", review)
+    monkeypatch.setattr(prod, "_plan_and_render", plan_and_render)
+    await prod.auto_edit(uid, WS)
+    # Held while it marks the video; let go before the load that clears the mark.
+    assert held_at_load[0] is True and held_at_load[-1] is False, held_at_load
+    assert uid not in prod._auto_editing
+    assert prod.AUTO_MARK not in ((await _upload(editorial_sessionmaker, str(uid))).job_ids or [])
+
+async def test_a_talk_brought_back_without_an_edit_still_offers_edit_this_now(
+    client, editorial_sessionmaker, tmp_path, spawned
+):
+    """He tapped Bring it back instead of Edit this now. The card in Still to do keeps the
+    one button that edits it, instead of a recording nothing will ever happen to."""
+    _talk, body = await _finished_talk(client, tmp_path, "call-brought-back", edit=False)
+    uid = body["upload_id"]
+    async with editorial_sessionmaker() as s:
+        await library.set_archived(s, WS, uuid.UUID(uid), False)
+        await s.commit()
+    card = next(i for i in await _library(editorial_sessionmaker, "todo") if i["upload_id"] == uid)
+    assert card["archived"] is False
+    assert [a["key"] for a in card["actions"]][0] == "edit_now"
+    assert card["state_sentence"] == library.STATE_SENTENCES["uploaded"]
+    r = await client.post(f"/api/v1/production/uploads/{uid}/auto-edit", headers=AUTH)
+    assert r.status_code == 202
+    assert r.json()["status_detail"].startswith("Editing it now: transcribing first")
+    assert [c.__name__ for c in spawned] == ["auto_edit"]
+    card = next(i for i in await _library(editorial_sessionmaker, "todo") if i["upload_id"] == uid)
+    assert "edit_now" not in [a["key"] for a in card["actions"]]  # it is being edited now
+
+
+async def test_a_talk_being_edited_offers_no_edit_this_now(client, editorial_sessionmaker, tmp_path, spawned):
+    """Edited by his choice, and its edit has started: no second way to start it."""
+    _talk, body = await _finished_talk(client, tmp_path, "call-editing", edit=True)
+    async with editorial_sessionmaker() as s:
+        row = await s.get(RecordingUpload, uuid.UUID(body["upload_id"]))
+        row.job_ids = [prod.AUTO_MARK]  # what the edit's task writes first
+        await s.commit()
+    card = next(i for i in await _library(editorial_sessionmaker, "todo") if i["upload_id"] == body["upload_id"])
+    assert "edit_now" not in [a["key"] for a in card["actions"]]
+
+
+async def test_edit_this_now_needs_the_private_key(client, editorial_sessionmaker, tmp_path, spawned):
+    _talk, body = await _finished_talk(client, tmp_path, "call-key", edit=False)
+    url = f"/api/v1/production/uploads/{body['upload_id']}/auto-edit"
+    for headers in ({"X-Workspace-Id": str(WS)}, {"Authorization": "Bearer not-the-key", "X-Workspace-Id": str(WS)}):
+        assert (await client.post(url, headers=headers)).status_code == 401
+    assert spawned == []
+    assert (await _upload(editorial_sessionmaker, body["upload_id"])).archived_at is not None
+
+
+def test_the_library_reads_the_same_auto_edit_mark_as_production():
+    assert library.AUTO_EDIT_MARK == prod.AUTO_MARK
