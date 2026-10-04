@@ -151,6 +151,10 @@ class Settings(BaseSettings):
     # TCE_WORKSPACE_LANGUAGES=40c0f179-7d5e-4397-b4de-b0b2f3e96fc2:he. A workspace not
     # listed is "en" and behaves exactly as before. Only "he" changes anything today.
     workspace_languages: str = ""
+    # Per-workspace idea lanes (comma list of <workspace uuid>:<profile>), e.g.
+    # TCE_WORKSPACE_LANE_PROFILES=40c0f179-7d5e-4397-b4de-b0b2f3e96fc2:performer.
+    # A workspace not listed keeps the owner selector exactly as before.
+    workspace_lane_profiles: str = ""
 
     # Web push. Absent keys simply mean no notifications are sent; nothing else
     # in the app depends on them, and the reconciler stays asleep.

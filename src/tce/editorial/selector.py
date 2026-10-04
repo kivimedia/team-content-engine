@@ -22,18 +22,19 @@ persisted as `status=rejected, origin=selector_rejected` rows for later sampling
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
-from tce.editorial import lineup, news_rules
+from tce.editorial import lane_profile, lineup, news_rules
 from tce.editorial.common import (
     ORIGIN_AGENT_TALK,
     ORIGIN_SELECTOR,
@@ -306,16 +307,70 @@ def _pick_reserve(reserve: list[PoolMoment], limit: int) -> list[PoolMoment]:
     return picked
 
 
+def lane_reserve_used_since(label_start: datetime, profile: lane_profile.LaneProfile) -> datetime:
+    """A lane seed used in an idea of a week on or after this is held back."""
+    return label_start - timedelta(days=7 * profile.reuse_after_weeks)
+
+
+def _rotation_key(pm: PoolMoment, label_start: datetime) -> str:
+    # Deterministic for a week, different from week to week: the same eight clips
+    # are not offered every Monday just because none was picked.
+    return hashlib.sha256(f"{label_start.date().isoformat()}:{pm.id}".encode()).hexdigest()
+
+
+async def _lane_reserve(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    label_start: datetime,
+    rows: list[Any],
+    profile: lane_profile.LaneProfile,
+) -> list[PoolMoment]:
+    """Profiled workspaces only: up to reserve_per_lane seeds of each evergreen lane,
+    whatever their date, skipping any used by an idea within the reuse window."""
+    since = lane_reserve_used_since(label_start, profile)
+    recent: set[str] = set()
+    for ids in (
+        await session.execute(
+            select(TopicCandidate.moment_ids).where(
+                TopicCandidate.workspace_id == workspace_id,
+                TopicCandidate.status.in_(USED_STATUSES),
+                TopicCandidate.week_start >= since,
+                TopicCandidate.week_start < label_start,
+            )
+        )
+    ).scalars():
+        recent.update(str(i) for i in (ids or []))
+    picked: list[PoolMoment] = []
+    for kind in profile.evergreen_kinds:
+        eligible = [
+            PoolMoment(moment, source, False)
+            for moment, source in rows
+            if source.source_kind == kind
+            and not source_is_excluded(source)
+            and not (
+                moment.source_version_hash and moment.source_version_hash != source.version_hash
+            )
+            and str(moment.id) not in recent
+        ]
+        eligible.sort(key=lambda pm: _rotation_key(pm, label_start))
+        picked.extend(eligible[: profile.reserve_per_lane])
+    return picked
+
+
 async def collect_pool(
     session: AsyncSession,
     workspace_id: uuid.UUID,
     week_start: date | datetime | str,
     source_ids: list[uuid.UUID] | None = None,
+    profile: lane_profile.LaneProfile | None = None,
 ) -> PoolPlan:
     """Every eligible moment of the week, plus a bounded evergreen reserve.
 
     The week is the Israel-time window of the label (see `week_source_window`). Week
     moments are never capped here: coverage is achieved by sharding the model jobs.
+
+    With a lane profile, the evergreen lanes' seeds (clips, story seeds) never enter
+    the week or the ordinary reserve; a rotating per-lane reserve offers them instead.
     """
     label_start, _ = week_bounds(week_start)
     start, end = week_source_window(week_start)
@@ -348,6 +403,13 @@ async def collect_pool(
 
     week: list[PoolMoment] = []
     reserve: list[PoolMoment] = []
+    lane_seeds: list[PoolMoment] = []
+    if profile is not None:
+        evergreen = set(profile.evergreen_kinds)
+        lane_rows = [r for r in rows if r[1].source_kind in evergreen]
+        rows = [r for r in rows if r[1].source_kind not in evergreen]
+        if not source_ids:
+            lane_seeds = await _lane_reserve(session, workspace_id, label_start, lane_rows, profile)
     for moment, source in rows:
         if source_is_excluded(source):
             continue
@@ -364,10 +426,11 @@ async def collect_pool(
 
     week.sort(key=_pm_sort_key)
     picked = [] if source_ids else _pick_reserve(reserve, RESERVE_POOL_LIMIT)
+    picked = picked + lane_seeds
     return PoolPlan(
         moments=week + picked,
         week_total=len(week),
-        reserve_eligible=len(reserve),
+        reserve_eligible=len(reserve) + len(lane_seeds),
         reserve_included=len(picked),
         window_start=start,
         window_end=end,
@@ -549,10 +612,18 @@ def build_selection_prompt(
     shards: int = 1,
     total_moments: int | None = None,
     context: list[PoolMoment] | None = None,
+    profile: lane_profile.LaneProfile | None = None,
 ) -> str:
     import json
 
     total = len(pool) if total_moments is None else total_moments
+    target_line = (
+        "Three strong ideas is the usual target for the whole week."
+        if profile is None
+        else f"About {profile.weekly_target} ideas across the lanes is the target for "
+        "the whole week."
+    )
+    lanes_block = [profile.lanes_prompt(max_candidates)] if profile is not None else []
     context_block: list[str] = []
     if context:
         # Only the news shard has context. These are the call, commit and
@@ -563,7 +634,9 @@ def build_selection_prompt(
         # accountable ids.
         context_block = [
             "ANCHOR CONTEXT (private; you may put these ids in a candidate's "
-            "moment_ids to anchor a news item in Ziv's own work, but do NOT account "
+            "moment_ids to anchor a news item in "
+            + ("Ziv's own work" if profile is None else "the performer's own work")
+            + ", but do NOT account "
             "for them and do NOT reject them - they are judged elsewhere):\n"
             + json.dumps([_context_prompt_item(pm) for pm in context], indent=1),
             "NEWS RULE: a candidate built on a news item MUST also cite at least one "
@@ -576,9 +649,9 @@ def build_selection_prompt(
             f"WEEK STARTING: {week_start.date().isoformat()}\n"
             f"SELECTION SHARD: {shard}/{shards}\n"
             f"RETURN AT MOST {max_candidates} candidates from this shard. Fewer or zero is "
-            "correct when the evidence does not support more. Three strong ideas is the "
-            "usual target for the whole week.",
+            "correct when the evidence does not support more. " + target_line,
             "STRATEGY (effective for this workspace):\n" + (strategy_text or "(none)"),
+            *lanes_block,
             feedback_text,
             f"COVERAGE: this is shard {shard} of {shards}. The week's pool has {total} "
             f"moments; this shard holds {len(pool)} of them and other shards are judged "
@@ -679,8 +752,14 @@ def enforce_candidates(
     raw_candidates: list[Any],
     pool: list[PoolMoment],
     workspace_moment_ids: set[str],
+    profile: lane_profile.LaneProfile | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Apply code-side gates. Returns (accepted, rejected); accepted are unranked."""
+    """Apply code-side gates. Returns (accepted, rejected); accepted are unranked.
+
+    With a lane profile: the profile's gates, plus the lane rules in code (the lane's
+    evidence is cited, one lane per idea, no invented memory, no method)."""
+    gate_names = profile.gate_names if profile is not None else REJECTION_GATES
+    audiences = profile.audiences if profile is not None else ("coaches", "event_owners", "both")
     by_id = {pm.id: pm for pm in pool}
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -728,7 +807,7 @@ def enforce_candidates(
 
         gates = raw.get("gates") if isinstance(raw.get("gates"), dict) else {}
         failed_gate = None
-        for g in REJECTION_GATES:
+        for g in gate_names:
             val = gates.get(g)
             if not isinstance(val, dict) or val.get("pass") is not True:
                 failed_gate = (
@@ -746,6 +825,17 @@ def enforce_candidates(
             continue
 
         cited = [by_id[i] for i in ids]
+
+        lane_key = None
+        if profile is not None:
+            broken = lane_profile.lane_check(
+                profile, raw, [pm.source.source_kind for pm in cited]
+            )
+            if broken:
+                g, code, why = broken
+                rejected.append(_reject(raw, ids, g, code, why))
+                continue
+            lane_key = str(raw.get("lane"))
 
         # The third lane's one rule, enforced in code rather than in the prompt:
         # news supplies the trigger, his own work supplies the point of view. A
@@ -853,24 +943,25 @@ def enforce_candidates(
                 notes.append(f"News score: {parts.explain()}")
 
         audience = raw.get("audience")
-        accepted.append(
-            {
+        out = {
                 "news": news,
                 "moment_ids": ids,
                 "title": str(raw.get("title") or "").strip()[:300],
                 "lesson": str(raw.get("lesson") or "").strip(),
-                "audience": audience if audience in ("coaches", "event_owners", "both") else "both",
+                "audience": audience if audience in audiences else "both",
                 "reasons_to_care": [str(r) for r in (raw.get("reasons_to_care") or [])][:6],
                 "public_angle": str(raw.get("public_angle") or "").strip(),
                 "public_safety_notes": "\n".join(dict.fromkeys(notes)) or None,
                 "gates": {
-                    g: {"pass": True, "reason": str(gates[g]["reason"])} for g in REJECTION_GATES
+                    g: {"pass": True, "reason": str(gates[g]["reason"])} for g in gate_names
                 },
                 "freshness_role": freshness_role,
                 "rank_score": round(rank_score, 4),
                 "citations_private": [_citation(pm) for pm in cited],
             }
-        )
+        if lane_key is not None:
+            out["lane"] = lane_key
+        accepted.append(out)
     return accepted, rejected
 
 
@@ -1445,7 +1536,18 @@ async def select_candidates(
     """
     ws = coerce_uuid(workspace_id)
     start, _end = week_bounds(week_start)
-    max_candidates = max(0, min(int(max_candidates), MAX_CANDIDATES_CAP))
+    # None for every workspace not named in TCE_WORKSPACE_LANE_PROFILES: the owner
+    # path below is then exactly what it was.
+    profile = lane_profile.profile_for(ws)
+    cap = profile.max_candidates if profile is not None else MAX_CANDIDATES_CAP
+    max_candidates = max(0, min(int(max_candidates), cap))
+    system_prompt = profile.system_prompt if profile is not None else SYSTEM_PROMPT
+    output_schema = (
+        lane_profile.output_schema_for(OUTPUT_SCHEMA, profile)
+        if profile is not None
+        else OUTPUT_SCHEMA
+    )
+    gate_names = profile.gate_names if profile is not None else REJECTION_GATES
     run_id = selection_run_id or uuid.uuid4()
 
     def activity(msg: str, **kw: Any) -> None:
@@ -1454,7 +1556,13 @@ async def select_candidates(
 
     async with open_session(sessionmaker_or_session) as session:
         activity("Building evidence pool")
-        plan = await collect_pool(session, ws, start, source_ids)
+        # The owner call is exactly the original one (callers and tests replace
+        # collect_pool with the four-argument signature).
+        plan = (
+            await collect_pool(session, ws, start, source_ids)
+            if profile is None
+            else await collect_pool(session, ws, start, source_ids, profile=profile)
+        )
         result = SelectionResult(
             selection_run_id=run_id,
             status="complete",
@@ -1552,6 +1660,7 @@ async def select_candidates(
                     shards=len(shards),
                     total_moments=len(plan.moments),
                     context=contexts.get(i),
+                    profile=profile,
                 )
                 specs.append(
                     ShardSpec(
@@ -1563,8 +1672,8 @@ async def select_candidates(
                             job_type=JOB_TYPE,
                             agent_name=AGENT_NAME,
                             messages=[{"role": "user", "content": prompt}],
-                            system=SYSTEM_PROMPT,
-                            output_schema=OUTPUT_SCHEMA,
+                            system=system_prompt,
+                            output_schema=output_schema,
                             max_tokens=8192,
                             prompt_version=PROMPT_VERSION,
                             workspace_id=ws,
@@ -1696,7 +1805,7 @@ async def select_candidates(
                     if i in pool_by_id
                 ]
                 raw_candidates = data.get("candidates") or []
-                acc, rej = enforce_candidates(raw_candidates, shard_pool, ws_ids)
+                acc, rej = enforce_candidates(raw_candidates, shard_pool, ws_ids, profile=profile)
                 accounted = {
                     str(i)
                     for c in raw_candidates
@@ -1715,7 +1824,7 @@ async def select_candidates(
                         dropped_rejections += 1
                         continue
                     accounted.update(kept)
-                    gate = r.get("gate") if r.get("gate") in REJECTION_GATES else None
+                    gate = r.get("gate") if r.get("gate") in gate_names else None
                     rej.append(
                         _reject(
                             r,
@@ -1853,7 +1962,28 @@ async def select_candidates(
             else:
                 deduped.append(cand)
 
-        if len(specs) > 1 and len(deduped) > 1:
+        if profile is not None:
+            # A profiled week is filled lane by lane in code (best of each lane up
+            # to its target, then the best remaining). The owner's global ranking
+            # job is not used: its prompt is written for his coaching audience.
+            coverage["rank"] = {
+                "stage": "rank",
+                "status": "lane_mix",
+                "detail": "filled by lane: "
+                + ", ".join(f"{lane.key} {lane.target}" for lane in profile.lanes),
+            }
+            final, below = lane_profile.fill_lane_mix(deduped, profile, max_candidates)
+            for extra in below:
+                cut = _reject(
+                    extra,
+                    extra["moment_ids"],
+                    "unspecified",
+                    "below_cut",
+                    f"the week's {max_candidates} slots went to stronger ideas in each lane",
+                )
+                cut["job_id"] = extra.get("job_id")
+                rejected.append(cut)
+        elif len(specs) > 1 and len(deduped) > 1:
             finalists_pool, capped = cap_per_shard(deduped, max_candidates)
             rejected.extend(capped)
             rank_ok, final, rank_rejected = await _global_rank(
@@ -1923,7 +2053,9 @@ async def select_candidates(
         # Third lane: the floor, the margin and the ceiling, applied to the week's
         # set as a whole because they are about the week, not about one idea. With
         # no news in the set this is a no-op and `final` is returned untouched.
-        if any(c.get("news") for c in final):
+        # A profiled workspace's trend lane is a lane of its own with a weekly target;
+        # the owner's one-news-idea ceiling does not apply to it.
+        if profile is None and any(c.get("news") for c in final):
             decision = news_rules.apply_slot_rules(
                 final,
                 is_news=lambda c: bool(c.get("news")),

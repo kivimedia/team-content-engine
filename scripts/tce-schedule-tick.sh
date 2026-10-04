@@ -16,6 +16,10 @@
 #       /home/ziv/team-content-engine/scripts/tce-schedule-tick.sh >/dev/null 2>&1
 #
 # Reads the private key and workspace from the app's own .env; never prints them.
+#
+# Several workspaces (5-Oct-2026): TCE_SCHEDULE_WORKSPACES=<uuid>,<uuid> in the same
+# .env ticks each in turn, one log line each (prefixed ws=<first 8>). Absent, the
+# one workspace is TCE_EDITOR_DEFAULT_WORKSPACE_ID and the log line is unchanged.
 set -uo pipefail
 
 APP_DIR="${TCE_APP_DIR:-/home/ziv/team-content-engine}"
@@ -38,6 +42,13 @@ if [ -f /home/ziv/state/tce/disabled ]; then
   exit 0
 fi
 
+LIST="$(env_value TCE_SCHEDULE_WORKSPACES | tr -d ' ')"
+WORKSPACES="${LIST:-$WS}"
+MULTI=""
+[ -n "$LIST" ] && MULTI=1
+
+tick_one() {
+WS="$1"
 BODY="$(mktemp)"
 # -w prints 000 itself when the connection fails; no fallback echo, or the code doubles.
 CODE="$(curl -s -o "$BODY" -w '%{http_code}' -m 60 -X POST "$API/api/v1/content-runs/schedule/tick" \
@@ -61,6 +72,16 @@ print(f"status={d.get('status')} occurrences=[{occ}] redriven=[{red}] scripts_sa
 PY
 )"
 rm -f "$BODY"
-echo "$(date -u +%FT%TZ) tick: http=$CODE $SUMMARY" >>"$LOG"
-[ "$CODE" = "200" ] || exit 1
-exit 0
+PREFIX=""
+[ -n "$MULTI" ] && PREFIX="ws=${WS:0:8} "
+echo "$(date -u +%FT%TZ) tick: ${PREFIX}http=$CODE $SUMMARY" >>"$LOG"
+[ "$CODE" = "200" ]
+}
+
+FAILED=0
+IFS=',' read -r -a WS_LIST <<<"$WORKSPACES"
+for one in "${WS_LIST[@]}"; do
+  [ -n "$one" ] || continue
+  tick_one "$one" || FAILED=1
+done
+exit "$FAILED"

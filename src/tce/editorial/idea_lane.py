@@ -21,6 +21,7 @@ from typing import Any
 import structlog
 from sqlalchemy import select
 
+from tce.db.workspace_filter import workspace_language
 from tce.editorial import status as job_status
 from tce.editorial.common import current_week_start, open_session
 from tce.models.editorial import EvidenceMoment, EvidenceSource, TopicCandidate
@@ -140,7 +141,8 @@ async def record_spoken_idea(
         claim_type="quoted",
         speaker="Ziv",
         speaker_confidence="high",
-        language="en",
+        # A Hebrew workspace's spoken idea is Hebrew; every other one stays "en".
+        language=workspace_language(ws),
         sensitivity_flags=[],
         status="active",
     )

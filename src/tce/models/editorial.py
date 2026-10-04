@@ -40,8 +40,12 @@ JSONType = JSON().with_variant(JSONB(), "postgresql")
 # a category of client, or a problem the owners Ziv coaches keep bringing - which
 # exists so those connections are citable at all. Both are inert until
 # TCE_NEWS_LANE is on.
+# curated_clip and story_seed are the evergreen evidence of a workspace with idea
+# lanes (tce.editorial.lane_profile): a real magic clip, a story seed he fills. Both
+# are written by a person (scripts/seed_matan_lanes.py), never by a model.
 SOURCE_KINDS = (
-    "fathom_meeting", "github_commit_group", "news_item", "standing_fact", "spoken_idea"
+    "fathom_meeting", "github_commit_group", "news_item", "standing_fact", "spoken_idea",
+    "curated_clip", "story_seed",
 )
 CLAIM_TYPES = ("quoted", "paraphrased", "inferred", "demonstrated", "measured")
 REJECTION_GATES = (

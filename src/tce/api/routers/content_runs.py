@@ -211,6 +211,17 @@ async def _moments_for_run(db: Any, run: ContentRun) -> int:
     return int((await db.execute(stmt)).scalar_one() or 0)
 
 
+def _max_candidates_for(run: ContentRun, source_ids: list[uuid.UUID]) -> int:
+    """The run's own number, except a whole-week run of a workspace with idea lanes,
+    which asks for the lane profile's weekly target (10 for Matan; runs cap at 6)."""
+    from tce.editorial.lane_profile import profile_for
+
+    profile = profile_for(run.workspace_id)
+    if profile is not None and not source_ids and run.scope_kind != "sources":
+        return profile.weekly_target
+    return run.maximum_candidate_count
+
+
 async def _execute_stage(sm: Any, run: ContentRun, stage: str, attempt: int = 1) -> dict[str, Any]:
     from tce.editorial.packets import build_packet
     from tce.editorial.selector import select_candidates
@@ -226,12 +237,22 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str, attempt: int = 1)
             return {"source_ids": [str(value) for value in source_ids], "collection": "existing"}
         if not run.window_start or not run.window_end:
             raise ValueError("week runs require window_start and window_end")
-        fathom = await collect_fathom(sm, run.workspace_id, run.window_start, run.window_end)
-        github = await collect_github(sm, run.workspace_id, run.window_start, run.window_end)
+        from tce.editorial.lane_profile import collects
+
+        # The Fathom key and GitHub token are the owner's: a workspace whose lane
+        # profile says it has no meetings or repos must never collect them.
+        wanted = collects(run.workspace_id)
+        collection_ids: list[str] = []
+        if wanted["fathom"]:
+            fathom = await collect_fathom(sm, run.workspace_id, run.window_start, run.window_end)
+            collection_ids.append(str(fathom))
+        if wanted["github"]:
+            github = await collect_github(sm, run.workspace_id, run.window_start, run.window_end)
+            collection_ids.append(str(github))
         # After his own evidence, so an anchor built from this morning's commits is
         # already there when the news is matched against it.
         news = await _news_step(sm, run, appraise=False)
-        out = {"collection_run_ids": [str(fathom), str(github)]}
+        out = {"collection_run_ids": collection_ids}
         return {**out, "news": news} if news else out
 
     if stage == "extracting":
@@ -250,7 +271,7 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str, attempt: int = 1)
             sm,
             run.workspace_id,
             week,
-            max_candidates=run.maximum_candidate_count,
+            max_candidates=_max_candidates_for(run, source_ids),
             selection_run_id=selection_id,
             source_ids=source_ids or None,
         )

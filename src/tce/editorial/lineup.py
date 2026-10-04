@@ -55,6 +55,10 @@ LANE_LABELS = {
     # code and stored lineups read it; only what he sees changes.
     "ai_news": "News that excites Ziv",
     "other": "Other",
+    # Idea lanes of a profiled workspace (tce.editorial.lane_profile, Matan).
+    "trend_reaction": "טרנד מהעולם",
+    "magic_clip": "קליפ של קוסם",
+    "behind_scenes": "מאחורי הקלעים",
 }
 
 
@@ -78,7 +82,19 @@ def lane_for(candidate: TopicCandidate) -> str:
     Read from the evidence that produced it, so the label is a fact about the
     idea rather than a guess: news is flagged by the selector, code citations
     mean it came out of something built, and the rest is coaching.
+
+    A workspace with idea lanes reads its lane off the cited evidence kind; the
+    selector already enforced one lane's evidence per idea.
     """
+    from tce.editorial import lane_profile
+
+    profile = lane_profile.profile_for(getattr(candidate, "workspace_id", None))
+    if profile is not None:
+        for c in candidate.citations_private or []:
+            lane = profile.lane_for_kind(c.get("source_kind")) if isinstance(c, dict) else None
+            if lane is not None:
+                return lane.key
+        return "other"
     if candidate.freshness_role == "news":
         return "ai_news"
     kinds = {
