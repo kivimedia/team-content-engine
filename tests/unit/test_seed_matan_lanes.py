@@ -124,13 +124,14 @@ async def test_sample_week_offline(editorial_sessionmaker, monkeypatch, capsys):
     assert lanes.count("magic_clip") >= 3 and lanes.count("behind_scenes") >= 3
 
 
-def test_seed_has_no_method_reveal_clips_and_weekly_stops_at_ranking(capsys):
+def test_seed_has_no_method_reveal_clips_and_weekly_stops_at_drafting(capsys):
     """Review 5-Oct: a clip whose own title says it reveals the trick, a vendor
-    upload of a trick product, and a feed that answers 403 are out; the weekly
-    schedule never reaches the owner's packet writer."""
+    upload of a trick product, and a feed that answers 403 are out. The weekly
+    schedule runs to drafting (his scripts come from his own lane writer since the
+    persona merge) and never to exporting (the owner's Google Docs)."""
     for c in seed.CLIPS:
         assert "fg0CC99hVK8" not in c[4] and "9w7QAr13FP0" not in c[4]
     assert all("japantoday" not in f[1] for f in seed.FEEDS)
     seed.print_live_steps(seed.MATAN_WORKSPACE)
     out = capsys.readouterr().out
-    assert '"final_stage":"ranking"' in out and '"final_stage":"exporting"' not in out
+    assert '"final_stage":"drafting"' in out and '"final_stage":"exporting"' not in out
