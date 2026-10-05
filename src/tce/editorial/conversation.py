@@ -87,6 +87,53 @@ What you may and may not do:
 
 Return JSON only."""
 
+# A client workspace (5-Oct): the same assistant, about him instead of Ziv. Owner
+# workspaces have no persona and get SYSTEM exactly as it is.
+PERSONA_PROMPT_VERSION = "editorial_conversation.v1.persona"
+
+_OWNER_INTRO = (
+    "You are Ziv's editorial assistant inside TCE.\n\n"
+    "Ziv is a business coach who records short talking-head videos for coaches and\n"
+    "service-business owners. You help him think about a topic before he spends a\n"
+    "recording slot on it."
+)
+
+
+def system_for(persona: Any = None) -> str:
+    """SYSTEM for an owner workspace; for a client workspace the same rules about him,
+    with his own profile (who he is, how he sounds, his taboos)."""
+    if persona is None:
+        return SYSTEM
+    from tce.editorial.persona import swap
+
+    name = persona.name
+    intro = (
+        f"You are {name}'s editorial assistant inside TCE.\n\n"
+        f"{name} records short walk-and-talk videos, phone in hand, one sentence at a time.\n"
+        "You help him think about a topic before he spends a recording slot on it.\n\n"
+        f"{persona.voice_block()}\n\n"
+        "Whatever you suggest stays inside his taboos above. Never explain or hint at how "
+        "an effect is done. Never tell him a story happened to him: only he knows what "
+        "happened, so a story is a question you ask him, never a memory you write."
+    )
+    if persona.language == "he":
+        intro += f"\nAnswer {name} in Hebrew, the way an Israeli talks to a friend."
+    return swap(SYSTEM, ((_OWNER_INTRO, intro),))
+
+
+def schema_for(persona: Any = None) -> dict[str, Any]:
+    """SCHEMA, with his name where it names Ziv (a client workspace)."""
+    if persona is None:
+        return SCHEMA
+    import copy
+
+    schema = copy.deepcopy(SCHEMA)
+    schema["properties"]["reply"]["description"] = (
+        f"What you say to {persona.name}. Plain text, no markdown headings."
+    )
+    return schema
+
+
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -368,14 +415,20 @@ async def _room_context(db: AsyncSession, ws: uuid.UUID) -> str:
 
 
 def build_prompt(
-    context_block: str, history: list[EditorialMessage], instruction: str, mode: str
+    context_block: str,
+    history: list[EditorialMessage],
+    instruction: str,
+    mode: str,
+    *,
+    speaker: str = "Ziv",
 ) -> str:
+    """`speaker` is who he is in the transcript: Ziv, or a client workspace's name."""
     lines = [context_block, ""]
     recent = [m for m in history if m.status == "complete"][-10:]
     if recent:
         lines.append("The conversation so far:")
         for message in recent:
-            who = "Ziv" if message.role == "editor" else "You"
+            who = speaker if message.role == "editor" else "You"
             lines.append(f"{who}: {message.text.strip()}")
         lines.append("")
     if mode == "propose":
@@ -390,7 +443,7 @@ def build_prompt(
             "wants an edit made, tell him to switch to Propose changes."
         )
     lines.append("")
-    lines.append(f"Ziv says: {instruction.strip()}")
+    lines.append(f"{speaker} says: {instruction.strip()}")
     return "\n".join(lines)
 
 
@@ -479,17 +532,29 @@ async def run_turn(
             assistant.status_detail = error.message
             await db.commit()
             return
-        prompt = build_prompt(context_block, history, instruction, assistant.mode)
+        # 5-Oct: a client workspace talks to its own assistant, about him, in his
+        # language (localize_request adds the Hebrew line); owners get None.
+        from tce.editorial.persona import load_persona
+
+        persona = await load_persona(db, ws)
+        prompt = build_prompt(
+            context_block,
+            history,
+            instruction,
+            assistant.mode,
+            **({"speaker": persona.name} if persona is not None else {}),
+        )
         await db.commit()
 
+    version = PROMPT_VERSION if persona is None else PERSONA_PROMPT_VERSION
     request = LLMRequest(
         job_type=JOB_TYPE,
         agent_name=AGENT_NAME,
         messages=[{"role": "user", "content": prompt}],
-        system=SYSTEM,
-        output_schema=SCHEMA,
+        system=system_for(persona),
+        output_schema=schema_for(persona),
         max_tokens=1200,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=version,
         workspace_id=ws,
         run_id=thread_id,
         idempotency_key=f"conversation:{ws}:{message_id}",
@@ -542,7 +607,7 @@ async def run_turn(
         row.status = "complete"
         row.status_detail = None
         row.job_id = llm.job_id
-        row.model_receipt = {"model": llm.model, "prompt_version": PROMPT_VERSION}
+        row.model_receipt = {"model": llm.model, "prompt_version": version}
 
         # Discuss mode never produces a proposal, whatever the model returned.
         if row.mode == "propose" and isinstance(proposal, dict) and target_type:

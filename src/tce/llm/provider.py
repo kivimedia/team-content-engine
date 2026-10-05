@@ -127,6 +127,22 @@ def localize_request(req: LLMRequest) -> LLMRequest:
     return replace(req, system=system, prompt_version=version)
 
 
+def job_workspace(workspace_id: Any) -> uuid.UUID | None:
+    """The workspace a job started with no request context must carry (5-Oct): one
+    with its own language, so localize_request applies it (a scheduler run, a worker,
+    an old agent). Any other workspace gives None, so those jobs stay exactly as they
+    were, row and prompt."""
+    from tce.db.workspace_filter import workspace_language
+
+    if workspace_id is None:
+        return None
+    try:
+        ws = workspace_id if isinstance(workspace_id, uuid.UUID) else uuid.UUID(str(workspace_id))
+    except ValueError:
+        return None
+    return ws if workspace_language(ws) != "en" else None
+
+
 def compute_input_hash(req: LLMRequest) -> str:
     return sha256_hex(
         canonical_json(
@@ -475,9 +491,12 @@ def _tool_prompt_and_schema(tools: list[Any]) -> tuple[str, dict[str, Any]]:
 
 
 class _Messages:
-    def __init__(self, agent_name: str, sessionmaker: Any | None) -> None:
+    def __init__(
+        self, agent_name: str, sessionmaker: Any | None, workspace_id: uuid.UUID | None = None
+    ) -> None:
         self._agent_name = agent_name
         self._sessionmaker = sessionmaker
+        self._workspace_id = workspace_id
 
     @property
     def batches(self) -> Any:
@@ -517,7 +536,7 @@ class _Messages:
             max_tokens=max_tokens,
             requested_model=model,
             prompt_version=prompt_version,
-            workspace_id=workspace_id,
+            workspace_id=workspace_id if workspace_id is not None else self._workspace_id,
             run_id=run_id,
             # A legacy call is one call: a new job per call unless the caller opts in
             # to dedup, so "regenerate" buttons do not return a cached answer.
@@ -556,15 +575,28 @@ class _Messages:
 class SubscriptionLLMClient:
     """Drop-in for the few ``client.messages.create`` shapes TCE used."""
 
-    def __init__(self, agent_name: str = "legacy", sessionmaker: Any | None = None) -> None:
+    def __init__(
+        self,
+        agent_name: str = "legacy",
+        sessionmaker: Any | None = None,
+        workspace_id: uuid.UUID | None = None,
+    ) -> None:
         self.agent_name = agent_name
-        self.messages = _Messages(agent_name, sessionmaker)
+        self.messages = _Messages(agent_name, sessionmaker, workspace_id)
 
     @property
     def batches(self) -> Any:
         raise LLMPolicyError("The Anthropic Batch API is disabled by the subscription-only policy.")
 
 
-def get_llm_client(agent_name: str = "legacy", *, sessionmaker: Any | None = None) -> Any:
+def get_llm_client(
+    agent_name: str = "legacy",
+    *,
+    sessionmaker: Any | None = None,
+    workspace_id: Any = None,
+) -> Any:
+    """`workspace_id` (5-Oct): the workspace every call of this client is for, when it
+    runs with no request context (job_workspace: only a workspace with its own
+    language is carried, so owner calls stay as they were)."""
     ensure_policy()
-    return SubscriptionLLMClient(agent_name, sessionmaker)
+    return SubscriptionLLMClient(agent_name, sessionmaker, job_workspace(workspace_id))

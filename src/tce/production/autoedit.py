@@ -37,11 +37,43 @@ MAX_HOLD_MS = 600
 EDITOR_SKILL_PATH = Path(__file__).parent / "skills" / "video_editor.md"
 
 
-def editor_skill() -> str:
+def editor_skill(persona: Any = None) -> str:
+    """His standing rules. A client workspace (5-Oct, `persona`) gets the same rules
+    about its own speaker: never Ziv's name, his coaching topic or his dogs."""
     try:
-        return EDITOR_SKILL_PATH.read_text(encoding="utf-8").strip()
+        text = EDITOR_SKILL_PATH.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+    if persona is None or not text:
+        return text
+    from tce.editorial.persona import swap
+
+    return swap(text, _persona_skill_swaps(persona))
+
+
+def _asides_phrase(persona: Any) -> str:
+    """Who he talks to off camera, for a client workspace."""
+    names = list(getattr(persona, "aside_names", ()) or ())
+    return f"talk to {' and '.join(names)}, " if names else ""
+
+
+def _persona_skill_swaps(persona: Any) -> tuple[tuple[str, str], ...]:
+    return (
+        (
+            "You edit Ziv Raviv's walking videos: he walks outside with his phone, talks to camera about\n"
+            "coaching and selling, and the edit is cut in the style of TJ Robertson's reels.",
+            f"You edit {persona.name}'s walking videos: he walks outside with his phone and talks to\n"
+            "camera one sentence at a time, and the edit is cut in the style of TJ Robertson's reels.",
+        ),
+        (
+            "- Talk that is not for the viewer goes: calls to his dogs Maple and Rain, Hebrew to the\n"
+            "  dogs (\"בואו\", \"הולכים משם\", \"לא לא לא\"), \"no no no Rain\", false starts, sounds with no\n"
+            "  words.",
+            "- Talk that is not for the viewer goes: "
+            + _asides_phrase(persona)
+            + "talk to people around him or to himself,\n  false starts, sounds with no words.",
+        ),
+    )
 
 _NORM = re.compile(r"[^\w']+")
 
@@ -317,16 +349,68 @@ def _to_hebrew(text: str, swaps: tuple[tuple[str, str], ...]) -> str:
     return text
 
 
-def review_system(dog_names: list[str], rules: str = "", *, language: str = "en") -> str:
+def review_system(
+    dog_names: list[str], rules: str = "", *, language: str = "en", persona: Any = None
+) -> str:
     """The review's instructions. `rules` (3-Oct): the block of rules Jennifer learned
     from his notes on earlier videos (production/rules.py), placed after the
     hand-written skill file. Empty leaves the instructions exactly as they were.
-    `language` "he" (4-Oct): a Hebrew workspace, with no English-only rule."""
-    text = _review_system_en(dog_names, rules)
-    return _to_hebrew(text, _HE_REVIEW_SWAPS) if language == "he" else text
+    `language` "he" (4-Oct): a Hebrew workspace, with no English-only rule.
+    `persona` (5-Oct): a client workspace; his name, his asides, no Ziv and no dogs.
+    None (every owner workspace) leaves the text exactly as it was."""
+    if persona is not None:
+        dog_names = list(getattr(persona, "aside_names", ()) or ())
+    text = _review_system_en(dog_names, rules, skill=editor_skill(persona) if persona is not None else None)
+    if language == "he":
+        text = _to_hebrew(text, _HE_REVIEW_SWAPS)
+    if persona is None:
+        return text
+    from tce.editorial.persona import swap
+
+    intro = "You edit these walking videos." if language == "he" else "You edit Ziv Raviv's walking videos."
+    names = list(dog_names)
+    company = f"sometimes with {' and '.join(names)}, " if names else ""
+    asides_named = f"anything said to {' and '.join(names)}, " if names else ""
+    swaps = [
+        (intro, f"You edit {persona.name}'s walking videos."),
+        (f"often with his two dogs, {' and '.join(names) if names else 'his dogs'}, and ", company + "and "),
+        (
+            "anything said to the dogs, to people around him, or to himself rather than "
+            f"to the viewer - the dogs' names ({' and '.join(names) if names else 'his dogs'}), 'come', "
+            "'come here', 'this way', 'good boy', 'no, no, no' said to a dog or to reject what he just said, ",
+            asides_named + "anything said to people around him, or to himself rather than to the viewer - "
+            "'no, no, no' said to reject what he just said, ",
+        ),
+    ]
+    if language == "he":
+        swaps.append(
+            (
+                "only what is said to the dogs, to people around him or to himself is (for example "
+                "בואו, 'come', said to the dogs). ",
+                "only what is said to people around him or to himself is. ",
+            )
+        )
+    else:
+        swaps.append(
+            (
+                "He calls the dogs in Hebrew too (for example בואו, 'come'), "
+                "which the recogniser writes as 'boy', 'bo' or 'bow', or translates into English "
+                "('from here', 'we're here'). ",
+                "",
+            )
+        )
+        swaps.append(
+            (
+                "that is Hebrew he says to the dogs or to himself",
+                "that is Hebrew he says to someone near him or to himself",
+            )
+        )
+    return swap(text, swaps)
 
 
-def _review_system_en(dog_names: list[str], rules: str = "") -> str:
+def _review_system_en(dog_names: list[str], rules: str = "", *, skill: str | None = None) -> str:
+    """`skill` None: his own skill file, read now (every owner workspace)."""
+    skill_text = editor_skill() if skill is None else skill
     dogs = " and ".join(dog_names) if dog_names else "his dogs"
     return (
         "You edit Ziv Raviv's walking videos. He films himself on his phone while he walks, "
@@ -368,7 +452,7 @@ def _review_system_en(dog_names: list[str], rules: str = "") -> str:
         "names its kind, and for a retake or false_start gives kept_from: the index of the first "
         "word of the take you keep (-1 otherwise). Every correction quotes the exact words it "
         "replaces by index; replacement '' deletes."
-        + (f"\n\nHIS STANDING RULES (the editor's skill file):\n{editor_skill()}" if editor_skill() else "")
+        + (f"\n\nHIS STANDING RULES (the editor's skill file):\n{skill_text}" if skill_text else "")
         + (f"\n\n{rules}" if rules else "")
     )
 
@@ -606,10 +690,20 @@ EDIT_REQUEST_SYSTEM = (
 )
 
 
-def edit_request_system() -> str:
-    """The request editor's instructions with his standing rules (the skill file)."""
-    skill = editor_skill()
-    return EDIT_REQUEST_SYSTEM + (f"\n\n{skill}" if skill else "")
+def edit_request_system(persona: Any = None) -> str:
+    """The request editor's instructions with his standing rules (the skill file).
+    `persona` (5-Oct): a client workspace's speaker instead of Ziv; None as before."""
+    skill = editor_skill(persona)
+    base = EDIT_REQUEST_SYSTEM
+    if persona is not None:
+        from tce.editorial.persona import swap
+
+        base = swap(
+            base,
+            (("You are the video editor for Ziv Raviv's walking videos.",
+              f"You are the video editor for {persona.name}'s walking videos."),),
+        )
+    return base + (f"\n\n{skill}" if skill else "")
 
 
 _HOLD = {
@@ -712,9 +806,9 @@ EDIT_BATCH_RULES = (
 )
 
 
-def edit_batch_system() -> str:
+def edit_batch_system(persona: Any = None) -> str:
     """The request editor's instructions and his standing rules, plus the batch rules."""
-    return edit_request_system() + "\n\n" + EDIT_BATCH_RULES
+    return edit_request_system(persona) + "\n\n" + EDIT_BATCH_RULES
 
 
 _BATCH_NOTE = {

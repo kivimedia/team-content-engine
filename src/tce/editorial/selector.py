@@ -999,6 +999,45 @@ one-sentence reason.
 
 Return only JSON matching the schema."""
 
+# 5-Oct: a workspace with idea lanes (Matan) is ranked as a performer's week, never as
+# "Ziv Raviv's coaching content". Owner workspaces keep RANK_SYSTEM_PROMPT exactly.
+RANK_LANES_PROMPT_VERSION = "editorial_rank.v1.lanes"
+
+
+def rank_system_for(profile: Any = None) -> str:
+    if profile is None:
+        return RANK_SYSTEM_PROMPT
+    from tce.editorial.persona import swap
+
+    return swap(
+        RANK_SYSTEM_PROMPT,
+        (
+            (
+                "You are the final editor for Ziv Raviv's coaching content.",
+                "You are the final editor for a performer's short videos, one idea lane each.",
+            ),
+            ("passed all four gates", "passed all of its gates"),
+            (
+                "Choose like an editor who wants the strongest, most useful week for coaches first and "
+                "event-industry small business owners second:",
+                "Choose like an editor who wants the strongest week for people who book or attend "
+                "Israeli events and people curious about mentalism, from every lane that has strong "
+                "ideas:",
+            ),
+            (
+                "- Pick the finalists most worth Ziv saying on camera, best first.",
+                "- Pick the finalists most worth him saying on camera, best first.",
+            ),
+            (
+                "- A coaching lesson that does not mention AI is as valuable as an AI one. Do not prefer an "
+                "idea because it is recent; freshness is only a tie-breaker.",
+                "- Do not prefer an idea because it is recent; freshness is only a tie-breaker. Never "
+                "pick an idea that explains how an effect is done or tells a story as his.",
+            ),
+        ),
+    )
+
+
 RANK_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1302,12 +1341,16 @@ async def _global_rank(
                     ),
                 }
             ],
-            system=RANK_SYSTEM_PROMPT,
+            system=rank_system_for(lane_profile.profile_for(ws)),
             output_schema=RANK_OUTPUT_SCHEMA,
             # Every finalist remains explicit; reduction rounds can be added if measured
             # prompt size approaches the provider context window.
             max_tokens=16384,
-            prompt_version=RANK_PROMPT_VERSION,
+            prompt_version=(
+                RANK_PROMPT_VERSION
+                if lane_profile.profile_for(ws) is None
+                else RANK_LANES_PROMPT_VERSION
+            ),
             workspace_id=ws,
             run_id=run_id,
             idempotency_key=key_text,

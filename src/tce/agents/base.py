@@ -16,6 +16,7 @@ from tce.llm.provider import (
     ShimUsage,
     TextBlock,
     flatten_system,
+    job_workspace,
     normalize_messages,
 )
 
@@ -45,6 +46,10 @@ class AgentBase(ABC):
 
     name: str = "base"
     default_model: str = "claude-sonnet-5"
+    # 5-Oct: the run's workspace (the orchestrator sets it, or run() reads it from the
+    # context), so a Hebrew workspace's agent jobs get its language with no request
+    # context (a scheduler run, a worker). See tce.llm.provider.job_workspace.
+    workspace_id: uuid.UUID | None = None
 
     def __init__(
         self,
@@ -74,6 +79,11 @@ class AgentBase(ABC):
     async def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """Public entry point. Wraps _execute with logging and error handling."""
         logger.info("agent.start", agent=self.name, run_id=str(self.run_id))
+        if self.workspace_id is None and context.get("workspace_id"):
+            try:
+                self.workspace_id = uuid.UUID(str(context["workspace_id"]))
+            except ValueError:
+                pass
         self._report("Starting...")
         start = time.monotonic()
         try:
@@ -153,6 +163,7 @@ class AgentBase(ABC):
             max_tokens=max_tokens,
             requested_model=requested_model,
             prompt_version=prompt_version,
+            workspace_id=job_workspace(self.workspace_id),
             run_id=self.run_id,
             # One agent call = one job. Re-running an agent must not replay an old answer.
             idempotency_key=f"agent:{self.name}:{uuid.uuid4().hex}",

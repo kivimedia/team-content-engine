@@ -236,12 +236,14 @@ def source_json(upload: RecordingUpload) -> dict[str, Any]:
     }
 
 
-PUBLISH_ORDER = ("instagram", "facebook", "youtube", "linkedin")
+# tiktok (5-Oct): a client workspace's copy-only post; owners never have one.
+PUBLISH_ORDER = ("instagram", "facebook", "youtube", "linkedin", "tiktok")
 PUBLISH_LABELS = {
     "instagram": "Instagram Reel",
     "facebook": "Facebook Page",
     "youtube": "YouTube Short",
     "linkedin": "LinkedIn",
+    "tiktok": "TikTok",
 }
 
 
@@ -1766,7 +1768,11 @@ async def moment(
     if found is not None:
         payload["check"] = {"state": found["state"], "line": found["line"]}
     if rules:
-        payload["rules"] = autoedit.editor_skill() + await learned_rules_text(db, ws)
+        # 5-Oct: a client workspace's voice seat reads the rules about its own speaker.
+        from tce.editorial.persona import load_persona
+
+        persona = await load_persona(db, ws)
+        payload["rules"] = autoedit.editor_skill(persona) + await learned_rules_text(db, ws)
     return payload
 
 

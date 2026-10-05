@@ -674,17 +674,65 @@ _HE_ASIDES_SWAPS = (
 
 
 def asides_system(
-    dog_names: list[str], *, skill: str = "", rules: str = "", talk: str = "", language: str = "en"
+    dog_names: list[str],
+    *,
+    skill: str = "",
+    rules: str = "",
+    talk: str = "",
+    language: str = "en",
+    persona: Any = None,
 ) -> str:
     """Jennifer's instructions for the leftover-asides check. `skill` is the hand-written
     skill file, `rules` the block of rules she learned from his notes (after it), `talk`
-    the conversation rules of an agent talk. `language` "he" (4-Oct): a Hebrew workspace."""
+    the conversation rules of an agent talk. `language` "he" (4-Oct): a Hebrew workspace.
+    `persona` (5-Oct): a client workspace, whose asides are his own (no dogs unless he
+    has them); None leaves the text exactly as it was."""
+    if persona is not None:
+        dog_names = list(getattr(persona, "aside_names", ()) or ())
     text = _asides_system_en(dog_names, skill=skill, rules=rules, talk=talk)
     if language == "he":
         from tce.production.autoedit import _to_hebrew
 
-        return _to_hebrew(text, _HE_ASIDES_SWAPS)
-    return text
+        text = _to_hebrew(text, _HE_ASIDES_SWAPS)
+    if persona is None:
+        return text
+    from tce.editorial.persona import swap
+
+    names = " and ".join(dog_names)
+    dogs = names or "his dogs"
+    first = (
+        f"1. Talk to the dogs: their names ({dogs}), 'come', 'come here', 'this way', 'good "
+        "boy', 'no, no, no' said to a dog. "
+    )
+    if language == "he":
+        first += (
+            "He speaks Hebrew to the viewer, so Hebrew is never an aside because it is Hebrew "
+            "(בואו, 'come', said to the dogs is).\n"
+        )
+        note = " He speaks Hebrew to the viewer, so Hebrew is never an aside because it is Hebrew."
+    else:
+        first += (
+            "He calls them in Hebrew too, which the recogniser "
+            "writes as 'boy', 'bo' or 'bow', or as English that makes no sense where it stands.\n"
+        )
+        note = ""
+    called = (
+        f"1. Talk to {names}: their names, 'come', 'come here', 'wait'."
+        if names
+        else "1. A name or 'come', 'wait for me' called out to someone near him, not to the viewer."
+    )
+    return swap(
+        text,
+        (
+            (
+                f"He films himself on his phone while he walks, often with his dogs, {dogs}, and ",
+                f"{persona.name} films himself on his phone while he walks, "
+                + (f"sometimes with {names}, " if names else "")
+                + "and ",
+            ),
+            (first, called + note + "\n"),
+        ),
+    )
 
 
 def _asides_system_en(dog_names: list[str], *, skill: str = "", rules: str = "", talk: str = "") -> str:

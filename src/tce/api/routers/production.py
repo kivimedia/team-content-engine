@@ -412,6 +412,14 @@ async def export_packet_route(
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
+    from tce.editorial.lane_profile import profile_for
+
+    # Review 5-Oct: an export is a Google Doc shared with the owner's team; the exporting
+    # stage refuses a lane workspace for the same reason. Its scripts are read in TCE.
+    if profile_for(ws) is not None:
+        raise HTTPException(
+            status_code=409, detail="This workspace's scripts are read in TCE; they are not exported"
+        )
     packet = await _packet(db, ws, packet_id)
     candidate = (
         await db.execute(
@@ -860,8 +868,37 @@ async def plan_edit_route(
     return upload_json(row)
 
 
-def aside_names() -> list[str]:
+def aside_names(persona: Any = None) -> list[str]:
+    """Who he talks to off camera. A client workspace (5-Oct, `persona`) has its own
+    (TCE_WORKSPACE_ASIDE_NAMES), never the owner's dogs."""
+    if persona is not None:
+        return list(getattr(persona, "aside_names", ()) or ())
     return [n.strip() for n in settings.production_aside_names.split(",") if n.strip()]
+
+
+async def _persona(ws: uuid.UUID | None, db: AsyncSession | None = None) -> Any:
+    """The client workspace's persona (5-Oct), or None: every owner workspace, and a
+    workspace with no profile of its own, keeps every prompt exactly as it was."""
+    from tce.db.workspace_filter import owner_workspace_ids
+    from tce.editorial import persona as persona_service
+
+    if ws is None or ws in owner_workspace_ids():
+        return None
+    try:
+        if db is not None:
+            return await persona_service.load_persona(db, ws)
+        return await persona_service.load_persona_from(session_factory(), ws)
+    except Exception:  # noqa: BLE001 - logged; the owner text is what ran before 5-Oct
+        import structlog
+
+        from tce.editorial.lane_profile import profile_for
+
+        structlog.get_logger().warning("production.persona_unavailable", workspace=str(ws), exc_info=True)
+        # Review 5-Oct: a configured client (idea lanes or its own language) never falls
+        # back to the owner's text (his name, his dogs): the job fails instead.
+        if profile_for(ws) is not None or workspace_language(ws) != "en":
+            raise
+        return None
 
 
 async def _levels(path: str | Path | None, hiss: bool = False) -> list[float] | None:
@@ -948,6 +985,8 @@ async def _compute_plan(
     # 3-Oct, an agent talk: the agent's words are content, never cut by a rule or the
     # review (only his own request can cut them).
     voices = await talk_voices(row)
+    # 5-Oct: a client workspace's own asides, never the owner's dogs.
+    names = aside_names(await _persona(ws, db))
     # A long walk takes a second or more to plan: off the event loop.
     plan = await asyncio.to_thread(
         plan_edit,
@@ -958,7 +997,7 @@ async def _compute_plan(
         activity=activity,
         removals=review.get("removals") if review.get("state") == "done" else None,
         overrides=previous.get("overrides"),
-        aside_names=aside_names(),
+        aside_names=names,
         protected=voices.agent_words if voices is not None else (),
         language=workspace_language(ws),
     )
@@ -1989,13 +2028,17 @@ def _review_request(
     rules: list[list[str]] | None = None,
     *,
     language: str = "en",
+    persona: Any = None,
 ) -> tuple[str, str]:
     """The review's prompt and instructions. An agent talk (3-Oct) says who speaks each
     line and adds the conversation rules: the agent's lines are content. `rules` are the
     rules Jennifer learned from his notes ([[id, text], ...], editor_rules.prompt_rules),
     written after the skill file; none leaves the instructions as they were. `language`
-    (4-Oct): "he" for a Hebrew workspace."""
-    system = autoedit.review_system(aside_names(), editor_rules.block(rules)[0], language=language)
+    (4-Oct): "he" for a Hebrew workspace. `persona` (5-Oct): a client workspace."""
+    system = autoedit.review_system(
+        aside_names(persona), editor_rules.block(rules)[0], language=language,
+        **({"persona": persona} if persona is not None else {}),
+    )
     if voices is None:
         return autoedit.review_prompt(words, context), system
     speakers = voices.speaker_names() if voices.known else None
@@ -2108,7 +2151,10 @@ async def _review(upload_id: uuid.UUID, ws: uuid.UUID, *, wait_timeout_s: float 
             await s.commit()
     if not words or not is_word_level(words):
         return "skipped"
-    prompt, system = _review_request(words, context, voices, rules, language=workspace_language(ws))
+    persona = await _persona(ws)
+    prompt, system = _review_request(
+        words, context, voices, rules, language=workspace_language(ws), persona=persona
+    )
     key = _review_key(upload_id, prompt, system)
     try:
         answer = await _ask(
@@ -2194,18 +2240,23 @@ async def _await_review(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             in_force = await editor_rules.prompt_rules(s, ws)
         # The rules the waiting job was asked with, not the rules as they are now.
         rules = [list(r) for r in review.get("rules") or []]
+        persona = await _persona(ws)
         if rules and not {r[0] for r in rules} <= {r[0] for r in in_force}:
             # 3-Oct review: he deleted a rule this job was asked with, so its answer may
             # follow it. A deleted rule is never applied: ask again with the rules in
             # force now (a new job); the old answer is never used.
             rules = in_force
-            prompt, system = _review_request(words, context, voices, rules, language=workspace_language(ws))
+            prompt, system = _review_request(
+                words, context, voices, rules, language=workspace_language(ws), persona=persona
+            )
             key = _review_key(upload_id, prompt, system)
             review = {**review, "key": key, "rules": rules, "asked_again": "a rule it read was deleted"}
             if not rules:
                 review.pop("rules")
             await _save_review(upload_id, ws, review, None)
-        prompt, system = _review_request(words, context, voices, rules, language=workspace_language(ws))
+        prompt, system = _review_request(
+            words, context, voices, rules, language=workspace_language(ws), persona=persona
+        )
         key = _review_key(upload_id, prompt, system)
         if key != str(review.get("key") or ""):
             await _save_review(upload_id, ws, {**review, "state": "stale"}, None)
@@ -2434,12 +2485,14 @@ async def _qc_asides(
     if voices is not None and not voices.known:
         return qc.skipped(f"who says each line of this talk with {voices.agent} could not be worked out")
     block, rule_ids = editor_rules.block(rules)
+    persona = await _persona(ws)
     system = qc.asides_system(
-        aside_names(),
-        skill=autoedit.editor_skill(),
+        aside_names(persona),
+        skill=autoedit.editor_skill(persona),
         rules=block,
         talk=autoedit.conversation_rules(voices.agent) if voices is not None else "",
         language=workspace_language(ws),
+        **({"persona": persona} if persona is not None else {}),
     )
     prompt = qc.asides_prompt(kept, context, voices.speaker_names() if voices is not None else None)
     try:
@@ -3228,7 +3281,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
                 end_s=got["end_s"], kept=got["kept"], marks=marks, history=got["history"],
                 speakers=got.get("speakers"),
             )
-            system = autoedit.edit_request_system()
+            system = autoedit.edit_request_system(await _persona(ws))
             try:
                 answer = await _ask(
                     autoedit.EDIT_REQUEST_JOB, prompt, system, autoedit.EDIT_REQUEST_SCHEMA, ws,
@@ -3736,7 +3789,7 @@ async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
                 kept=got["kept"], marks=marks, history=got["history"], plan_moved=got["plan_moved"],
                 speakers=got.get("speakers"),
             )
-            system = autoedit.edit_batch_system()
+            system = autoedit.edit_batch_system(await _persona(ws))
             key = talk_key(session_id, prompt, system, got["attempt"])
             count = len(got["notes"])
             reading = f"Reading your {count} note{'s' if count != 1 else ''} on the subscription"
@@ -3867,12 +3920,13 @@ async def learn_from_notes(ws: uuid.UUID, upload_id: uuid.UUID, note_ids: list[u
             await s.commit()
         texts = [r[1] for r in have]
         prompt = rule_text.distill_prompt(context, items, texts)
-        key = rule_key(upload_id, prompt, rule_text.DISTILL_SYSTEM)
+        distill_system = rule_text.distill_system(await _persona(ws))
+        key = rule_key(upload_id, prompt, distill_system)
         deadline = began + timedelta(hours=settings.production_review_wait_h)
         while True:
             try:
                 answer = await _ask(
-                    rule_text.DISTILL_JOB, prompt, rule_text.DISTILL_SYSTEM, rule_text.DISTILL_SCHEMA, ws, key,
+                    rule_text.DISTILL_JOB, prompt, distill_system, rule_text.DISTILL_SCHEMA, ws, key,
                     wait_timeout_s=RULE_ASK_WAIT_S, prompt_version=rule_text.DISTILL_PROMPT_VERSION,
                     max_tokens=min(4000, 500 + 250 * len(items)), requeue_failed=True,
                 )
@@ -4171,6 +4225,24 @@ async def resume_auto_work() -> None:
 # through the schedule-* skills on this server; the Library shows the live links.
 
 
+CLIENT_POSTING_DETAIL = (
+    "TCE posts only to the owner's own accounts. Copy this post and publish it from your own "
+    "Instagram, Facebook page, YouTube and TikTok."
+)
+
+
+def _posts_from_tce(ws: uuid.UUID, persona: Any = None) -> bool:
+    """False for a client workspace: the schedule-* skills post to the owner's accounts.
+    A client is a non-owner workspace with a persona, idea lanes or its own language
+    (read from config, so it holds even when its profile cannot be read)."""
+    from tce.db.workspace_filter import owner_workspace_ids
+    from tce.editorial.lane_profile import profile_for
+
+    if ws in owner_workspace_ids():
+        return True
+    return persona is None and profile_for(ws) is None and workspace_language(ws) == "en"
+
+
 def _publication_json(row: VideoPublication) -> dict[str, Any]:
     return {
         "platform": row.platform,
@@ -4205,10 +4277,13 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
     is already out, going out, or scheduled."""
     from tce.llm import LLMUnavailable
 
+    # 5-Oct: a client workspace gets his own four platforms, in his voice and language.
+    persona = await _persona(ws)
+    platforms = publishing.platforms_for(persona)
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
         existing = await _publications(s, ws, upload_id)
-        if not rewrite and len(existing) == len(publishing.PLATFORMS):
+        if not rewrite and len(existing) == len(platforms):
             return
         words = list(row.transcript or [])
         keep = [list(r) for r in (row.edit_plan or {}).get("keep") or []]
@@ -4227,32 +4302,49 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
         from tce.editorial import lineup as lineup_service
 
         rules = await lineup_service.post_rules(s, ws)
+    if persona is None:
+        system, schema, key = (
+            publishing.COPY_SYSTEM,
+            publishing.COPY_SCHEMA,
+            f"post-copy:{upload_id}:{hashlib.sha256((spoken + rules).encode()).hexdigest()[:12]}",
+        )
+        extra: dict[str, Any] = {}
+    else:
+        system, schema = publishing.copy_system(persona), publishing.copy_schema(persona)
+        key = f"post-copy-client:{upload_id}:{hashlib.sha256((spoken + rules + system).encode()).hexdigest()[:12]}"
+        extra = {"prompt_version": publishing.CLIENT_PROMPT_VERSION}
     try:
         answer = await _ask(
             publishing.COPY_JOB,
             publishing.copy_prompt(title, spoken, rules, script_posts),
-            publishing.COPY_SYSTEM,
-            publishing.COPY_SCHEMA,
+            system,
+            schema,
             ws,
-            f"post-copy:{upload_id}:{hashlib.sha256((spoken + rules).encode()).hexdigest()[:12]}",
+            key,
+            **extra,
         )
     except LLMUnavailable:
         return  # the card offers "Write the posts" again
-    copies = publishing.clean_copy(answer.structured or {})
+    if persona is None:
+        copies, problems = publishing.clean_copy(answer.structured or {}), {}
+    else:
+        copies = publishing.clean_client_copy(answer.structured or {})
+        problems = publishing.copy_problems(copies)
     async with session_factory()() as s:
         existing = await _publications(s, ws, upload_id)
-        for platform in publishing.PLATFORMS:
+        for platform in platforms:
             pub = existing.get(platform)
             if pub is None:
                 s.add(
                     VideoPublication(
                         workspace_id=ws, upload_id=upload_id, candidate_id=candidate_id,
                         platform=platform, status="draft", copy=copies[platform],
+                        **({"detail": problems[platform]} if platform in problems else {}),
                     )
                 )
             elif pub.status in ("draft", "failed"):
                 pub.copy = copies[platform]
-                pub.status, pub.detail = "draft", None
+                pub.status, pub.detail = "draft", problems.get(platform)
         await s.commit()
 
 
@@ -4291,14 +4383,16 @@ async def revise_posts(upload_id: uuid.UUID, ws: uuid.UUID, request: str) -> Non
                 pub.status, pub.detail = "draft", detail
             await s.commit()
 
+    persona = await _persona(ws)
     try:
         answer = await _ask(
             publishing.REVISE_JOB,
             publishing.revise_prompt(title, spoken, rules, current, locked, request),
-            publishing.REVISE_SYSTEM,
-            publishing.COPY_SCHEMA,
+            publishing.revise_system(persona),
+            publishing.copy_schema(persona),
             ws,
             f"post-revise:{upload_id}:{hashlib.sha256((request + repr(current)).encode()).hexdigest()[:16]}",
+            **({} if persona is None else {"prompt_version": publishing.CLIENT_PROMPT_VERSION}),
         )
     except LLMUnavailable as exc:
         await finish(f"The change did not run ({exc.status}); ask again", None)
@@ -4306,7 +4400,8 @@ async def revise_posts(upload_id: uuid.UUID, ws: uuid.UUID, request: str) -> Non
     except Exception as exc:  # noqa: BLE001 - lands on the card
         await finish(f"The change stopped: {str(exc)[:200]}", None)
         return
-    await finish(f"Changed as you asked: {request.strip()[:200]}", publishing.clean_copy(answer.structured or {}))
+    clean = publishing.clean_copy if persona is None else publishing.clean_client_copy
+    await finish(f"Changed as you asked: {request.strip()[:200]}", clean(answer.structured or {}))
 
 
 async def _social_copy(upload_id: uuid.UUID, ws: uuid.UUID) -> Path:
@@ -4397,6 +4492,13 @@ async def publish_video(
                 setattr(pub, k, v)
             await s.commit()
 
+    # Review 5-Oct: the schedule-* skills post to the owner's accounts. A client's post
+    # left on "posting" (the restart resume path) never goes out through them.
+    if not _posts_from_tce(ws, await _persona(ws)):
+        for platform in platforms:
+            await mark(platform, status="failed", detail=CLIENT_POSTING_DETAIL)
+        return
+
     try:
         for platform in platforms:
             await mark(platform, status="posting", detail="Making the upload copy of the video")
@@ -4473,14 +4575,18 @@ async def get_publishing(
 ):
     await _upload(db, ws, upload_id)
     pubs = await _publications(db, ws, upload_id)
-    return {
+    persona = await _persona(ws, db)
+    out: dict[str, Any] = {
         "upload_id": str(upload_id),
         "platforms": [
             _publication_json(pubs[p]) if p in pubs
             else {"platform": p, "label": publishing.LABELS[p], "status": "none", "copy": {}}
-            for p in publishing.PLATFORMS
+            for p in publishing.platforms_for(persona)
         ],
     }
+    if not _posts_from_tce(ws, persona):
+        out["post_by_hand"] = CLIENT_POSTING_DETAIL
+    return out
 
 
 @router.post("/uploads/{upload_id}/publishing/draft", status_code=202)
@@ -4522,14 +4628,16 @@ async def save_post_copy(
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    if platform not in publishing.PLATFORMS:
+    persona = await _persona(ws, db)
+    if platform not in publishing.platforms_for(persona):
         raise HTTPException(status_code=404, detail="Unknown platform")
     pub = (await _publications(db, ws, upload_id)).get(platform)
     if pub is None:
         raise HTTPException(status_code=404, detail="No post written for this platform yet")
     if pub.status in ("posting", "posted", "scheduled", "revising"):
         raise HTTPException(status_code=409, detail="This post is already out or being changed; it cannot be edited now")
-    pub.copy = publishing.clean_copy({platform: body.fields})[platform]
+    clean = publishing.clean_copy if persona is None else publishing.clean_client_copy
+    pub.copy = clean({platform: body.fields})[platform]
     await db.commit()
     return _publication_json(pub)
 
@@ -4542,6 +4650,10 @@ async def publish_route(
     db: AsyncSession = Depends(get_db),
 ):
     row = await _upload(db, ws, upload_id)
+    # 5-Oct: the schedule-* skills on this server post to the owner's own accounts. A
+    # client workspace's video never goes out through them.
+    if not _posts_from_tce(ws, await _persona(ws, db)):
+        raise HTTPException(status_code=409, detail=CLIENT_POSTING_DETAIL)
     if not row.edited_path:
         raise HTTPException(status_code=409, detail="There is no edited video to post")
     # 28-Sep review: a post tapped while the video is being edited again would upload
