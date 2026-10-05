@@ -412,6 +412,14 @@ async def export_packet_route(
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
+    from tce.editorial.lane_profile import profile_for
+
+    # Review 5-Oct: an export is a Google Doc shared with the owner's team; the exporting
+    # stage refuses a lane workspace for the same reason. Its scripts are read in TCE.
+    if profile_for(ws) is not None:
+        raise HTTPException(
+            status_code=409, detail="This workspace's scripts are read in TCE; they are not exported"
+        )
     packet = await _packet(db, ws, packet_id)
     candidate = (
         await db.execute(
@@ -883,7 +891,13 @@ async def _persona(ws: uuid.UUID | None, db: AsyncSession | None = None) -> Any:
     except Exception:  # noqa: BLE001 - logged; the owner text is what ran before 5-Oct
         import structlog
 
+        from tce.editorial.lane_profile import profile_for
+
         structlog.get_logger().warning("production.persona_unavailable", workspace=str(ws), exc_info=True)
+        # Review 5-Oct: a configured client (idea lanes or its own language) never falls
+        # back to the owner's text (his name, his dogs): the job fails instead.
+        if profile_for(ws) is not None or workspace_language(ws) != "en":
+            raise
         return None
 
 
@@ -4477,6 +4491,13 @@ async def publish_video(
             for k, v in fields.items():
                 setattr(pub, k, v)
             await s.commit()
+
+    # Review 5-Oct: the schedule-* skills post to the owner's accounts. A client's post
+    # left on "posting" (the restart resume path) never goes out through them.
+    if not _posts_from_tce(ws, await _persona(ws)):
+        for platform in platforms:
+            await mark(platform, status="failed", detail=CLIENT_POSTING_DETAIL)
+        return
 
     try:
         for platform in platforms:

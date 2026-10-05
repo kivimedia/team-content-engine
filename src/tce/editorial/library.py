@@ -236,12 +236,14 @@ def source_json(upload: RecordingUpload) -> dict[str, Any]:
     }
 
 
-PUBLISH_ORDER = ("instagram", "facebook", "youtube", "linkedin")
+# tiktok (5-Oct): a client workspace's copy-only post; owners never have one.
+PUBLISH_ORDER = ("instagram", "facebook", "youtube", "linkedin", "tiktok")
 PUBLISH_LABELS = {
     "instagram": "Instagram Reel",
     "facebook": "Facebook Page",
     "youtube": "YouTube Short",
     "linkedin": "LinkedIn",
+    "tiktok": "TikTok",
 }
 
 

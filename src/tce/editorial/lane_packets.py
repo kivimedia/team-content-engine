@@ -222,10 +222,41 @@ _ASK_HE = re.compile(
     r"תגיבו|עקבו|תעקבו|הירשמו|תירשמו|לינק בביו|קישור בביו|דברו איתי)(?![֐-׿])"
 )
 
+# Review 5-Oct: Hebrew glues one-letter prefixes onto a word ("כשהופעתי", "והסוד",
+# "וראיתי"), and the bare-word checks above and in lane_profile missed every one. The
+# writer's checks take up to three prefix letters.
+_HE_PREFIX = r"(?<![֐-׿])[ובכלמשה]{0,3}"
+
+
+def _he_words(*words: str) -> re.Pattern[str]:
+    return re.compile(_HE_PREFIX + "(?:" + "|".join(re.escape(w) for w in words) + r")(?![֐-׿])")
+
+
+_EVENT_HE = _he_words(
+    "קרה לי", "זכור לי", "אני זוכר", "פעם אחת", "באחת ההופעות", "בהופעה אחת",
+    "בחתונה אחת", "באירוע אחד", "הופעתי",
+)
+_MEMORY_HE = _he_words(
+    "הופעתי", "הייתי", "קרה לי", "זכור לי", "אני זוכר", "פעם אחת", "באחת ההופעות",
+    "בהופעה אחת", "בחתונה אחת", "באירוע אחד", "ראיתי", "אמרתי", "עשיתי", "ניחשתי",
+    "גיליתי", "פגשתי",
+)
+_METHOD_HE = _he_words(
+    "הסוד", "השיטה", "חשיפת", "חושף", "נחשף", "ככה עושים", "איך עושים את",
+    "הפתרון של הטריק", "הטריק הוא", "הטריק פה", "הטריק כאן", "גימיק", "גימיקים",
+)
+
+
+def method_hit(text: str) -> re.Match[str] | None:
+    """Talk about how an effect is done, English or (prefixed) Hebrew."""
+    from tce.editorial.lane_profile import _METHOD_REVEAL
+
+    return _METHOD_REVEAL.search(text) or _METHOD_HE.search(text)
+
 
 def lane_errors(clean: dict[str, Any], lane: str) -> list[str]:
     """What breaks a lane rule in code. Empty = the packet may be saved."""
-    from tce.editorial.lane_profile import _INVENTED_MEMORY, _METHOD_REVEAL
+    from tce.editorial.lane_profile import _INVENTED_MEMORY
 
     errors: list[str] = []
     phrases = list(clean.get("script_phrases") or [])
@@ -244,12 +275,13 @@ def lane_errors(clean: dict[str, Any], lane: str) -> list[str]:
         if len(line.split()) > MAX_WORDS_PER_LINE:
             errors.append(f"script line {i} is too long to say in one breath ({len(line.split())} words)")
     for text in public:
-        hit = _METHOD_REVEAL.search(text)
+        hit = method_hit(text)
         if hit:
             errors.append(f"talks about how an effect is done ('{hit.group(0)}'); never reveal a method")
             break
     for text in public:
-        hit = _INVENTED_EVENT.search(text.replace(SLOT, " "))
+        bare = text.replace(SLOT, " ")
+        hit = _INVENTED_EVENT.search(bare) or _EVENT_HE.search(bare)
         if hit:
             errors.append(f"narrates an event as his ('{hit.group(0)}'); only he knows what happened")
             break
@@ -268,7 +300,8 @@ def lane_errors(clean: dict[str, Any], lane: str) -> list[str]:
         if len(slots) != 1:
             errors.append(f"a behind_scenes script has exactly one line {SLOT} where his own story goes")
         for text in public:
-            hit = _INVENTED_MEMORY.search(text.replace(SLOT, " "))
+            bare = text.replace(SLOT, " ")
+            hit = _INVENTED_MEMORY.search(bare) or _MEMORY_HE.search(bare)
             if hit:
                 errors.append(
                     f"narrates an event as his ('{hit.group(0)}'); a story seed stays questions "

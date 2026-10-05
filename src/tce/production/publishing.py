@@ -244,12 +244,12 @@ def clean_client_copy(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def copy_problems(copies: dict[str, dict[str, Any]]) -> dict[str, str]:
     """Per platform, what in a client's post breaks one of his rules in code: a
     method explained. The card shows it; nothing is posted by TCE anyway."""
-    from tce.editorial.lane_profile import _METHOD_REVEAL
+    from tce.editorial.lane_packets import method_hit
 
     out: dict[str, str] = {}
     for platform, fields in copies.items():
         text = " ".join(str(v) for v in fields.values() if isinstance(v, str))
-        hit = _METHOD_REVEAL.search(text)
+        hit = method_hit(text)
         if hit:
             out[platform] = f"Check before posting: it talks about how an effect is done ('{hit.group(0)}')"
     return out

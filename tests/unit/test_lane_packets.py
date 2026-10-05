@@ -258,3 +258,47 @@ async def test_owner_packets_are_written_exactly_as_before(editorial_sessionmake
         bad = good_output()
         bad["linkedin_post"] = ""
         packets.validate_packet_output(bad)
+
+
+# Review 5-Oct: Hebrew glues one-letter prefixes (ו ש כ ב ה ל מ) onto the word, so
+# "כשהופעתי" and "והסוד" slipped past checks that only matched the bare word.
+@pytest.mark.parametrize(
+    "lane,line",
+    [
+        ("trend_reaction", "כשהופעתי בחתונה בהרצליה כולם צחקו."),
+        ("trend_reaction", "ופעם אחת זה קרה באמצע הריקוד."),
+        ("trend_reaction", "באירוע שהופעתי בו כולם עמדו."),
+        ("magic_clip", "והסוד הוא שהקלף כבר בכיס."),
+        ("magic_clip", "הטריק הוא שהקלף כבר בכיס שלו."),
+        ("magic_clip", "יש לו גימיק בתוך הארנק."),
+        ("behind_scenes", "כשהייתי בחתונה ההיא כולם שתקו?"),
+        ("behind_scenes", "וראיתי את הכלה בוכה?"),
+    ],
+)
+def test_hebrew_prefixes_never_hide_an_event_or_a_method(lane, line):
+    clean = behind_scenes()
+    clean["linkedin_post"] = ""
+    clean["script_phrases"][1] = line
+    assert lane_packets.lane_errors(clean, lane), line
+
+
+@pytest.mark.parametrize(
+    "lane,line",
+    [
+        ("magic_clip", "הייתי משנה את הסוף לקהל ישראלי."),
+        ("magic_clip", "איך הוא עשה את זה בכלל?"),
+        ("trend_reaction", "זה היה עובד בבר מצווה בישראל."),
+    ],
+)
+def test_his_reactions_stay_legal(lane, line):
+    clean = behind_scenes()
+    clean["linkedin_post"] = ""
+    clean["script_phrases"][1] = line
+    assert lane_packets.lane_errors(clean, lane) == []
+
+
+def test_a_post_with_a_prefixed_method_word_gets_a_note():
+    from tce.production import publishing
+
+    flagged = publishing.copy_problems({"instagram": {"caption": "והסוד הוא שהקלף בכיס"}})
+    assert "instagram" in flagged

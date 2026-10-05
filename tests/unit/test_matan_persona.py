@@ -442,3 +442,80 @@ def test_the_orchestrator_hands_its_workspace_to_each_agent():
     from tce.orchestrator import engine
 
     assert "agent.workspace_id = self.workspace_id" in inspect.getsource(engine.PipelineOrchestrator._run_step)
+
+
+
+# ---------------------------------------------------------------- review 5-Oct
+
+
+async def test_a_lane_workspace_never_exports_a_packet_to_the_owners_team(editorial_sessionmaker, lanes):
+    from fastapi import HTTPException
+
+    from tce.api.routers import production as prod
+
+    async with editorial_sessionmaker() as s:
+        with pytest.raises(HTTPException) as refused:
+            await prod.export_packet_route(uuid.uuid4(), ws=MATAN, db=s)
+        assert refused.value.status_code == 409
+        # Owners are untouched: the route goes on to look the packet up as before.
+        with pytest.raises(HTTPException) as owner:
+            await prod.export_packet_route(uuid.uuid4(), ws=OWNER, db=s)
+        assert owner.value.status_code == 404
+
+
+async def test_a_resumed_post_never_goes_out_for_a_client_workspace(editorial_sessionmaker, monkeypatch, lanes):
+    from tce.api.routers import production as prod
+    from tce.models.editorial import RecordingUpload, TopicCandidate, VideoPublication
+
+    monkeypatch.setattr(prod, "session_factory", lambda: editorial_sessionmaker)
+
+    async def no_copy(*a, **k):
+        raise AssertionError("the upload copy must never be made for a client workspace")
+
+    monkeypatch.setattr(prod, "_social_copy", no_copy)
+    async with editorial_sessionmaker() as s:
+        cand = TopicCandidate(workspace_id=MATAN, week_start=datetime(2026, 10, 5), moment_ids=["m"], title="t",
+                              lesson="l", audience="a", public_angle="p", gates={}, status="recorded")
+        s.add(cand)
+        await s.flush()
+        up = RecordingUpload(workspace_id=MATAN, candidate_id=cand.id, original_filename="w.mp4",
+                             storage_path="/tmp/w.mp4", sha256=uuid.uuid4().hex * 2, status="edited",
+                             edited_path="/tmp/w-edited.mp4")
+        s.add(up)
+        await s.flush()
+        s.add(VideoPublication(workspace_id=MATAN, upload_id=up.id, candidate_id=cand.id, platform="instagram",
+                               status="posting", copy={"caption": "x"}, detail="Making the upload copy"))
+        await s.commit()
+        uid = up.id
+    await prod.publish_video(uid, MATAN, ["instagram"], None)
+    async with editorial_sessionmaker() as s:
+        pub = (await prod._publications(s, MATAN, uid))["instagram"]
+    assert pub.status == "failed" and pub.detail == prod.CLIENT_POSTING_DETAIL
+
+
+async def test_a_client_persona_that_cannot_be_read_never_falls_back_to_ziv(monkeypatch, lanes):
+    from tce.api.routers import production as prod
+    from tce.editorial import persona as persona_service
+
+    async def broken(*a, **k):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(persona_service, "load_persona_from", broken)
+    with pytest.raises(RuntimeError):
+        await prod._persona(MATAN)
+    # An unconfigured workspace keeps the old behaviour (owner text), and owners never read.
+    assert await prod._persona(uuid.uuid4()) is None
+    assert await prod._persona(OWNER) is None
+
+
+def test_the_library_lists_his_tiktok_post():
+    from types import SimpleNamespace as NS
+
+    from tce.editorial import library
+
+    pub = NS(status="draft", copy={"caption": "c"}, url=None, detail=None, scheduled_for=None, posted_at=None)
+    out = library._publishing_json({"instagram": pub, "tiktok": pub})
+    assert [p["platform"] for p in out] == ["instagram", "tiktok"]
+    # Owners have no TikTok row: their list is exactly what it was.
+    owner = library._publishing_json({p: pub for p in ("instagram", "facebook", "youtube", "linkedin")})
+    assert [p["platform"] for p in owner] == ["instagram", "facebook", "youtube", "linkedin"]
