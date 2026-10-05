@@ -260,7 +260,8 @@ async def match_pending(
             item.prefilter_reason = "stale"
             out["stale"] += 1
             continue
-        result = match_item(title=item.title, summary=item.summary, anchors=anchors)
+        result = match_item(title=item.title, summary=item.summary, anchors=anchors,
+                            concept_of=problem_concept_for(ws))
         if not result.matched:
             item.prefilter_reason = "blocked_shape" if result.blocked_shape else "no_anchor"
             out["blocked_shape" if result.blocked_shape else "no_anchor"] += 1
@@ -574,7 +575,8 @@ async def check_one(
             select(NewsAnchor).where(NewsAnchor.workspace_id == ws, NewsAnchor.active.is_(True))
         )
     ).scalars().all()
-    result = match_item(title=item.title, summary=None, body=body, anchors=anchors)
+    result = match_item(title=item.title, summary=None, body=body, anchors=anchors,
+                        concept_of=problem_concept_for(ws))
     if not result.matched:
         item.prefilter_reason = "blocked_shape" if result.blocked_shape else "no_anchor"
         await session.flush()
@@ -604,3 +606,12 @@ async def check_one(
             )
     await session.flush()
     return {"status": "matched", "item_id": str(item.id), "why": result.why()}
+
+
+def problem_concept_for(ws: Any):
+    """Lane workspaces count two forms of one word as one problem; owners get None,
+    so their matching is exactly what it was."""
+    from tce.editorial.lane_profile import profile_for
+    from tce.news.matcher import concept_key
+
+    return concept_key if profile_for(ws) is not None else None

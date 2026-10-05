@@ -3685,3 +3685,21 @@ async def test_live_every_hold_is_pinned_and_his_spoken_instructions_make_one_ve
     }, state
     instructions = {str(n.id) for n in notes if (n.result or {}).get("command")}
     assert instructions == {correction, scratch, make_it, yes}
+
+
+def test_find_ideas_passes_a_performers_lane_types():
+    """5-Oct: "research 3 clip ideas" reaches the API as magic_clip, not "any"."""
+    out = run({
+        "steps": [step("tce_find_ideas", count=3, type="magic_clip"),
+                  step("tce_find_ideas", count=2, type="behind_scenes"),
+                  step("tce_find_ideas", count=1, type="trend_reaction")],
+        "responses": {
+            "POST /editorial/idea-research": {"ok": True, "status": 202, "data": {"run_id": RUN}},
+        },
+    })
+    bodies = [s["body"]["type"] for s in out["sent"] if s["key"] == "POST /editorial/idea-research"]
+    assert bodies == ["magic_clip", "behind_scenes", "trend_reaction"]
+    assert "3 new clip topics" in out["texts"][0] and "clips" in out["texts"][0]
+    assert "magic_clip" not in out["texts"][0]
+    assert "story seeds" in out["texts"][1]
+    assert "1 new trend topic" in out["texts"][2]

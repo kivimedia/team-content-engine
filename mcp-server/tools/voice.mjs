@@ -1096,7 +1096,9 @@ export function register(server, call, { reply, failure, shortId }) {
     'Go and find NEW video topics in the background, when he asks for new topics or ideas. He can say '
       + 'HOW MANY (count, 1-10; 3 if he does not say) and WHAT TYPE: "news" (things happening in AI and '
       + 'tools, found on the web), "coaching" (from his own recent calls), "build" (from his own recent '
-      + 'commits), or "any". If he did not say a number or a type, ask once in a short sentence, then go. '
+      + 'commits), or "any". A performer\'s workspace has its own types instead: "trend_reaction" (event '
+      + 'news from the web), "magic_clip" (from his saved clips) and "behind_scenes" (from his story seeds). '
+      + 'If he did not say a number or a type, ask once in a short sentence, then go. '
       + 'Give the topic or angle he named; leave it out for "surprise me". Every idea goes through the '
       + 'four checks and is saved only if it passes; a repeat of one on his list is not saved twice. Takes '
       + 'several minutes and returns at once: tce_jobs reports it on this call, and if he hangs up the new '
@@ -1107,14 +1109,16 @@ export function register(server, call, { reply, failure, shortId }) {
       properties: {
         topic: { type: 'string', description: 'The topic or angle he named. Leave out for "surprise me".' },
         count: { type: 'integer', minimum: 1, maximum: 10, description: 'How many new topics he wants. Default 3.' },
-        type: { type: 'string', enum: ['news', 'coaching', 'build', 'any'], description: 'The type of video he asked for. Default any.' },
+        type: { type: 'string', enum: ['news', 'coaching', 'build', 'any', 'trend_reaction', 'magic_clip', 'behind_scenes'], description: 'The type of video he asked for. Default any.' },
         days: { type: 'integer', minimum: 1, maximum: 60, description: 'How far back in his calls or commits, in days ("last two weeks" = 14). Default 21.' },
       },
     },
     async ({ topic, count, type, days }) => {
       const about = String(topic || '').trim();
       const n = Math.max(1, Math.min(10, Number.isInteger(count) ? count : 3));
-      const kind = ['news', 'coaching', 'build', 'any'].includes(type) ? type : 'any';
+      const kind = ['news', 'coaching', 'build', 'any', 'trend_reaction', 'magic_clip', 'behind_scenes']
+        .includes(type) ? type : 'any';
+      const LANE_WORD = { trend_reaction: 'trend', magic_clip: 'clip', behind_scenes: 'behind-the-scenes' };
       const back = Number.isInteger(days) ? Math.max(1, Math.min(60, days)) : 21;
       const result = await call('POST', '/editorial/idea-research', {
         topic: about || null, by: 'voice', count: n, type: kind, days: back,
@@ -1122,9 +1126,12 @@ export function register(server, call, { reply, failure, shortId }) {
       if (!result.ok) return spokenError(result, 'start the research');
       const title = about || 'what you have been working on';
       track({ kind: 'idea_research', title, run_id: result.data.run_id });
-      const what = `${n} new ${kind === 'any' ? '' : `${kind} `}topic${n === 1 ? '' : 's'}`;
+      const word = LANE_WORD[kind] || kind;
+      const what = `${n} new ${kind === 'any' ? '' : `${word} `}topic${n === 1 ? '' : 's'}`;
       const where = kind === 'coaching' ? ` from your calls of the last ${back} days`
         : kind === 'build' ? ` from your commits of the last ${back} days`
+        : kind === 'magic_clip' ? ' from your clips'
+        : kind === 'behind_scenes' ? ' from your story seeds'
         : about ? ` about "${about}"` : ' about what you have been working on lately';
       return reply(
         `Started looking for ${what}${where}. It takes a few minutes; I will say what it found. `

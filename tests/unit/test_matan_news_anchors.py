@@ -286,3 +286,120 @@ async def test_holiday_season_entertainment_matches_for_matan(editorial_session,
     res = match_item(title="Purim parties bring back the performer",
                      summary="Hosts plan the holiday early this year.", anchors=anchors)
     assert res.matched, res.why()
+
+
+# ---------------------------------------------------------------------------
+# Adversarial review 5-Oct (round 2)
+# ---------------------------------------------------------------------------
+
+# Two spellings or two forms of ONE word are one problem, not two independent
+# ones: "Hanukkah (Chanukah) latke recipe" matched as a two-hit connection.
+VARIANT_JUNK = [
+    ("Hanukkah (Chanukah) latke recipe for the whole family", "Grate the potatoes."),
+    ("Best Hanukkah and Chanukah candle lighting times", "After sunset."),
+    ("Taylor Swift tour: one performer and the performers behind her", "Backstage crews."),
+    ("Concert review: the entertainer delivered entertainment all night", "An encore."),
+]
+
+
+async def test_spelling_and_plural_variants_are_one_problem_for_matan(editorial_session, lanes_on):
+    from tce.news import discovery
+
+    anchors = await _matan_anchors(editorial_session)
+    concept = discovery.problem_concept_for(MATAN)
+    assert concept is not None
+    for title, summary in VARIANT_JUNK:
+        res = match_item(title=title, summary=summary, anchors=anchors, concept_of=concept)
+        assert not res.matched, f"{title!r} matched: {res.why()}"
+    # Two different words still make a connection.
+    res = match_item(title="Purim parties bring back the performer",
+                     summary="Hosts plan the holiday early this year.", anchors=anchors,
+                     concept_of=concept)
+    assert res.matched, res.why()
+
+
+async def test_match_pending_judges_matan_variants_as_one_problem(editorial_session, lanes_on):
+    """The real gate (discovery.match_pending) collapses variants for Matan."""
+    from tce.models.news import NewsItem
+    from tce.news import discovery
+
+    await build_anchor_index(editorial_session, MATAN, settings_obj=ZIV_VENDOR_SETTINGS, now=NOW)
+    item = NewsItem(id=uuid.uuid4(), workspace_id=MATAN, external_id="variant-1",
+                    url="https://example.com/latke", title=VARIANT_JUNK[0][0],
+                    summary=VARIANT_JUNK[0][1], source_tier="1a", matched=False,
+                    published_at=NOW, fetched_at=NOW)
+    editorial_session.add(item)
+    await editorial_session.flush()
+
+    async def no_fetch(url):  # an unmatched item is never fetched
+        raise AssertionError(url)
+
+    out = await discovery.match_pending(editorial_session, MATAN, fetch_text=no_fetch, now=NOW)
+    assert out["matched"] == 0
+    assert item.prefilter_reason == "no_anchor"
+
+
+@pytest.mark.parametrize("owner", OWNERS)
+def test_owner_matching_has_no_concept_collapse(lanes_on, owner):
+    from tce.news import discovery
+
+    assert discovery.problem_concept_for(owner) is None
+
+
+async def test_owner_match_is_unchanged_without_concept(editorial_session):
+    """match_item without concept_of counts problems exactly as before."""
+    anchors = [SimpleNamespace(id=None, kind="problem_pattern", term=t, normalized_term=t,
+                               weight=1.0) for t in ("performer", "performers")]
+    res = match_item(title="one performer and the performers", anchors=anchors)
+    assert res.matched and res.reason == "two independent client problems"
+
+
+async def test_mitzvah_alone_is_not_a_bar_mitzvah(editorial_session, lanes_on):
+    anchors = await _matan_anchors(editorial_session)
+    res = match_item(title="Mitzvah Day volunteers clean the beach", anchors=anchors)
+    assert not res.matched, res.why()
+    res = match_item(title="Bar mitzvah parties go interactive", anchors=anchors)
+    assert res.matched, res.why()
+
+
+async def test_hebrew_prefixed_forms_match_for_matan(editorial_session, lanes_on):
+    """Hebrew glues "the", "to", "in" onto the word: הקוסם is "the magician"."""
+    anchors = await _matan_anchors(editorial_session)
+    for title in ("הקוסם הצעיר כבש את הבמה", "המנטליסט שקרא את מחשבות הקהל",
+                  "רעיונות חדשים לבר מצווה"):
+        res = match_item(title=title, anchors=anchors)
+        assert res.matched, f"{title!r}: {res.why()}"
+
+
+async def test_clip_research_pool_holds_the_clips_he_asked_for(editorial_session, lanes_on):
+    """Real path, no mocked selector: "research 3 clip ideas" passes his clip ids to
+    collect_pool, and the lane split used to drop every one of them."""
+    from tce.editorial import lane_profile, selector
+    from tce.models.editorial import EvidenceMoment
+
+    src = EvidenceSource(
+        workspace_id=MATAN, source_kind="curated_clip", external_id=f"clip-{uuid.uuid4()}",
+        title="a great mentalist clip", occurred_at=NOW - timedelta(days=200),
+        version_hash="b" * 64, fetch_status="ok", payload_private={},
+    )
+    editorial_session.add(src)
+    await editorial_session.flush()
+    m = EvidenceMoment(
+        workspace_id=MATAN, source_id=src.id, source_version_hash="b" * 64,
+        excerpt_private="synthetic", lesson_summary="clip", claim_type="paraphrased",
+        speaker="Matan", speaker_confidence="high", sensitivity_flags=[], status="active",
+    )
+    editorial_session.add(m)
+    await editorial_session.flush()
+
+    plan = await selector.collect_pool(editorial_session, MATAN, NOW, source_ids=[src.id],
+                                       profile=lane_profile.profile_for(MATAN))
+    assert str(m.id) in [str(pm.id) for pm in plan.moments]
+
+
+def test_matan_saying_news_means_his_trend_lane(lanes_on):
+    assert idea_lane.resolve_kind(MATAN, "news") == "trend_reaction"
+    assert idea_lane.resolve_kind(MATAN, "magic_clip") == "magic_clip"
+    for ws in OWNERS:
+        for k in (*idea_lane.OWNER_KINDS, "magic_clip", "nonsense"):
+            assert idea_lane.resolve_kind(ws, k) == k

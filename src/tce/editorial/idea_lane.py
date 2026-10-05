@@ -60,6 +60,15 @@ def kinds_for(ws: uuid.UUID | str | None) -> tuple[str, ...]:
     if profile is None:
         return OWNER_KINDS
     return ("any", *[k for k in LANE_KINDS if k in profile.lane_keys])
+
+
+def resolve_kind(ws: uuid.UUID | str | None, kind: str) -> str:
+    """A lane workspace's \"news\" is its trend lane; owners' kinds pass through."""
+    if kind == "news" and "trend_reaction" in kinds_for(ws):
+        return "trend_reaction"
+    return kind
+
+
 MAX_IDEAS_ASKED = 10
 
 
@@ -339,6 +348,7 @@ async def run_idea_research(
     """Find new ideas of the kind he asked for, as many as he asked. Never raises."""
     key = str(run_id)
     count = max(1, min(MAX_IDEAS_ASKED, int(count or MAX_RESEARCH_IDEAS)))
+    kind = resolve_kind(ws, kind)
     kind = kind if kind in KINDS else "any"
     if kind in LANE_KINDS and kind not in kinds_for(ws):
         kind = "any"
