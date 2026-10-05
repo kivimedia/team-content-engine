@@ -66,6 +66,10 @@ class LaneProfile:
     # "Surprise me" web queries for the trend lane when there are no calls or
     # commits to seed from.
     research_seeds: tuple[str, ...] = ()
+    # His usual number of videos a week until he sets his own (5-Oct: "minimum 5
+    # videos recorded per week"; more is allowed and never capped). None = the
+    # owner default (lineup.DEFAULT_PRIMARY_SLOTS).
+    videos_per_week: int | None = None
 
     @property
     def weekly_target(self) -> int:
@@ -122,6 +126,21 @@ prompt he answers from his own real memory ("a time when... what did you feel?")
 Never write it as something that happened to him: no invented events, no invented \
 audiences, no invented numbers.
 
+What he picked in his first week (5-Oct) - follow it:
+- behind_scenes is his strongest lane: he loved the seeds about real moments from his \
+gigs (a show that went somewhere else entirely, a last-minute booking). Make these \
+seeds specific and close to an event night.
+- trend_reaction: he wants trends about HIS format - audience participation (guests who \
+want to take part, not sit and watch) and small, intimate events where the magic is \
+close. Reject a gadget or AI-tech trend (a robot that draws the guests, an app, a drone \
+show, VR) that is not about a live performer: it is tech news, not his world, and it is \
+rejected in code.
+- magic_clip: he likes reading the craft and "how would this play at an Israeli event" \
+(David Blaine at an Israeli wedding). Do not pick a big psychological-manipulation stunt \
+(Derren Brown's armoured-car heist, people manipulated into a crime or a public prank \
+on strangers): it is not his style.
+- He is comfortable with bold, cheeky, funny lines about his own life.
+
 Every candidate must pass ALL five gates, each with a one-sentence reason:
 - real_and_verifiable: the trend, clip or theme is real and the cited evidence shows it
 - relevant_to_israeli_events_or_mentalism: an Israeli event audience or a mentalism \
@@ -154,33 +173,37 @@ PERFORMER = LaneProfile(
             key="trend_reaction",
             label="טרנד מהעולם",
             source_kind=NEWS_KIND,
-            target=4,
+            target=5,
             guidance=(
                 "a real trend or attraction from the world event industry and his "
                 "reaction as an Israeli event performer; must connect to Israeli events "
                 "or mentalism through one of his standing facts, otherwise reject it "
-                "under relevant_to_israeli_events_or_mentalism"
+                "under relevant_to_israeli_events_or_mentalism. Best: audience "
+                "participation and small, intimate events. A gadget or AI-tech trend "
+                "that is not about a live performer is rejected"
             ),
         ),
         Lane(
             key="magic_clip",
             label="קליפ של קוסם",
             source_kind=CLIP_KIND,
-            target=3,
+            target=5,
             guidance=(
                 "a famous magic or mentalism clip: what he thinks happened without "
                 "revealing any method, why it works on an audience, what he would "
-                "change for an Israeli crowd"
+                "change for an Israeli crowd. Never a big psychological-manipulation "
+                "stunt (Derren Brown's heist)"
             ),
         ),
         Lane(
             key="behind_scenes",
             label="מאחורי הקלעים",
             source_kind=SEED_KIND,
-            target=3,
+            target=5,
             guidance=(
                 "a story seed from a mentalist's life, phrased as a question he answers "
-                "from his own real memory; never written as an event that happened"
+                "from his own real memory; never written as an event that happened. "
+                "behind_scenes is his strongest lane"
             ),
         ),
     ),
@@ -192,10 +215,13 @@ PERFORMER = LaneProfile(
         "performer_point_of_view",
     ),
     system_prompt=PERFORMER_SYSTEM_PROMPT,
-    max_candidates=10,
+    # 5-Oct (Ziv): five ideas offered in EVERY lane each week, 15 in all, the lanes
+    # weighted equally. A thin lane is still never padded (fill_lane_mix).
+    max_candidates=15,
     reserve_per_lane=8,
     reuse_after_weeks=8,
     anchors_file="news-anchors-performer.md",
+    videos_per_week=5,
     research_seeds=(
         "corporate event entertainment trend",
         "bar mitzvah entertainment trend",
@@ -276,6 +302,36 @@ _INVENTED_MEMORY = re.compile(
     re.IGNORECASE,
 )
 
+# 5-Oct, his week-1 picks: a trend that is a gadget or AI tech ("a robot that draws the
+# guests") is tech news, not his world, unless it is about a live performer. Read in
+# the TITLE (what the idea is about), Hebrew with its one- and two-letter prefixes and
+# its plural/construct endings, and English.
+_GADGET_TECH = re.compile(
+    r"(?:\b(?:robots?|robotic|AI|artificial intelligence|drones?|apps?|gadgets?|VR|"
+    r"virtual reality|augmented reality|metaverse|holograms?|holographic|chatbots?|"
+    r"ChatGPT)\b|"
+    # Hebrew, with up to two prefix letters (ו ה ש ב ל מ כ) and any ending.
+    r"(?<![\u0590-\u05ff])[והשבלמכ]{0,2}"
+    r"(?:רובוט|בינה מלאכותית|אפליקצי|רחפן|רחפני|מציאות מדומה|מציאות רבודה|"
+    r"הולוגרמ|גאדג'ט|צ'אטבוט))",
+    re.IGNORECASE,
+)
+# ... about a live performer: then it is his world after all.
+_LIVE_PERFORMER = re.compile(
+    r"(?:\b(?:magicians?|mentalists?|performers?|entertainers?|illusionists?|live show)\b|"
+    r"קוסם|מנטליסט|אמן במה|אמן אירועים|בדרן|מופיע)",
+    re.IGNORECASE,
+)
+
+
+def gadget_tech_hit(title: str) -> re.Match[str] | None:
+    """The gadget-tech words in an idea's title, unless it is about a live performer."""
+    hit = _GADGET_TECH.search(title or "")
+    if hit is None or _LIVE_PERFORMER.search(title or ""):
+        return None
+    return hit
+
+
 # A clip reaction never explains the trick.
 _METHOD_REVEAL = re.compile(
     r"(?:\b(?:the (?:secret|method|trick) (?:is|was)|here'?s how (?:it'?s|he) (?:done|did)|"
@@ -316,6 +372,16 @@ def lane_check(
     public = " ".join(
         str(raw.get(k) or "") for k in ("title", "lesson", "public_angle")
     )
+    if lane.source_kind == NEWS_KIND:
+        hit = gadget_tech_hit(str(raw.get("title") or ""))
+        if hit:
+            return (
+                "relevant_to_israeli_events_or_mentalism",
+                "gadget_tech_trend",
+                f"a gadget or AI-tech trend ('{hit.group(0).strip()}') that is not about a "
+                "live performer; he wants trends about audience participation and small, "
+                "intimate events",
+            )
     if lane.source_kind == SEED_KIND:
         hit = _INVENTED_MEMORY.search(public)
         if hit:

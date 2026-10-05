@@ -16,6 +16,14 @@ workspace. Six of those spend the OWNER's resources or voice, whatever workspace
 A lane workspace is refused on all six (409, before any lookup), and its finished
 edits start no post writer. Owner workspaces have no lane profile, so for them
 nothing changes. Synthetic keys; no database is touched by a refusal.
+
+Merged 5-Oct (feat/matan-tce-integrated) with feat/matan-persona-voice, which gave a
+lane workspace its OWN writers: its script (editorial.lane_packets, through
+packets.build_packet) and its Hebrew posts (copy_system(persona)). So the script and
+the post WRITING routes are allowed again and its finished edits start its own post
+writer (tests/unit/test_matan_decisions_5oct.py); posting and the Google export, which
+run on the owner's own accounts, stay refused here, by one guard
+(private_access.refuse_lane_workspace).
 """
 
 from __future__ import annotations
@@ -37,11 +45,7 @@ ANY = str(uuid.uuid4())
 
 OWNER_ONLY = [
     ("post", f"/api/v1/production/uploads/{ANY}/publishing/publish", {"platforms": ["instagram"]}),
-    ("post", f"/api/v1/production/uploads/{ANY}/publishing/draft", None),
-    ("post", f"/api/v1/production/uploads/{ANY}/publishing/revise", {"request": "shorter please"}),
-    ("put", f"/api/v1/production/uploads/{ANY}/publishing/instagram", {"fields": {"caption": "x"}}),
     ("post", f"/api/v1/production/packets/{ANY}/export", None),
-    ("post", f"/api/v1/editorial/candidates/{ANY}/packet", None),
 ]
 
 
@@ -97,7 +101,9 @@ def test_the_check_names_what_was_refused(matan_login):
     assert "posting" in err.value.detail
 
 
-def test_a_finished_edit_in_his_workspace_starts_no_post_writer(matan_login, monkeypatch):
+def test_a_finished_edit_in_his_workspace_starts_his_own_post_writer(matan_login, monkeypatch):
+    # Merged 5-Oct: draft_posts writes his posts with his own writer (and nothing with
+    # the owner's when his profile cannot be read): test_matan_decisions_5oct.py.
     from tce.api.routers import production
 
     spawned: list[object] = []
@@ -108,7 +114,7 @@ def test_a_finished_edit_in_his_workspace_starts_no_post_writer(matan_login, mon
 
     monkeypatch.setattr(production, "_spawn", fake_spawn)
     production.start_draft_posts(uuid.uuid4(), MATAN_WS)
-    assert spawned == []
+    assert len(spawned) == 1
 
 
 @pytest.mark.parametrize("ws", [ZIV_WS, ZIV_WS_2])

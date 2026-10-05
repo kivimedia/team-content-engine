@@ -56,7 +56,21 @@ def _page_language(request: Request) -> str:
     return workspace_language(ws)
 
 
+# 5-Oct (Ziv): a client's own login never sees the microphone (the call is KM BOT's
+# /voice) or "Back to KM BOT": both lead outside its fence. Hidden by CSS before the
+# first paint (the scripts still find the elements they set), and the flag tells
+# workspace.js not to draw the bar's voice-call button. Owner pages never get it.
+SCOPED_HEAD = (
+    '<style id="tce-scoped">.kmbot-link,#talkHeader,#talkFab{display:none!important}</style>'
+    "<script>window.TCE_SCOPED = true;</script>"
+    "</head>"
+)
+
+
 def _localize(html: str, request: Request) -> str:
+    if _scoped_workspace(request) is None:
+        return html
+    html = html.replace("</head>", SCOPED_HEAD, 1)
     if _page_language(request) != "he":
         return html
     html = html.replace('<html lang="en">', '<html lang="he" dir="rtl">', 1)

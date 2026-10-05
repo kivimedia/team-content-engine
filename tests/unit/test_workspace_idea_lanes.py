@@ -128,7 +128,7 @@ def test_setting_names_matan_only(lanes_on):
     p = lane_profile.profile_for(MATAN)
     assert p is not None and p.name == "performer"
     assert [lane.key for lane in p.lanes] == ["trend_reaction", "magic_clip", "behind_scenes"]
-    assert p.weekly_target == 10
+    assert p.weekly_target == 15  # 5-Oct (Ziv): five per lane
     assert lane_profile.profile_for(str(MATAN)) is p
     assert lane_profile.profile_for(OWNER) is None
 
@@ -258,7 +258,7 @@ def test_lane_rules_in_code(lanes_on):
     assert all(set(c["gates"]) == set(p.gate_names) for c in acc)
 
 
-def test_fill_lane_mix_takes_four_three_three_then_best_rest(lanes_on):
+def test_fill_lane_mix_takes_five_five_five_then_best_rest(lanes_on):
     p = lane_profile.PROFILES["performer"]
 
     def c(lane, score):
@@ -268,15 +268,15 @@ def test_fill_lane_mix_takes_four_three_three_then_best_rest(lanes_on):
     cands = [c("trend_reaction", 0.9 - i / 100) for i in range(6)]
     cands += [c("magic_clip", 0.5 - i / 100) for i in range(6)]
     cands += [c("behind_scenes", 0.4 - i / 100) for i in range(6)]
-    kept, cut = lane_profile.fill_lane_mix(cands, p, 10)
+    kept, cut = lane_profile.fill_lane_mix(cands, p, 15)
     lanes = [k["lane"] for k in kept]
-    assert len(kept) == 10 and len(cut) == 8
-    assert lanes.count("trend_reaction") == 4
-    assert lanes.count("magic_clip") == 3 and lanes.count("behind_scenes") == 3
+    assert len(kept) == 15 and len(cut) == 3
+    assert lanes.count("trend_reaction") == 5
+    assert lanes.count("magic_clip") == 5 and lanes.count("behind_scenes") == 5
 
     # a thin lane is filled by the best remaining ideas, never padded
     thin = [c("trend_reaction", 0.9 - i / 100) for i in range(8)] + [c("magic_clip", 0.3)]
-    kept, cut = lane_profile.fill_lane_mix(thin, p, 10)
+    kept, cut = lane_profile.fill_lane_mix(thin, p, 15)
     assert len(kept) == 9 and not cut
     lanes = [k["lane"] for k in kept]
     assert lanes.count("magic_clip") == 1 and lanes.count("trend_reaction") == 8
@@ -360,7 +360,7 @@ def test_week_run_asks_matan_for_the_weekly_target(lanes_on):
     from tce.api.routers.content_runs import _max_candidates_for
 
     week = SimpleNamespace(workspace_id=MATAN, scope_kind="week", maximum_candidate_count=6)
-    assert _max_candidates_for(week, []) == 10
+    assert _max_candidates_for(week, []) == 15
     assert _max_candidates_for(SimpleNamespace(**{**week.__dict__, "workspace_id": OWNER}), []) == 6
     assert _max_candidates_for(week, [uuid.uuid4()]) == 6
 

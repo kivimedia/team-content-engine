@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tce.api.private_access import owner_action_workspace, require_private_workspace
+from tce.api.private_access import refuse_lane_workspace, require_private_workspace
 from tce.db.session import get_db
 from tce.db.workspace_filter import workspace_language
 from tce.editorial import editor_rules
@@ -409,17 +409,12 @@ def publication_json(p: PublicationReceipt) -> dict[str, Any]:
 @router.post("/packets/{packet_id}/export")
 async def export_packet_route(
     packet_id: uuid.UUID,
-    ws: uuid.UUID = Depends(owner_action_workspace("Exporting to Google Docs")),
+    ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    from tce.editorial.lane_profile import profile_for
-
-    # Review 5-Oct: an export is a Google Doc shared with the owner's team; the exporting
-    # stage refuses a lane workspace for the same reason. Its scripts are read in TCE.
-    if profile_for(ws) is not None:
-        raise HTTPException(
-            status_code=409, detail="This workspace's scripts are read in TCE; they are not exported"
-        )
+    # An export is a Google Doc shared with the owner's team: never for a lane workspace
+    # (the exporting stage refuses it too). The one guard, before any lookup.
+    refuse_lane_workspace(ws, "Exporting to Google Docs", "ייצוא ל-Google Docs")
     packet = await _packet(db, ws, packet_id)
     candidate = (
         await db.execute(
@@ -4225,22 +4220,32 @@ async def resume_auto_work() -> None:
 # through the schedule-* skills on this server; the Library shows the live links.
 
 
-CLIENT_POSTING_DETAIL = (
-    "TCE posts only to the owner's own accounts. Copy this post and publish it from your own "
-    "Instagram, Facebook page, YouTube and TikTok."
-)
+CLIENT_POSTING_DETAIL = publishing.CLIENT_POSTING_DETAIL
+
+
+def client_posting_detail(ws: uuid.UUID) -> str:
+    """What a client reads instead of a Post button: in his own language."""
+    return publishing.client_posting_detail(workspace_language(ws))
 
 
 def _posts_from_tce(ws: uuid.UUID, persona: Any = None) -> bool:
-    """False for a client workspace: the schedule-* skills post to the owner's accounts.
-    A client is a non-owner workspace with a persona, idea lanes or its own language
-    (read from config, so it holds even when its profile cannot be read)."""
-    from tce.db.workspace_filter import owner_workspace_ids
-    from tce.editorial.lane_profile import profile_for
+    """False for a client workspace (publishing.is_client_workspace): the schedule-*
+    skills post to the owner's accounts."""
+    return not publishing.is_client_workspace(ws, persona)
 
-    if ws in owner_workspace_ids():
-        return True
-    return persona is None and profile_for(ws) is None and workspace_language(ws) == "en"
+
+def _no_owner_writer(ws: uuid.UUID, persona: Any) -> str | None:
+    """Why a client's posts cannot be written now, or None. Its posts are written only
+    by its own writer (copy_system(persona)); with no persona (no profile rows of its
+    own) the owner's writer (COPY_SYSTEM, his name and rules) would run, so it never does."""
+    if persona is not None or not publishing.is_client_workspace(ws, None):
+        return None
+    if workspace_language(ws) == "he":
+        return "הפוסטים נכתבים רק בקול שלך, והפרופיל שלך עוד לא נקרא. נסו שוב בעוד רגע."
+    return (
+        "Posts here are written only in this workspace's own voice, and its profile "
+        "could not be read"
+    )
 
 
 def _publication_json(row: VideoPublication) -> dict[str, Any]:
@@ -4279,6 +4284,8 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
 
     # 5-Oct: a client workspace gets his own four platforms, in his voice and language.
     persona = await _persona(ws)
+    if _no_owner_writer(ws, persona):
+        return  # a client's posts are never written by the owner's writer
     platforms = publishing.platforms_for(persona)
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
@@ -4349,12 +4356,9 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
 
 
 def start_draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = False) -> None:
-    # The post writer is the owner's (COPY_SYSTEM, his post rules): a workspace with
-    # idea lanes gets no posts written in his voice after its edits.
-    from tce.editorial.lane_profile import profile_for
-
-    if profile_for(ws) is not None:
-        return
+    # 5-Oct (merged): a lane workspace's posts are written by its OWN Hebrew writer
+    # (draft_posts picks copy_system(persona), and writes nothing for a client with no
+    # persona), so its finished edits get posts to copy, never posts sent.
     _spawn(draft_posts(upload_id, ws, rewrite=rewrite))
 
 
@@ -4390,6 +4394,10 @@ async def revise_posts(upload_id: uuid.UUID, ws: uuid.UUID, request: str) -> Non
             await s.commit()
 
     persona = await _persona(ws)
+    refused = _no_owner_writer(ws, persona)
+    if refused:
+        await finish(refused, None)
+        return
     try:
         answer = await _ask(
             publishing.REVISE_JOB,
@@ -4502,7 +4510,7 @@ async def publish_video(
     # left on "posting" (the restart resume path) never goes out through them.
     if not _posts_from_tce(ws, await _persona(ws)):
         for platform in platforms:
-            await mark(platform, status="failed", detail=CLIENT_POSTING_DETAIL)
+            await mark(platform, status="failed", detail=client_posting_detail(ws))
         return
 
     try:
@@ -4591,17 +4599,21 @@ async def get_publishing(
         ],
     }
     if not _posts_from_tce(ws, persona):
-        out["post_by_hand"] = CLIENT_POSTING_DETAIL
+        out["post_by_hand"] = client_posting_detail(ws)
     return out
 
 
 @router.post("/uploads/{upload_id}/publishing/draft", status_code=202)
 async def write_posts(
     upload_id: uuid.UUID,
-    ws: uuid.UUID = Depends(owner_action_workspace("Writing the posts")),
+    ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
     row = await _upload(db, ws, upload_id)
+    # A client's posts are written by its own writer (allowed); never by the owner's.
+    refused = _no_owner_writer(ws, await _persona(ws, db))
+    if refused:
+        raise HTTPException(status_code=409, detail=refused)
     if not row.edited_path:
         raise HTTPException(status_code=409, detail="Edit the video first; the posts are written from the edit")
     start_draft_posts(upload_id, ws, rewrite=True)
@@ -4612,9 +4624,12 @@ async def write_posts(
 async def revise_posts_route(
     upload_id: uuid.UUID,
     body: ReviseBody,
-    ws: uuid.UUID = Depends(owner_action_workspace("Changing the posts")),
+    ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
+    refused = _no_owner_writer(ws, await _persona(ws, db))
+    if refused:
+        raise HTTPException(status_code=409, detail=refused)
     pubs = await _publications(db, ws, upload_id)
     open_ones = [pub for pub in pubs.values() if pub.status in ("draft", "failed")]
     if not open_ones:
@@ -4631,10 +4646,15 @@ async def save_post_copy(
     upload_id: uuid.UUID,
     platform: str,
     body: CopyBody,
-    ws: uuid.UUID = Depends(owner_action_workspace("Editing the posts")),
+    ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
     persona = await _persona(ws, db)
+    # His own edits to his own copy are allowed; the owner's cleaner never decides a
+    # client's fields.
+    refused = _no_owner_writer(ws, persona)
+    if refused:
+        raise HTTPException(status_code=409, detail=refused)
     if platform not in publishing.platforms_for(persona):
         raise HTTPException(status_code=404, detail="Unknown platform")
     pub = (await _publications(db, ws, upload_id)).get(platform)
@@ -4652,14 +4672,16 @@ async def save_post_copy(
 async def publish_route(
     upload_id: uuid.UUID,
     body: PublishBody,
-    ws: uuid.UUID = Depends(owner_action_workspace("Posting")),
+    ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    row = await _upload(db, ws, upload_id)
     # 5-Oct: the schedule-* skills on this server post to the owner's own accounts. A
-    # client workspace's video never goes out through them.
+    # lane workspace is refused before any lookup (the one guard); any other client
+    # workspace (a persona or its own language) right after its video is found.
+    refuse_lane_workspace(ws, "Posting", "פרסום")
+    row = await _upload(db, ws, upload_id)
     if not _posts_from_tce(ws, await _persona(ws, db)):
-        raise HTTPException(status_code=409, detail=CLIENT_POSTING_DETAIL)
+        raise HTTPException(status_code=409, detail=client_posting_detail(ws))
     if not row.edited_path:
         raise HTTPException(status_code=409, detail="There is no edited video to post")
     # 28-Sep review: a post tapped while the video is being edited again would upload

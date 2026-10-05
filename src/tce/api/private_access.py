@@ -34,7 +34,7 @@ import hmac
 import json
 import uuid
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Header, HTTPException
 
 from tce.db.workspace_filter import set_workspace_context
 from tce.settings import settings
@@ -144,29 +144,33 @@ async def require_private_workspace(
     return ws
 
 
-
-def refuse_lane_workspace(ws: uuid.UUID | None, what: str) -> None:
+def refuse_lane_workspace(ws: uuid.UUID | None, what: str, what_he: str | None = None) -> None:
     """409 for a workspace with idea lanes (a client, Matan) on an action that runs on
-    the owner's own accounts or voice: posting to his social accounts, his post writer,
-    his Google export, his packet writer. Owner workspaces have no lane profile, so for
-    them this returns and nothing changes."""
+    the owner's own accounts: posting through the schedule-* skills (his social
+    accounts) and the Google export (his Drive, shared with his team). Owner workspaces
+    have no lane profile, so for them this returns and nothing changes.
+
+    The one guard (5-Oct, the persona and login reviews merged). Writing a lane
+    workspace's script and posts is NOT refused: packets.build_packet sends it to its
+    own writer (editorial.lane_packets) and draft_posts to its own Hebrew post writer.
+    A Hebrew workspace reads the refusal in Hebrew (`what_he`)."""
     from tce.editorial.lane_profile import profile_for
 
-    if profile_for(ws) is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"{what} is not available in this workspace: it runs on the owner's own accounts and voice",
+    if profile_for(ws) is None:
+        return
+    from tce.db.workspace_filter import workspace_language
+
+    if what_he and workspace_language(ws) == "he":
+        detail = (
+            f"{what_he} לא זמין כאן: זה רץ על החשבונות של בעל המערכת. את הסרטון מורידים "
+            "ואת הפוסט מעתיקים מהכרטיס בספרייה, ומפרסמים מהחשבונות שלך."
         )
-
-
-def owner_action_workspace(what: str):
-    """require_private_workspace, then refuse_lane_workspace(ws, what)."""
-
-    async def dependency(ws: uuid.UUID = Depends(require_private_workspace)) -> uuid.UUID:
-        refuse_lane_workspace(ws, what)
-        return ws
-
-    return dependency
+    else:
+        detail = (
+            f"{what} is not available in this workspace: it runs on the owner's own "
+            "accounts and voice"
+        )
+    raise HTTPException(status_code=409, detail=detail)
 
 # --- The scoped-editor fence (pure ASGI, so ContextVars are untouched) ----------
 

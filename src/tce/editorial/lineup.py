@@ -158,7 +158,18 @@ async def videos_per_week(db: AsyncSession, ws: uuid.UUID) -> int:
     row = (
         await db.execute(select(EditorialSettings).where(EditorialSettings.workspace_id == ws))
     ).scalar_one_or_none()
-    return row.videos_per_week if row is not None else DEFAULT_PRIMARY_SLOTS
+    return row.videos_per_week if row is not None else default_videos_per_week(ws)
+
+
+def default_videos_per_week(ws: uuid.UUID) -> int:
+    """Three for the owner; a workspace with idea lanes starts from its profile's number
+    (5-Oct: five for Matan, his minimum; he can record more, never capped)."""
+    from tce.editorial.lane_profile import profile_for
+
+    profile = profile_for(ws)
+    if profile is not None and profile.videos_per_week:
+        return profile.videos_per_week
+    return DEFAULT_PRIMARY_SLOTS
 
 
 async def post_rules(db: AsyncSession, ws: uuid.UUID) -> str:
@@ -183,7 +194,7 @@ async def set_post_rules(db: AsyncSession, ws: uuid.UUID, rules: str) -> str:
         await db.execute(select(EditorialSettings).where(EditorialSettings.workspace_id == ws))
     ).scalar_one_or_none()
     if row is None:
-        row = EditorialSettings(workspace_id=ws, videos_per_week=DEFAULT_PRIMARY_SLOTS)
+        row = EditorialSettings(workspace_id=ws, videos_per_week=default_videos_per_week(ws))
         db.add(row)
     row.post_rules = text or None
     await db.flush()

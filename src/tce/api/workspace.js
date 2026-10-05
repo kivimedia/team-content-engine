@@ -1584,12 +1584,15 @@
     instagram: [["caption", "Caption", 9]],
     facebook: [["message", "Post", 10]],
     youtube: [["title", "Title", 1], ["description", "Description", 5], ["tags", "Tags (comma separated)", 1]],
-    linkedin: [["message", "Post", 10], ["hashtags", "Hashtags (comma separated)", 1]]
+    linkedin: [["message", "Post", 10], ["hashtags", "Hashtags (comma separated)", 1]],
+    // A client workspace's fourth platform (5-Oct); owners never have one.
+    tiktok: [["caption", "Caption", 4]]
   };
   var PUB_STATUS = { draft: "Ready to post", posting: "Posting now", scheduled: "Scheduled",
                      posted: "Posted", failed: "Did not go out", revising: "Being changed" };
 
   function publishSection(item) {
+    if (state.library && state.library.post_by_hand) return handPostSection(item);
     var pubs = item.publishing || [];
     var id = esc(item.upload_id);
     var html = '<section class="publish" data-pub-upload="' + id + '"><h4>Publish</h4>';
@@ -1642,6 +1645,89 @@
            + '<button class="btn quiet" type="button" data-pub-draft="' + id + '">Write them again</button></div>';
     }
     return html + "</section>";
+  }
+
+  /* 5-Oct (Ziv): "Publishing optional: he downloads the finished video and the post copy
+     and posts himself." A client's card: the finished video to download, and each
+     platform's post to copy (as it reads on screen, so his own edits go with it). No
+     Post, no Schedule: TCE never posts for a client (the server refuses it too). */
+  var HAND_STATUS = { draft: "Ready to copy", failed: "Ready to copy", revising: "Being changed" };
+
+  function handPostSection(item) {
+    var pubs = item.publishing || [];
+    var id = esc(item.upload_id);
+    var file = apiV1 + "/production/uploads/" + id + "/edited";
+    var html = '<section class="publish" data-pub-upload="' + id + '"><h4>Your video and posts</h4>';
+    html += '<p class="section-hint">' + esc(state.library.post_by_hand) + "</p>";
+    html += '<div class="actions"><a class="btn primary" href="' + file + '?download=1" download>Download</a></div>';
+    if (!pubs.length) {
+      var writing = state.pubWriting && state.pubWriting[item.upload_id];
+      html += writing
+        ? '<p class="notice">Writing your posts. This card fills in when they are ready.</p>'
+        : '<div class="actions"><button class="btn" type="button" data-pub-draft="' + id + '">Write the posts</button></div>';
+      return html + "</section>";
+    }
+    pubs.forEach(function (p) {
+      var busy = p.status === "revising";
+      html += '<div class="pub-platform" data-platform="' + esc(p.platform) + '">';
+      html += '<div class="pub-head"><strong>' + esc(p.label) + "</strong>"
+           + '<span class="tag">' + esc(HAND_STATUS[p.status] || PUB_STATUS[p.status] || p.status) + "</span></div>";
+      if (p.detail) html += '<p class="source">' + esc(p.detail) + "</p>";
+      (PUB_FIELDS[p.platform] || []).forEach(function (f) {
+        var value = p.copy[f[0]];
+        if (Array.isArray(value)) value = value.join(", ");
+        html += '<label class="pub-field"><span>' + esc(f[1]) + "</span>";
+        html += f[2] > 1
+          ? '<textarea rows="' + f[2] + '" data-pub-field="' + f[0] + '"' + (busy ? " readonly" : "") + ">" + esc(value || "") + "</textarea>"
+          : '<input type="text" data-pub-field="' + f[0] + '" value="' + esc(value || "") + '"' + (busy ? " readonly" : "") + ">";
+        html += "</label>";
+      });
+      html += '<div class="actions"><button class="btn" type="button" data-pub-copy="' + esc(p.platform) + '">Copy</button></div>';
+      html += "</div>";
+    });
+    if (pubs.some(function (p) { return p.status === "draft" || p.status === "failed"; })) {
+      html += '<label class="pub-field"><span>Ask for a change to the posts</span>'
+           + '<textarea rows="2" class="pub-change" placeholder="For example: shorter, and open with the question"></textarea></label>'
+           + '<div class="actions"><button class="btn" type="button" data-pub-revise="' + id + '">Change the posts</button>'
+           + '<button class="btn quiet" type="button" data-pub-draft="' + id + '">Write them again</button></div>';
+    }
+    return html + "</section>";
+  }
+
+  // What one platform's post reads on screen, field after field, ready to paste.
+  function handCopyText(section, platform) {
+    var box = section.querySelector('.pub-platform[data-platform="' + platform + '"]');
+    var parts = [];
+    box.querySelectorAll("[data-pub-field]").forEach(function (el) {
+      var v = (el.value || "").trim();
+      if (v) parts.push(v);
+    });
+    return parts.join("\n\n");
+  }
+
+  async function copyPost(button) {
+    var section = button.closest("[data-pub-upload]");
+    var text = handCopyText(section, button.getAttribute("data-pub-copy"));
+    var ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch (e) {
+      // An older phone browser: the classic way.
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { ok = document.execCommand("copy"); } catch (e2) { ok = false; }
+      ta.remove();
+    }
+    if (!ok) { toast("Could not copy. Select the text and copy it yourself.", true); return; }
+    button.textContent = "Copied";
+    toast("Copied. Paste it in the app.");
+    setTimeout(function () { if (button.isConnected) button.textContent = "Copy"; }, 2500);
   }
 
   function publishFields(section, platform) {
@@ -2722,7 +2808,7 @@
     "slot", "remove", "ask-script", "change", "edit", "restore", "wtab",
     "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
     "watch", "watch-close", "voice-undo", "voice-restore",
-    "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise",
+    "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise", "pub-copy",
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
@@ -2746,6 +2832,7 @@
     if (d.pubPost !== undefined) { publishStart(d.pubPost, false); return; }
     if (d.pubSchedule !== undefined) { publishStart(d.pubSchedule, true); return; }
     if (d.pubRevise !== undefined) { publishRevise(d.pubRevise); return; }
+    if (d.pubCopy !== undefined) { copyPost(target); return; }
     if (d.saveRules !== undefined) { saveRules(); return; }
     if (d.archive !== undefined) { archiveRecording(d.archive, true); return; }
     if (d.unarchive !== undefined) { archiveRecording(d.unarchive, false); return; }
@@ -2922,9 +3009,11 @@
          browser's Back and the call page's own way back both land here. Typed
          chat stays one tap away beside it for when talking out loud is wrong. */
       bar.insertAdjacentHTML("beforeend",
-        '<a class="bar-btn is-talk" id="talkFab" href="'
+        /* 5-Oct: a client's own login has no voice call (KM BOT's /voice is outside
+           its fence); typing to the editor stays. */
+        (window.TCE_SCOPED ? "" : '<a class="bar-btn is-talk" id="talkFab" href="'
         + esc(voiceCallUrl(state.talkContext.voice)) + '">'
-        + esc(state.talkContext.action) + "</a>"
+        + esc(state.talkContext.action) + "</a>")
         + '<button class="bar-btn is-type" type="button" id="typeFab"'
         + ' aria-label="Type instead of talking">Type</button>');
       $("typeFab").addEventListener("click", openTalk);

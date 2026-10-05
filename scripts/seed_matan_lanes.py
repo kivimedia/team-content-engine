@@ -11,8 +11,9 @@ running it twice with --apply writes nothing the second time.
   lane C  behind_scenes   Hebrew story seeds he fills from his own memory
 
 Also: the workspace strategy (Hebrew, replaces the owner strategy file) and
-videos_per_week 10. Schedules are created through the API, not here; the commands are
-printed.
+videos_per_week 5 (his minimum; more is allowed). Schedules are created through the
+API, not here; the commands are printed. A feed taken out of FEEDS and listed in
+RETIRED_FEEDS is switched off (enabled=false, the row and its items kept) by --apply.
 
 Usage (on the VPS, from the app directory):
     PYTHONPATH=src python scripts/seed_matan_lanes.py                 # dry run
@@ -32,7 +33,8 @@ from datetime import UTC, datetime
 
 MATAN_WORKSPACE = "40c0f179-7d5e-4397-b4de-b0b2f3e96fc2"
 AUTHOR = "matan-lanes-seed"
-VIDEOS_PER_WEEK = 10
+# 5-Oct (Ziv): a minimum of five videos recorded a week; more is allowed, never capped.
+VIDEOS_PER_WEEK = 5
 
 # --------------------------------------------------------------------------- strategy
 
@@ -43,15 +45,21 @@ STRATEGY_MD = """<!-- tce-strategy: replace -->
 ישראלים שמזמינים אירועים או מגיעים אליהם: זוגות לפני חתונה, הורים לבר ובת מצווה, \
 מנהלות HR ומפיקי אירועי חברה, וכל מי שסקרן לגבי מנטליזם. גם קהלים דוברי אנגלית ותיירים.
 
-## שלושה מסלולים, עשרה רעיונות בשבוע
-1. **טרנד מהעולם** (בערך 4 בשבוע): טרנד או אטרקציה אמיתיים מתעשיית האירועים בעולם \
+## שלושה מסלולים, 15 רעיונות בשבוע (5 בכל מסלול)
+מינימום 5 סרטונים מוקלטים בשבוע. יותר זה מצוין.
+
+1. **טרנד מהעולם** (5 בשבוע): טרנד או אטרקציה אמיתיים מתעשיית האירועים בעולם \
 (ארה"ב, יפן, גרמניה ועוד), ומתן מגיב כאמן אירועים ישראלי. חייב להיות קשור לאירועים \
-בישראל או למנטליזם. טרנד בלי קשר כזה נפסל ("ביפן זורקים כדורי תפוחי אדמה - מה זה קשור אליי?").
-2. **קליפ של קוסם** (בערך 3 בשבוע): קליפ של קוסם או מנטליסט גדול. מה מתן חושב שקרה \
+בישראל או למנטליזם. טרנד בלי קשר כזה נפסל ("ביפן זורקים כדורי תפוחי אדמה - מה זה קשור אליי?"). \
+מה שעובד: השתתפות של הקהל, אירועים קטנים ואינטימיים שבהם הקסם קרוב. \
+מה שלא: טרנד של גאדג'ט או טכנולוגיה (רובוט שמצייר את האורחים, אפליקציה, AI) שלא קשור לאמן חי.
+2. **קליפ של קוסם** (5 בשבוע): קליפ של קוסם או מנטליסט גדול. מה מתן חושב שקרה \
 מנקודת המבט של הקהל, למה זה עובד על קהל, ומה הוא היה משנה לקהל ישראלי. \
-**אף פעם לא חושפים שיטה**, לא רומזים ולא מנחשים איך זה נעשה.
-3. **מאחורי הקלעים** (בערך 3 בשבוע): זרע של סיפור מהחיים של מנטליסט, כשאלה שמתן \
-עונה עליה מהזיכרון האמיתי שלו. **אף פעם לא ממציאים אירוע** כאילו קרה לו.
+**אף פעם לא חושפים שיטה**, לא רומזים ולא מנחשים איך זה נעשה. \
+לא פעלולי מניפולציה פסיכולוגית גדולים (כמו השוד של דרן בראון) - זה לא הסגנון שלו.
+3. **מאחורי הקלעים** (5 בשבוע): זרע של סיפור מהחיים של מנטליסט, כשאלה שמתן \
+עונה עליה מהזיכרון האמיתי שלו. **אף פעם לא ממציאים אירוע** כאילו קרה לו. \
+המסלול הכי חזק שלו: רגעים אמיתיים מהופעות.
 
 ## קול
 עברית מדוברת, חמה, משחקית, הומור עצמי. קצר. בלי קופי שיווקי מתורגם.
@@ -82,8 +90,25 @@ FEEDS: list[tuple[str, str, str, str, str | None]] = [
     ("SoraNews24 (Japan trends)", "https://soranews24.com/feed/", "rss", "1b", "soranews24"),
     ("event partner (Germany)", "https://www.event-partner.de/feed/", "rss", "1b",
      "event partner"),
-    ("Genii Magazine (magic)", "https://geniimagazine.com/feed/", "rss", "1b", "genii"),
 ]
+
+# Feeds taken out of the seed; --apply switches each off (enabled=false). The row and
+# the items it already brought in are kept for history.
+RETIRED_FEEDS: dict[str, str] = {
+    # 5-Oct (Ziv): Genii's items are trick reviews, not event-industry trends.
+    "https://geniimagazine.com/feed/": "trick-review items, not event-industry trends",
+}
+
+
+def retire_feeds(existing: dict) -> list[str]:
+    """Switch off every enabled feed of the workspace that RETIRED_FEEDS names.
+    Returns the names switched off (none when they already are)."""
+    out = []
+    for url, feed in existing.items():
+        if url in RETIRED_FEEDS and getattr(feed, "enabled", False):
+            feed.enabled = False
+            out.append(feed.name)
+    return out
 
 # The anchors for lane A, in categories, never client names. English terms, because
 # the feeds are English and German trade press and the matcher reads their words.
@@ -271,6 +296,8 @@ def print_plan(ws: str) -> None:
     print(f"\n[news_feeds] {len(FEEDS)} feeds (lane A)")
     for name, url, kind, tier, _v in FEEDS:
         print(f"  [{tier}] {name}  {url}  ({kind})")
+    for url, why in RETIRED_FEEDS.items():
+        print(f"  [retired, switched off by --apply] {url}  ({why})")
     print(f"\n[standing facts] {len(STANDING_FACTS)} (lane A anchors)")
     for kind, term, lesson in STANDING_FACTS:
         print(f"  {kind:16} {term:28} {lesson}")
@@ -286,7 +313,9 @@ def print_plan(ws: str) -> None:
 def print_live_steps(ws: str) -> None:
     print("\nAfter --apply, create the schedules through the API (not SQL), as ziv on the VPS:")
     for name, cadence, at, final in (
-        ("weekly-content", "weekly", "07:30", "ranking"),
+        # 5-Oct: his scripts are written by his own lane writer, so the week runs on to
+        # drafting (exporting stays refused for a lane workspace).
+        ("weekly-content", "weekly", "07:30", "drafting"),
         ("daily-evidence", "daily", "07:15", "extracting"),
     ):
         body = (
@@ -444,6 +473,8 @@ async def apply(ws_text: str) -> None:
                 changed += 1
         print(f"feeds: {added} added, {changed} updated, "
               f"{len(FEEDS) - added - changed} unchanged")
+        retired = retire_feeds(existing)
+        print(f"retired feeds switched off: {', '.join(retired) if retired else 'none'}")
 
         facts = await seed_standing_facts(session, ws, standing_facts(), author=AUTHOR, now=now)
         print(f"standing facts: {facts['detail']}")

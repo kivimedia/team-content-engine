@@ -398,6 +398,7 @@ async def list_library(
             "filters": [{"key": k, "label": FILTER_LABELS[k]} for k in LIBRARY_FILTERS],
             "items": [],
             "total": 0,
+            **await _post_by_hand(db, ws),
         }
 
     candidate_ids = [u.candidate_id for u in uploads if u.candidate_id]
@@ -582,7 +583,23 @@ async def list_library(
         "filters": [{"key": k, "label": FILTER_LABELS[k]} for k in LIBRARY_FILTERS],
         "items": items,
         "total": len(items),
+        **await _post_by_hand(db, ws),
     }
+
+
+async def _post_by_hand(db: AsyncSession, ws: uuid.UUID) -> dict[str, Any]:
+    """5-Oct: a client workspace downloads its finished video and copies its posts; TCE
+    never posts for it. {"post_by_hand": what he reads} for a client, {} for the owner,
+    so an owner's library is exactly what it was."""
+    from tce.db.workspace_filter import owner_workspace_ids, workspace_language
+    from tce.editorial.persona import load_persona
+    from tce.production import publishing
+
+    if ws in owner_workspace_ids():
+        return {}
+    if not publishing.is_client_workspace(ws, await load_persona(db, ws)):
+        return {}
+    return {"post_by_hand": publishing.client_posting_detail(workspace_language(ws))}
 
 
 # ---------------------------------------------------------------------------

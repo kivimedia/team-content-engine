@@ -154,6 +154,32 @@ LIMITS = {
 _HASHTAG = re.compile(r"(?<![\w#])#[\w֐-׿]+")
 
 
+CLIENT_POSTING_DETAIL = (
+    "TCE posts only to the owner's own accounts. Copy this post and publish it from your own "
+    "Instagram, Facebook page, YouTube and TikTok."
+)
+CLIENT_POSTING_DETAIL_HE = (
+    "TCE לא מפרסם בשבילך. מורידים את הסרטון המוכן, מעתיקים את הפוסט של כל פלטפורמה, "
+    "ומפרסמים מהאינסטגרם, הפייסבוק, היוטיוב והטיקטוק שלך."
+)
+
+
+def client_posting_detail(language: str) -> str:
+    return CLIENT_POSTING_DETAIL_HE if language == "he" else CLIENT_POSTING_DETAIL
+
+
+def is_client_workspace(ws: Any, persona: Any = None) -> bool:
+    """A client workspace: not an owner workspace, and with a persona, idea lanes or its
+    own language (config, so it holds even when its profile cannot be read). TCE never
+    posts for one: the schedule-* skills post to the owner's accounts."""
+    from tce.db.workspace_filter import owner_workspace_ids, workspace_language
+    from tce.editorial.lane_profile import profile_for
+
+    if ws is None or ws in owner_workspace_ids():
+        return False
+    return persona is not None or profile_for(ws) is not None or workspace_language(ws) != "en"
+
+
 def platforms_for(persona: Any = None) -> tuple[str, ...]:
     return PLATFORMS if persona is None else CLIENT_PLATFORMS
 

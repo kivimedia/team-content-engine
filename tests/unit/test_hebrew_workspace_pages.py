@@ -81,15 +81,17 @@ def test_hebrew_login_gets_rtl_hebrew_pages(client, path):
     assert "Heebo" in html  # a face with Hebrew glyphs
     # The Hebrew layer loads before the page's own scripts run.
     assert html.index("i18n-he.js") < html.index("</head>")
-    # Nothing else in the page changed.
-    assert html.replace(dashboard.HE_HEAD, "</head>").replace(
+    # Nothing else in the page changed (5-Oct: besides the scoped login's head, which
+    # hides the microphone and the KM BOT link, test_matan_decisions_5oct.py).
+    assert html.replace(dashboard.HE_HEAD, "</head>").replace(dashboard.SCOPED_HEAD, "</head>").replace(
         '<html lang="he" dir="rtl">', '<html lang="en">') == _file_for(path)
 
 
 def test_a_scoped_english_workspace_keeps_english_pages(client, monkeypatch):
     monkeypatch.setattr(settings, "workspace_languages", "")
     r = client.get("/record", headers={"X-TCE-Editor-Key": MATAN_KEY})
-    assert r.text == _file_for("/record")
+    # English, left to right; only the scoped login's head (no mic, no KM BOT link).
+    assert r.text == _file_for("/record").replace("</head>", dashboard.SCOPED_HEAD, 1)
 
 
 def test_hebrew_assets_are_served(client):
