@@ -12,6 +12,7 @@ Skipped when Playwright or its Chromium build is not installed.
 
 from __future__ import annotations
 
+import json
 import asyncio
 import os
 import socket
@@ -68,6 +69,30 @@ PHRASES = [
     "זה כל הסיפור.",
 ]
 
+
+
+# 5-Oct review: the Today screenshot still showed "Record this one" and "Open the topic".
+# Every visible control and heading on his screens must be Hebrew; only the product
+# names below may stay in Latin letters.
+LEAK_JS = r"""
+() => {
+  const allowed = /\b(KM BOT|TCE|AI|KM|BOT)\b/g;
+  const out = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const el = node.parentElement;
+    if (!el || el.closest('script, style, textarea, input, [hidden]')) continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    const st = getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none') continue;
+    const text = (node.nodeValue || '').replace(allowed, '').trim();
+    if (/[A-Za-z]{3,}/.test(text)) out.push((node.nodeValue || '').trim().slice(0, 200));
+  }
+  return Array.from(new Set(out));
+}
+"""
 
 def _free_port() -> int:
     with socket.socket() as s:
@@ -239,6 +264,13 @@ def test_hebrew_studio_and_workspace_render_rtl(server, tmp_path, size):
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
 
+        leaks = {}
+
+        def check(screen):
+            found = page.evaluate(LEAK_JS)
+            if found:
+                leaks[screen] = found
+
         page.goto(f"{server['base']}/record")
         page.wait_for_selector(".idea-card")
         page.wait_for_function("document.getElementById('queueTitle').textContent === 'מוכן להקלטה'")
@@ -247,10 +279,12 @@ def test_hebrew_studio_and_workspace_render_rtl(server, tmp_path, size):
         assert state["overflowX"] is False, state
         assert "Heebo" in state["font"], state
         page.screenshot(path=str(shots / f"he-record-queue-{size}.png"), full_page=True)
+        check("record-queue")
 
         page.click(".idea-card")
         page.wait_for_selector("#hookView:not([hidden]) .hook-use")
         page.screenshot(path=str(shots / f"he-record-openings-{size}.png"), full_page=True)
+        check("record-openings")
         page.locator("#hookView .hook-option").first.locator(".hook-use").click()
         page.wait_for_selector("#studioView:not([hidden])")
         page.wait_for_selector("#reader .reader-line")
@@ -263,12 +297,14 @@ def test_hebrew_studio_and_workspace_render_rtl(server, tmp_path, size):
         assert any(lbl.startswith("נקודה") for lbl in state["labels"]), state
         assert state["overflowX"] is False, state
         page.screenshot(path=str(shots / f"he-record-points-{size}.png"))
+        check("record-points")
 
         page.click("#scriptTab")
         page.wait_for_function("document.getElementById('reader').classList.contains('script')")
         state = page.evaluate(STATE_JS)
         assert state["readerDir"] == "rtl" and max(state["sentenceCounts"]) >= 2, state
         page.screenshot(path=str(shots / f"he-record-script-{size}.png"))
+        check("record-script")
 
         page.goto(f"{server['base']}/today")
         page.wait_for_function("document.documentElement.dir === 'rtl'")
@@ -277,7 +313,22 @@ def test_hebrew_studio_and_workspace_render_rtl(server, tmp_path, size):
         )
         page.wait_for_timeout(800)
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+        check("today")
         page.screenshot(path=str(shots / f"he-today-{size}.png"), full_page=True)
+
+        # His other workspace screens: right to left, no English controls or headings.
+        for route in ("topics", "week", "library", "settings"):
+            page.goto(f"{server['base']}/{route}")
+            page.wait_for_function("document.documentElement.dir === 'rtl'")
+            page.wait_for_timeout(1200)
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"), route
+            page.screenshot(path=str(shots / f"he-{route}-{size}.png"), full_page=True)
+            check(route)
+        # The full list lands next to the screenshots (pytest truncates long diffs).
+        (shots / f"he-leaks-{size}.json").write_text(
+            json.dumps(leaks, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        assert leaks == {}, leaks
         browser.close()
 
     assert not errors, errors

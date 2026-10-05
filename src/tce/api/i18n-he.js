@@ -215,10 +215,72 @@
     "Notifications are blocked in your browser settings.": "ההתראות חסומות בהגדרות הדפדפן.",
     "Type": "הקלדה",
     "is first.": "ראשון בתור.",
+    "Record this one": "להקליט את זה",
+    "Open the topic": "לפתוח את הנושא",
+    "Open it": "לפתוח",
+    "Record first": "קודם להקליט",
+    "Start a new take set": "הקלטה חדשה",
+    "Best matches": "הכי מתאימים",
+    "Calls": "שיחות",
+    "Code": "קוד",
+    "AI news": "חדשות AI",
+    "Evergreen": "תמיד רלוונטי",
+    "Later": "אחר כך",
+    "Put away": "בצד",
+    "Change how many a week": "לשנות כמה בשבוע",
+    "Take out of the week": "להוציא מהשבוע",
+    "Still to do": "עוד לעשות",
+    "Uploading": "מעלה",
+    "Being edited": "בעריכה",
+    "Needs your review": "מחכה לבדיקה שלך",
+    "Ready": "מוכן",
+    "Published": "פורסם",
+    "Everything": "הכול",
+    "Archived": "בארכיון",
+    "Videos a week": "סרטונים בשבוע",
+    "Open this week": "לפתוח את השבוע",
+    "How your posts read": "איך הפוסטים שלך נשמעים",
+    "Your post rules": "הכללים לפוסטים שלך",
+    "Save the rules": "לשמור את הכללים",
+    "Notifications": "התראות",
+    "Keep this opening": "להשאיר את הפתיחה הזאת",
+    "Decide what is worth your time. Nothing here asks the engine for anything.": "מחליטים מה שווה את הזמן שלך. שום דבר כאן לא מפעיל את המנוע.",
+    "Nothing here": "אין כאן כלום",
+    "Everything is decided. The next weekly run collects new evidence.": "הכול הוחלט. הסבב השבועי הבא יביא רעיונות חדשים.",
+    "The order here is the order you record in.": "הסדר כאן הוא סדר ההקלטה.",
+    "What still needs you: recorded, being edited, or waiting to go out.": "מה שעוד מחכה לך: הוקלט, בעריכה, או מחכה לצאת.",
+    ": what she learned from your notes, and applies to every next video.": ": מה שהיא למדה מההערות שלך, ומיישמת בכל סרטון הבא.",
+    "Nothing waiting on you": "שום דבר לא מחכה לך",
+    "Everything you recorded has gone out. Published videos are under Published.": "כל מה שהקלטת כבר יצא. סרטונים שפורסמו נמצאים תחת פורסם.",
+    "How many videos you usually record in a week. Each new week starts with this many places, and this week changes too.": "כמה סרטונים אתה מקליט בדרך כלל בשבוע. כל שבוע חדש מתחיל עם מספר המקומות הזה, וגם השבוע הנוכחי משתנה.",
+    "Had a good week? Put more in the week anyway. This number is your usual week, not a limit.": "היה שבוע טוב? אפשר להכניס עוד לשבוע. המספר הזה הוא השבוע הרגיל שלך, לא תקרה.",
+    "Every post TCE writes for you follows this, in your words. Change it any time; the next posts follow the new version.": "כל פוסט ש-TCE כותב בשבילך הולך לפי זה, במילים שלך. אפשר לשנות מתי שרוצים; הפוסטים הבאים ילכו לפי הגרסה החדשה.",
     "Other": "אחר"
   };
 
+  // Topic filter names as the page writes them inside a count ("3 ideas best matches").
+  var FILTER_NAMES = {
+    "best matches": "הכי מתאימים", "calls": "שיחות", "code": "קוד", "ai news": "חדשות AI",
+    "evergreen": "תמיד רלוונטי", "later": "אחר כך", "put away": "בצד"
+  };
+
   var PATTERNS = [
+    [/^Recommended · current opening$/, "מומלץ · הפתיחה הנוכחית"],
+    [/^Option (\d+) · current opening$/, "אפשרות $1 · הפתיחה הנוכחית"],
+    [/^(\d+) ideas? (?:is|are) not shown because the engine could not say how they connect to your work\.$/, "$1 רעיונות לא מוצגים כי המנוע לא הצליח להסביר איך הם קשורים לעבודה שלך."],
+    [/^(\d+) of (\d+) scripts? ready$/, "$1 מתוך $2 תסריטים מוכנים"],
+    [/^Week of (\S+)$/, "השבוע של $1"],
+    [/^(\d+) recordings?$/, "$1 הקלטות"],
+    [/^(\d+) videos? a week$/, "$1 סרטונים בשבוע"],
+    [/^(\d+) ideas? (best matches|calls|code|ai news|evergreen|later|put away)$/i, function (_, n, f) {
+      return n + " רעיונות · " + FILTER_NAMES[f.toLowerCase()];
+    }],
+    [/^(\d+) of (\d+) videos? planned\.(?: (\d+) other\.)?$/, function (_, a, b, o) {
+      return a + " מתוך " + b + " סרטונים מתוכננים." + (o ? " " + o + " אחר." : "");
+    }],
+    [/^Save (\d+) a week$/, "לשמור $1 בשבוע"],
+    [/^(\d+) of (\d+) · Start a new take set$/, "$1 מתוך $2 · הקלטה חדשה"],
+    [/^(\d+) of (\d+) · Continue take set .*$/, "$1 מתוך $2 · ממשיכים את ההקלטה"],
     [/^Point (\d+)$/, "נקודה $1"],
     [/^Version (\d+)$/, "גרסה $1"],
     [/^Script version (\d+)$/, "תסריט, גרסה $1"],
@@ -240,9 +302,10 @@
     if (typeof text !== "string") return null;
     var key = text.trim();
     if (!key) return null;
-    if (Object.prototype.hasOwnProperty.call(EXACT, key)) return text.replace(key, EXACT[key]);
+    var flat = key.replace(/\s+/g, " ");
+    if (Object.prototype.hasOwnProperty.call(EXACT, flat)) return text.replace(key, EXACT[flat]);
     for (var i = 0; i < PATTERNS.length; i += 1) {
-      if (PATTERNS[i][0].test(key)) return text.replace(key, key.replace(PATTERNS[i][0], PATTERNS[i][1]));
+      if (PATTERNS[i][0].test(flat)) return text.replace(key, flat.replace(PATTERNS[i][0], PATTERNS[i][1]));
     }
     return null;
   }
