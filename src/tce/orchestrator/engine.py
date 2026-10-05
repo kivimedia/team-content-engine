@@ -167,6 +167,9 @@ class PipelineOrchestrator:
                     run_id=self.run_id,
                     progress_log=log_list,
                 )
+                # 5-Oct: the agent's jobs carry the run's workspace (its language).
+                if self.workspace_id is not None:
+                    agent.workspace_id = self.workspace_id
                 result = await asyncio.wait_for(
                     agent.run(self.context),
                     timeout=step.timeout_seconds,

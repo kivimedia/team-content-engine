@@ -1766,7 +1766,11 @@ async def moment(
     if found is not None:
         payload["check"] = {"state": found["state"], "line": found["line"]}
     if rules:
-        payload["rules"] = autoedit.editor_skill() + await learned_rules_text(db, ws)
+        # 5-Oct: a client workspace's voice seat reads the rules about its own speaker.
+        from tce.editorial.persona import load_persona
+
+        persona = await load_persona(db, ws)
+        payload["rules"] = autoedit.editor_skill(persona) + await learned_rules_text(db, ws)
     return payload
 
 

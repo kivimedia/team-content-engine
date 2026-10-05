@@ -184,6 +184,21 @@ class PacketValidationError(ValueError):
     pass
 
 
+def _lane_profile_for(ws: uuid.UUID | str | None) -> Any:
+    """The workspace's idea-lane profile (5-Oct, Matan), or None (owner workspaces)."""
+    from tce.editorial.lane_profile import profile_for
+
+    return profile_for(ws)
+
+
+# More openings and the voice pass are written in the owner's register (his coaching
+# hooks, his voice critic). A lane workspace's openings come from its own writer.
+LANE_OWNER_ONLY = (
+    "this workspace writes its openings with its own script writer; ask for a new script "
+    "instead"
+)
+
+
 @dataclass
 class PacketOutcome:
     status: str  # ready | issues | waiting_capacity | failed | timeout | cancelled | invalid
@@ -213,6 +228,7 @@ def validate_packet_output(
     max_hooks: int = HOOK_OPTIONS_WRITTEN,
     news_terms: list[str] | None = None,
     forbid_asks: bool = False,
+    require_linkedin: bool = True,
 ) -> dict[str, Any]:
     """Return a cleaned packet dict or raise PacketValidationError with all problems.
 
@@ -220,6 +236,8 @@ def validate_packet_output(
     existing one is re-validated. Asking for more openings grows that list on
     purpose, and choose_hook re-validates the whole packet: with a flat rule of
     exactly three, every opening added after the first three was unselectable.
+    `require_linkedin` False (5-Oct): a lane workspace's packet (lane_packets) has no
+    LinkedIn post; it is stored empty.
     """
     if not isinstance(data, dict):
         raise PacketValidationError("packet output is not a JSON object")
@@ -239,7 +257,10 @@ def validate_packet_output(
     elif len(phrases) < 6:
         errors.append("script_phrases must be a full script (at least 6 phrases)")
 
-    for key in ("facebook_post", "linkedin_post", "interviewer_prompt"):
+    required = ("facebook_post", "linkedin_post", "interviewer_prompt")
+    if not require_linkedin:
+        required = ("facebook_post", "interviewer_prompt")
+    for key in required:
         if not isinstance(data.get(key), str) or not data[key].strip():
             errors.append(f"{key} is required")
 
@@ -340,7 +361,11 @@ def validate_packet_output(
         "bullets": [b.strip() for b in bullets],
         "script_phrases": [p.strip() for p in phrases],
         "facebook_post": data["facebook_post"].strip(),
-        "linkedin_post": data["linkedin_post"].strip(),
+        "linkedin_post": (
+            data["linkedin_post"].strip()
+            if require_linkedin
+            else str(data.get("linkedin_post") or "").strip()
+        ),
         "interviewer_prompt": data["interviewer_prompt"].strip(),
         "hook_options": clean_options,
         "selected_hook_id": selected_hook_id,
@@ -648,6 +673,18 @@ async def build_packet(
         if cand.status in ("rejected", "withdrawn"):
             return PacketOutcome(status="invalid", detail=f"candidate is {cand.status}")
 
+        # 5-Oct: a workspace with idea lanes (Matan) is written by its own writer
+        # (lane_packets), never by the owner's prompt below.
+        from tce.editorial import lane_packets, lane_profile
+
+        lane_ws = lane_profile.profile_for(ws) is not None
+        lane = lineup.lane_for(cand) if lane_ws else None
+        if lane_ws and lane not in lane_packets._LANE_RULES:
+            return PacketOutcome(
+                status="invalid",
+                detail=f"this idea has no lane of its own ({lane}); it cannot get a script",
+            )
+
         request: LLMRequest | None = None
         requeue = False
         if resume_job_id is not None:
@@ -661,6 +698,16 @@ async def build_packet(
                     )
                 )
             ).scalar_one_or_none()
+            if (
+                lane_ws
+                and job is not None
+                and not str(job.prompt_version or "").startswith(lane_packets.PROMPT_VERSION)
+            ):
+                return PacketOutcome(
+                    status="failed",
+                    job_id=job.id,
+                    detail="that job was written by the owner's writer; request a new script",
+                )
             nonce = parse_packet_header(job_prompt_text(job.request_json)) if job else None
             request = replay_request(job, packet_key_text(ws, nonce)) if nonce else None
             if request is None:
@@ -670,6 +717,28 @@ async def build_packet(
                     detail="the interrupted packet job could not be resumed; request a new packet",
                 )
             requeue = job_can_requeue(job)
+        elif lane_ws:
+            from tce.editorial.persona import load_persona
+
+            persona = await load_persona(session, ws)
+            nonce = str(uuid.uuid4())
+            rules = await lineup.post_rules(session, ws)
+            prompt = f"PACKET REQUEST: {nonce}\n\n" + lane_packets.build_prompt(
+                cand, lane, post_rules=rules
+            )
+            activity(f"Writing the {lane} script in his own voice")
+            request = LLMRequest(
+                job_type=JOB_TYPE,
+                agent_name="lane_packet_writer",
+                messages=[{"role": "user", "content": prompt}],
+                system=lane_packets.system_prompt(lane, persona),
+                output_schema=lane_packets.OUTPUT_SCHEMA,
+                max_tokens=6000,
+                prompt_version=lane_packets.PROMPT_VERSION,
+                workspace_id=ws,
+                run_id=cand.id,
+                idempotency_key=packet_key_text(ws, nonce),
+            )
         else:
             # include_voice: his 36 patterns, the banned vocabulary and the meta-rule.
             # Without it the writer had never been shown how he sounds.
@@ -725,7 +794,10 @@ async def build_packet(
         news_terms = await news_terms_for(session, ws, cand.id)
         news_block, news_format = await news_block_for(session, ws, cand)
         try:
-            clean = validate_packet_output(data, news_terms=news_terms, forbid_asks=True)
+            if lane_ws:
+                clean = lane_packets.validate(data, lane, news_terms=news_terms)
+            else:
+                clean = validate_packet_output(data, news_terms=news_terms, forbid_asks=True)
         except PacketValidationError as exc:
             # Persist nothing; the job is reported as failed so it can be re-run.
             return PacketOutcome(
@@ -823,7 +895,7 @@ async def build_packet(
             citations_private=list(cand.citations_private or []),
             public_safety=safety,
             status=status_for_safety(safety),
-            prompt_version=PROMPT_VERSION,
+            prompt_version=lane_packets.PROMPT_VERSION if lane_ws else PROMPT_VERSION,
             job_id=llm.job_id,
             created_at=now,
             updated_at=now,
@@ -1124,6 +1196,8 @@ async def more_hook_options(
     person is reading must not move under them.
     """
     ws = coerce_uuid(workspace_id)
+    if _lane_profile_for(ws) is not None:
+        return PacketOutcome(status="invalid", detail=LANE_OWNER_ONLY)
     async with open_session(sessionmaker_or_session) as session:
         packet = (
             await session.execute(
@@ -1370,6 +1444,8 @@ async def voice_pass(
     the same reason it blocks choosing: what he is reading must not move.
     """
     ws = coerce_uuid(workspace_id)
+    if _lane_profile_for(ws) is not None:
+        return PacketOutcome(status="invalid", detail=LANE_OWNER_ONLY)
     async with open_session(sessionmaker_or_session) as session:
         packet = (
             await session.execute(
@@ -1795,7 +1871,22 @@ async def choose_hook(
         max_hooks=MAX_HOOK_OPTIONS,
         # Switching to another opening must not smuggle a news headline back in.
         news_terms=await news_terms_for(session, ws, original.candidate_id),
+        # A lane workspace's script (5-Oct) has no LinkedIn post.
+        require_linkedin=_lane_profile_for(ws) is None,
     )
+    if _lane_profile_for(ws) is not None:
+        from tce.editorial import lane_packets
+
+        cand = (
+            await session.execute(
+                select(TopicCandidate).where(
+                    TopicCandidate.workspace_id == ws, TopicCandidate.id == original.candidate_id
+                )
+            )
+        ).scalar_one_or_none()
+        problems = lane_packets.lane_errors(clean, lineup.lane_for(cand)) if cand is not None else []
+        if problems:
+            raise PacketValidationError("; ".join(problems))
     maximum = (
         await session.execute(
             select(func.max(RecordingPacket.version)).where(

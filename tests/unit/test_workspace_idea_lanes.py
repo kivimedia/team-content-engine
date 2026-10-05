@@ -430,16 +430,30 @@ def test_owner_gates_constant_untouched():
     )
 
 
-def test_lane_workspace_never_drafts_with_the_owner_packet_writer(lanes_on):
+def test_lane_workspace_never_exports_and_drafts_only_through_its_own_writer(
+    lanes_on, monkeypatch
+):
     """Review 5-Oct: build_packet's prompt is Ziv's (English, coaching, his own
-    first-person experience). A lane workspace's drafting/exporting must refuse
-    instead of writing invented first-person stories for the performer."""
+    first-person experience). Exporting (Google Docs shared with the owner's team)
+    still refuses for a lane workspace. Drafting (5-Oct, persona track) runs again:
+    build_packet sends a lane workspace to editorial.lane_packets (pinned in
+    test_lane_packets.py), so the stage no longer refuses."""
     import asyncio
     from types import SimpleNamespace
 
+    from tce.api.routers import content_runs
     from tce.api.routers.content_runs import _execute_stage
 
     run = SimpleNamespace(workspace_id=MATAN, source_ids_private=[], id=uuid.uuid4())
-    for stage in ("drafting", "exporting"):
-        with pytest.raises(ValueError, match="final_stage 'ranking'"):
-            asyncio.run(_execute_stage(None, run, stage))
+    with pytest.raises(ValueError, match="final_stage 'drafting'"):
+        asyncio.run(_execute_stage(None, run, "exporting"))
+
+    class PastTheGuard(Exception):
+        pass
+
+    async def sources(sm, r):
+        raise PastTheGuard
+
+    monkeypatch.setattr(content_runs, "_source_ids_for_run", sources)
+    with pytest.raises(PastTheGuard):
+        asyncio.run(_execute_stage(None, run, "drafting"))

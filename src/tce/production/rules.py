@@ -60,6 +60,24 @@ DISTILL_SYSTEM = (
     "and why in a few words."
 )
 
+def distill_system(persona: Any = None) -> str:
+    """DISTILL_SYSTEM; for a client workspace (5-Oct) about him, with no dogs. None
+    (every owner workspace) is DISTILL_SYSTEM exactly."""
+    if persona is None:
+        return DISTILL_SYSTEM
+    from tce.editorial.persona import swap
+
+    names = list(getattr(persona, "aside_names", ()) or ())
+    asides = f"talk to {' and '.join(names)}" if names else "talk that is not for the viewer"
+    return swap(
+        DISTILL_SYSTEM,
+        (
+            ("He watched an edit of one of his videos", f"{persona.name} watched an edit of one of his videos"),
+            ("talk to the dogs, pauses,", f"{asides}, pauses,"),
+        ),
+    )
+
+
 DISTILL_SCHEMA = {
     "type": "object",
     "properties": {

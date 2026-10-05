@@ -157,6 +157,10 @@ class Settings(BaseSettings):
     workspace_lane_profiles: str = ""
     # Read by scripts/tce-schedule-tick.sh (comma list); declared so the API accepts the .env line.
     schedule_workspaces: str = ""
+    # Per-workspace aside names (comma list of <workspace uuid>:Name|Name), the people or
+    # pets a client talks to off camera, e.g. his dog. Owner workspaces keep
+    # production_aside_names. A client workspace not listed has none.
+    workspace_aside_names: str = ""
 
     # Web push. Absent keys simply mean no notifications are sent; nothing else
     # in the app depends on them, and the reconciler stays asleep.
