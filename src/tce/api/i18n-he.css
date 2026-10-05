@@ -30,6 +30,28 @@ html[dir="rtl"] .tab-icon { border-left: 0; border-right: 1px solid rgba(255, 25
 html[dir="rtl"] .recording-flag { left: auto; right: 14px; }
 html[dir="rtl"] .camera-timer { right: auto; left: 12px; }
 html[dir="rtl"] .hook-flags ul { padding-left: 0; padding-right: 20px; }
+/* 6-Oct: the workspace's side bars mark the start of a line, which is the right in Hebrew. */
+html[dir="rtl"] .notice,
+html[dir="rtl"] .removed { border-left: 0; border-right: 5px solid var(--amber); }
+html[dir="rtl"] .removed { border-right-color: var(--line); }
+html[dir="rtl"] .notice.is-bad { border-right-color: var(--signal); }
+html[dir="rtl"] .notice.is-good { border-right-color: var(--moss); }
+html[dir="rtl"] .removed ul { padding-left: 0; padding-right: 18px; }
+/* His own words (titles, script lines, notes, posts) take their direction from their
+   first letter, so a line that starts in English keeps its period on the right side
+   of it, and a Hebrew line stays right to left (dir=auto, done in CSS). */
+html[dir="rtl"] .card h3,
+html[dir="rtl"] .card .big-idea,
+html[dir="rtl"] .card .why,
+html[dir="rtl"] .block > p,
+html[dir="rtl"] .bubble,
+html[dir="rtl"] .voice-text p,
+html[dir="rtl"] .diff p,
+html[dir="rtl"] .tv-said,
+html[dir="rtl"] .tv-answer,
+html[dir="rtl"] .rule-card h3,
+html[dir="rtl"] .pub-field textarea,
+html[dir="rtl"] .pub-field input { unicode-bidi: plaintext; }
 /* Numbers, times and the brand name stay left to right inside Hebrew lines. */
 html[dir="rtl"] .camera-timer,
 html[dir="rtl"] .size-value { direction: ltr; unicode-bidi: isolate; }
