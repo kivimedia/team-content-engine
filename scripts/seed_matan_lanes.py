@@ -138,12 +138,6 @@ STANDING_FACTS: list[tuple[str, str, str]] = [
 # where it is documented in the clip's own title, otherwise the upload year
 # (marked "upload"). No method text is stored anywhere.
 CLIPS: list[tuple[str, str, str, str, str, str]] = [
-    ("derren-paying-with-paper", "Derren Brown", "Paying with paper (Trick or Treat)", "2007",
-     "https://www.youtube.com/watch?v=dy75GtKsOAw",
-     "קופאים מקבלים פיסת נייר ריקה כאילו היא כסף - הקהל צוחק ולא מאמין שאנשים רגילים מקבלים את זה."),
-    ("derren-advertisers", "Derren Brown", "Tricking advertisers with adverts (Mind Control)",
-     "2016 upload", "https://www.youtube.com/watch?v=43Mw-f6vIbo",
-     "אנשי פרסום מגלים שהרעיון 'שלהם' כבר חיכה להם במעטפה - מנטליזם על אנשים שחושבים שהם מבינים השפעה."),
     ("shin-lim-fool-us", "Shin Lim", "Penn & Teller: Fool Us", "2015",
      "https://www.youtube.com/watch?v=EAN-PwRfJcA",
      "קלפים בלי מילה אחת, רק מוזיקה ותנועה - הוכחה שקסם יכול לעבוד בלי טקסט בכלל."),

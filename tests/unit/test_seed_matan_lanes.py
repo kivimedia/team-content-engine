@@ -135,3 +135,12 @@ def test_seed_has_no_method_reveal_clips_and_weekly_stops_at_drafting(capsys):
     seed.print_live_steps(seed.MATAN_WORKSPACE)
     out = capsys.readouterr().out
     assert '"final_stage":"drafting"' in out and '"final_stage":"exporting"' not in out
+
+
+def test_no_derren_brown_manipulation_clips_in_matans_seed():
+    """Matan rejected the Derren Brown heist ("?? ????", 5-Oct-2026); Ziv: remove the manipulation clips."""
+    import importlib.util, pathlib
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "seed_matan_lanes.py"
+    spec = importlib.util.spec_from_file_location("seed_matan_lanes_t", path)
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    assert not [c for c in mod.CLIPS if c[1] == "Derren Brown"]
