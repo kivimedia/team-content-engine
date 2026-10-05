@@ -103,6 +103,8 @@
   // Design section 6: a note the editor never read still goes to it as he said it.
   var UNCONFIRMED = EDITOR + " has not confirmed this one. It is still made as you said it.";
   var NOT_A_NOTE = "That hold was not kept as a note.";
+  // A client's own login (5-Oct, Ziv: no mic on his login): typed notes only.
+  var TYPED_ONLY = "Pause where something is wrong, then tap Type to write a note.";
 
   var prefix = global.location.pathname.indexOf("/tce/") === 0 ? "/tce" : "";
   var apiV1 = prefix + "/api/v1";
@@ -330,7 +332,10 @@
     var closing = null;      // close() was called: {promise, resolve}. His last words still land.
     // loading | signin | unavailable | old (no mute on this box) | idle (no call: the notes
     // are not taking new ones) | connecting | ready | dropped | failed
-    var voice = "loading";
+    // typedOnly (5-Oct): a client's own login. No hold button, no sign-in link, and
+    // KM BOT's voice client is never fetched: the voice is "off" for the whole sheet.
+    var typedOnly = Boolean(opts.typedOnly);
+    var voice = typedOnly ? "off" : "loading";
     var hangUp = null;       // the notes left the sheet: {since, spoke, force, timer} until the call ends
     var hangUpWait = opts.hangUpWaitMs || HANGUP_WAIT_MS;
     var voiceWhy = "";       // the sentence for failed / unavailable
@@ -372,6 +377,10 @@
     var wordsEl = root.querySelector(".tv-words");
     var signinEl = root.querySelector(".tv-signin");
     var button = root.querySelector(".tv-hold");
+    if (typedOnly) {
+      button.hidden = true;
+      root.querySelector(".tv-slot").hidden = true;
+    }
     signinEl.href = "/voice?seat=tce&context=video:" + encodeURIComponent(sitting.upload || "")
       + "&return=" + encodeURIComponent(global.location.pathname + global.location.search);
 
@@ -383,7 +392,7 @@
     function takingNotes() { return sitting.state === "open" || sitting.state === "closed"; }
 
     // Voice states in which a hold cannot be used at all.
-    var NO_HOLD = ["loading", "signin", "unavailable", "old"];
+    var NO_HOLD = ["loading", "signin", "unavailable", "old", "off"];
 
     function say(text) {
       if (gone()) return;
@@ -412,6 +421,7 @@
         // How it ended ("New version made from your 3 notes. 1 of them needs you.").
         return sitting.status || "These notes were handed to " + EDITOR + ". Open the notes again for new ones.";
       }
+      if (voice === "off") return TYPED_ONLY;
       if (voice === "loading") return "Loading " + EDITOR + "'s voice";
       if (voice === "signin") {
         return EDITOR + "'s voice needs its own sign-in on this phone. Sign in, then come back. Typing still works.";
@@ -1020,7 +1030,7 @@
       if (document.visibilityState !== "visible" || gone()) return;
       lockScreen();
       // Back from signing in to the voice in the other tab: try again.
-      if (voice === "signin" || voice === "unavailable") loadVoice();
+      if (!typedOnly && (voice === "signin" || voice === "unavailable")) loadVoice();
       refresh();
     }
 
@@ -1126,7 +1136,7 @@
     paint();
     tellHandBack(false);
     lockScreen();
-    loadVoice();
+    if (!typedOnly) loadVoice();
     schedule();
 
     return {

@@ -1309,3 +1309,56 @@ def test_notes_another_screen_closed_open_again_with_a_hold():
         page.evaluate("() => window.talk.close()")
         assert errors == [], errors
         browser.close()
+
+
+# ------------------------------------------- a client's own login (5-Oct, decision 6)
+
+
+TYPED_ONLY_OPEN = """async (id) => {
+  var r = await fetch("/api/v1/production/recordings/" + id + "/talk", { method: "POST" });
+  var sitting = await r.json();
+  window.talk = TceTalkVoice.open({
+    root: document.getElementById("bar"),
+    video: document.getElementById("player"),
+    sitting: sitting,
+    notes: document.getElementById("notes"),
+    typedOnly: true
+  });
+}"""
+
+
+def test_a_client_login_gets_typed_notes_only_with_no_mic_and_no_kmbot_sign_in(host):
+    """Ziv, 5-Oct: no mic and no KM BOT link on Matan's login. The notes sheet's hold
+    bar is a mic that loads KM BOT's /voice-client.js and, on a 401, links to KM BOT's
+    /voice sign-in. With typedOnly (workspace.js passes it for a scoped login) there is
+    no hold button, no sign-in link, and KM BOT's client is never fetched."""
+    from playwright.sync_api import sync_playwright
+
+    host["voice"]["status"] = 401
+    with sync_playwright() as pw:
+        browser = _launch(pw)
+        page, errors = _phone(browser)
+        asked: list[str] = []
+        page.on("request", lambda r: asked.append(r.url))
+        phone = Phone(page)
+        page.goto(f"{host['base']}/talk-host")
+        page.wait_for_function("() => !!window.TceTalkVoice")
+        page.evaluate(TYPED_ONLY_OPEN, host["upload"])
+        phone.wait_status("tap Type")
+        assert page.locator(".tv-hold").is_hidden()
+        assert page.locator(".tv-signin").is_hidden()
+        page.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")
+        page.wait_for_timeout(1500)
+        assert not [u for u in asked if "voice-client" in u], asked
+        assert page.evaluate("() => typeof window.KmVoice") == "undefined"
+        assert "voice" not in (page.evaluate("() => window.talk.voice") or "").replace("off", "")
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
+def test_the_workspace_opens_the_notes_sheet_typed_only_for_a_client_login():
+    js = (API_DIR / "workspace.js").read_text(encoding="utf-8")
+    assert "typedOnly: Boolean(window.TCE_SCOPED)" in js
+    he = (API_DIR / "i18n-he.js").read_text(encoding="utf-8")
+    assert '"Pause where something is wrong, then tap Type to write a note."' in he

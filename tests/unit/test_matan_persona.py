@@ -519,3 +519,49 @@ def test_the_library_lists_his_tiktok_post():
     # Owners have no TikTok row: their list is exactly what it was.
     owner = library._publishing_json({p: pub for p in ("instagram", "facebook", "youtube", "linkedin")})
     assert [p["platform"] for p in owner] == ["instagram", "facebook", "youtube", "linkedin"]
+
+
+# ------------------------------------------------- integrated review (5-Oct)
+
+
+async def test_a_configured_client_with_no_readable_persona_never_chats_as_zivs_assistant(
+    profile_sm, monkeypatch, hebrew, lanes
+):
+    """Integrated review: production._persona refuses to fall back to Ziv's text for a
+    configured client, but the chat did not. With no profile rows of his own (or a
+    database that cannot read them), Matan's chat ran "You are Ziv's editorial
+    assistant... Ziv is a business coach". It now fails the turn instead."""
+    from sqlalchemy import select
+
+    from tce.editorial import conversation
+    from tce.llm import LLMResult
+    from tce.models.editorial_workspace import EditorialMessage
+
+    sent: list = []
+
+    async def _complete(request, **kwargs):
+        sent.append(request)
+        return LLMResult(job_id=uuid.uuid4(), text="", structured={"reply": "ok", "proposal": None},
+                         model="claude-opus-5-5")
+
+    monkeypatch.setattr(conversation._llm, "complete", _complete)
+    async with profile_sm() as s:  # no seed_profiles: his rows are not there
+        thread = await conversation.ensure_thread(s, MATAN, context_type="room", context_id=MATAN)
+        _editor, assistant = await conversation.post_message(s, MATAN, thread, text="hi", mode="discuss")
+        await s.commit()
+        ids = (thread.id, assistant.id)
+    await conversation.run_turn(profile_sm, MATAN, *ids)
+    assert all("Ziv" not in (r.system or "") for r in sent)
+    assert sent == []
+    async with profile_sm() as s:
+        row = (await s.execute(select(EditorialMessage).where(EditorialMessage.id == ids[1]))).scalar_one()
+    assert row.status == "failed" and row.status_detail
+
+
+async def test_an_unconfigured_workspace_without_rows_still_chats_as_before(profile_sm, monkeypatch):
+    """The guard is only for a configured client (idea lanes or its own language)."""
+    from tce.editorial import conversation
+
+    other = uuid.uuid4()
+    req = await _turn(profile_sm, other, monkeypatch)
+    assert req.system == conversation.SYSTEM

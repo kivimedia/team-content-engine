@@ -234,6 +234,8 @@
     "This week's recording list": "רשימת ההקלטות של השבוע",
     "Notifications are blocked in your browser settings.": "ההתראות חסומות בהגדרות הדפדפן.",
     "Type": "הקלדה",
+    "Pause where something is wrong, then tap Type to write a note.":
+      "עוצרים במקום שמשהו לא בסדר, ולוחצים על הקלדה כדי לכתוב הערה.",
     "is first.": "ראשון בתור.",
     "Record this one": "להקליט את זה",
     "Open the topic": "לפתוח את הנושא",

@@ -499,6 +499,27 @@ async def post_message(
     return editor, assistant
 
 
+
+def _no_client_persona(ws: uuid.UUID, persona: Any) -> str | None:
+    """Why a configured client's chat cannot run now, or None (5-Oct integrated review).
+
+    A workspace with idea lanes or its own language is a client: with no persona of its
+    own, system_for(None) is Ziv's assistant ("Ziv is a business coach"), so it never
+    runs. Owner workspaces and unconfigured ones return None and behave as before."""
+    if persona is not None:
+        return None
+    from tce.db.workspace_filter import owner_workspace_ids, workspace_language
+    from tce.editorial.lane_profile import profile_for
+
+    if ws in owner_workspace_ids():
+        return None
+    if profile_for(ws) is None and workspace_language(ws) == "en":
+        return None
+    if workspace_language(ws) == "he":
+        return "הפרופיל שלך עוד לא נקרא. נסו שוב בעוד רגע."
+    return "This workspace's own profile could not be read; try again in a moment"
+
+
 async def run_turn(
     sessionmaker: Any, ws: uuid.UUID, thread_id: uuid.UUID, message_id: uuid.UUID
 ) -> None:
@@ -536,7 +557,19 @@ async def run_turn(
         # language (localize_request adds the Hebrew line); owners get None.
         from tce.editorial.persona import load_persona
 
-        persona = await load_persona(db, ws)
+        try:
+            persona = await load_persona(db, ws)
+        except Exception:  # noqa: BLE001 - decided below: a client never gets Ziv's text
+            persona = None
+        refused = _no_client_persona(ws, persona)
+        if refused:
+            # Integrated review 5-Oct: as production._persona, a configured client
+            # (idea lanes or its own language) whose own profile cannot be read never
+            # talks to "Ziv's editorial assistant"; the turn fails on the card.
+            assistant.status = "failed"
+            assistant.status_detail = refused
+            await db.commit()
+            return
         prompt = build_prompt(
             context_block,
             history,

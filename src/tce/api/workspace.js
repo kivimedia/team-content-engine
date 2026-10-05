@@ -2247,6 +2247,8 @@
       sitting: payload,
       notes: list,
       api: api,
+      // 5-Oct (Ziv): a client's own login has no mic; its notes are typed.
+      typedOnly: Boolean(window.TCE_SCOPED),
       onSitting: function (p) { if (state.notesSheet === sheet) tookSitting(sheet, p); },
       onStale: function (ref, p) { if (state.notesSheet === sheet) newRender(sheet, p); }
     });
