@@ -240,3 +240,49 @@ async def test_owner_asking_for_a_lane_kind_reads_nothing_new(editorial_sessionm
                                       count=3, kind="magic_clip", search=NoKey())
     run = job_status.get(ws, idea_lane.KIND_RESEARCH, str(run_id))
     assert "no search key" in run["said"], run
+
+
+# Review 5-Oct: "israel" / "tel aviv" as one-hit anchors pulled war and politics
+# headlines into a mentalist's trend lane. A place name alone is never a match.
+WAR_AND_POLITICS = [
+    ("Israeli airstrike hits Gaza as ceasefire talks stall", "Israel's military said..."),
+    ("Rockets fired at Tel Aviv overnight", "Sirens sounded across central Israel."),
+    ("Israel election: coalition talks collapse", "The Knesset votes next week."),
+]
+
+
+async def test_war_and_politics_never_match_for_matan(editorial_session, lanes_on):
+    anchors = await _matan_anchors(editorial_session)
+    for title, summary in WAR_AND_POLITICS:
+        res = match_item(title=title, summary=summary, anchors=anchors)
+        assert not res.matched, f"{title!r} matched: {res.why()}"
+
+
+async def test_israeli_event_news_still_matches_for_matan(editorial_session, lanes_on):
+    anchors = await _matan_anchors(editorial_session)
+    res = match_item(title="Tel Aviv corporate events go immersive this Hanukkah",
+                     summary="Israeli companies book interactive entertainment.", anchors=anchors)
+    assert res.matched, res.why()
+
+
+# A holiday name alone is a recipe or a news story; his season is the holiday
+# TOGETHER with the entertainment around it.
+HOLIDAY_JUNK = [
+    ("The best Hanukkah latke recipe for crispy edges", "Grate the potatoes and squeeze them dry."),
+    ("Purim costume ideas for toddlers", "Simple DIY costumes from things at home."),
+    ("Chanukah candle lighting times 2026", "Light the first candle after sunset."),
+]
+
+
+async def test_holiday_name_alone_never_matches_for_matan(editorial_session, lanes_on):
+    anchors = await _matan_anchors(editorial_session)
+    for title, summary in HOLIDAY_JUNK:
+        res = match_item(title=title, summary=summary, anchors=anchors)
+        assert not res.matched, f"{title!r} matched: {res.why()}"
+
+
+async def test_holiday_season_entertainment_matches_for_matan(editorial_session, lanes_on):
+    anchors = await _matan_anchors(editorial_session)
+    res = match_item(title="Purim parties bring back the performer",
+                     summary="Hosts plan the holiday early this year.", anchors=anchors)
+    assert res.matched, res.why()

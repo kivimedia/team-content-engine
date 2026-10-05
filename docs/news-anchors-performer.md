@@ -17,6 +17,10 @@ so it holds the broad event words that only count together.
 Never add a bare "magic", "illusion", "show", "event" or "party": "Six Flags Magic
 Mountain solar carport" and "magic of autumn decor" are exactly the junk they let
 in. Name the craft ("magician", "magic show") or the event ("bar mitzvah").
+Never add a bare place ("israel", "tel aviv"): alone they match war and politics
+headlines, which never belong in his trend lane. Holiday names (Hanukkah, Purim)
+are his busy corporate season, but alone they are recipes and candle-lighting
+times, so they live in `problem_pattern` and count only next to a second hit.
 
 ## client_solution
 
@@ -83,12 +87,6 @@ in. Name the craft ("magician", "magic show") or the event ("bar mitzvah").
 - booth activation
 - experiential marketing
 - ai at events
-- hanukkah
-- chanukah
-- purim
-- israel
-- israeli
-- tel aviv
 - קוסם
 - קוסמים
 - מנטליסט
@@ -99,8 +97,6 @@ in. Name the craft ("magician", "magic show") or the event ("bar mitzvah").
 - אירוע חברה
 - אירועי חברה
 - ערב גיבוש
-- חנוכה
-- פורים
 
 ## problem_pattern
 
@@ -122,3 +118,8 @@ What is left are words about the guest experience itself.
 - interactive
 - immersive
 - gala
+- hanukkah
+- chanukah
+- purim
+- חנוכה
+- פורים
