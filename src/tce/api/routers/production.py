@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tce.api.private_access import require_private_workspace
+from tce.api.private_access import owner_action_workspace, require_private_workspace
 from tce.db.session import get_db
 from tce.db.workspace_filter import workspace_language
 from tce.editorial import editor_rules
@@ -409,7 +409,7 @@ def publication_json(p: PublicationReceipt) -> dict[str, Any]:
 @router.post("/packets/{packet_id}/export")
 async def export_packet_route(
     packet_id: uuid.UUID,
-    ws: uuid.UUID = Depends(require_private_workspace),
+    ws: uuid.UUID = Depends(owner_action_workspace("Exporting to Google Docs")),
     db: AsyncSession = Depends(get_db),
 ):
     packet = await _packet(db, ws, packet_id)
@@ -4257,6 +4257,12 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
 
 
 def start_draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = False) -> None:
+    # The post writer is the owner's (COPY_SYSTEM, his post rules): a workspace with
+    # idea lanes gets no posts written in his voice after its edits.
+    from tce.editorial.lane_profile import profile_for
+
+    if profile_for(ws) is not None:
+        return
     _spawn(draft_posts(upload_id, ws, rewrite=rewrite))
 
 
@@ -4486,7 +4492,7 @@ async def get_publishing(
 @router.post("/uploads/{upload_id}/publishing/draft", status_code=202)
 async def write_posts(
     upload_id: uuid.UUID,
-    ws: uuid.UUID = Depends(require_private_workspace),
+    ws: uuid.UUID = Depends(owner_action_workspace("Writing the posts")),
     db: AsyncSession = Depends(get_db),
 ):
     row = await _upload(db, ws, upload_id)
@@ -4500,7 +4506,7 @@ async def write_posts(
 async def revise_posts_route(
     upload_id: uuid.UUID,
     body: ReviseBody,
-    ws: uuid.UUID = Depends(require_private_workspace),
+    ws: uuid.UUID = Depends(owner_action_workspace("Changing the posts")),
     db: AsyncSession = Depends(get_db),
 ):
     pubs = await _publications(db, ws, upload_id)
@@ -4519,7 +4525,7 @@ async def save_post_copy(
     upload_id: uuid.UUID,
     platform: str,
     body: CopyBody,
-    ws: uuid.UUID = Depends(require_private_workspace),
+    ws: uuid.UUID = Depends(owner_action_workspace("Editing the posts")),
     db: AsyncSession = Depends(get_db),
 ):
     if platform not in publishing.PLATFORMS:
@@ -4538,7 +4544,7 @@ async def save_post_copy(
 async def publish_route(
     upload_id: uuid.UUID,
     body: PublishBody,
-    ws: uuid.UUID = Depends(require_private_workspace),
+    ws: uuid.UUID = Depends(owner_action_workspace("Posting")),
     db: AsyncSession = Depends(get_db),
 ):
     row = await _upload(db, ws, upload_id)

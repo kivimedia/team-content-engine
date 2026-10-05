@@ -34,7 +34,7 @@ import hmac
 import json
 import uuid
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 
 from tce.db.workspace_filter import set_workspace_context
 from tce.settings import settings
@@ -144,6 +144,30 @@ async def require_private_workspace(
     return ws
 
 
+
+def refuse_lane_workspace(ws: uuid.UUID | None, what: str) -> None:
+    """409 for a workspace with idea lanes (a client, Matan) on an action that runs on
+    the owner's own accounts or voice: posting to his social accounts, his post writer,
+    his Google export, his packet writer. Owner workspaces have no lane profile, so for
+    them this returns and nothing changes."""
+    from tce.editorial.lane_profile import profile_for
+
+    if profile_for(ws) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{what} is not available in this workspace: it runs on the owner's own accounts and voice",
+        )
+
+
+def owner_action_workspace(what: str):
+    """require_private_workspace, then refuse_lane_workspace(ws, what)."""
+
+    async def dependency(ws: uuid.UUID = Depends(require_private_workspace)) -> uuid.UUID:
+        refuse_lane_workspace(ws, what)
+        return ws
+
+    return dependency
+
 # --- The scoped-editor fence (pure ASGI, so ContextVars are untouched) ----------
 
 # Pages and assets of the editorial workspace and the recording studio. Exact
@@ -178,15 +202,25 @@ class ScopedEditorGuard:
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
             return await self.app(scope, receive, send)
-        key = None
+        keys: list[str] = []
         given_ws = None
         for name, value in scope.get("headers") or []:
             lname = name.lower()
             if lname == b"x-tce-editor-key":
-                key = value.decode("latin-1")
+                keys.append(value.decode("latin-1"))
             elif lname == b"x-workspace-id":
                 given_ws = value.decode("latin-1")
-        if not key or not scoped_editor_keys() or _key_matches(key):
+        if not keys or not scoped_editor_keys():
+            return await self.app(scope, receive, send)
+        if len(keys) > 1:
+            # Review 5-Oct: the app's Header() reads the first value; reading only one
+            # here let [scoped key, junk] past the fence. Any scoped key among several
+            # is refused outright.
+            if any(scoped_editor_workspace(k) is not None for k in keys):
+                return await _deny(send, "Not available for this login")
+            return await self.app(scope, receive, send)
+        key = keys[0]
+        if _key_matches(key):
             return await self.app(scope, receive, send)
         ws = scoped_editor_workspace(key)
         if ws is None:

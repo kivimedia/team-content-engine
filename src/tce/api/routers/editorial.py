@@ -17,7 +17,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from tce.api.private_access import require_private_workspace
+from tce.api.private_access import owner_action_workspace, require_private_workspace
 from tce.editorial import more_ideas as more_ideas_service
 from tce.editorial import status as job_status
 from tce.editorial.common import (
@@ -542,7 +542,7 @@ async def start_packet(
     candidate_id: str,
     background: BackgroundTasks,
     body: StartPacketRequest | None = None,
-    ws: uuid.UUID = Depends(require_private_workspace),
+    ws: uuid.UUID = Depends(owner_action_workspace("Writing a script")),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
     from tce.editorial.voice_agent import current_packet
