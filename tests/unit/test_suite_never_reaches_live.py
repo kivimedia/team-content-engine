@@ -1,7 +1,7 @@
 """The suite can never reach the live box (integrated review, 5-Oct).
 
 On the VPS the settings defaults ARE the live services: the default database URL is
-the live TCE database (same user, password and name), production_self_url is the
+the live TCE database on this box, production_self_url is the
 live API on :8200, and production_skills_dir is /home/ziv/skills, whose schedule-*
 CLIs post to the owner's real accounts. Before this, only a hand-sourced env file
 kept a pytest run off them. tests/conftest.py now points every one of them at a dead

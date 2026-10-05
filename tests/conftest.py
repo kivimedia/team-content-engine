@@ -6,8 +6,8 @@ from urllib.parse import urlsplit
 import pytest
 
 # --- Never the live box (integrated review, 5-Oct) -------------------------------
-# On the VPS the settings defaults ARE the live services: the default database URL is
-# the live TCE database (same user, password and name), :8200 is the live API, and
+# On the VPS the settings defaults ARE the live services: the default database URL
+# reaches the live TCE database on this box, :8200 is the live API, and
 # /home/ziv/skills holds the schedule-* CLIs that post to the owner's real accounts.
 # Every one is pointed at a dead address here, before any tce module is imported
 # (environment variables win over a .env file in pydantic-settings), and a run that
