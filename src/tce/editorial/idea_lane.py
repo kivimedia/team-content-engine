@@ -38,9 +38,28 @@ SEED_DAYS = 21
 # 27-Sep: "research new topics, decide how many, choose a specific type of videos".
 # A topic's type (its lane) is a fact of its evidence, so each type is found where
 # that evidence lives: news on the web, coaching in his calls, build in his commits.
-KINDS = ("any", "news", "coaching", "build")
-KIND_LABEL = {"any": "", "news": "news", "coaching": "coaching", "build": "build"}
-KIND_SOURCES = {"coaching": ("fathom_meeting",), "build": ("github_commit_group",)}
+OWNER_KINDS = ("any", "news", "coaching", "build")
+# 5-Oct: a lane workspace (Matan) asks by lane. Trend reactions are found on the
+# web like news; clips and seeds are his curated, evergreen evidence.
+LANE_KINDS = ("trend_reaction", "magic_clip", "behind_scenes")
+KINDS = OWNER_KINDS + LANE_KINDS
+KIND_LABEL = {"any": "", "news": "news", "coaching": "coaching", "build": "build",
+              "trend_reaction": "trend", "magic_clip": "clip", "behind_scenes": "story"}
+KIND_SOURCES = {"coaching": ("fathom_meeting",), "build": ("github_commit_group",),
+                "magic_clip": ("curated_clip",), "behind_scenes": ("story_seed",)}
+KIND_WHERE = {"coaching": "calls", "build": "commits", "magic_clip": "clips",
+              "behind_scenes": "story seeds"}
+EVERGREEN_KINDS = ("magic_clip", "behind_scenes")
+
+
+def kinds_for(ws: uuid.UUID | str | None) -> tuple[str, ...]:
+    """The research types this workspace may ask for: owners keep their four."""
+    from tce.editorial.lane_profile import profile_for
+
+    profile = profile_for(ws)
+    if profile is None:
+        return OWNER_KINDS
+    return ("any", *[k for k in LANE_KINDS if k in profile.lane_keys])
 MAX_IDEAS_ASKED = 10
 
 
@@ -321,6 +340,8 @@ async def run_idea_research(
     key = str(run_id)
     count = max(1, min(MAX_IDEAS_ASKED, int(count or MAX_RESEARCH_IDEAS)))
     kind = kind if kind in KINDS else "any"
+    if kind in LANE_KINDS and kind not in kinds_for(ws):
+        kind = "any"
     # 27-Sep: "five ideas from the last two weeks of Fathom" - his window, not ours.
     days = max(1, min(60, int(days or SEED_DAYS)))
     try:
@@ -350,26 +371,32 @@ async def _run_from_his_work(
 
     key = str(run_id)
     since = _now() - timedelta(days=days)
-    job_status.update(ws, KIND_RESEARCH, key, current_activity=f"Reading your recent {'calls' if kind == 'coaching' else 'commits'}")
+    where = KIND_WHERE[kind]
+    evergreen = kind in EVERGREEN_KINDS
+    job_status.update(ws, KIND_RESEARCH, key, current_activity=(
+        f"Reading your {where}" if evergreen else f"Reading your recent {where}"))
     async with open_session(sm) as db:
         q = select(EvidenceSource.id).where(
             EvidenceSource.workspace_id == ws,
             EvidenceSource.source_kind.in_(KIND_SOURCES[kind]),
-            EvidenceSource.created_at >= since,
         )
+        if not evergreen:
+            # Clips and seeds are evergreen: a curated clip does not age out.
+            q = q.where(EvidenceSource.created_at >= since)
         if topic:
             q = q.where(EvidenceSource.title.ilike(f"%{_clean(topic, 80)}%"))
         source_ids = list((await db.execute(q.order_by(EvidenceSource.created_at.desc()).limit(60))).scalars().all())
-    where = "calls" if kind == "coaching" else "commits"
     if not source_ids:
         job_status.update(
             ws, KIND_RESEARCH, key, state="done", finished_at=_now().isoformat(),
-            said=f"found no {where} of yours from the last {days} days"
+            said=f"found no {where} of yours"
+            + ("" if evergreen else f" from the last {days} days")
             + (f" about {topic}" if topic else "") + ". Nothing on your list changed.",
             result={"ideas": [], "kind": kind},
         )
         return
-    job_status.update(ws, KIND_RESEARCH, key, current_activity=f"Checking {len(source_ids)} {where} against your four checks")
+    job_status.update(ws, KIND_RESEARCH, key, current_activity=f"Checking {len(source_ids)} {where} against your "
+                      + ("checks" if evergreen else "four checks"))
     result = await selector.select_candidates(
         sm, ws, current_week_start(), max_candidates=count, selection_run_id=run_id,
         source_ids=source_ids, adds_only=True,
@@ -380,8 +407,10 @@ async def _run_from_his_work(
                           said="waits for the writing computer and carries on by itself.")
         return
     ideas = [{"candidate_id": c["id"], "title": c.get("title")} for c in result.candidates]
-    await _mark_origin(sm, ws, [c["candidate_id"] for c in ideas], f"From your recent {where}")
-    looked = f"read {len(source_ids)} of your {where} from the last {days} days"
+    await _mark_origin(sm, ws, [c["candidate_id"] for c in ideas],
+                       f"From your {where}" if evergreen else f"From your recent {where}")
+    looked = (f"read {len(source_ids)} of your {where}" if evergreen
+              else f"read {len(source_ids)} of your {where} from the last {days} days")
     if ideas:
         said = f"{looked}. {_topics_word(len(ideas), kind).capitalize()} on your list: " + "; ".join(
             f'"{c["title"]}"' for c in ideas) + "."
@@ -431,6 +460,12 @@ async def _run_idea_research(
     else:
         async with open_session(sm) as db:
             queries = await seed_queries(db, ws)
+        if not queries:
+            # A lane workspace has no calls or commits; its profile seeds the trend lane.
+            from tce.editorial.lane_profile import profile_for
+
+            profile = profile_for(ws)
+            queries = list(profile.research_seeds) if profile is not None else []
         if not queries:
             finish("found nothing to start from: no calls or commits in the last three weeks.")
             return
