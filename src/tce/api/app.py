@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from tce.api import dashboard
+from tce.api.private_access import ScopedEditorGuard
 from tce.api.routers import (
     admin,
     agent_talks,
@@ -264,6 +265,10 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # A client's own login is fenced to its workspace on every route (pure ASGI,
+    # so ContextVars are untouched). Requests without such a key pass straight through.
+    app.add_middleware(ScopedEditorGuard)
 
     # Workspace context is set via the get_workspace_id() FastAPI dependency
     # in deps.py, NOT via middleware. Starlette's BaseHTTPMiddleware (which
