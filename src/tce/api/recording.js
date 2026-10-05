@@ -1,5 +1,16 @@
 // Pure helpers for the hook chooser. They live outside the studio closure so the
 // unit tests can load them in Node without a DOM; nothing here touches the page.
+/* A Hebrew workspace reads one sentence per line (5-Oct): he films walk and talk,
+   one sentence at a time, so each sentence of a point or a phrase is its own line.
+   Any other language keeps the item whole, exactly as before. */
+function readerSentences(text, lang) {
+  const value = String(text || "");
+  if (lang !== "he") return [value];
+  const parts = value.split(/(?<=[.!?\u2026]["'\u201d\u05f4)]?)\s+/u)
+    .map((part) => part.trim()).filter(Boolean);
+  return parts.length ? parts : [value];
+}
+
 function payoffPhrase(phrases, phraseId) {
   const list = Array.isArray(phrases) ? phrases : [];
   const index = Number(String(phraseId || "").slice(1)) - 1;
@@ -131,6 +142,7 @@ function rebindIdeas(ideas, next) {
   };
   const pathPrefix = window.location.pathname.startsWith("/tce/") ? "/tce" : "";
   const apiV1 = `${pathPrefix}/api/v1`;
+  const PAGE_LANG = document.documentElement.lang === "he" ? "he" : "en";
   const state = {
     ideas: [], idea: null, session: null, stream: null, recorder: null, clip: null,
     mode: "points", sequence: 0, startedAt: 0, activeStartedAt: 0, activeMs: 0,
@@ -348,7 +360,17 @@ function rebindIdeas(ideas, next) {
         label.textContent = `Point ${index + 1}`;
         line.appendChild(label);
       }
-      line.appendChild(document.createTextNode(text));
+      const sentences = readerSentences(text, PAGE_LANG);
+      if (sentences.length > 1) {
+        sentences.forEach((sentence) => {
+          const span = document.createElement("span");
+          span.className = "reader-sentence";
+          span.textContent = sentence;
+          line.appendChild(span);
+        });
+      } else {
+        line.appendChild(document.createTextNode(text));
+      }
       reader.appendChild(line);
     });
     const tail = document.createElement("div");

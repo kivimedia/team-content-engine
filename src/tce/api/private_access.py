@@ -11,6 +11,19 @@ raw transcripts, commit diffs and client context, so they:
    TCE_EDITOR_DEFAULT_WORKSPACE_ID, else 400. Proxy editors: always the
    configured editor workspace; a different header is 403.
 
+Scoped editors (5-Oct, a client's own login): TCE_EDITOR_WORKSPACE_KEYS maps
+further editor keys to ONE workspace each (`<key>:<workspace uuid>,...`). The
+proxy injects that key for that client's Basic Auth user. A scoped key:
+
+- works only as X-TCE-Editor-Key, never as a Bearer service key,
+- is bound to its workspace; any other X-Workspace-Id is 403,
+- is refused on routes that are not workspace scoped (LLM jobs: 403),
+- and, through `ScopedEditorGuard`, reaches only the editorial workspace pages
+  and the workspace-scoped /production, /editorial and /content-runs APIs. Every
+  legacy open route (which would read NULL-workspace owner rows) is 403.
+
+The owner's key and every owner request behave exactly as before.
+
 Queries in these routers must filter `Model.workspace_id == workspace_id`
 explicitly. Never rely on the global filter, which also returns NULL rows.
 """
@@ -18,6 +31,7 @@ explicitly. Never rely on the global filter, which also returns NULL rows.
 from __future__ import annotations
 
 import hmac
+import json
 import uuid
 
 from fastapi import Header, HTTPException
@@ -33,15 +47,50 @@ def _key_matches(candidate: str | None) -> bool:
     return hmac.compare_digest(candidate.encode(), expected.encode())
 
 
-def _authenticate(authorization: str | None, x_tce_editor_key: str | None) -> str:
-    """Return "service" (Bearer key) or "editor" (proxy-injected key); raise otherwise."""
+def scoped_editor_keys() -> list[tuple[str, uuid.UUID]]:
+    """TCE_EDITOR_WORKSPACE_KEYS parsed. Bad entries, short keys and a key equal to
+    the owner key are skipped (the owner key always stays the owner's)."""
+    raw = settings.editor_workspace_keys.get_secret_value() if settings.editor_workspace_keys else ""
+    owner = settings.private_access_key.get_secret_value()
+    out: list[tuple[str, uuid.UUID]] = []
+    for part in (raw or "").split(","):
+        key, sep, ws_text = part.strip().rpartition(":")
+        key = key.strip()
+        if not sep or len(key) < 16 or key == owner:
+            continue
+        try:
+            out.append((key, uuid.UUID(ws_text.strip())))
+        except ValueError:
+            continue
+    return out
+
+
+def scoped_editor_workspace(candidate: str | None) -> uuid.UUID | None:
+    """The workspace a scoped editor key is bound to, or None. Constant time per key."""
+    if not candidate:
+        return None
+    found: uuid.UUID | None = None
+    for key, ws in scoped_editor_keys():
+        if hmac.compare_digest(candidate.encode(), key.encode()):
+            found = ws
+    return found
+
+
+def _authenticate(
+    authorization: str | None, x_tce_editor_key: str | None
+) -> tuple[str, uuid.UUID | None]:
+    """("service", None) for the Bearer key, ("editor", None) for the owner's proxy
+    key, ("scoped", ws) for a client's proxy key; raise otherwise."""
     if not settings.private_access_key.get_secret_value():
         raise HTTPException(status_code=503, detail="Private access is not configured")
     if authorization and authorization.startswith("Bearer "):
         if _key_matches(authorization[len("Bearer ") :]):
-            return "service"
+            return "service", None
     if _key_matches(x_tce_editor_key):
-        return "editor"
+        return "editor", None
+    scoped = scoped_editor_workspace(x_tce_editor_key)
+    if scoped is not None:
+        return "scoped", scoped
     raise HTTPException(status_code=401, detail="Private access key required")
 
 
@@ -49,7 +98,10 @@ async def require_private_access(
     authorization: str | None = Header(None),
     x_tce_editor_key: str | None = Header(None),
 ) -> None:
-    _authenticate(authorization, x_tce_editor_key)
+    principal, _ = _authenticate(authorization, x_tce_editor_key)
+    if principal == "scoped":
+        # These routes are not workspace scoped, so a client login never reaches them.
+        raise HTTPException(status_code=403, detail="Not available for this login")
 
 
 def _parse_workspace(raw: str) -> uuid.UUID:
@@ -68,11 +120,16 @@ async def require_private_workspace(
 
     Browser editors authenticate through the proxy, which cannot vouch for a
     header the browser sends, so they are bound to the configured editor
-    workspace: a different X-Workspace-Id is refused.
+    workspace (the owner) or to their key's workspace (a scoped client login):
+    a different X-Workspace-Id is refused.
     """
-    principal = _authenticate(authorization, x_tce_editor_key)
+    principal, scoped_ws = _authenticate(authorization, x_tce_editor_key)
     default = settings.editor_default_workspace_id
-    if principal == "editor":
+    if principal == "scoped":
+        ws = scoped_ws
+        if x_workspace_id and _parse_workspace(x_workspace_id) != ws:
+            raise HTTPException(status_code=403, detail="Editor cannot select another workspace")
+    elif principal == "editor":
         if not default:
             raise HTTPException(status_code=400, detail="Editor workspace is not configured")
         ws = _parse_workspace(default)
@@ -85,3 +142,76 @@ async def require_private_workspace(
         ws = _parse_workspace(raw)
     set_workspace_context(ws)
     return ws
+
+
+# --- The scoped-editor fence (pure ASGI, so ContextVars are untouched) ----------
+
+# Pages and assets of the editorial workspace and the recording studio. Exact
+# paths, plus the workspace's own sub-pages below.
+SCOPED_PAGE_PATHS = frozenset({
+    "/", "/record", "/today", "/topics", "/week", "/library", "/settings",
+    "/workspace.css", "/workspace.js", "/workspace-sw.js", "/workspace.webmanifest",
+    "/talk-voice.js", "/talk-voice.css", "/recording.css", "/recording.js",
+    "/i18n-he.js", "/i18n-he.css",
+})
+SCOPED_PAGE_PREFIXES = ("/topics/", "/scripts/", "/library/")
+# Every route under these is workspace scoped (tests/unit/test_scoped_editor_access.py
+# walks the real app and fails if one is not).
+SCOPED_API_PREFIXES = ("/api/v1/production/", "/api/v1/editorial/", "/api/v1/content-runs")
+
+
+def scoped_path_allowed(path: str) -> bool:
+    if path in SCOPED_PAGE_PATHS or path.startswith(SCOPED_PAGE_PREFIXES):
+        return True
+    return path.startswith(SCOPED_API_PREFIXES)
+
+
+class ScopedEditorGuard:
+    """Keeps a scoped editor inside its workspace on EVERY route, open ones included.
+
+    Requests without a scoped key pass through untouched, byte for byte.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+        key = None
+        given_ws = None
+        for name, value in scope.get("headers") or []:
+            lname = name.lower()
+            if lname == b"x-tce-editor-key":
+                key = value.decode("latin-1")
+            elif lname == b"x-workspace-id":
+                given_ws = value.decode("latin-1")
+        if not key or not scoped_editor_keys() or _key_matches(key):
+            return await self.app(scope, receive, send)
+        ws = scoped_editor_workspace(key)
+        if ws is None:
+            return await self.app(scope, receive, send)
+        if not scoped_path_allowed(scope.get("path") or ""):
+            return await _deny(send, "Not available for this login")
+        if given_ws is not None:
+            try:
+                if uuid.UUID(given_ws.strip()) != ws:
+                    return await _deny(send, "Editor cannot select another workspace")
+            except ValueError:
+                return await _deny(send, "Editor cannot select another workspace")
+        headers = [(k, v) for k, v in scope["headers"] if k.lower() != b"x-workspace-id"]
+        headers.append((b"x-workspace-id", str(ws).encode()))
+        scope = dict(scope, headers=headers)
+        scope.setdefault("state", {})
+        scope["state"]["scoped_workspace_id"] = ws
+        return await self.app(scope, receive, send)
+
+
+async def _deny(send, detail: str) -> None:
+    body = json.dumps({"detail": detail}).encode()
+    await send({
+        "type": "http.response.start",
+        "status": 403,
+        "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+    })
+    await send({"type": "http.response.body", "body": body})

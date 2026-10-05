@@ -143,6 +143,11 @@ class Settings(BaseSettings):
     # Private evidence / editorial / production routes (see api/private_access.py)
     private_access_key: SecretStr = SecretStr("")
     editor_default_workspace_id: str = ""
+    # A client's own login (comma list of <editor key>:<workspace uuid>). The proxy
+    # injects that key for that client's Basic Auth user; the key is bound to its
+    # one workspace and fenced off every other route (api/private_access.py).
+    # Empty = no client logins, every request behaves exactly as before.
+    editor_workspace_keys: SecretStr = SecretStr("")
     # Owner workspaces (comma list). A profile pick with no workspace context reads
     # only these and NULL-workspace rows, never a client workspace. Empty = the
     # editor default workspace plus the original owner workspace.

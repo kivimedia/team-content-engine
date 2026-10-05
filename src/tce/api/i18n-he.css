@@ -1,0 +1,35 @@
+/* Right-to-left and Hebrew glyphs for a Hebrew workspace (5-Oct). Loaded only on
+   pages served to a "he" login; the owner's pages never reference this file.
+   Georgia and Trebuchet have no Hebrew letters, so every face falls back to a
+   Hebrew-capable one. */
+html[lang="he"] body,
+html[lang="he"] body *:not(svg):not(path):not(rect) {
+  font-family: "Heebo", "Rubik", "Noto Sans Hebrew", "Arial Hebrew", "Segoe UI", Arial, sans-serif !important;
+}
+html[dir="rtl"] body { text-align: right; }
+
+/* The teleprompter: right to left, one sentence per line. */
+html[dir="rtl"] .reader,
+html[dir="rtl"] .reader-line { direction: rtl; text-align: right; unicode-bidi: plaintext; }
+.reader-sentence { display: block; }
+.reader-sentence + .reader-sentence { margin-top: .35em; }
+html[dir="rtl"] .reader-line .reader-index { margin-left: .5em; margin-right: 0; }
+
+/* Borders and corners that mark a side mirror to the other side. */
+html[dir="rtl"] .idea-card { text-align: right; box-shadow: -5px 5px 0 var(--ink); }
+html[dir="rtl"] .engine-state,
+html[dir="rtl"] .hook-panel { border-left: 0; border-right: 5px solid #b07d2a; }
+html[dir="rtl"] .hook-panel { border-right-color: var(--signal); }
+html[dir="rtl"] .reader-line.opening { border-left: 0; padding-left: 0; border-right: 5px solid var(--signal); padding-right: 10px; }
+html[dir="rtl"] .reader-line.opening .opening-change { margin-left: 0; margin-right: 10px; }
+html[dir="rtl"] body.overlay-mode .reader-line.opening,
+html[dir="rtl"] .reader-shell[data-shade="4"] .reader-line.opening { border-right-color: #ffe08a; }
+html[dir="rtl"] .beat-rail { border-right: 0; border-left: 1px solid #9baaba; }
+html[dir="rtl"] .size-rail { border-left: 0; border-right: 1px solid #9baaba; }
+html[dir="rtl"] .tab-icon { border-left: 0; border-right: 1px solid rgba(255, 255, 255, .25); }
+html[dir="rtl"] .recording-flag { left: auto; right: 14px; }
+html[dir="rtl"] .camera-timer { right: auto; left: 12px; }
+html[dir="rtl"] .hook-flags ul { padding-left: 0; padding-right: 20px; }
+/* Numbers, times and the brand name stay left to right inside Hebrew lines. */
+html[dir="rtl"] .camera-timer,
+html[dir="rtl"] .size-value { direction: ltr; unicode-bidi: isolate; }
