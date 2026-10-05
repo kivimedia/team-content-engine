@@ -86,6 +86,25 @@
   cursor: default;
 }
 
+/* His own mute (Ziv, 5-Oct-2026): always reachable while the sheet listens. */
+.tv-mute {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 8px;
+  padding: 0 16px;
+  border: 2px solid var(--ink, #10213b);
+  border-radius: 16px;
+  background: var(--paper, #f6f1e4);
+  color: var(--ink, #10213b);
+  font-size: 1rem;
+  font-weight: 800;
+}
+.tv-mute[aria-pressed="true"] {
+  background: var(--signal, #c72c2c);
+  color: #fff;
+}
+.tv-mute[hidden] { display: none; }
+
 /* ------------------------------------------------------------ the note rows */
 
 .tv-notes { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }

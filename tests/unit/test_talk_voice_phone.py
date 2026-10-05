@@ -1375,3 +1375,39 @@ def test_hands_free_off_keeps_the_hold_to_talk_sheet():
         page.evaluate("() => window.talk.close()")
         assert errors == [], errors
         browser.close()
+
+
+def test_hands_free_shows_a_mute_that_stops_it_hearing_him():
+    """Ziv, 5-Oct-2026: "Every time I talk with an agent, I want a mute option shown to me."
+    Hands-free listens whenever the video is paused, so the sheet shows a Mute button; while
+    it is pressed the mic stays shut, even when he pauses the video again, until he unmutes."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, page, errors = _bar_page(pw, BASE, before=HANDS_FREE)
+        phone = Phone(page)
+        phone.emit(0, "ear", {"open": True})
+        phone.wait_status("Listening. Say what is wrong here")
+        mute = page.locator(".tv-mute")
+        assert mute.is_visible()
+        assert mute.inner_text() == "Mute"
+        assert _mic(page) is False
+
+        mute.click()
+        assert _mic(page) is True
+        assert mute.get_attribute("aria-pressed") == "true"
+        assert mute.inner_text() == "Unmute"
+        # Pausing the video again does not reopen the mic while he is muted.
+        page.evaluate("() => document.getElementById('player').dispatchEvent(new Event('play'))")
+        page.evaluate("() => document.getElementById('player').dispatchEvent(new Event('pause'))")
+        page.wait_for_timeout(300)
+        assert _mic(page) is True
+
+        mute.click()
+        assert _mic(page) is False
+        assert mute.inner_text() == "Mute"
+
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()

@@ -366,12 +366,18 @@
       + '<a class="btn tv-signin" target="_blank" rel="noopener" hidden>Sign in to the voice</a>'
       + "</div>"
       + '<button class="tv-hold" type="button" aria-pressed="false">Hold to talk</button>'
+      /* Ziv, 5-Oct-2026: "Every time I talk with an agent, I want a mute option shown to
+         me." Hands-free listens whenever the video is paused, so this is his way to stop
+         it hearing him without leaving the sheet. */
+      + '<button class="tv-mute" type="button" aria-pressed="false" aria-label="Mute your microphone" hidden>Mute</button>'
       + "</div>";
     if (opts.notes) opts.notes.classList.add("tv-notes");
     var statusEl = root.querySelector(".tv-status");
     var wordsEl = root.querySelector(".tv-words");
     var signinEl = root.querySelector(".tv-signin");
     var button = root.querySelector(".tv-hold");
+    var muteBtn = root.querySelector(".tv-mute");
+    var userMuted = false;   // his own mute: nothing is heard until he lifts it
     signinEl.href = "/voice?seat=tce&context=video:" + encodeURIComponent(sitting.upload || "")
       + "&return=" + encodeURIComponent(global.location.pathname + global.location.search);
 
@@ -392,7 +398,7 @@
        ("said") lets it go. While the video plays the mic is muted, as before. */
     var handsFree = opts.handsFree !== false;
     function listening() {
-      return handsFree && !gone() && takingNotes() && NO_HOLD.indexOf(voice) < 0
+      return handsFree && !userMuted && !gone() && takingNotes() && NO_HOLD.indexOf(voice) < 0
         && !(video && !video.paused);
     }
     function listen() {
@@ -485,6 +491,10 @@
       button.setAttribute("aria-pressed", hold ? "true" : "false");
       button.classList.toggle("is-holding", Boolean(hold));
       button.hidden = handsFree && !hold && voice !== "dropped" && voice !== "failed";
+      muteBtn.hidden = !handsFree || !takingNotes() || NO_HOLD.indexOf(voice) >= 0;
+      muteBtn.setAttribute("aria-pressed", userMuted ? "true" : "false");
+      muteBtn.setAttribute("aria-label", userMuted ? "Unmute your microphone" : "Mute your microphone");
+      muteBtn.textContent = userMuted ? "Unmute" : "Mute";
       button.textContent = handsFree && hold ? "Listening"
         : hold ? "Listening - let go when done"
         : voice === "dropped" || voice === "failed" ? "Hold to reconnect"
@@ -1073,6 +1083,16 @@
       dropNote(x.getAttribute("data-tv-drop"));
     }
 
+    function onMute() {
+      userMuted = !userMuted;
+      if (userMuted) {
+        if (call) call.mute(true);
+      } else {
+        listen();
+      }
+      paint();
+    }
+    muteBtn.addEventListener("click", onMute);
     button.addEventListener("pointerdown", onPointerDown);
     // pointercancel (the phone took the gesture over) is a release, not a discard:
     // what he said is kept.
@@ -1131,6 +1151,7 @@
       clearTimeout(noticeTimer);
       cancelHangUp();
       stopSpeaking();
+      muteBtn.removeEventListener("click", onMute);
       button.removeEventListener("pointerdown", onPointerDown);
       button.removeEventListener("pointerup", onRelease);
       button.removeEventListener("pointercancel", onRelease);
