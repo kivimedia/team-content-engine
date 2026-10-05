@@ -423,8 +423,10 @@ async def start_idea_research(
     topic = (body.topic or "").strip() if body else ""
     count = body.count if body else 3
     kind = (body.type if body else "any") or "any"
-    if kind not in idea_lane.KINDS:
-        raise HTTPException(status_code=400, detail=f"type must be one of {', '.join(idea_lane.KINDS)}")
+    kind = idea_lane.resolve_kind(ws, kind)
+    allowed = idea_lane.kinds_for(ws)
+    if kind not in allowed:
+        raise HTTPException(status_code=400, detail=f"type must be one of {', '.join(allowed)}")
     run_id = uuid.uuid4()
     job_status.start(
         ws, idea_lane.KIND_RESEARCH, str(run_id), "Starting the search",

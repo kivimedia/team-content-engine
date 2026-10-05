@@ -390,15 +390,21 @@ async def build_anchor_index(
     """
     ws = uuid.UUID(str(workspace_id))
     settings_obj = settings_obj if settings_obj is not None else _default_settings()
-    curated_path = curated_path or _default_curated_path()
+    # 5-Oct: a lane workspace (Matan, a mentalist) has its own curated file, and
+    # this box's settings, repos and model ids are the OWNER's vendors, not his.
+    own_file = _profile_anchors_file(ws)
+    curated_path = curated_path or (
+        _docs_dir() / own_file if own_file else _default_curated_path()
+    )
     now = now or datetime.now(UTC).replace(tzinfo=None)
 
     derived: list[DerivedAnchor] = []
-    derived += vendors_from_settings(settings_obj)
-    derived += model_ids_from_settings(settings_obj)
-    derived += await repos_from_commit_evidence(
-        session, ws, window_days=window_days, now=now
-    )
+    if own_file is None:
+        derived += vendors_from_settings(settings_obj)
+        derived += model_ids_from_settings(settings_obj)
+        derived += await repos_from_commit_evidence(
+            session, ws, window_days=window_days, now=now
+        )
     derived += parse_curated_file(curated_path)
     derived += await anchors_from_standing_facts(session, ws)
 
@@ -477,6 +483,18 @@ def _default_settings() -> Any:
     return settings
 
 
+def _docs_dir() -> Path:
+    # repo_root/docs, from src/tce/news/anchors.py
+    return Path(__file__).resolve().parents[3] / "docs"
+
+
 def _default_curated_path() -> Path:
-    # repo_root/docs/news-anchors.md, from src/tce/news/anchors.py
-    return Path(__file__).resolve().parents[3] / "docs" / "news-anchors.md"
+    return _docs_dir() / "news-anchors.md"
+
+
+def _profile_anchors_file(ws: uuid.UUID) -> str | None:
+    """The lane profile's own anchors file, or None for an owner workspace."""
+    from tce.editorial.lane_profile import profile_for
+
+    profile = profile_for(ws)
+    return getattr(profile, "anchors_file", None) if profile is not None else None

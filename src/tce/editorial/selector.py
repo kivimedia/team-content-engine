@@ -408,8 +408,10 @@ async def collect_pool(
         evergreen = set(profile.evergreen_kinds)
         lane_rows = [r for r in rows if r[1].source_kind in evergreen]
         rows = [r for r in rows if r[1].source_kind not in evergreen]
-        if not source_ids:
-            lane_seeds = await _lane_reserve(session, workspace_id, label_start, lane_rows, profile)
+        # 5-Oct review: a research run on his clips or seeds passes their ids; they
+        # come through the same lane reserve (reuse window, stale versions), never
+        # dropped. The weekly run (no source_ids) is unchanged.
+        lane_seeds = await _lane_reserve(session, workspace_id, label_start, lane_rows, profile)
     for moment, source in rows:
         if source_is_excluded(source):
             continue

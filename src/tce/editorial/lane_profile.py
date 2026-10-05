@@ -59,6 +59,13 @@ class LaneProfile:
     collect_fathom: bool = False
     collect_github: bool = False
     audiences: tuple[str, ...] = ("event_owners", "both")
+    # docs/<file> that REPLACES docs/news-anchors.md for this workspace's news
+    # anchors; settings-, repo- and model-derived anchors (the owner's vendors) are
+    # then not built at all. None = the owner index.
+    anchors_file: str | None = None
+    # "Surprise me" web queries for the trend lane when there are no calls or
+    # commits to seed from.
+    research_seeds: tuple[str, ...] = ()
 
     @property
     def weekly_target(self) -> int:
@@ -188,6 +195,13 @@ PERFORMER = LaneProfile(
     max_candidates=10,
     reserve_per_lane=8,
     reuse_after_weeks=8,
+    anchors_file="news-anchors-performer.md",
+    research_seeds=(
+        "corporate event entertainment trend",
+        "bar mitzvah entertainment trend",
+        "mentalist corporate event",
+        "immersive interactive entertainment events",
+    ),
 )
 
 PROFILES: dict[str, LaneProfile] = {PERFORMER.name: PERFORMER}

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -217,6 +218,7 @@ def match_item(
     summary: str | None = None,
     body: str | None = None,
     anchors: list[Any],
+    concept_of: Callable[[str], str] | None = None,
 ) -> MatchResult:
     """Decide whether one announcement lands on anything of Ziv's.
 
@@ -278,12 +280,20 @@ def match_item(
         return MatchResult(matched=True, reason="strong anchor", matches=matches)
 
     problems = [m for m in matches if m.kind == "problem_pattern"]
-    if len(problems) >= 2:
+    # 5-Oct review: for a lane workspace, two forms of one word (Hanukkah /
+    # Chanukah, performer / performers) are one problem, not two independent
+    # ones. Owners pass no concept_of and count exactly as before.
+    independent = (
+        len({concept_of(normalize(m.term)) for m in problems})
+        if concept_of is not None
+        else len(problems)
+    )
+    if independent >= 2:
         return MatchResult(
             matched=True, reason="two independent client problems", matches=matches
         )
 
-    if len(problems) == 1:
+    if independent == 1:
         return MatchResult(
             matched=False,
             reason=(
@@ -303,3 +313,28 @@ def match_item(
         )
 
     return MatchResult(matched=False, reason="no anchor")
+
+
+# One concept, many spellings: Hebrew and English holiday names, and the forms
+# of one English word. Used only for lane workspaces (see discovery).
+_CONCEPT_ALIASES = {
+    "chanukah": "hanukkah",
+    "hanukah": "hanukkah",
+    "חנוכה": "hanukkah",
+    "פורים": "purim",
+}
+_SUFFIXES = ("ments", "ment", "ers", "er", "s")
+
+
+def concept_key(term: str) -> str:
+    """The word family of a normalised anchor term: performer, performers ->
+    perform; entertainer, entertainment -> entertain; Chanukah -> hanukkah."""
+    out = []
+    for token in normalize(term).split(" "):
+        token = _CONCEPT_ALIASES.get(token, token)
+        for suffix in _SUFFIXES:
+            if token.endswith(suffix) and len(token) - len(suffix) >= 4:
+                token = token[: -len(suffix)]
+                break
+        out.append(token)
+    return " ".join(out)
