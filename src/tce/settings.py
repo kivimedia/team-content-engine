@@ -155,6 +155,8 @@ class Settings(BaseSettings):
     # TCE_WORKSPACE_LANE_PROFILES=40c0f179-7d5e-4397-b4de-b0b2f3e96fc2:performer.
     # A workspace not listed keeps the owner selector exactly as before.
     workspace_lane_profiles: str = ""
+    # Read by scripts/tce-schedule-tick.sh (comma list); declared so the API accepts the .env line.
+    schedule_workspaces: str = ""
 
     # Web push. Absent keys simply mean no notifications are sent; nothing else
     # in the app depends on them, and the reconciler stays asleep.
