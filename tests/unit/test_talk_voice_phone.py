@@ -1409,6 +1409,30 @@ def test_hands_free_listens_while_paused_and_his_words_make_the_note_without_a_b
         browser.close()
 
 
+def test_a_client_login_stays_typed_only_even_with_the_hold_button_asked_for(host):
+    """?hold=1 turns hands-free off and brings the hold button back, but never on a
+    client's own login: typedOnly keeps the button hidden however the sheet is opened."""
+    from playwright.sync_api import sync_playwright
+
+    host["voice"]["status"] = 401
+    with sync_playwright() as pw:
+        browser = _launch(pw)
+        page, errors = _phone(browser)
+        phone = Phone(page)
+        page.goto(f"{host['base']}/talk-host")
+        page.wait_for_function("() => !!window.TceTalkVoice")
+        page.evaluate(TYPED_ONLY_OPEN.replace("typedOnly: true", "typedOnly: true, handsFree: false"),
+                      host["upload"])
+        phone.wait_status("tap Type")
+        page.evaluate("() => document.getElementById('player').dispatchEvent(new Event('pause'))")
+        page.wait_for_timeout(500)
+        assert page.locator(".tv-hold").is_hidden()
+        assert page.locator(".tv-slot").is_hidden()
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
 def test_the_workspace_opens_the_notes_sheet_typed_only_for_a_client_login():
     js = (API_DIR / "workspace.js").read_text(encoding="utf-8")
     assert "typedOnly: Boolean(window.TCE_SCOPED)" in js

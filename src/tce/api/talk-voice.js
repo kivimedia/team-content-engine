@@ -399,7 +399,8 @@
        While the video is paused the mic is open. His first words open a hold pinned to
        the paused second, exactly as a press did, and the voice's end of his utterance
        ("said") lets it go. While the video plays the mic is muted, as before. */
-    var handsFree = opts.handsFree !== false;
+    // A typed-only sheet has no mic at all, so it is never hands-free either.
+    var handsFree = !typedOnly && opts.handsFree !== false;
     function listening() {
       return handsFree && !gone() && takingNotes() && NO_HOLD.indexOf(voice) < 0
         && !(video && !video.paused);
@@ -494,7 +495,7 @@
       button.disabled = !usable && !hold;
       button.setAttribute("aria-pressed", hold ? "true" : "false");
       button.classList.toggle("is-holding", Boolean(hold));
-      button.hidden = handsFree && !hold && voice !== "dropped" && voice !== "failed";
+      button.hidden = typedOnly || (handsFree && !hold && voice !== "dropped" && voice !== "failed");
       button.textContent = handsFree && hold ? "Listening"
         : hold ? "Listening - let go when done"
         : voice === "dropped" || voice === "failed" ? "Hold to reconnect"
