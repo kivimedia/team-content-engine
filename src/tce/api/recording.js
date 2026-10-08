@@ -301,8 +301,14 @@ function rebindIdeas(ideas, next) {
       card.innerHTML = `<strong></strong><span></span><div class="idea-meta"></div>`;
       card.querySelector("strong").textContent = idea.title;
       card.querySelector("span").textContent = idea.big_idea;
-      const status = idea.active_session_id ? `Continue take set ${idea.active_session_status}` : "Start a new take set";
+      // 8-Oct: a take set Finish just sent is being built in the background; it
+      // takes no new clips until it is done, so it is not offered to continue.
+      const building = idea.active_session_status === "finalizing";
+      const status = building
+        ? "Being put together for editing"
+        : idea.active_session_id ? `Continue take set ${idea.active_session_status}` : "Start a new take set";
       card.querySelector(".idea-meta").textContent = `${index + 1} of ${state.ideas.length} · ${status}`;
+      card.disabled = building;
       card.addEventListener("click", () => chooseIdea(idea));
       queue.appendChild(card);
     });
@@ -849,6 +855,8 @@ function rebindIdeas(ideas, next) {
     $("hookView").hidden = true;
     $("studioView").hidden = false;
     setStudioMode(true);
+    // Finish leaves with the press that sends a take set; the next one has its own.
+    if (!state.finishing) $("finishSessionButton").hidden = false;
     $("scriptTitle").textContent = idea.title;
     $("bigIdea").textContent = idea.big_idea;
     $("hookChooser").hidden = true;
@@ -1341,39 +1349,202 @@ function rebindIdeas(ideas, next) {
     return clip;
   }
 
+  /* Finish, once (8-Oct, T-10566 and T-10568). Ziv pressed Finish, saw only the
+     thin top line, pressed it again, and the second build failed with an error
+     after the take had saved. "I don't even need to see the finish button after
+     I clicked on it already." "Show me a modal for three seconds about what is
+     going to be done in the background and then move me to the next phase."
+     So the button goes the moment it is pressed, the note below names the steps,
+     and he lands on his list with the take's progress at the top. Only the part
+     that needs this phone (sending the end of a clip) asks him to wait, and it
+     says so plainly. The server builds the video in the background. */
+  const FINISH_NOTE_MS = 3000;
+  const FINISH_KEY = "tce-finish-tracking";
+  const FINISH_STEPS = [
+    ["send", "Sending the last clip from this phone"],
+    ["build", "Putting the clips together and checking the sound"],
+    ["edit", "Editing the video"],
+  ];
+  const EDIT_DONE = new Set(["edited", "needs_review", "published"]);
+  const EDIT_STOPPED = new Set(["failed", "unavailable", "interrupted"]);
+
+  function paintSteps(list, current, failed = false) {
+    const at = FINISH_STEPS.findIndex(([key]) => key === current);
+    list.replaceChildren(...FINISH_STEPS.map(([key, label], index) => {
+      const item = document.createElement("li");
+      item.textContent = label;
+      item.className = current === "done" || index < at ? "done" : index === at ? (failed ? "failed" : "now") : "next";
+      return item;
+    }));
+  }
+
+  function paintNow(element, text, mode = "") {
+    element.textContent = text;
+    element.classList.toggle("must-wait", mode === "wait");
+    element.classList.toggle("failed", mode === "failed");
+  }
+
+  function finishNote(step, text, mode = "") {
+    paintSteps($("finishDialogSteps"), step);
+    paintNow($("finishDialogNow"), text, mode);
+  }
+
   async function finishSession() {
+    if (state.finishing) return;
+    state.finishing = true;
+    const button = $("finishSessionButton");
+    button.hidden = true;
+    const opened = Date.now();
+    const dialog = $("finishDialog");
+    finishNote("send", "Sending the last clip from this phone.");
+    if (!dialog.open) dialog.showModal();
+    const giveBack = (message) => {
+      if (dialog.open) dialog.close();
+      button.hidden = false;
+      state.finishing = false;
+      showNotice(message, 7000);
+    };
+    let response;
     try {
       // A clip Stop is already ending must not be ended a second time.
       if (state.recorder && state.recorder.state !== "inactive" && !state.finalizing.size) await finishClip().catch(() => {});
       if (state.finalizing.size) {
-        $("syncState").textContent = "Sending the end of the last clip before building the video";
+        finishNote("send", "Please stay on this screen: sending the end of your last clip from this phone.", "wait");
         await Promise.all([...state.finalizing]);
       }
       // Clips whose send failed earlier: send them now, or refuse to build without them.
       for (const entry of [...(state.unfinished || [])]) {
         if (entry.session.id !== state.session?.id) continue;
-        $("syncState").textContent = "Sending a clip that did not get through before";
+        finishNote("send", "Please stay on this screen: sending a clip that did not get through before.", "wait");
         await sendClip(entry);
       }
       if (!(state.session?.clips || []).some((clip) => clip.status === "ready")) {
-        showNotice("Nothing recorded yet, so there is nothing to send for editing.");
+        giveBack("Nothing recorded yet, so there is nothing to send for editing.");
         return;
       }
       await ensureSession();
       const ready = (state.session.clips || []).filter((clip) => clip.status === "ready").sort((a, b) => a.position - b.position);
       if (!ready.length) throw new Error("Finish at least one clip before finishing the session.");
-      $("syncState").textContent = "Assembling clips and checking audio";
-      const response = await api(`/recording-sessions/${state.session.id}/finish`, {
+      finishNote("build", "Handing the clips to TCE.");
+      response = await api(`/recording-sessions/${state.session.id}/finish`, {
         method: "POST", body: JSON.stringify({ selected_clip_ids: ready.map((clip) => clip.id) }),
       });
-      state.session = response.session;
-      resetTimer();
-      showNotice("Session saved as one editable recording. Every source clip is retained.", 7000);
-      showQueue();
-      await loadQueue();
     } catch (error) {
-      showNotice(error.message, 7000);
+      giveBack(error.message);
+      return;
     }
+    state.session = response.session;
+    const tracked = { sessionId: response.session.id, title: state.idea?.title || "", at: Date.now() };
+    localStorage.setItem(FINISH_KEY, JSON.stringify(tracked));
+    finishNote("build", "Putting the clips together and checking the sound. You do not have to wait for this.");
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, FINISH_NOTE_MS - (Date.now() - opened))));
+    if (dialog.open) dialog.close();
+    resetTimer();
+    state.finishing = false;
+    showQueue();
+    trackFinish(tracked);
+  }
+
+  function readTracked() {
+    try {
+      const tracked = JSON.parse(localStorage.getItem(FINISH_KEY) || "null");
+      // A take from a day ago is in the Library by now; the card is for this sitting.
+      return tracked && tracked.sessionId && Date.now() - tracked.at < 12 * 3600 * 1000 ? tracked : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function stopTracking() {
+    clearTimeout(state.finishPoll);
+    localStorage.removeItem(FINISH_KEY);
+    $("finishStatus").hidden = true;
+  }
+
+  async function trackFinish(tracked) {
+    clearTimeout(state.finishPoll);
+    const again = (ms) => {
+      // An hour is longer than any edit; past it the Library is the place to look.
+      if (Date.now() - tracked.at < 3600 * 1000) state.finishPoll = setTimeout(() => trackFinish(tracked), ms);
+    };
+    const box = $("finishStatus");
+    const now = $("finishStatusNow");
+    const steps = $("finishStatusSteps");
+    const open = $("finishOpen");
+    const retry = $("finishRetry");
+    box.hidden = false;
+    $("finishStatusTitle").textContent = tracked.title || "Your take";
+    open.href = `${pathPrefix}/library?filter=editing`;
+    open.hidden = true;
+    retry.hidden = true;
+    let session;
+    try {
+      session = (await api(`/recording-sessions/${tracked.sessionId}`)).session;
+    } catch (error) {
+      paintNow(now, "Could not check on it just now. Trying again in a moment.");
+      again(8000);
+      return;
+    }
+    if (session.status === "finalizing") {
+      paintSteps(steps, "build");
+      paintNow(now, "Putting the clips together and checking the sound.");
+      tracked.building = true;
+      again(2500);
+      return;
+    }
+    if (tracked.building) {
+      tracked.building = false;
+      if (!$("queueView").hidden) loadQueue();
+    }
+    if (!session.canonical_upload_id) {
+      paintSteps(steps, "build", true);
+      paintNow(now, session.error_detail || "The video was not put together. Press the button below to try again.", "failed");
+      retry.hidden = false;
+      retry.onclick = async () => {
+        retry.disabled = true;
+        const ready = (session.clips || []).filter((clip) => clip.status === "ready").sort((a, b) => a.position - b.position);
+        try {
+          await api(`/recording-sessions/${session.id}/finish`, {
+            method: "POST", body: JSON.stringify({ selected_clip_ids: ready.map((clip) => clip.id) }),
+          });
+          trackFinish({ ...tracked, at: Date.now() });
+        } catch (error) {
+          paintNow(now, error.message, "failed");
+        } finally {
+          retry.disabled = false;
+        }
+      };
+      return;
+    }
+    let upload;
+    try {
+      upload = await api(`/uploads/${session.canonical_upload_id}`);
+    } catch (error) {
+      paintNow(now, "Could not check on it just now. Trying again in a moment.");
+      again(8000);
+      return;
+    }
+    open.hidden = false;
+    if (EDIT_DONE.has(upload.status)) {
+      paintSteps(steps, "done");
+      paintNow(now, "Edited. It is waiting for you in the Library.");
+      open.href = `${pathPrefix}/library`;
+      return;
+    }
+    if (upload.status === "superseded") {
+      paintSteps(steps, "done");
+      paintNow(now, "This take was replaced by a newer version.");
+      open.href = `${pathPrefix}/library`;
+      return;
+    }
+    if (EDIT_STOPPED.has(upload.status)) {
+      paintSteps(steps, "edit", true);
+      paintNow(now, upload.status_detail || "The edit stopped. Open it in the Library to see why.", "failed");
+      return;
+    }
+    paintSteps(steps, "edit");
+    paintNow(now, upload.status === "uploaded" ? "Saved as one video. The edit starts in a moment." : (upload.status_detail || "Editing the video."));
+    again(6000);
   }
 
   function updateSessionLabels() {
@@ -1523,6 +1694,9 @@ function rebindIdeas(ideas, next) {
   $("pauseButton").addEventListener("click", pauseResume);
   $("finishClipButton").addEventListener("click", () => finishClip());
   $("finishSessionButton").addEventListener("click", finishSession);
+  $("finishStatusClose").addEventListener("click", stopTracking);
+  // Escape must not hide the note while the end of a clip is still leaving this phone.
+  $("finishDialog").addEventListener("cancel", (event) => event.preventDefault());
   $("reader").addEventListener("scroll", syncScrollRail, { passive: true });
   $("switchDialog").addEventListener("close", async () => {
     if ($("switchDialog").returnValue !== "confirm" || !state.pendingIdea) { state.pendingIdea = null; return; }
@@ -1592,4 +1766,7 @@ function rebindIdeas(ideas, next) {
   loadQueue().then(function () {
     try { openFromQuery(); } catch (error) { /* the list still works */ }
   });
+  // Back on the page after sending a take: its progress is still at the top.
+  const lastSent = readTracked();
+  if (lastSent) trackFinish(lastSent);
 })();

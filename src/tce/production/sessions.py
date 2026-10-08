@@ -6,11 +6,11 @@ import asyncio
 import hashlib
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.models.editorial import RecordingPacket, RecordingUpload, TopicCandidate
@@ -360,6 +360,95 @@ async def _audio_decodes(exe: str, path: Path) -> bool:
     )
     _out, err = await proc.communicate()
     return proc.returncode == 0 and not err.strip()
+
+
+# A build left "finalizing" this long ago was cut off (a restart mid-build), so a
+# new Finish may take it over. An 8 min 43 s take builds in about a minute.
+FINALIZE_STALE = timedelta(minutes=20)
+
+
+async def claim_finalize(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    session_id: uuid.UUID,
+    selected_clip_ids: list[uuid.UUID],
+) -> tuple[RecordingSession, RecordingUpload | None, str | None]:
+    """Claim the take set for ONE build, or say why there is nothing to build.
+
+    8-Oct (T-10566): a second Finish read the take set while the first was still
+    building, built the same video again and failed on the duplicate, a 500 after
+    the take had saved. The claim is one conditional write, so only one press can
+    win it; the caller commits it and builds in the background.
+
+    Returns (session, upload, previous_status). previous_status is None when this
+    press did not claim: the video is already building (upload None) or already
+    built from these clips (upload set). Otherwise it is the status to give back
+    if the build fails.
+    """
+    recording = (
+        await db.execute(
+            select(RecordingSession).where(
+                RecordingSession.id == session_id,
+                RecordingSession.workspace_id == workspace_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if recording is None:
+        raise RecordingSessionError("recording session not found")
+    seen_status, seen_updated = recording.status, recording.updated_at
+    if seen_status == "finalizing" and seen_updated and utcnow() - seen_updated < FINALIZE_STALE:
+        return recording, None, None
+    if recording.canonical_upload_id:
+        upload = (
+            await db.execute(
+                select(RecordingUpload).where(
+                    RecordingUpload.id == recording.canonical_upload_id,
+                    RecordingUpload.workspace_id == workspace_id,
+                )
+            )
+        ).scalar_one()
+        same = not selected_clip_ids or {str(v) for v in selected_clip_ids} == set(
+            recording.selected_clip_ids or []
+        )
+        if same:
+            return recording, upload, None
+        if upload.status != "uploaded":
+            raise RecordingSessionError(
+                "this take set's video is already being edited, so it cannot be rebuilt"
+            )
+    if not selected_clip_ids:
+        raise RecordingSessionError("select at least one clip")
+    clips = list(
+        (
+            await db.execute(
+                select(RecordingClip).where(
+                    RecordingClip.workspace_id == workspace_id,
+                    RecordingClip.session_id == session_id,
+                    RecordingClip.id.in_(selected_clip_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if {clip.id for clip in clips} != set(selected_clip_ids) or any(
+        clip.status != "ready" for clip in clips
+    ):
+        raise RecordingSessionError("every selected clip must be ready in this session")
+    guard = [RecordingSession.id == session_id, RecordingSession.status == seen_status]
+    if seen_status == "finalizing":
+        guard.append(RecordingSession.updated_at == seen_updated)
+    won = await db.execute(
+        update(RecordingSession)
+        .where(*guard)
+        .values(status="finalizing", error_detail=None, updated_at=utcnow())
+        .execution_options(synchronize_session=False)
+    )
+    await db.refresh(recording)
+    if won.rowcount != 1:
+        return recording, None, None
+    # A take set taken over from a cut-off build goes back to recording on failure.
+    return recording, None, "recording" if seen_status == "finalizing" else seen_status
 
 
 async def finalize_session(

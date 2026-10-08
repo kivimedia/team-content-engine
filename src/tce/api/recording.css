@@ -46,6 +46,7 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .queue { display: grid; gap: 14px; margin-top: 30px; }
 .idea-card { width: 100%; border: 2px solid var(--ink); border-radius: 18px; background: var(--white); padding: 18px; text-align: left; box-shadow: 5px 5px 0 var(--ink); }
 .idea-card:active { transform: translate(2px, 2px); box-shadow: 3px 3px 0 var(--ink); }
+.idea-card:disabled { border-style: dashed; box-shadow: none; transform: none; color: var(--ink); }
 .idea-card strong { display: block; font-family: Georgia, serif; font-size: 1.35rem; line-height: 1.2; }
 .idea-card span { display: block; margin-top: 8px; color: #3d4b60; line-height: 1.4; }
 .idea-meta { margin-top: 12px; color: var(--lake); font-weight: 800; font-size: .9rem; }
@@ -185,6 +186,30 @@ main { width: min(100%, 980px); margin: 0 auto; }
 dialog { width: min(92vw, 430px); border: 3px solid var(--ink); border-radius: 18px; color: var(--ink); padding: 22px; }
 dialog::backdrop { background: rgba(7, 17, 31, .72); }
 dialog h2 { font-family: Georgia, serif; margin-top: 0; }
+/* Finish (8-Oct): the short note, then the progress card on the list. */
+.finish-dialog h2 { font-size: 1.5rem; margin-bottom: 10px; }
+.finish-now { font-size: 1.08rem; line-height: 1.45; font-weight: 800; margin: 0 0 14px; color: var(--ink); }
+.finish-now.must-wait { background: #fff4c2; border: 2px solid var(--ink); border-radius: 10px; padding: 12px; }
+.finish-now.failed { background: #fde3e3; border: 2px solid var(--signal); border-radius: 10px; padding: 12px; }
+.finish-steps { list-style: none; padding: 0; margin: 0 0 14px; display: grid; gap: 10px; }
+.finish-steps li { display: grid; grid-template-columns: 26px 1fr; align-items: start; gap: 8px; font-size: 1rem; line-height: 1.4; color: #34435a; }
+.finish-steps li::before { content: "\25CB"; font-weight: 900; color: #34435a; }
+.finish-steps li.now { color: var(--ink); font-weight: 800; }
+.finish-steps li.now::before { content: "\25CF"; color: var(--moss); }
+.finish-steps li.done { color: var(--ink); }
+.finish-steps li.done::before { content: "\2713"; color: var(--moss); }
+.finish-steps li.failed { color: var(--signal); font-weight: 800; }
+.finish-steps li.failed::before { content: "!"; color: var(--signal); }
+.finish-after { font-size: .98rem; line-height: 1.45; color: #34435a; margin: 0; }
+.finish-status { border: 3px solid var(--ink); border-radius: 18px; background: #fff; padding: 16px 18px; margin: 0 0 22px; max-width: 620px; }
+.finish-status-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.finish-status-head .kicker { margin: 0; }
+.finish-status h2 { font-family: Georgia, serif; font-size: 1.35rem; line-height: 1.2; margin: 6px 0 10px; }
+.finish-status-close { min-width: 44px; min-height: 44px; border: 2px solid var(--ink); border-radius: 10px; background: #fff; color: var(--ink); font-size: 1.4rem; font-weight: 800; }
+.finish-status-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.finish-retry, .finish-open { min-height: 48px; display: inline-flex; align-items: center; padding: 0 16px; border: 2px solid var(--ink); border-radius: 10px; font-weight: 800; font-size: 1rem; text-decoration: none; }
+.finish-retry { background: var(--moss); color: #fff; }
+.finish-open { background: #fff; color: var(--ink); }
 .dialog-actions { display: grid; grid-template-columns: 1fr 1.4fr; gap: 10px; }
 .dialog-actions button { min-height: 50px; border: 2px solid var(--ink); border-radius: 10px; background: #fff; font-weight: 800; }
 .dialog-actions .primary { background: var(--moss); color: #fff; }

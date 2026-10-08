@@ -1880,21 +1880,64 @@ async def finish_recording_clip_route(
 async def finish_recording_session_route(
     session_id: uuid.UUID,
     body: RecordingSessionFinish,
+    response: Response,
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    """Claim the take set and build its video in the background (8-Oct, T-10568).
+
+    Ziv: "show me a modal for three seconds about what is going to be done in the
+    background and then move me to the next phase." Finish used to hold the phone
+    on the thin top line for the whole build; it now answers 202 as soon as the
+    build is claimed, and the page follows it on GET /recording-sessions/{id}. A
+    second Finish while it builds answers 200 with started false, never an error.
+    """
     try:
-        row, upload = await recording_sessions.finalize_session(
-            db, ws, session_id, body.selected_clip_ids, _recording_root()
+        row, upload, previous = await recording_sessions.claim_finalize(
+            db, ws, session_id, body.selected_clip_ids
         )
     except recording_sessions.RecordingSessionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    payload = {"session": await _recording_session_json(db, row), "upload": upload_json(upload)}
-    await db.commit()  # the edit runs in the background and must see the new video
-    if upload.status == "uploaded" and not upload.transcript:
-        start_auto_edit(upload.id, ws)
+    payload = {
+        "session": await _recording_session_json(db, row),
+        "upload": upload_json(upload) if upload else None,
+        "started": previous is not None,
+    }
+    await db.commit()
+    if previous is not None:
+        response.status_code = 202
+        _spawn(_build_session_video(ws, session_id, list(body.selected_clip_ids), previous))
     return payload
 
+
+async def _build_session_video(
+    ws: uuid.UUID, session_id: uuid.UUID, clip_ids: list[uuid.UUID], previous: str
+) -> None:
+    """The build Finish claimed. Every failure lands on the take set, never only in a log."""
+    try:
+        async with session_factory()() as s:
+            _, upload = await recording_sessions.finalize_session(
+                s, ws, session_id, clip_ids, _recording_root()
+            )
+            await s.commit()  # the edit runs in the background and must see the new video
+            if upload.status == "uploaded" and not upload.transcript:
+                start_auto_edit(upload.id, ws)
+    except Exception as exc:  # noqa: BLE001 - the reason goes on the row he reads
+        reason = str(exc) if isinstance(exc, recording_sessions.RecordingSessionError) else (
+            f"{type(exc).__name__}: {exc}"
+        )
+        async with session_factory()() as s:
+            row = (
+                await s.execute(
+                    select(RecordingSession).where(
+                        RecordingSession.id == session_id, RecordingSession.workspace_id == ws
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is not None and row.status == "finalizing":
+                row.status = previous
+                row.error_detail = f"The video could not be put together: {reason}"[:1000]
+                await s.commit()
 
 
 # ---------------------------------------------------------------------------

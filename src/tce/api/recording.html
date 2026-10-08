@@ -25,6 +25,21 @@
 
   <main>
     <section id="queueView" class="queue-view" aria-labelledby="queueTitle">
+      <!-- 8-Oct: after Finish he lands here and keeps working; this says what the
+           take he just sent is doing right now, until the edit is done. -->
+      <section id="finishStatus" class="finish-status" hidden aria-labelledby="finishStatusTitle">
+        <div class="finish-status-head">
+          <p class="kicker">The take you just sent</p>
+          <button id="finishStatusClose" class="finish-status-close" type="button" aria-label="Hide this">&#215;</button>
+        </div>
+        <h2 id="finishStatusTitle"></h2>
+        <p id="finishStatusNow" class="finish-now" aria-live="polite"></p>
+        <ol id="finishStatusSteps" class="finish-steps"></ol>
+        <div class="finish-status-actions">
+          <button id="finishRetry" class="finish-retry" type="button" hidden>Put it together again</button>
+          <a id="finishOpen" class="finish-open" href="/library?filter=editing" hidden>See it in the Library</a>
+        </div>
+      </section>
       <div class="queue-intro">
         <p class="kicker">This recording sitting</p>
         <h1 id="queueTitle">Ready to record</h1>
@@ -122,6 +137,13 @@
   </main>
 
   <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+  <!-- 8-Oct: Finish shows this for about three seconds, then moves him on. -->
+  <dialog id="finishDialog" class="finish-dialog" aria-labelledby="finishDialogTitle">
+    <h2 id="finishDialogTitle">Sending your take for editing</h2>
+    <p id="finishDialogNow" class="finish-now" aria-live="assertive"></p>
+    <ol id="finishDialogSteps" class="finish-steps"></ol>
+    <p class="finish-after">This carries on in the background. In a moment you are back on your list, with its progress at the top.</p>
+  </dialog>
   <dialog id="switchDialog">
     <form method="dialog">
       <h2>Save this clip before switching?</h2>

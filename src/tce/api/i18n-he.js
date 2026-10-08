@@ -92,6 +92,36 @@
       "הקליפ יישאר עם התסריט הזה. התסריט הבא ייפתח ברגע שהקליפ שמור בטלפון.",
     "Stay here": "להישאר כאן",
     "Save clip and switch": "לשמור ולעבור",
+    // Finish, once (8-Oct): the note and the progress card on the list
+    "Sending your take for editing": "שולחים את הטייק לעריכה",
+    "This carries on in the background. In a moment you are back on your list, with its progress at the top.":
+      "זה ממשיך ברקע. עוד רגע חוזרים לרשימה, וההתקדמות מופיעה למעלה.",
+    "The take you just sent": "הטייק ששלחת עכשיו",
+    "Hide this": "להסתיר",
+    "Your take": "הטייק שלך",
+    "Put it together again": "לחבר שוב",
+    "See it in the Library": "לראות בספרייה",
+    "Sending the last clip from this phone": "שולחים את הקליפ האחרון מהטלפון",
+    "Sending the last clip from this phone.": "שולחים את הקליפ האחרון מהטלפון.",
+    "Putting the clips together and checking the sound": "מחברים את הקליפים ובודקים את הקול",
+    "Putting the clips together and checking the sound.": "מחברים את הקליפים ובודקים את הקול.",
+    "Editing the video": "עורכים את הסרטון",
+    "Editing the video.": "עורכים את הסרטון.",
+    "Please stay on this screen: sending the end of your last clip from this phone.":
+      "נא להישאר במסך הזה: שולחים את סוף הקליפ האחרון מהטלפון.",
+    "Please stay on this screen: sending a clip that did not get through before.":
+      "נא להישאר במסך הזה: שולחים קליפ שלא עבר קודם.",
+    "Being put together for editing": "מחברים לעריכה",
+    "Handing the clips to TCE.": "מעבירים את הקליפים ל-TCE.",
+    "Putting the clips together and checking the sound. You do not have to wait for this.":
+      "מחברים את הקליפים ובודקים את הקול. לא צריך לחכות לזה.",
+    "Saved as one video. The edit starts in a moment.": "נשמר כסרטון אחד. העריכה מתחילה עוד רגע.",
+    "Edited. It is waiting for you in the Library.": "נערך. הוא מחכה לך בספרייה.",
+    "This take was replaced by a newer version.": "הטייק הזה הוחלף בגרסה חדשה יותר.",
+    "The edit stopped. Open it in the Library to see why.": "העריכה נעצרה. אפשר לפתוח בספרייה ולראות למה.",
+    "The video was not put together. Press the button below to try again.":
+      "הסרטון לא חובר. אפשר ללחוץ על הכפתור למטה ולנסות שוב.",
+    "Could not check on it just now. Trying again in a moment.": "לא הצלחנו לבדוק כרגע. ננסה שוב עוד רגע.",
 
     // Workspace: pages, headings, buttons
     "Start recording": "להתחיל להקליט",
@@ -801,6 +831,7 @@
     [/^Save (\d+) a week$/, "לשמור $1 בשבוע"],
     [/^(\d+) of (\d+) · Start a new take set$/, "$1 מתוך $2 · הקלטה חדשה"],
     [/^(\d+) of (\d+) · Continue take set .*$/, "$1 מתוך $2 · ממשיכים את ההקלטה"],
+    [/^(\d+) of (\d+) · Being put together for editing$/, "$1 מתוך $2 · מחברים לעריכה"],
     [/^Point (\d+)$/, "נקודה $1"],
     // Lines on his post card that the server writes in English (5-Oct).
     [/^Changing: ([\s\S]*)$/, "משנה: $1"],
