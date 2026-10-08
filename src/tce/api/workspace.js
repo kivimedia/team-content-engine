@@ -2806,14 +2806,17 @@
      branches but were missing from the string, so "Ask for a rewrite", "Review
      the change" and the notifications toggle were silently dead. Nothing threw,
      nothing logged - the click simply matched nothing. Adding an action here is
-     now the only step. */
+     now the only step. It drifted again on 8-Oct (check-again, release-hold,
+     rule-delete), so tests/unit/test_workspace_click_actions.py now fails on
+     any branch below whose action is missing from this list. */
   var CLICK_ACTIONS = [
     "go", "filter", "libfilter", "decide", "open-room", "open-script", "move",
     "slot", "remove", "ask-script", "change", "edit", "restore", "wtab",
     "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
     "watch", "watch-close", "voice-undo", "voice-restore",
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise", "pub-copy",
-    "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now"
+    "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
+    "check-again", "release-hold", "rule-delete"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
