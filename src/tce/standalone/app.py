@@ -213,13 +213,26 @@ async def logout(
 
 
 @auth.get("/me")
-async def me(principal: Principal = Depends(current_principal)):
-    return {
+async def me(
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+):
+    result = {
         "email": principal.email,
         "workspace_id": str(principal.workspace_id),
         "role": principal.role,
         "scopes": sorted(principal.scopes),
     }
+    if principal.token_id:
+        token = await db.get(StandaloneAPIToken, principal.token_id)
+        expires = token.expires_at if token else None
+        result["token_expires_at"] = (
+            (expires.replace(tzinfo=UTC) if expires.tzinfo is None else expires.astimezone(UTC))
+            .isoformat()
+            if expires
+            else None
+        )
+    return result
 
 
 async def latest_config(db: AsyncSession, ws: uuid.UUID) -> StandaloneConfigRevision | None:

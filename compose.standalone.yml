@@ -56,6 +56,24 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  mcp-http:
+    build:
+      context: ./mcp-http
+    environment:
+      TCE_CLIENT_API_URL: http://app:8000
+      TCE_CLIENT_PUBLIC_URL: ${TCE_STANDALONE_PUBLIC_URL:?Set public URL}
+    ports:
+      - "127.0.0.1:${TCE_STANDALONE_MCP_PORT:-8876}:3000"
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   tce_client_db:
   tce_client_files:

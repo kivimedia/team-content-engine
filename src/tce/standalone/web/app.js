@@ -99,6 +99,9 @@ const workerGrantObserver = new MutationObserver(() => {
   const panel = heading?.parentElement;
   if (!panel || panel.dataset.workerReady) return;
   panel.dataset.workerReady = 'true';
+  const remote = node('p', 'Remote MCP endpoint: ', 'note');
+  remote.append(node('code', `${location.origin}/mcp`));
+  panel.append(remote);
   panel.append(node('p', 'Claude Code can scout and draft through its own signed-in terminal. Give its TCE MCP adapter a worker-only token. Disconnect it by revoking the token.'));
   const create = button('Create Claude Code worker token', async () => {
     try {

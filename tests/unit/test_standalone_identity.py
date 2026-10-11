@@ -421,6 +421,9 @@ async def test_claude_code_worker_leases_only_own_jobs_and_retries_failures(clie
     token_id = granted.json()["id"]
     bearer = {"Authorization": f"Bearer {granted.json()['token']}"}
     await client.post("/auth/logout", headers=headers)
+    identity = (await client.get("/auth/me", headers=bearer)).json()
+    assert identity["scopes"] == ["worker"]
+    assert datetime.fromisoformat(identity["token_expires_at"]) > datetime.now(UTC)
     assert (await client.get("/api/ideas", headers=bearer)).status_code == 403
     lease = await client.post("/api/jobs/lease", headers=bearer)
     assert lease.status_code == 200 and lease.json()["job"]["id"] == job_id

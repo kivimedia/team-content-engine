@@ -121,6 +121,17 @@ native Claude Code to lease one job, answer its prompt with its own subscription
 then complete or fail that exact lease. Never point a client at the legacy `index.mjs` MCP
 server, which is for the owner runtime.
 
+Remote HTTP MCP runs as a separate `mcp-http` container and is proxied at
+`https://tce-clients.104-200-30-37.sslip.io/mcp`. Its port binds to VPS
+loopback only. Use a personal token created in Settings as a Bearer grant;
+`read`, `deliver`, and `worker` scopes determine which tools are listed.
+The gateway checks the grant against `/auth/me` on every request, so expiration,
+revocation, disabled accounts, and disabled workspaces take effect immediately.
+API endpoints enforce scopes again on every tool call. The gateway does not
+provide an OAuth authorization server or social publishing tools. Stdio remains
+available for local Claude Code. Proxy `/mcp` to loopback port 8876, preserve
+the Host header, and disable response buffering for streaming clients.
+
 ## Operations and rollback
 
 Audit active tokens in Settings and revoke any unused token. Pause a source in
@@ -132,6 +143,8 @@ keys in their own systems; client keys can then be replaced in Settings.
 The pre-s004 client DB snapshot is at
 `/home/ziv/tce-client-backups/pre-s004-2026-10-11.dump` on the VPS. Its mode is
 0600. Restore only to an isolated copy before using it as a rollback source.
+The pre-s005 snapshot is at
+`/home/ziv/tce-client-backups/pre-s005-2026-10-11.dump`, also mode 0600.
 Take another private snapshot before applying the routine schema s005.
 
 Before client launch, verify two independent client accounts cannot read or alter
