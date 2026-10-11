@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -10,7 +11,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
@@ -434,7 +435,7 @@ def create_standalone_app() -> FastAPI:
             "img-src 'self' data:; media-src 'self' blob:; "
             "connect-src 'self'; frame-ancestors 'none'; form-action 'self'"
         )
-        if request.url.path.startswith(("/api/", "/auth/")) or request.url.path == "/app":
+        if request.url.path.startswith(("/api/", "/auth/")) or request.url.path in {"/app", "/"}:
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -455,14 +456,21 @@ def create_standalone_app() -> FastAPI:
     app.include_router(workflow_router)
     web_root = Path(__file__).with_name("web")
     app.mount("/static", StaticFiles(directory=web_root), name="standalone-static")
+    asset_version = hashlib.sha256(
+        (web_root / "app.css").read_bytes() + (web_root / "app.js").read_bytes()
+    ).hexdigest()[:12]
+    frontend_html = (web_root / "index.html").read_text(encoding="utf-8")
+    frontend_html = frontend_html.replace(
+        "/static/app.css", f"/static/app.css?v={asset_version}"
+    ).replace("/static/app.js", f"/static/app.js?v={asset_version}")
 
     @app.get("/app", include_in_schema=False)
     async def frontend():
-        return FileResponse(web_root / "index.html")
+        return HTMLResponse(frontend_html)
 
     @app.get("/", include_in_schema=False)
     async def home():
-        return FileResponse(web_root / "index.html")
+        return HTMLResponse(frontend_html)
 
     return app
 

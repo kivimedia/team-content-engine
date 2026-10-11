@@ -53,6 +53,10 @@ settings, pause sources, remove provider keys, and deactivate uploaded material.
 They can preview each saved source lane before scouting. Audio voice samples can
 be transcribed on an explicit click with the client's own OpenAI key, then used
 alongside written samples when drafting scripts.
+Generated research and AI news ideas must include an enabled lane and a public
+HTTPS source URL. The link is stored with the idea and shown in the inbox.
+The URL is structurally checked but its contents are not independently checked
+by the app, so a client should open it before relying on a factual claim.
 The weekly scouting day and local time live in the same versioned Settings
 record. Disabling or restoring the routine takes effect on the next scheduler
 check. The scheduler uses the client's IANA timezone, including daylight saving

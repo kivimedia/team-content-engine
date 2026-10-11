@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from docx import Document
@@ -43,6 +45,8 @@ class IdeaDraft(BaseModel):
     why_now: str = Field(default="", max_length=2000)
     evidence: str = Field(default="", max_length=4000)
     source_ref: int | None = None
+    source_url: str | None = Field(default=None, max_length=1000)
+    source_lane_index: int | None = Field(default=None, ge=0, le=2)
 
 
 class IdeaPatch(BaseModel):
@@ -289,8 +293,8 @@ async def preview_source(
     }
 
 
-def _idea_json(row: StandaloneIdea) -> dict:
-    return {
+def _idea_json(row: StandaloneIdea, source_url: str | None = None) -> dict:
+    result = {
         "id": str(row.id),
         "title": row.title,
         "angle": row.angle,
@@ -302,6 +306,87 @@ def _idea_json(row: StandaloneIdea) -> dict:
         "source_item_id": str(row.source_item_id) if row.source_item_id else None,
         "notes": row.notes,
     }
+    if source_url:
+        result["source_url"] = source_url
+    return result
+
+
+async def _source_urls(db: AsyncSession, ws: uuid.UUID, ideas: list[StandaloneIdea]) -> dict:
+    ids = {row.source_item_id for row in ideas if row.source_item_id}
+    if not ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(StandaloneSourceItem).where(
+                StandaloneSourceItem.workspace_id == ws,
+                StandaloneSourceItem.id.in_(ids),
+            )
+        )
+    ).scalars()
+    return {row.id: row.url for row in rows}
+
+
+async def generated_source(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    draft: IdeaDraft,
+    refs: dict[int, StandaloneSourceItem],
+    web_lanes: set[int],
+) -> StandaloneSourceItem:
+    if draft.source_ref is not None:
+        source = refs.get(draft.source_ref)
+        if source is None:
+            raise HTTPException(status_code=422, detail="Idea cites an unknown supplied source")
+        return source
+    if draft.source_lane_index not in web_lanes or not draft.source_url:
+        raise HTTPException(status_code=422, detail="Web idea needs a linked research source")
+    url = draft.source_url.strip()
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname or ""
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Web source URL is malformed") from exc
+    try:
+        ipaddress.ip_address(host)
+        invalid_host = True
+    except ValueError:
+        invalid_host = not bool(re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", host))
+    if (
+        parsed.scheme != "https"
+        or invalid_host
+        or parsed.username
+        or parsed.password
+        or port is not None
+        or host.endswith((".local", ".internal", ".test"))
+    ):
+        raise HTTPException(status_code=422, detail="Web source must use a public HTTPS URL")
+    digest = hashlib.sha256((url + "\n" + draft.evidence).encode()).hexdigest()
+    external_id = "web:" + hashlib.sha256(url.encode()).hexdigest()
+    source = (
+        await db.execute(
+            select(StandaloneSourceItem).where(
+                StandaloneSourceItem.workspace_id == ws,
+                StandaloneSourceItem.lane_index == draft.source_lane_index,
+                StandaloneSourceItem.external_id == external_id,
+                StandaloneSourceItem.sha256 == digest,
+            )
+        )
+    ).scalar_one_or_none()
+    if source is None:
+        source = StandaloneSourceItem(
+            workspace_id=ws,
+            lane_index=draft.source_lane_index,
+            source_kind="web_research",
+            external_id=external_id,
+            title=draft.title,
+            url=url,
+            content=draft.evidence,
+            sha256=digest,
+        )
+        db.add(source)
+        await db.flush()
+    return source
 
 
 @router.post("/scout")
@@ -334,7 +419,8 @@ async def scout(
         f"SOURCE {i}: {row.title}\nURL: {row.url or 'private upload'}\n{row.content[:3000]}"
         for i, row in source_refs.items()
     )
-    use_search = any(lane["kind"] in {"ai_news", "research"} for lane in lane_specs)
+    web_lanes = {lane["index"] for lane in lane_specs if lane["kind"] in {"ai_news", "research"}}
+    use_search = bool(web_lanes)
     if not source_refs and not use_search:
         raise HTTPException(status_code=409, detail="Add material or connect a source first")
     prompt = (
@@ -342,8 +428,10 @@ async def scout(
         "For Fathom and commits prefer evidence from real calls and work. For research and AI news "
         "search for current primary sources and connect them to this client's work. "
         "Never invent a source, quote, claim or result. Return JSON objects with "
-        "title, angle, why_now, evidence, source_ref. source_ref is a numbered supplied source, "
-        "or null for web research. For web research include a verified primary URL in evidence.\n"
+        "title, angle, why_now, evidence, source_ref, source_url, source_lane_index. "
+        "Use a numbered source_ref for supplied material. For web research use source_ref null, "
+        "a real primary HTTPS source_url, and the enabled research or AI news lane index. "
+        "Do not return an idea without one of these sources.\n"
         f"CLIENT: {config['display_name']}\nAUDIENCE: {config.get('audience', '')}\n"
         f"FOCUS: {config.get('focus', '')}\nAVOID: {config.get('avoid', '')}\n"
         f"LANES: {json.dumps(lane_specs)}\n{source_text}"
@@ -359,6 +447,7 @@ async def scout(
                 "source_refs": {
                     str(number): str(source.id) for number, source in source_refs.items()
                 },
+                "web_lanes": sorted(web_lanes),
             },
         )
         return JSONResponse(status_code=202, content={"job_id": str(job.id), "status": "queued"})
@@ -376,15 +465,13 @@ async def scout(
     made = []
     for item in parsed:
         idea = IdeaDraft.model_validate(item)
-        source = source_refs.get(idea.source_ref) if idea.source_ref is not None else None
-        if idea.source_ref is not None and source is None:
-            raise HTTPException(
-                status_code=502, detail="Reasoning connection cited an unknown source"
-            )
+        source = await generated_source(
+            db, principal.workspace_id, idea, source_refs, web_lanes
+        )
         row = StandaloneIdea(
             workspace_id=principal.workspace_id,
-            source_item_id=source.id if source else None,
-            lane_index=source.lane_index if source else None,
+            source_item_id=source.id,
+            lane_index=source.lane_index,
             title=idea.title,
             angle=idea.angle,
             why_now=idea.why_now,
@@ -392,7 +479,7 @@ async def scout(
         )
         db.add(row)
         await db.flush()
-        made.append(_idea_json(row))
+        made.append(_idea_json(row, source.url))
     return {"ideas": made, "sources_considered": len(source_refs)}
 
 
@@ -407,8 +494,9 @@ async def list_ideas(
             .where(StandaloneIdea.workspace_id == principal.workspace_id)
             .order_by(StandaloneIdea.created_at.desc())
         )
-    ).scalars()
-    return [_idea_json(row) for row in rows]
+    ).scalars().all()
+    urls = await _source_urls(db, principal.workspace_id, rows)
+    return [_idea_json(row, urls.get(row.source_item_id)) for row in rows]
 
 
 async def _idea(db: AsyncSession, ws: uuid.UUID, idea_id: uuid.UUID) -> StandaloneIdea:
@@ -488,8 +576,12 @@ async def week(
                 StandaloneIdea.status == "this_week",
             )
         )
-    ).scalars()
-    return {"week_start": week_start, "ideas": [_idea_json(row) for row in rows]}
+    ).scalars().all()
+    urls = await _source_urls(db, principal.workspace_id, rows)
+    return {
+        "week_start": week_start,
+        "ideas": [_idea_json(row, urls.get(row.source_item_id)) for row in rows],
+    }
 
 
 async def _latest_script(db: AsyncSession, ws: uuid.UUID, idea_id: uuid.UUID):

@@ -123,6 +123,18 @@ def config(name: str):
 
 
 @pytest.mark.asyncio
+async def test_client_assets_use_a_content_version(clients):
+    client, _ = clients
+    response = await client.get("/app")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    import re
+
+    versions = re.findall(r"/static/app\.(?:css|js)\?v=([0-9a-f]{12})", response.text)
+    assert len(versions) == 2 and versions[0] == versions[1]
+
+
+@pytest.mark.asyncio
 async def test_saved_source_preview_shows_only_active_material_from_own_lane(clients):
     client, _ = clients
     login = await client.post(
@@ -671,6 +683,84 @@ async def test_private_material_and_secret_do_not_cross_clients(clients):
     assert (await client.get(f"/api/materials/{material_id}/download")).status_code == 404
     assert (await client.get("/api/materials")).json() == []
     assert (await client.get("/api/secrets")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_web_scout_keeps_a_workspace_bound_source_link(clients, monkeypatch):
+    from tce.standalone import workflow
+
+    result = [
+        '[{"title":"A current finding","angle":"Apply the finding to coaching",'
+        '"evidence":"A specific published finding","source_ref":null,'
+        '"source_url":"https://www.nist.gov/news-events/news/example",'
+        '"source_lane_index":1}]'
+    ]
+
+    async def fake_brain(db, ws, system, prompt, **kwargs):
+        assert kwargs["web_search"] is True
+        return result[0]
+
+    monkeypatch.setattr(workflow, "ask_brain", fake_brain)
+    client, _ = clients
+    assert (await client.post(
+        "/auth/login",
+        json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+    )).status_code == 200
+    headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    own_config = {**config("Ken"), "brain_mode": "anthropic_api"}
+    assert (await client.put(
+        "/api/config", json={"expected_revision": 0, "config": own_config}, headers=headers
+    )).status_code == 200
+    scout = await client.post("/api/scout", headers=headers)
+    assert scout.status_code == 200, scout.text
+    idea = scout.json()["ideas"][0]
+    assert idea["source_item_id"] and idea["lane_index"] == 1
+    assert idea["source_url"] == "https://www.nist.gov/news-events/news/example"
+    listed = (await client.get("/api/ideas")).json()
+    assert listed[0]["source_url"] == idea["source_url"]
+
+    result[0] = result[0].replace("https://www.nist.gov/news-events/news/example", "http://localhost/private")
+    assert (await client.post("/api/scout", headers=headers)).status_code == 422
+    assert len((await client.get("/api/ideas")).json()) == 1
+
+    assert (await client.post(
+        "/auth/login",
+        json={"email": "other@example.test", "password": TEST_PASSWORD, "workspace": "other"},
+    )).status_code == 200
+    assert (await client.get("/api/ideas")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_claude_code_web_scout_requires_a_linked_source(clients):
+    client, _ = clients
+    assert (await client.post(
+        "/auth/login",
+        json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+    )).status_code == 200
+    headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    assert (await client.put(
+        "/api/config", json={"expected_revision": 0, "config": config("Ken")}, headers=headers
+    )).status_code == 200
+    queued = await client.post("/api/scout", headers=headers)
+    assert queued.status_code == 202
+    grant = await client.post(
+        "/api/tokens", json={"label": "Synthetic worker", "scopes": ["worker"]}, headers=headers
+    )
+    bearer = {"Authorization": f"Bearer {grant.json()['token']}"}
+    await client.post("/auth/logout", headers=headers)
+    lease = (await client.post("/api/jobs/lease", headers=bearer)).json()["job"]
+    assert lease["id"] == queued.json()["job_id"]
+    body = {"lease_token": lease["lease_token"], "output": (
+        '[{"title":"A current finding","angle":"Apply the finding to coaching",'
+        '"evidence":"A published finding","source_ref":null,'
+        '"source_url":"https://www.nist.gov/news-events/news/example",'
+        '"source_lane_index":1}]'
+    )}
+    completed = await client.post(
+        f"/api/jobs/{lease['id']}/complete", json=body, headers=bearer
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["result"]["ideas"][0]["source_url"].startswith("https://")
 
 
 @pytest.mark.asyncio

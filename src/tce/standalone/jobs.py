@@ -173,39 +173,45 @@ async def complete_job(
 ):
     row = await _leased(db, principal.workspace_id, job_id, body.lease_token)
     if row.kind == "scout":
-        from tce.standalone.workflow import IdeaDraft, _idea_json, _parse_json
+        from tce.standalone.workflow import (
+            IdeaDraft,
+            _idea_json,
+            _parse_json,
+            generated_source,
+        )
 
         parsed = _parse_json(body.output)
         if not isinstance(parsed, list) or not 1 <= len(parsed) <= 8:
             raise HTTPException(status_code=422, detail="Return 1 to 8 JSON ideas")
         refs = row.input.get("source_refs") or {}
         source_ids = {int(number): uuid.UUID(value) for number, value in refs.items()}
+        web_lanes = set(row.input.get("web_lanes") or [])
+        sources = {}
+        for number, source_id in source_ids.items():
+            source = (
+                await db.execute(
+                    select(StandaloneSourceItem).where(
+                        StandaloneSourceItem.id == source_id,
+                        StandaloneSourceItem.workspace_id == principal.workspace_id,
+                        StandaloneSourceItem.active.is_(True),
+                    )
+                )
+            ).scalar_one_or_none()
+            if source is not None:
+                sources[number] = source
         made = []
         for item in parsed:
             try:
                 draft = IdeaDraft.model_validate(item)
             except ValidationError as exc:
                 raise HTTPException(status_code=422, detail="Idea fields are invalid") from exc
-            source_id = source_ids.get(draft.source_ref) if draft.source_ref is not None else None
-            if draft.source_ref is not None and source_id is None:
-                raise HTTPException(status_code=422, detail="Idea cites an unknown source")
-            source = None
-            if source_id:
-                source = (
-                    await db.execute(
-                        select(StandaloneSourceItem).where(
-                            StandaloneSourceItem.id == source_id,
-                            StandaloneSourceItem.workspace_id == principal.workspace_id,
-                            StandaloneSourceItem.active.is_(True),
-                        )
-                    )
-                ).scalar_one_or_none()
-                if source is None:
-                    raise HTTPException(status_code=409, detail="Cited source was removed")
+            source = await generated_source(
+                db, principal.workspace_id, draft, sources, web_lanes
+            )
             idea = StandaloneIdea(
                 workspace_id=principal.workspace_id,
-                source_item_id=source.id if source else None,
-                lane_index=source.lane_index if source else None,
+                source_item_id=source.id,
+                lane_index=source.lane_index,
                 title=draft.title,
                 angle=draft.angle,
                 why_now=draft.why_now,
@@ -213,7 +219,7 @@ async def complete_job(
             )
             db.add(idea)
             await db.flush()
-            made.append(_idea_json(idea))
+            made.append(_idea_json(idea, source.url))
         row.result = {"ideas": made, "sources_considered": len(refs)}
     elif row.kind == "script":
         script = body.output.strip()
