@@ -13,7 +13,8 @@ volume. Keep its public address behind HTTPS. The container listens on local por
    the encryption key separately. Losing it makes client provider keys unreadable.
 2. Run `docker compose --env-file .env.standalone -f compose.standalone.yml up -d --build`.
    The one-shot migration container must finish successfully before the app starts.
-   The database is fresh and has no owner data. Do not point this at the owner TCE
+   These use `alembic_standalone.ini`, an independent migration history. The
+   `tce_client` database is fresh and has no owner data. Do not point this at the owner TCE
    database or file volume.
 3. Read `GET /healthz` through the HTTPS proxy and check that `/app` loads its
    CSS and JavaScript. Confirm the proxy forwards HTTPS correctly and limits upload

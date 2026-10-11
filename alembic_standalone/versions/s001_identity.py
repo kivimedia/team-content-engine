@@ -1,7 +1,7 @@
 """Standalone account, tenant and configuration foundation.
 
-Revision ID: 059
-Revises: 058
+Revision ID: s001
+Revises: none
 Create Date: 2026-10-11
 """
 
@@ -10,8 +10,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision = "059"
-down_revision = "058"
+revision = "s001"
+down_revision = None
 branch_labels = None
 depends_on = None
 JSON = sa.JSON().with_variant(postgresql.JSONB(), "postgresql")

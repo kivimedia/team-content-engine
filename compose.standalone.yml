@@ -3,12 +3,12 @@ services:
     image: postgres:16
     environment:
       POSTGRES_USER: tce
-      POSTGRES_DB: tce
+      POSTGRES_DB: tce_client
       POSTGRES_PASSWORD: ${TCE_STANDALONE_DB_PASSWORD:?Set database password}
     volumes:
       - tce_client_db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tce -d tce"]
+      test: ["CMD-SHELL", "pg_isready -U tce -d tce_client"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -18,7 +18,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.standalone
-    command: ["alembic", "upgrade", "head"]
+    command: ["alembic", "-c", "alembic_standalone.ini", "upgrade", "head"]
     env_file: .env.standalone
     depends_on:
       db:

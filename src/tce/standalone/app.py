@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -371,6 +373,18 @@ async def revoke_token(
     return {"ok": True}
 
 
+@asynccontextmanager
+async def client_lifespan(app: FastAPI):
+    for name in (
+        "TCE_DATABASE_URL",
+        "TCE_STANDALONE_STORAGE_DIR",
+        "TCE_STANDALONE_ENCRYPTION_KEY",
+    ):
+        if not os.environ.get(name):
+            raise RuntimeError(f"Standalone client configuration is missing {name}")
+    yield
+
+
 def create_standalone_app() -> FastAPI:
     from tce.standalone.delivery import router as delivery_router
     from tce.standalone.live import router as live_router
@@ -379,7 +393,13 @@ def create_standalone_app() -> FastAPI:
     from tce.standalone.secrets import router as secrets_router
     from tce.standalone.workflow import router as workflow_router
 
-    app = FastAPI(title="TCE for clients", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(
+        title="TCE for clients",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=client_lifespan,
+    )
 
     @app.middleware("http")
     async def browser_headers(request, call_next):

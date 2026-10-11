@@ -158,6 +158,3 @@ __all__ = [
     "WorkspaceStrategy",
     "WorkspaceTrendFocus",
 ]
-
-# Standalone client records
-from tce.standalone import models as standalone_models

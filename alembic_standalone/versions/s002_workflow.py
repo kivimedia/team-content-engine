@@ -1,7 +1,7 @@
 """Private idea, script, recording and conversation records.
 
-Revision ID: 060
-Revises: 059
+Revision ID: s002
+Revises: s001
 Create Date: 2026-10-11
 """
 
@@ -10,8 +10,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision = "060"
-down_revision = "059"
+revision = "s002"
+down_revision = "s001"
 branch_labels = None
 depends_on = None
 JSON = sa.JSON().with_variant(postgresql.JSONB(), "postgresql")

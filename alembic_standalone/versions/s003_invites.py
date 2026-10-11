@@ -1,7 +1,7 @@
 """One-time client invitations.
 
-Revision ID: 061
-Revises: 060
+Revision ID: s003
+Revises: s002
 Create Date: 2026-10-11
 """
 
@@ -9,8 +9,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "061"
-down_revision = "060"
+revision = "s003"
+down_revision = "s002"
 branch_labels = None
 depends_on = None
 
