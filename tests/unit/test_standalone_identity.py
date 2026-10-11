@@ -141,6 +141,8 @@ async def test_public_setup_guide_and_invitation_are_safe_and_specific(clients):
     guide = await client.get("/guide")
     assert guide.status_code == 200
     assert guide.headers["cache-control"] == "no-store"
+    assert 'href="/static/guide.css"' in guide.text
+    assert "<style>" not in guide.text
     for phrase in (
         "three sources",
         "camera",
