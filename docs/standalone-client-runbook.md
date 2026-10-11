@@ -3,7 +3,7 @@
 The client service starts `tce.standalone.app:app`. It does not mount the owner
 application or any publishing route. It uses a separate database and private media
 volume. Keep its public address behind HTTPS. The container listens on local port
-8765 for a reverse proxy.
+8875 by default for a reverse proxy.
 
 ## Prepare a new environment
 

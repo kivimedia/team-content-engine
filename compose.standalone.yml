@@ -30,7 +30,7 @@ services:
       dockerfile: Dockerfile.standalone
     env_file: .env.standalone
     ports:
-      - "127.0.0.1:8765:8000"
+      - "127.0.0.1:${TCE_STANDALONE_BIND_PORT:-8875}:8000"
     volumes:
       - tce_client_files:/data/tce
     depends_on:
