@@ -354,6 +354,146 @@ async def test_audio_voice_sample_transcribes_only_with_clients_verified_key(
 
 
 @pytest.mark.asyncio
+async def test_claude_code_worker_leases_only_own_jobs_and_retries_failures(clients):
+    client, _ = clients
+    login = await client.post(
+        "/auth/login",
+        json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+    )
+    assert login.status_code == 200
+    headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    assert (
+        await client.put(
+            "/api/config", json={"expected_revision": 0, "config": config("Ken")}, headers=headers
+        )
+    ).status_code == 200
+    uploaded = await client.post(
+        "/api/materials",
+        data={"kind": "source", "lane_index": "0"},
+        files={"file": ("chapter.txt", b"Fix client intake before adding AI.", "text/plain")},
+        headers=headers,
+    )
+    assert uploaded.status_code == 201
+    queued = await client.post("/api/scout", headers=headers)
+    assert queued.status_code == 202, queued.text
+    job_id = queued.json()["job_id"]
+    assert (await client.get(f"/api/jobs/{job_id}")).json()["status"] == "queued"
+    assert (
+        await client.post(
+            "/auth/login",
+            json={"email": "other@example.test", "password": TEST_PASSWORD, "workspace": "other"},
+        )
+    ).status_code == 200
+    other_headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    other_grant = await client.post(
+        "/api/tokens", json={"label": "Other worker", "scopes": ["worker"]},
+        headers=other_headers,
+    )
+    assert other_grant.status_code == 200
+    await client.post("/auth/logout", headers=other_headers)
+    other_bearer = {"Authorization": f"Bearer {other_grant.json()['token']}"}
+    assert (await client.post("/api/jobs/lease", headers=other_bearer)).json()["job"] is None
+    assert (
+        await client.post(
+            "/auth/login",
+            json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+        )
+    ).status_code == 200
+    headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    granted = await client.post(
+        "/api/tokens",
+        json={"label": "Native Claude Code", "scopes": ["worker"]},
+        headers=headers,
+    )
+    assert granted.status_code == 200
+    token_id = granted.json()["id"]
+    bearer = {"Authorization": f"Bearer {granted.json()['token']}"}
+    await client.post("/auth/logout", headers=headers)
+    assert (await client.get("/api/ideas", headers=bearer)).status_code == 403
+    lease = await client.post("/api/jobs/lease", headers=bearer)
+    assert lease.status_code == 200 and lease.json()["job"]["id"] == job_id
+    assert "Fix client intake" in lease.json()["job"]["prompt"]
+    lease_token = lease.json()["job"]["lease_token"]
+    assert (await client.post("/api/jobs/lease", headers=bearer)).json()["job"] is None
+    completed = await client.post(
+        f"/api/jobs/{job_id}/complete",
+        json={
+            "lease_token": lease_token,
+            "output": '[{"title":"Intake before AI","angle":"Fix intake before automation",'
+            '"why_now":"Client asked","evidence":"Chapter example","source_ref":1}]',
+        },
+        headers=bearer,
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["status"] == "done"
+    idea_id = completed.json()["result"]["ideas"][0]["id"]
+    assert (await client.post(
+        f"/api/jobs/{job_id}/complete",
+        json={"lease_token": lease_token, "output": "repeat"}, headers=bearer
+    )).status_code == 409
+
+    login_again = await client.post(
+        "/auth/login",
+        json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+    )
+    assert login_again.status_code == 200
+    headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    script = await client.post(f"/api/ideas/{idea_id}/script", headers=headers)
+    assert script.status_code == 202
+    script_job = script.json()["job_id"]
+    await client.post("/auth/logout", headers=headers)
+    first_lease = (await client.post("/api/jobs/lease", headers=bearer)).json()["job"]
+    assert first_lease["id"] == script_job
+    failed = await client.post(
+        f"/api/jobs/{script_job}/fail",
+        json={"lease_token": first_lease["lease_token"], "error_code": "needs_context"},
+        headers=bearer,
+    )
+    assert failed.status_code == 200 and failed.json()["status"] == "failed"
+    assert (
+        await client.post(
+            "/auth/login",
+            json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+        )
+    ).status_code == 200
+    headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    retried = await client.post(f"/api/jobs/{script_job}/retry", headers=headers)
+    assert retried.status_code == 200 and retried.json()["status"] == "queued"
+    await client.post("/auth/logout", headers=headers)
+    second_lease = (await client.post("/api/jobs/lease", headers=bearer)).json()["job"]
+    assert second_lease["id"] == script_job
+    finished = await client.post(
+        f"/api/jobs/{script_job}/complete",
+        json={
+            "lease_token": second_lease["lease_token"],
+            "output": "First fix the intake questions. Then add AI only where it saves time.",
+        },
+        headers=bearer,
+    )
+    assert finished.status_code == 200, finished.text
+    assert finished.json()["result"]["version"] == 1
+    assert (
+        await client.post(
+            "/auth/login",
+            json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+        )
+    ).status_code == 200
+    headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    assert (await client.delete(f"/api/tokens/{token_id}", headers=headers)).status_code == 200
+    await client.post("/auth/logout", headers=headers)
+    assert (await client.post("/api/jobs/lease", headers=bearer)).status_code == 401
+
+    assert (
+        await client.post(
+            "/auth/login",
+            json={"email": "other@example.test", "password": TEST_PASSWORD, "workspace": "other"},
+        )
+    ).status_code == 200
+    assert (await client.get(f"/api/jobs/{job_id}")).status_code == 404
+    assert (await client.get(f"/api/jobs/{script_job}")).status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_one_time_invitation_activates_client_without_exposing_another_workspace(clients):
     client, (ken_ws, _) = clients
     assert (
@@ -564,10 +704,11 @@ async def test_scout_script_week_and_talk_are_workspace_bound(clients, monkeypat
         )
     ).status_code == 200
     csrf = client.cookies[CSRF_COOKIE]
+    sync_config = {**config("Ken"), "brain_mode": "anthropic_api"}
     assert (
         await client.put(
             "/api/config",
-            json={"expected_revision": 0, "config": config("Ken")},
+            json={"expected_revision": 0, "config": sync_config},
             headers={"X-TCE-CSRF": csrf},
         )
     ).status_code == 200

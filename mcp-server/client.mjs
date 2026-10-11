@@ -54,6 +54,18 @@ register(server, 'request_self_delivery', 'Email the selected video to this sign
   recording_id: z.string().uuid(),
   idempotency_key: z.string().min(8).max(120),
 }, ({ recording_id, idempotency_key }) => call('POST', `/api/recordings/${recording_id}/send-to-self`, { idempotency_key }));
+register(server, 'lease_client_job', 'Claim one queued scouting or script job for this client workspace. Use your own Claude Code session to answer its prompt.', {},
+  () => call('POST', '/api/jobs/lease'));
+register(server, 'complete_client_job', 'Return the finished result for a job you leased. Scouting expects a JSON array; scripting expects plain script text.', {
+  job_id: z.string().uuid(),
+  lease_token: z.string().min(20),
+  output: z.string().min(1).max(40000),
+}, ({ job_id, lease_token, output }) => call('POST', `/api/jobs/${job_id}/complete`, { lease_token, output }));
+register(server, 'fail_client_job', 'Mark a leased job as needing attention, without including private content in the error code.', {
+  job_id: z.string().uuid(),
+  lease_token: z.string().min(20),
+  error_code: z.string().regex(/^[a-z0-9_]{2,80}$/),
+}, ({ job_id, lease_token, error_code }) => call('POST', `/api/jobs/${job_id}/fail`, { lease_token, error_code }));
 
 await server.connect(new StdioServerTransport());
 console.error('tce-client MCP connected to a single client studio.');

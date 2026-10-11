@@ -5,6 +5,10 @@ application or any publishing route. It uses a separate database and private med
 volume. Keep its public address behind HTTPS. The container listens on local port
 8875 by default for a reverse proxy.
 
+The isolated VPS pilot is at https://tce-clients.104-200-30-37.sslip.io/app.
+The owner editor remains at its separate `tce.` host and must not be routed to
+port 8875. The pilot has no client invitations or configured sender yet.
+
 ## Prepare a new environment
 
 1. Copy `.env.standalone.example` to the ignored `.env.standalone`. Fill the
@@ -25,10 +29,12 @@ volume. Keep its public address behind HTTPS. The container listens on local por
 
 The app intentionally has no shared Anthropic or OpenAI credential. Each client
 enters their own key in Settings. Web idea generation needs a client-owned Anthropic
-API key. Claude Code terminal mode can use that client's own subscription without
-passing subscription tokens through this web app. OpenAI GPT-Live 1 requires the
-client's OpenAI API key. Failed verification stays visible; it never switches to an
-owner-paid key.
+API key. In Claude Code mode, scouting and scripting create jobs for the client's
+native signed-in Claude Code process. Its worker-only TCE token can lease and
+complete those jobs through MCP. Subscription credentials stay in Claude Code and
+never pass through the web app. A queued job stays visible until the worker finishes;
+failed jobs can be retried from the app. OpenAI GPT-Live 1 requires the client's
+OpenAI API key. Failed verification never switches to an owner-paid key.
 
 ## Invite and onboard a client
 
@@ -42,6 +48,9 @@ unverified account replaces its prior link. Run it only when that client invitat
 has been authorized. After accepting it, the client sets a password and chooses
 three source lanes with per-lane filters and comments. They can revise or restore
 settings, pause sources, remove provider keys, and deactivate uploaded material.
+They can preview each saved source lane before scouting. Audio voice samples can
+be transcribed on an explicit click with the client's own OpenAI key, then used
+alongside written samples when drafting scripts.
 
 For Ken's pilot, use a real Ken-owned email and agreed domain only after the
 isolated DB, HTTPS, backup, sender and provider keys are verified. Do not import
@@ -51,7 +60,8 @@ global owner records by guesswork. Map owner records on a copy before any import
 
 In Settings, create a token with the required scopes. The raw token appears once.
 Store it in the client's terminal secret store. Revoke it from `DELETE /api/tokens/{id}`
-when no longer needed. Every request uses `Authorization: Bearer $TCE_CLIENT_TOKEN`.
+or the Settings grant list when no longer needed. Every request uses
+`Authorization: Bearer $TCE_CLIENT_TOKEN`.
 The token is bound to one account and one workspace. A forged `X-Workspace-Id`
 header is rejected. The terminal can use these routes:
 
@@ -66,6 +76,9 @@ header is rejected. The terminal can use these routes:
 | Read edit versions | `GET /api/recordings/{id}/renders` | read |
 | Get selected export manifest | `GET /api/recordings/{id}/export-manifest` | export |
 | Send video to verified self | `POST /api/recordings/{id}/send-to-self` | deliver |
+| Lease a Claude Code job | `POST /api/jobs/lease` | worker |
+| Complete or fail a leased job | `POST /api/jobs/{id}/complete` or `/fail` | worker |
+| List and retry failed jobs | `GET /api/jobs`, `POST /api/jobs/{id}/retry` | read, write |
 
 `POST /api/recordings/{id}/send-to-self` requires a unique
 `{"idempotency_key":"client-generated-unique-value"}` body. It always uses the
@@ -76,17 +89,23 @@ social publish or schedule route. Claude Code can take the downloaded file into
 a separate publishing tool under that tool's own permissions.
 
 The export manifest identifies the selected render and its SHA-256 checksum,
-idea, source and recorded script version. Captions, transcript and suggested
-post copy are marked unavailable until a client supplies or generates them;
-the manifest never invents those assets.
+idea, source and recorded script version. `POST /api/recordings/{id}/prepare-export`
+uses the client's OpenAI key to transcribe the selected video into timed captions.
+It also attempts suggested post copy through the client's configured brain.
+The manifest contains those assets only when the selected video checksum still
+matches. Re-run preparation after selecting another edit. A visual review uses
+three sampled still frames and never claims to have heard the video.
 
 For MCP, install `mcp-server` dependencies from its lockfile and register
 `node mcp-server/client.mjs` as a stdio MCP command in Claude Code. Supply
 `TCE_CLIENT_URL` and `TCE_CLIENT_TOKEN` through that client's process
 environment or secret manager. Do not put the token in a command line or a
 committed MCP configuration. This separate entry point exposes only
-`list_week`, `list_ready_videos`, `get_export_manifest`, and
-`request_self_delivery`. Never point a client at the legacy `index.mjs` MCP
+`list_week`, `list_ready_videos`, `get_export_manifest`,
+`request_self_delivery`, `lease_client_job`, `complete_client_job`, and
+`fail_client_job`. A worker-only token can use only the three job tools. Ask
+native Claude Code to lease one job, answer its prompt with its own subscription,
+then complete or fail that exact lease. Never point a client at the legacy `index.mjs` MCP
 server, which is for the owner runtime.
 
 ## Operations and rollback
@@ -97,6 +116,9 @@ Disable invitation command access and stop the standalone container to freeze
 the pilot. Roll back the app image if necessary, keeping the DB and media volumes.
 Never delete client material as a rollback shortcut. Rotate Resend and provider
 keys in their own systems; client keys can then be replaced in Settings.
+The pre-s004 client DB snapshot is at
+`/home/ziv/tce-client-backups/pre-s004-2026-10-11.dump` on the VPS. Its mode is
+0600. Restore only to an isolated copy before using it as a rollback source.
 
 Before client launch, verify two independent client accounts cannot read or alter
 each other's settings, sources, recordings, tokens or deliveries. Run an actual

@@ -93,6 +93,38 @@ const visualReviewObserver = new MutationObserver(() => {
   panel.insertBefore(exportResult, log);
 });
 visualReviewObserver.observe(view, {childList:true, subtree:true});
+const workerGrantObserver = new MutationObserver(() => {
+  if (state.view !== 'settings') return;
+  const heading = [...view.querySelectorAll('h2')].find(item => item.textContent === 'Terminal mode');
+  const panel = heading?.parentElement;
+  if (!panel || panel.dataset.workerReady) return;
+  panel.dataset.workerReady = 'true';
+  panel.append(node('p', 'Claude Code can scout and draft through its own signed-in terminal. Give its TCE MCP adapter a worker-only token. Disconnect it by revoking the token.'));
+  const create = button('Create Claude Code worker token', async () => {
+    try {
+      const grant = await api('/api/tokens', {method:'POST', body:JSON.stringify({label:'Claude Code worker', scopes:['worker'], days:30})});
+      const secret = node('textarea');
+      secret.readOnly = true;
+      secret.value = grant.token;
+      panel.append(node('p', 'Copy this worker token now. It appears only once.', 'note'), secret);
+      toast('Worker token created');
+    } catch (error) { toast(message(error)); }
+  }, 'secondary');
+  panel.append(create);
+  api('/api/tokens').then(tokens => {
+    if (state.view !== 'settings') return;
+    for (const token of tokens) {
+      const line = node('div', null, 'button-row');
+      line.append(node('span', `${token.label}: ${token.scopes.join(', ')}`));
+      line.append(button('Revoke', async () => {
+        try { await api(`/api/tokens/${token.id}`, {method:'DELETE'}); line.remove(); toast('Terminal grant revoked'); }
+        catch (error) { toast(message(error)); }
+      }, 'quiet'));
+      panel.append(line);
+    }
+  }).catch(() => {});
+});
+workerGrantObserver.observe(view, {childList:true, subtree:true});
 
 function draftScope() { return `tce-take:${state.me.workspace_id}:${state.me.email}`; }
 function draftDatabase() {
@@ -170,7 +202,43 @@ function cookie(name){return document.cookie.split('; ').find(x=>x.startsWith(na
 async function api(path, options={}) { const headers={...(options.headers||{})}; if(!(options.body instanceof FormData)&&options.body!==undefined)headers['Content-Type']='application/json'; if(!['GET','HEAD'].includes(options.method||'GET'))headers['X-TCE-CSRF']=cookie('tce_client_csrf'); const r=await fetch(path,{credentials:'same-origin',...options,headers}); if(!r.ok){let body={};try{body=await r.json()}catch{} const e=new Error(message(body));e.status=r.status;throw e;} return r.status===204?null:r.json(); }
 function toast(text){const t=$('toast');t.textContent=text;t.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>t.classList.remove('show'),4500);}
 function status(text){let p=$('action-progress');if(p)p.textContent=text;}
-async function act(btn, first, fn){const old=btn?.textContent;if(btn){btn.disabled=true;btn.textContent=first;}const started=Date.now();status(first);const ticker=setInterval(()=>status(`${first}. Waiting for the current step, ${Math.floor((Date.now()-started)/1000)} seconds elapsed.`),1000);try{const value=await fn();status('Done');return value;}catch(e){status(message(e));toast(message(e));throw e;}finally{clearInterval(ticker);if(btn){btn.disabled=false;btn.textContent=old;}}}
+async function act(btn, first, fn){const old=btn?.textContent;if(btn){btn.disabled=true;btn.textContent=first;}const started=Date.now();status(first);const ticker=setInterval(()=>status(`${state.actionPhase||first}. ${Math.floor((Date.now()-started)/1000)} seconds elapsed.`),1000);try{const value=await fn();status('Done');return value;}catch(e){status(message(e));toast(message(e));throw e;}finally{clearInterval(ticker);state.actionPhase=null;if(btn){btn.disabled=false;btn.textContent=old;}}}
+async function waitForWorker(jobId) {
+  for (let check = 0; check < 12; check++) {
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    const job = await api(`/api/jobs/${jobId}`);
+    state.actionPhase = job.phase;
+    if (job.status === 'done') return job.result;
+    if (job.status === 'failed') throw new Error(`Claude Code job needs attention: ${job.error_code}`);
+  }
+  toast('Your Claude Code job is still queued. You can see it on this page later.');
+  return null;
+}
+
+async function renderJobs(name) {
+  if (!state.config?.onboarded) return;
+  try {
+    const jobs = await api('/api/jobs');
+    if (state.view !== name || view.querySelector('.job-queue')) return;
+    const visible = jobs.filter(job => job.status !== 'done').slice(0, 5);
+    if (!visible.length) return;
+    const panel = node('div', null, 'surface stack-tight job-queue');
+    panel.append(node('h2', 'Claude Code jobs'));
+    panel.append(node('p', 'Your client-owned Claude Code connection works on these jobs. Failed jobs stay here until you retry.'));
+    for (const job of visible) {
+      const item = node('div', null, 'stack-tight');
+      item.append(node('strong', `${job.kind}: ${job.status}`), node('p', job.phase));
+      if (job.status === 'failed') item.append(button('Retry this job', async () => {
+        try { await api(`/api/jobs/${job.id}/retry`, {method:'POST'}); toast('Job queued again'); show(name); }
+        catch (error) { toast(message(error)); }
+      }, 'secondary'));
+      panel.append(item);
+    }
+    panel.append(button('Refresh worker jobs', () => show(name), 'quiet'));
+    view.append(panel);
+  } catch {}
+}
+
 function header(title, description, action){view.replaceChildren();const h=node('div',null,'view-header');const text=node('div');text.append(node('h1',title),node('p',description));h.append(text);if(action)h.append(action);view.append(h);}
 function section(title){const h=node('div',null,'section-head');h.append(node('h2',title));view.append(h);return h;}
 function surface(){const s=node('div',null,'surface');view.append(s);return s;}
@@ -182,17 +250,17 @@ function weekMonday(){const zone=state.config?.config?.timezone||'UTC';const par
 function moveWeek(days){const d=new Date(state.weekStart+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+days);state.weekStart=d.toISOString().slice(0,10);renderWeek();}
 
 async function load(){const [me,config,ideas,recordings,materials,secrets]=await Promise.all([api('/auth/me'),api('/api/config'),api('/api/ideas'),api('/api/recordings'),api('/api/materials'),api('/api/secrets')]);Object.assign(state,{me,config,ideas,recordings,materials,secrets});const linkedRecording=new URLSearchParams(location.search).get('recording');if(linkedRecording&&recordings.some(r=>r.id===linkedRecording)){state.recordingId=linkedRecording;state.view='library';}$('workspace-name').textContent=config.config.display_name;$('login-shell').hidden=true;$('studio').hidden=false;if(!config.onboarded)state.view='settings';show(state.view);}
-function show(name){if(state.live){closeLive();}if(state.view==='record'&&name!=='record'&&state.media?.state==='recording'){state.media.stop();state.stream?.getTracks().forEach(t=>t.stop());}state.view=name;document.querySelectorAll('[data-view]').forEach(n=>n.classList.toggle('active',n.dataset.view===name));history.replaceState(null,'',`/app#${name}`);if(name==='today')renderToday();if(name==='ideas')renderIdeas();if(name==='week')renderWeek();if(name==='record')renderRecord();if(name==='library')renderLibrary();if(name==='settings')renderSettings();view.focus({preventScroll:true});}
+function show(name){if(state.live){closeLive();}if(state.view==='record'&&name!=='record'&&state.media?.state==='recording'){state.media.stop();state.stream?.getTracks().forEach(t=>t.stop());}state.view=name;document.querySelectorAll('[data-view]').forEach(n=>n.classList.toggle('active',n.dataset.view===name));history.replaceState(null,'',`/app#${name}`);if(name==='today')renderToday();if(name==='ideas')renderIdeas();if(name==='week')renderWeek();if(name==='record')renderRecord();if(name==='library')renderLibrary();if(name==='settings')renderSettings();void renderJobs(name);view.focus({preventScroll:true});}
 document.querySelectorAll('[data-view]').forEach(n=>n.addEventListener('click',()=>show(n.dataset.view)));
 $('login-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;const body=Object.fromEntries(new FormData(form));const b=form.querySelector('button');b.disabled=true;b.textContent='Checking your workspace';$('login-message').textContent='Checking your email, password and workspace';try{await api('/auth/login',{method:'POST',body:JSON.stringify(body)});await load();}catch(err){$('login-message').textContent=message(err);}finally{b.disabled=false;b.textContent='Sign in';}});
 $('sign-out').addEventListener('click',async()=>{try{await api('/auth/logout',{method:'POST'});}catch{}location.replace('/app');});
 
 function renderToday(){const c=state.config.config;header(`What will ${c.display_name} say next?`,'Start with real material. Leave with a video you can publish on your own terms.',button('Scout ideas',()=>runScout(),'primary'));if(!state.config.onboarded){const s=surface();s.append(node('h2','Finish your setup'),node('p','Choose your three sources and add your voice before scouting.'));s.append(button('Open onboarding',()=>show('settings'),'primary'));return;}const stats=node('div',null,'stat-row');[['Ideas',state.ideas.length],['For this week',state.ideas.filter(i=>i.status==='this_week').length],['Recordings',state.recordings.length]].forEach(([label,value])=>{const n=node('div',null,'stat');n.append(node('strong',String(value)),node('span',label));stats.append(n)});view.append(stats);section('Your three idea sources');const grid=node('div',null,'source-grid');c.source_lanes.forEach((lane,index)=>{const n=node('div',null,'source-strip'+(lane.enabled?'':' off'));n.append(node('span',`Source ${index+1}`,'eyebrow'),node('strong',lane.name||sourceName(lane.kind)),node('p',lane.enabled?lane.filter||'No filter added yet':'Paused'));grid.append(n)});view.append(grid);section('Your next move');const s=surface();s.append(node('h3',state.ideas.length?'Choose an idea to shape':'Start with your own work'));s.append(node('p',state.ideas.length?'Review your ideas, choose one for the week, and make a script.':'Add a book, course, call, commit source or research topic, then scout ideas.'));s.append(button(state.ideas.length?'Open ideas':'Open settings',()=>show(state.ideas.length?'ideas':'settings'),'secondary'));view.append(node('p','', 'progress'));view.lastChild.id='action-progress';}
-async function runScout(){const b=[...view.querySelectorAll('button')].find(x=>x.textContent==='Scout ideas');await act(b,'Reading your sources',async()=>{status('Reading configured sources, applying filters, then asking your client-owned brain for grounded ideas');const r=await api('/api/scout',{method:'POST'});state.ideas.unshift(...r.ideas);toast(`${r.ideas.length} ideas ready to review`);show('ideas');});}
+async function runScout(){const b=[...view.querySelectorAll('button')].find(x=>x.textContent==='Scout ideas');await act(b,'Reading your sources',async()=>{status('Reading configured sources, applying filters, then asking your client-owned brain for grounded ideas');let r=await api('/api/scout',{method:'POST'});if(r.job_id){state.actionPhase='Waiting for your Claude Code worker';r=await waitForWorker(r.job_id);if(!r){show('ideas');return;}}state.ideas.unshift(...r.ideas);toast(`${r.ideas.length} ideas ready to review`);show('ideas');});}
 
 function ideaCard(idea){const card=node('article',null,'idea-card');card.append(node('span',idea.status.replace('_',' '),'eyebrow'),node('h3',idea.title),node('p',idea.angle));if(idea.evidence)card.append(node('p',idea.evidence,'evidence'));const actions=row();actions.append(button('Open idea',()=>{state.ideaId=idea.id;renderIdeas();}));if(idea.status!=='this_week')actions.append(button('Put on this week',async()=>{try{const week=state.weekStart||weekMonday();const changed=await api(`/api/ideas/${idea.id}`,{method:'PATCH',body:JSON.stringify({status:'this_week',week_start:week})});Object.assign(idea,changed);toast('Added to this week');renderIdeas();}catch(e){toast(message(e));}},'quiet'));card.append(actions);return card;}
 function renderIdeas(){if(state.ideaId){renderIdeaDetail(state.ideaId);return;}header('Ideas','A working inbox from your chosen sources.',button('Scout ideas',()=>runScout(),'primary'));const grid=node('div',null,'idea-grid');state.ideas.filter(i=>i.status!=='away').forEach(i=>grid.append(ideaCard(i)));if(!grid.children.length){const n=surface();n.append(node('h2','No ideas yet'),node('p','Add source material in Settings, then scout your first ideas.'));}else view.append(grid);const progress=node('p','', 'progress');progress.id='action-progress';view.append(progress);}
-async function renderIdeaDetail(id){const idea=ideaById(id);if(!idea){state.ideaId=null;renderIdeas();return;}header(idea.title,idea.angle,button('Back to ideas',()=>{state.ideaId=null;renderIdeas();},'quiet'));const summary=surface();summary.append(node('span',idea.status.replace('_',' '),'eyebrow'),node('h3','What supports it'),node('p',idea.evidence||'Add evidence before making a strong claim.'),node('h3','Why now'),node('p',idea.why_now||'No timing note yet.'));const controls=row();controls.append(button('Put on this week',async()=>{try{const changed=await api(`/api/ideas/${id}`,{method:'PATCH',body:JSON.stringify({status:'this_week',week_start:state.weekStart||weekMonday()})});Object.assign(idea,changed);toast('Added to this week');renderIdeaDetail(id);}catch(e){toast(message(e));}},'secondary'),button('Record this idea',()=>show('record'),'quiet'));summary.append(controls);section('Script');const s=surface();const text=node('textarea');text.placeholder='Your script appears here. You can edit and save a new version.';text.style.minHeight='280px';s.append(text);const actions=row();const generate=button('Draft a script',async()=>{try{const out=await act(generate,'Writing your script',()=>api(`/api/ideas/${id}/script`,{method:'POST'}));text.value=out.script;toast(`Script version ${out.version} is ready`);}catch{}} ,'primary');const save=button('Save my edits',async()=>{try{const out=await act(save,'Saving version',()=>api(`/api/ideas/${id}/script`,{method:'PUT',body:JSON.stringify({script:text.value})}));toast(`Saved version ${out.version}`);}catch{}});actions.append(generate,save);s.append(actions);const versions=node('div',null,'stack-tight');s.append(versions);try{const history=await api(`/api/ideas/${id}/scripts`);if(history.length){text.value=history[0].script;const selector=node('select');history.forEach(item=>{const option=node('option',`Version ${item.version} (${item.origin})`);option.value=String(item.version);selector.append(option);});selector.addEventListener('change',()=>{text.value=history.find(x=>String(x.version)===selector.value).script;});versions.append(node('h3','Earlier versions'),selector);}}catch(e){toast(message(e));}const progress=node('p','', 'progress');progress.id='action-progress';view.append(progress);}
+async function renderIdeaDetail(id){const idea=ideaById(id);if(!idea){state.ideaId=null;renderIdeas();return;}header(idea.title,idea.angle,button('Back to ideas',()=>{state.ideaId=null;renderIdeas();},'quiet'));const summary=surface();summary.append(node('span',idea.status.replace('_',' '),'eyebrow'),node('h3','What supports it'),node('p',idea.evidence||'Add evidence before making a strong claim.'),node('h3','Why now'),node('p',idea.why_now||'No timing note yet.'));const controls=row();controls.append(button('Put on this week',async()=>{try{const changed=await api(`/api/ideas/${id}`,{method:'PATCH',body:JSON.stringify({status:'this_week',week_start:state.weekStart||weekMonday()})});Object.assign(idea,changed);toast('Added to this week');renderIdeaDetail(id);}catch(e){toast(message(e));}},'secondary'),button('Record this idea',()=>show('record'),'quiet'));summary.append(controls);section('Script');const s=surface();const text=node('textarea');text.placeholder='Your script appears here. You can edit and save a new version.';text.style.minHeight='280px';s.append(text);const actions=row();const generate=button('Draft a script',async()=>{try{let out=await act(generate,'Writing your script',async()=>{let result=await api(`/api/ideas/${id}/script`,{method:'POST'});if(result.job_id){state.actionPhase='Waiting for your Claude Code worker';result=await waitForWorker(result.job_id);}return result;});if(!out)return;text.value=out.script;toast(`Script version ${out.version} is ready`);}catch{}} ,'primary');const save=button('Save my edits',async()=>{try{const out=await act(save,'Saving version',()=>api(`/api/ideas/${id}/script`,{method:'PUT',body:JSON.stringify({script:text.value})}));toast(`Saved version ${out.version}`);}catch{}});actions.append(generate,save);s.append(actions);const versions=node('div',null,'stack-tight');s.append(versions);try{const history=await api(`/api/ideas/${id}/scripts`);if(history.length){text.value=history[0].script;const selector=node('select');history.forEach(item=>{const option=node('option',`Version ${item.version} (${item.origin})`);option.value=String(item.version);selector.append(option);});selector.addEventListener('change',()=>{text.value=history.find(x=>String(x.version)===selector.value).script;});versions.append(node('h3','Earlier versions'),selector);}}catch(e){toast(message(e));}const progress=node('p','', 'progress');progress.id='action-progress';view.append(progress);}
 
 async function renderWeek(){state.weekStart ||= weekMonday();header('This week','Choose what to record and discuss the lineup before you start.');const controls=row();controls.append(button('Previous week',()=>moveWeek(-7),'quiet'),node('strong',state.weekStart),button('Next week',()=>moveWeek(7),'quiet'));view.append(controls);const spine=node('div',null,'week-spine');[['Ideas','Choose'],['Scripts','Shape'],['Record','Capture'],['Review','Refine'],['Video','Take it with you']].forEach(([a,b])=>{const n=node('div',null,'week-step');n.append(node('span',a),node('strong',b));spine.append(n)});view.append(spine);const list=node('div',null,'idea-grid');view.append(list);try{const week=await api(`/api/week/${state.weekStart}`);if(!week.ideas.length){const s=node('div',null,'surface');s.append(node('h3','Your week is open'),node('p','Pick ideas from the inbox to put them here.'));s.append(button('Choose ideas',()=>show('ideas')));list.append(s);}else week.ideas.forEach(i=>list.append(ideaCard(i)));}catch(e){list.append(node('p',message(e),'error'));}section('Talk to the week');const s=surface();s.append(node('p','Ask which idea deserves attention or how to sequence the week. Suggestions stay in the conversation until you choose to change a card.'));const log=node('div',null,'chat-log');s.append(log);const form=node('form',null,'stack-tight');const input=field('Your question','','textarea');form.append(input.wrap);const actions=row();const send=node('button','Send question','primary');send.type='submit';actions.append(send,button('Start voice conversation',()=>startLive('week',null,s),'secondary'));form.append(actions);s.append(form);form.addEventListener('submit',async e=>{e.preventDefault();const value=input.input.value.trim();if(!value)return;appendChat(log,'You',value,true);input.input.value='';try{const r=await act(send,'Thinking about the week',()=>api('/api/talk/week',{method:'POST',body:JSON.stringify({message:value})}));appendChat(log,'TCE',r.answer,false);}catch{}});s.append(node('p','', 'progress'));s.lastChild.id='action-progress';}
 function appendChat(log,name,text,mine){const m=node('div',null,'chat-message'+(mine?' mine':''));m.append(node('strong',name+' '),node('span',text));log.append(m);log.scrollTop=log.scrollHeight;}

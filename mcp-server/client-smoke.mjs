@@ -13,6 +13,9 @@ const http = createServer((request, response) => {
   if (request.url === '/api/recordings' && request.method === 'GET') {
     response.writeHead(200, { 'Content-Type': 'application/json' });
     response.end('[]');
+  } else if (request.url === '/api/jobs/lease' && request.method === 'POST') {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end('{"job":null}');
   } else {
     response.writeHead(404, { 'Content-Type': 'application/json' });
     response.end('{}');
@@ -34,12 +37,15 @@ try {
   await client.connect(transport);
   const listed = await client.listTools();
   assert.deepEqual(listed.tools.map(tool => tool.name).sort(), [
-    'get_export_manifest', 'list_ready_videos', 'list_week', 'request_self_delivery',
+    'complete_client_job', 'fail_client_job', 'get_export_manifest', 'lease_client_job',
+    'list_ready_videos', 'list_week', 'request_self_delivery',
   ]);
   const videos = await client.callTool({ name: 'list_ready_videos', arguments: {} });
   assert.equal(videos.isError, undefined);
   assert.deepEqual(JSON.parse(videos.content[0].text), []);
-  console.log('Client MCP exposes four scoped tools and reads only the client API.');
+  const lease = await client.callTool({ name: 'lease_client_job', arguments: {} });
+  assert.deepEqual(JSON.parse(lease.content[0].text), { job: null });
+  console.log('Client MCP exposes seven scoped tools, including workspace-bound worker jobs.');
 } finally {
   await client.close();
   await new Promise(resolve => http.close(resolve));

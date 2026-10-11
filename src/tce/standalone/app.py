@@ -115,7 +115,7 @@ class ConfigRestore(BaseModel):
 
 class TokenCreate(BaseModel):
     label: str = Field(min_length=1, max_length=120)
-    scopes: list[str] = Field(min_length=1, max_length=5)
+    scopes: list[str] = Field(min_length=1, max_length=6)
     days: int = Field(default=30, ge=1, le=90)
 
 
@@ -124,7 +124,7 @@ DEFAULT_LANES = [
     {"name": "Source 2", "kind": "custom", "filter": "", "comments": "", "enabled": False},
     {"name": "Source 3", "kind": "custom", "filter": "", "comments": "", "enabled": False},
 ]
-TOKEN_SCOPES = frozenset({"read", "write", "record", "export", "deliver"})
+TOKEN_SCOPES = frozenset({"read", "write", "record", "export", "deliver", "worker"})
 
 auth = APIRouter(prefix="/auth")
 api = APIRouter(prefix="/api", dependencies=[Depends(current_principal)])
@@ -387,6 +387,7 @@ async def client_lifespan(app: FastAPI):
 
 def create_standalone_app() -> FastAPI:
     from tce.standalone.delivery import router as delivery_router
+    from tce.standalone.jobs import router as jobs_router
     from tce.standalone.live import router as live_router
     from tce.standalone.materials import router as materials_router
     from tce.standalone.recording import router as recording_router
@@ -426,6 +427,7 @@ def create_standalone_app() -> FastAPI:
     app.include_router(materials_router)
     app.include_router(delivery_router)
     app.include_router(live_router)
+    app.include_router(jobs_router)
     app.include_router(recording_router)
     app.include_router(secrets_router)
     app.include_router(workflow_router)

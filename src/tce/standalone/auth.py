@@ -146,7 +146,7 @@ async def current_principal(
             row.workspace_id,
             account.email,
             membership.role,
-            frozenset({"read", "write", "record", "export", "deliver", "tokens"}),
+            frozenset({"read", "write", "record", "export", "deliver", "worker", "tokens"}),
         )
     else:
         raise HTTPException(status_code=401, detail="Sign in required")
@@ -219,7 +219,7 @@ async def sign_in(
         workspace.id,
         account.email,
         membership.role,
-        frozenset({"read", "write", "record", "export", "deliver", "tokens"}),
+        frozenset({"read", "write", "record", "export", "deliver", "worker", "tokens"}),
     )
     return session, secret, csrf, principal
 
