@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -35,6 +36,7 @@ from tce.standalone.models import (
     StandaloneAPIToken,
     StandaloneConfigRevision,
     StandaloneInvite,
+    StandaloneOnboardingDraft,
     StandaloneSession,
     StandaloneWorkspace,
 )
@@ -126,6 +128,11 @@ class ClientConfig(BaseModel):
 
 class ConfigWrite(BaseModel):
     expected_revision: int = Field(ge=0)
+    config: ClientConfig
+
+
+class OnboardingDraftWrite(BaseModel):
+    step: int = Field(ge=0, le=6)
     config: ClientConfig
 
 
@@ -267,6 +274,48 @@ async def get_config(
     }
 
 
+@api.get("/onboarding/draft")
+async def get_onboarding_draft(
+    principal: Principal = Depends(require_scope("read")),
+    db: AsyncSession = Depends(get_db),
+):
+    row = (
+        await db.execute(select(StandaloneOnboardingDraft).where(
+            StandaloneOnboardingDraft.workspace_id == principal.workspace_id
+        ))
+    ).scalar_one_or_none()
+    if row is None:
+        return {"step": 0, "config": (await get_config(principal, db))["config"]}
+    from tce.standalone.secrets import decrypt
+
+    return {"step": row.step, "config": json.loads(decrypt(
+        row.encrypted_payload, principal.workspace_id, "onboarding-draft"
+    ))}
+
+
+@api.put("/onboarding/draft")
+async def put_onboarding_draft(
+    body: OnboardingDraftWrite,
+    principal: Principal = Depends(require_scope("write")),
+    db: AsyncSession = Depends(get_db),
+):
+    from tce.standalone.secrets import encrypt
+
+    row = (
+        await db.execute(select(StandaloneOnboardingDraft).where(
+            StandaloneOnboardingDraft.workspace_id == principal.workspace_id
+        ))
+    ).scalar_one_or_none()
+    if row is None:
+        row = StandaloneOnboardingDraft(workspace_id=principal.workspace_id)
+        db.add(row)
+    row.step = body.step
+    row.encrypted_payload = encrypt(
+        json.dumps(body.config.model_dump()), principal.workspace_id, "onboarding-draft"
+    )
+    return {"step": row.step, "saved": True}
+
+
 @api.put("/config")
 async def put_config(
     body: ConfigWrite,
@@ -291,6 +340,13 @@ async def put_config(
         reason="onboarding" if actual == 0 else "settings",
     )
     db.add(next_row)
+    draft = (
+        await db.execute(select(StandaloneOnboardingDraft).where(
+            StandaloneOnboardingDraft.workspace_id == principal.workspace_id
+        ))
+    ).scalar_one_or_none()
+    if draft:
+        await db.delete(draft)
     await db.flush()
     return {"revision": next_row.revision, "config": next_row.content}
 

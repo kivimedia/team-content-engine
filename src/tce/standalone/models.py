@@ -21,6 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from tce.db.base import Base
 from tce.models.editorial import JSONType
+from tce.standalone.crypto import EncryptedText
 
 
 class StandaloneAccount(Base):
@@ -117,6 +118,16 @@ class StandaloneConfigRevision(Base):
     reason: Mapped[str] = mapped_column(String(24), nullable=False)
 
 
+class StandaloneOnboardingDraft(Base):
+    __tablename__ = "standalone_onboarding_drafts"
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("standalone_workspaces.id"), unique=True, nullable=False
+    )
+    encrypted_payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    step: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
 class StandaloneMaterial(Base):
     __tablename__ = "standalone_materials"
     __table_args__ = (UniqueConstraint("workspace_id", "kind", "sha256"),)
@@ -134,6 +145,8 @@ class StandaloneMaterial(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
     transcript_text: Mapped[str | None] = mapped_column(Text)
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    readable_page_count: Mapped[int | None] = mapped_column(Integer)
 
 
 class StandaloneSecret(Base):
@@ -196,13 +209,15 @@ class StandaloneIdea(Base):
         ForeignKey("standalone_source_items.id")
     )
     lane_index: Mapped[int | None] = mapped_column(Integer)
-    title: Mapped[str] = mapped_column(String(250), nullable=False)
-    angle: Mapped[str] = mapped_column(Text, nullable=False)
-    why_now: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    evidence: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    title: Mapped[str] = mapped_column(EncryptedText("idea.title"), nullable=False)
+    angle: Mapped[str] = mapped_column(EncryptedText("idea.angle"), nullable=False)
+    why_now: Mapped[str] = mapped_column(EncryptedText("idea.why_now"), default="", nullable=False)
+    evidence: Mapped[str] = mapped_column(
+        EncryptedText("idea.evidence"), default="", nullable=False
+    )
     status: Mapped[str] = mapped_column(String(30), default="inbox", nullable=False)
     week_start: Mapped[str | None] = mapped_column(String(10))
-    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    notes: Mapped[str] = mapped_column(EncryptedText("idea.notes"), default="", nullable=False)
 
 
 class StandaloneScriptVersion(Base):
@@ -214,8 +229,8 @@ class StandaloneScriptVersion(Base):
     )
     idea_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("standalone_ideas.id"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
-    script: Mapped[str] = mapped_column(Text, nullable=False)
-    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    script: Mapped[str] = mapped_column(EncryptedText("script.script"), nullable=False)
+    note: Mapped[str] = mapped_column(EncryptedText("script.note"), default="", nullable=False)
     origin: Mapped[str] = mapped_column(String(24), default="generated", nullable=False)
 
 

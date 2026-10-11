@@ -110,7 +110,7 @@ def _material_segments(row: StandaloneMaterial) -> list[tuple[str, str]]:
             from pypdf import PdfReader
         except ImportError as exc:
             raise HTTPException(status_code=503, detail="PDF extraction is not installed") from exc
-        for index, page in enumerate(PdfReader(str(path)).pages[:100], start=1):
+        for index, page in enumerate(PdfReader(str(path)).pages, start=1):
             sections.append((f"page {index}", page.extract_text() or ""))
     elif path.suffix == ".docx":
         heading = "opening"
@@ -156,8 +156,11 @@ def _material_segments(row: StandaloneMaterial) -> list[tuple[str, str]]:
             if chunk:
                 suffix = f", part {offset // 3000 + 1}" if len(content) > 3000 else ""
                 pieces.append((label + suffix, chunk))
-            if len(pieces) >= 120:
-                return pieces
+            if len(pieces) > 10000:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Material has too many text sections. Split it into smaller files.",
+                )
     return pieces
 
 
@@ -289,7 +292,7 @@ async def _sources(db: AsyncSession, ws: uuid.UUID, config: dict) -> list[Standa
         elif kind in {"ai_news", "research"} and not fetched:
             # Web search is performed by the client's brain on the exact lane filter.
             continue
-        for item in fetched[:120]:
+        for item in fetched:
             digest = hashlib.sha256(item["content"].encode()).hexdigest()
             row = (
                 await db.execute(
@@ -490,8 +493,19 @@ async def scout(
         )
         chosen.extend(lane_sources[:4])
     source_refs = {i + 1: row for i, row in enumerate(chosen)}
+    material_rows = (
+        await db.execute(select(StandaloneMaterial).where(
+            StandaloneMaterial.workspace_id == principal.workspace_id,
+            StandaloneMaterial.kind == "source",
+        ))
+    ).scalars().all()
+    material_notes = {str(row.id): row.notes for row in material_rows if row.notes}
+    def source_note(row: StandaloneSourceItem) -> str:
+        note = material_notes.get(row.external_id.split(":", 1)[0])
+        return f"\nCLIENT FILE NOTE (guidance, not evidence): {note}" if note else ""
     source_text = "\n\n".join(
-        f"SOURCE {i}: {row.title}\nURL: {row.url or 'private upload'}\n{row.content[:3000]}"
+        f"SOURCE {i}: {row.title}\nURL: {row.url or 'private upload'}"
+        f"{source_note(row)}\n{row.content[:3000]}"
         for i, row in source_refs.items()
     )
     web_lanes = {lane["index"] for lane in lane_specs if lane["kind"] in {"ai_news", "research"}}
@@ -651,7 +665,7 @@ async def week(
             select(StandaloneIdea).where(
                 StandaloneIdea.workspace_id == principal.workspace_id,
                 StandaloneIdea.week_start == week_start,
-                StandaloneIdea.status == "this_week",
+                StandaloneIdea.status.in_(["this_week", "recorded"]),
             )
         )
     ).scalars().all()

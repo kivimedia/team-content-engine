@@ -1211,3 +1211,130 @@ async def test_claude_code_conversation_proposes_but_does_not_apply_cut(clients,
         json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
     )).status_code == 200
     assert (await client.get(f"/api/recordings/{recording_id}/renders")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_entire_book_is_available_and_textless_pdf_is_rejected(
+    clients, monkeypatch, tmp_path
+):
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    from pypdf import PdfWriter
+
+    from tce.standalone import workflow
+
+    client, _ = clients
+    assert (await client.post('/auth/login', json={
+        'email': 'ken@example.test', 'password': TEST_PASSWORD, 'workspace': 'ken',
+    })).status_code == 200
+    csrf = {'X-TCE-CSRF': client.cookies[CSRF_COOKIE]}
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    pdf = BytesIO()
+    writer.write(pdf)
+    rejected = await client.post('/api/materials',
+        data={'kind': 'source', 'lane_index': '0'},
+        files={'file': ('scan.pdf', pdf.getvalue(), 'application/pdf')}, headers=csrf)
+    assert rejected.status_code == 422
+    assert 'searchable' in rejected.json()['detail'].lower()
+
+    pdf_path = tmp_path / 'long-book.pdf'
+    pdf_path.write_bytes(b'%PDF-1.4\n')
+    class Page:
+        def __init__(self, number): self.number = number
+        def extract_text(self): return f'Chapter {self.number} distinct lesson'
+    monkeypatch.setattr(
+        'pypdf.PdfReader', lambda _path: SimpleNamespace(pages=[Page(i) for i in range(1, 106)])
+    )
+    sections = workflow._material_segments(
+        SimpleNamespace(kind='source', storage_key='long-book.pdf')
+    )
+    assert len(sections) == 105
+    assert sections[-1] == ('page 105', 'Chapter 105 distinct lesson')
+
+
+@pytest.mark.asyncio
+async def test_scout_job_contains_material_note_and_recorded_idea_stays_in_week(clients):
+    client, _ = clients
+    assert (await client.post('/auth/login', json={
+        'email': 'ken@example.test', 'password': TEST_PASSWORD, 'workspace': 'ken',
+    })).status_code == 200
+    csrf = {'X-TCE-CSRF': client.cookies[CSRF_COOKIE]}
+    assert (await client.put('/api/config', json={
+        'expected_revision': 0, 'config': config('Ken'),
+    }, headers=csrf)).status_code == 200
+    uploaded = await client.post('/api/materials',
+        data={'kind': 'source', 'lane_index': '0', 'notes': 'Focus on the closing lesson'},
+        files={'file': ('book.txt', b'The closing lesson is a clear handoff.', 'text/plain')},
+        headers=csrf)
+    assert uploaded.status_code == 201
+    queued = await client.post('/api/scout', headers=csrf)
+    assert queued.status_code == 202
+    grant = await client.post('/api/tokens', json={
+        'label': 'QA worker', 'scopes': ['worker'],
+    }, headers=csrf)
+    bearer = {'Authorization': f"Bearer {grant.json()['token']}"}
+    await client.post('/auth/logout', headers=csrf)
+    leased = (await client.post('/api/jobs/lease', headers=bearer)).json()['job']
+    assert 'Focus on the closing lesson' in leased['prompt']
+    assert (await client.post('/auth/login', json={
+        'email': 'ken@example.test', 'password': TEST_PASSWORD, 'workspace': 'ken',
+    })).status_code == 200
+    csrf = {'X-TCE-CSRF': client.cookies[CSRF_COOKIE]}
+    idea = await client.post('/api/ideas', json={
+        'title': 'The handoff', 'angle': 'One useful client step', 'evidence': 'Chapter 1',
+        'lane_index': 0,
+    }, headers=csrf)
+    assert idea.status_code == 200, idea.text
+    idea_id = idea.json()['id']
+    assert (await client.patch(f'/api/ideas/{idea_id}', json={
+        'status': 'this_week', 'week_start': '2026-10-12',
+    }, headers=csrf)).status_code == 200
+    assert (await client.patch(f'/api/ideas/{idea_id}', json={
+        'status': 'recorded',
+    }, headers=csrf)).status_code == 200
+    week = await client.get('/api/week/2026-10-12')
+    assert idea_id in [item['id'] for item in week.json()['ideas']]
+
+
+@pytest.mark.asyncio
+async def test_onboarding_draft_survives_sessions_and_is_workspace_private(clients):
+    client, _ = clients
+    assert (await client.post('/auth/login', json={
+        'email': 'ken@example.test', 'password': TEST_PASSWORD, 'workspace': 'ken',
+    })).status_code == 200
+    csrf = {'X-TCE-CSRF': client.cookies[CSRF_COOKIE]}
+    draft_config = config('Ken')
+    draft_config['source_lanes'][0]['comments'] = 'Private book instruction'
+    assert (await client.put('/api/onboarding/draft', json={
+        'step': 2, 'config': draft_config,
+    }, headers=csrf)).status_code == 200
+    await client.post('/auth/logout', headers=csrf)
+    assert (await client.post('/auth/login', json={
+        'email': 'other@example.test', 'password': TEST_PASSWORD, 'workspace': 'other',
+    })).status_code == 200
+    other = (await client.get('/api/onboarding/draft')).json()
+    assert 'Private book instruction' not in str(other)
+    await client.post('/auth/logout', headers={'X-TCE-CSRF': client.cookies[CSRF_COOKIE]})
+    assert (await client.post('/auth/login', json={
+        'email': 'ken@example.test', 'password': TEST_PASSWORD, 'workspace': 'ken',
+    })).status_code == 200
+    resumed = (await client.get('/api/onboarding/draft')).json()
+    assert resumed['step'] == 2
+    assert resumed['config']['source_lanes'][0]['comments'] == 'Private book instruction'
+    assert (await client.put('/api/config', json={
+        'expected_revision': 0, 'config': draft_config,
+    }, headers={'X-TCE-CSRF': client.cookies[CSRF_COOKIE]})).status_code == 200
+    assert (await client.get('/api/onboarding/draft')).json()['step'] == 0
+
+
+def test_editorial_text_is_encrypted_and_bound_to_its_field(monkeypatch):
+    from tce.standalone.crypto import decrypt_text, encrypt_text
+
+    monkeypatch.setenv('TCE_STANDALONE_ENCRYPTION_KEY', base64.b64encode(b'k' * 32).decode())
+    sealed = encrypt_text('A private idea', 'idea.title')
+    assert 'A private idea' not in sealed
+    assert decrypt_text(sealed, 'idea.title') == 'A private idea'
+    with pytest.raises(Exception):
+        decrypt_text(sealed, 'script.script')

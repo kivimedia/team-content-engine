@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import uuid
+from io import BytesIO
 from pathlib import Path
 
 import httpx
@@ -30,6 +31,29 @@ ALLOWED = {
 }
 MAX_SOURCE_BYTES = 50 * 1024 * 1024
 MAX_VOICE_BYTES = 20 * 1024 * 1024
+MAX_PDF_PAGES = 2000
+
+
+def _pdf_stats(data: bytes) -> tuple[int, int]:
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(BytesIO(data))
+        pages = len(reader.pages)
+        if pages > MAX_PDF_PAGES:
+            raise HTTPException(
+                status_code=422, detail="PDF has more than 2000 pages. Split the book into parts."
+            )
+        readable = sum(bool((page.extract_text() or "").strip()) for page in reader.pages)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=415, detail="PDF could not be read") from exc
+    if readable == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="This PDF has no selectable text. Upload a searchable PDF or run OCR first.",
+        )
+    return pages, readable
 
 
 def storage_root() -> Path:
@@ -53,6 +77,8 @@ def _public(row: StandaloneMaterial) -> dict:
         "notes": row.notes,
         "transcribed": bool(row.transcript_text),
         "transcript_excerpt": (row.transcript_text or "")[:600],
+        "page_count": row.page_count,
+        "readable_page_count": row.readable_page_count,
         "created_at": row.created_at,
     }
 
@@ -101,6 +127,9 @@ async def upload_material(
             head = check.read(8)
         if ext == ".pdf" and not head.startswith(b"%PDF-"):
             raise HTTPException(status_code=415, detail="Invalid PDF file")
+        page_count = readable_page_count = None
+        if ext == ".pdf":
+            page_count, readable_page_count = _pdf_stats(tmp.read_bytes())
         if ext == ".docx" and not head.startswith(b"PK"):
             raise HTTPException(status_code=415, detail="Invalid Word file")
         if ext in {".txt", ".md"}:
@@ -121,6 +150,8 @@ async def upload_material(
             existing.active = True
             existing.lane_index = lane_index
             existing.notes = notes
+            existing.page_count = page_count
+            existing.readable_page_count = readable_page_count
             return _public(existing)
         final = folder / f"{uuid.uuid4().hex}{ext}"
         tmp.replace(final)
@@ -134,6 +165,8 @@ async def upload_material(
             storage_key=str(final.relative_to(root)),
             size_bytes=size,
             notes=notes,
+            page_count=page_count,
+            readable_page_count=readable_page_count,
             active=True,
         )
         db.add(row)
