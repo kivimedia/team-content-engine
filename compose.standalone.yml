@@ -1,0 +1,48 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tce
+      POSTGRES_DB: tce
+      POSTGRES_PASSWORD: ${TCE_STANDALONE_DB_PASSWORD:?Set database password}
+    volumes:
+      - tce_client_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tce -d tce"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.standalone
+    command: ["alembic", "upgrade", "head"]
+    env_file: .env.standalone
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.standalone
+    env_file: .env.standalone
+    ports:
+      - "127.0.0.1:8765:8000"
+    volumes:
+      - tce_client_files:/data/tce
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  tce_client_db:
+  tce_client_files:

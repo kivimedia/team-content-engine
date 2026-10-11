@@ -127,3 +127,7 @@ Auto-loaded on startup:
 - **DOCX**: python-docx
 - **Resilience**: tenacity (retry), custom circuit breaker
 - **CI**: GitHub Actions (ruff + mypy + pytest)
+
+## Standalone client studio
+
+The isolated client runtime, onboarding, media and terminal API are documented in [docs/standalone-client-runbook.md](docs/standalone-client-runbook.md). Run it with tce.standalone.app:app and a separate database and media volume. The legacy owner runtime remains a separate entry point.
