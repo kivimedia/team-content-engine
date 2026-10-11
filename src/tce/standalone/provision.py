@@ -35,6 +35,46 @@ def _public_url() -> str:
     return raw
 
 
+def invitation_message(from_email: str, email: str, name: str, link: str, public_url: str) -> dict:
+    """Build the client-facing invitation without sending it."""
+    safe_name = html.escape(name.strip())
+    safe_link = html.escape(link, quote=True)
+    safe_guide = html.escape(f"{public_url}/guide", quote=True)
+    return {
+        "from": from_email,
+        "to": [email],
+        "subject": f"Your {name.strip()} content studio is ready",
+        "html": (
+            f"<p>Hi {safe_name},</p>"
+            "<p>Your private TCE studio is ready. It helps you find ideas in your own material, "
+            "shape scripts in your voice, record and review video, "
+            "and take the finished file with you. "
+            "The studio does not publish on your behalf.</p>"
+            f'<p><a href="{safe_link}">Activate your private studio</a>. '
+            "This one-time link expires in seven days. "
+            "Set a password of at least 16 characters.</p>"
+            "<p>Onboarding asks for three idea sources and a filter and comments for each. "
+            "You can upload book or course material and examples of your voice, "
+            "then choose your AI connections. "
+            "Everything in onboarding can be changed later in Settings.</p>"
+            f'<p><a href="{safe_guide}">Read the setup and recording guide</a> before you begin. '
+            "You can use the studio in a browser on your computer or phone. "
+            "For the first recording, allow camera and microphone access "
+            "and make a short test take.</p>"
+            "<p>After recording, download your selected video. "
+            "Email delivery to your own verified address will be available "
+            "once the studio sender is enabled. The guide explains terminal delivery too.</p>"
+            "<p>For the pilot, please reply after a short test with your device and browser, "
+            "whether camera and microphone permission worked, "
+            "whether the test take played with sound, and whether your "
+            "download opened outside the studio. If you use email delivery, "
+            "include whether the message "
+            "and video arrived. Please do not send us your password or API keys.</p>"
+            "<p>Reply to this email if you need help with setup.</p>"
+        ),
+    }
+
+
 async def invite_client(email: str, name: str, slug: str, timezone: str) -> None:
     email = email.strip().lower()
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
@@ -103,18 +143,7 @@ async def invite_client(email: str, name: str, slug: str, timezone: str) -> None
         invite_id = invite.id
 
     link = f"{public_url}/app#invite={raw}"
-    safe_name = html.escape(name.strip())
-    safe_link = html.escape(link, quote=True)
-    body = {
-        "from": from_email,
-        "to": [email],
-        "subject": f"Set up your {name.strip()} content studio",
-        "html": (
-            f"<p>Your private {safe_name} studio is ready.</p>"
-            f'<p><a href="{safe_link}">Set your password and start onboarding</a></p>'
-            "<p>This link expires in seven days and works once.</p>"
-        ),
-    }
+    body = invitation_message(from_email, email, name, link, public_url)
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
             response = await client.post(

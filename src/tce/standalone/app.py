@@ -227,8 +227,9 @@ async def me(
         token = await db.get(StandaloneAPIToken, principal.token_id)
         expires = token.expires_at if token else None
         result["token_expires_at"] = (
-            (expires.replace(tzinfo=UTC) if expires.tzinfo is None else expires.astimezone(UTC))
-            .isoformat()
+            (
+                expires.replace(tzinfo=UTC) if expires.tzinfo is None else expires.astimezone(UTC)
+            ).isoformat()
             if expires
             else None
         )
@@ -448,7 +449,11 @@ def create_standalone_app() -> FastAPI:
             "img-src 'self' data:; media-src 'self' blob:; "
             "connect-src 'self'; frame-ancestors 'none'; form-action 'self'"
         )
-        if request.url.path.startswith(("/api/", "/auth/")) or request.url.path in {"/app", "/"}:
+        if request.url.path.startswith(("/api/", "/auth/")) or request.url.path in {
+            "/app",
+            "/",
+            "/guide",
+        }:
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -484,6 +489,10 @@ def create_standalone_app() -> FastAPI:
     @app.get("/", include_in_schema=False)
     async def home():
         return HTMLResponse(frontend_html)
+
+    @app.get("/guide", include_in_schema=False)
+    async def client_guide():
+        return HTMLResponse((web_root / "guide.html").read_text(encoding="utf-8"))
 
     return app
 

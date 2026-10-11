@@ -26,6 +26,7 @@ from tce.standalone.models import (
     StandaloneMembership,
     StandaloneWorkspace,
 )
+from tce.standalone.provision import invitation_message
 
 INVITE_TOKEN = secrets.token_urlsafe(32)
 TEST_PASSWORD = secrets.token_urlsafe(24)
@@ -132,6 +133,34 @@ async def test_client_assets_use_a_content_version(clients):
 
     versions = re.findall(r"/static/app\.(?:css|js)\?v=([0-9a-f]{12})", response.text)
     assert len(versions) == 2 and versions[0] == versions[1]
+
+
+@pytest.mark.asyncio
+async def test_public_setup_guide_and_invitation_are_safe_and_specific(clients):
+    client, _ = clients
+    guide = await client.get("/guide")
+    assert guide.status_code == 200
+    assert guide.headers["cache-control"] == "no-store"
+    for phrase in (
+        "three sources",
+        "camera",
+        "microphone",
+        "Download selected video",
+        "does not publish",
+    ):
+        assert phrase in guide.text
+    message = invitation_message(
+        "ziv@kivimedia.co",
+        "ken@example.test",
+        'Ken <Kelly>',
+        "https://studio.example.test/app#invite=private",
+        "https://studio.example.test",
+    )
+    assert message["to"] == ["ken@example.test"]
+    assert "Ken &lt;Kelly&gt;" in message["html"]
+    assert 'href="https://studio.example.test/app#invite=private"' in message["html"]
+    assert 'href="https://studio.example.test/guide"' in message["html"]
+    assert "does not publish" in message["html"]
 
 
 @pytest.mark.asyncio
