@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import secrets
+import subprocess
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -14,6 +15,9 @@ from sqlalchemy.pool import StaticPool
 
 from tce.db.base import Base
 from tce.db.session import get_db
+from tce.standalone import materials as materials_module
+from tce.standalone import recording as recording_module
+from tce.standalone import secrets as secrets_module
 from tce.standalone.app import create_standalone_app
 from tce.standalone.auth import CSRF_COOKIE, hash_password, token_hash
 from tce.standalone.models import (
@@ -116,6 +120,237 @@ def config(name: str):
             {"name": "Course", "kind": "course", "filter": "module 3", "comments": ""},
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_saved_source_preview_shows_only_active_material_from_own_lane(clients):
+    client, _ = clients
+    login = await client.post(
+        "/auth/login",
+        json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+    )
+    assert login.status_code == 200
+    headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    saved = await client.put(
+        "/api/config",
+        json={"expected_revision": 0, "config": config("Ken")},
+        headers=headers,
+    )
+    assert saved.status_code == 200
+    material = await client.post(
+        "/api/materials",
+        data={"kind": "source", "lane_index": "0", "notes": "A real example"},
+        files={
+            "file": (
+                "chapter.txt",
+                b"A client fixed the intake form before adding AI.",
+                "text/plain",
+            )
+        },
+        headers=headers,
+    )
+    assert material.status_code == 201, material.text
+    preview = await client.post("/api/sources/0/preview", headers=headers)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["items_found"] == 1
+    assert preview.json()["items"][0]["title"] == "chapter.txt"
+    assert "intake form" in preview.json()["items"][0]["excerpt"]
+    assert preview.json()["filter"] == "Chapter 1"
+    assert (await client.post("/api/sources/4/preview", headers=headers)).status_code == 404
+    paused = await client.post(
+        f"/api/materials/{material.json()['id']}/active?active=false", headers=headers
+    )
+    assert paused.status_code == 200
+    assert (await client.post("/api/sources/0/preview", headers=headers)).json()["items_found"] == 0
+
+    other = await client.post(
+        "/auth/login",
+        json={"email": "other@example.test", "password": TEST_PASSWORD, "workspace": "other"},
+    )
+    assert other.status_code == 200
+    other_headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    assert (await client.post("/api/sources/0/preview", headers=other_headers)).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_jennifer_visual_review_uses_client_video_frames_and_stays_private(
+    clients, monkeypatch, tmp_path
+):
+    client, _ = clients
+    assert (
+        await client.post(
+            "/auth/login",
+            json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+        )
+    ).status_code == 200
+    headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    idea = await client.post(
+        "/api/ideas",
+        json={"title": "Real intake lesson", "angle": "Fix intake before adding AI"},
+        headers=headers,
+    )
+    assert idea.status_code == 200
+    video_path = tmp_path / "sample.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-nostdin", "-v", "error", "-f", "lavfi",
+            "-i", "color=c=blue:s=320x240:d=2", "-f", "lavfi",
+            "-i", "sine=frequency=440:duration=2", "-c:v", "libx264",
+            "-c:a", "aac", str(video_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    upload = await client.post(
+        f"/api/ideas/{idea.json()['id']}/recordings",
+        files={"file": ("sample.mp4", video_path.read_bytes(), "video/mp4")},
+        headers=headers,
+    )
+    assert upload.status_code == 201, upload.text
+    observed = {}
+
+    async def fake_brain(db, workspace_id, system, prompt, *, images=None, **kwargs):
+        if not images:
+            return "Fix intake before adding AI."
+        observed["workspace_id"] = workspace_id
+        observed["system"] = system
+        observed["images"] = images
+        return "The speaker is centered against a plain blue background."
+
+    monkeypatch.setattr(recording_module, "ask_brain", fake_brain)
+    review = await client.post(
+        f"/api/recordings/{upload.json()['id']}/visual-review", headers=headers
+    )
+    assert review.status_code == 200, review.text
+    assert len(observed["images"]) == 3
+    assert all(image.startswith(b"\xff\xd8") for image in observed["images"])
+    assert review.json()["audio_reviewed"] is False
+    assert "centered" in review.json()["summary"]
+    assert (
+        await client.get(f"/api/recordings/{upload.json()['id']}")
+    ).json()["qc"]["visual_review"]["summary"] == review.json()["summary"]
+
+    async def verified(kind, value):
+        return kind == "openai_live"
+
+    monkeypatch.setattr(secrets_module, "_verify", verified)
+    key = await client.put(
+        "/api/secrets/openai_live", json={"value": FAKE_OPENAI_KEY}, headers=headers
+    )
+    assert key.status_code == 200 and key.json()["verified"]
+
+    class FakeCaptionProvider:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            assert kwargs["data"]["model"] == "whisper-1"
+            assert kwargs["data"]["response_format"] == "verbose_json"
+            return httpx.Response(
+                200,
+                json={
+                    "text": "Fix intake before adding AI.",
+                    "segments": [
+                        {"start": 0.0, "end": 1.8, "text": "Fix intake before adding AI."}
+                    ],
+                },
+            )
+
+    monkeypatch.setattr(
+        recording_module.httpx, "AsyncClient", lambda **kwargs: FakeCaptionProvider()
+    )
+    prepared = await client.post(
+        f"/api/recordings/{upload.json()['id']}/prepare-export", headers=headers
+    )
+    assert prepared.status_code == 200, prepared.text
+    assert "00:00:00,000 --> 00:00:01,800" in prepared.json()["captions"]
+    manifest = await client.get(f"/api/recordings/{upload.json()['id']}/export-manifest")
+    assert manifest.status_code == 200
+    assert manifest.json()["transcript"] == "Fix intake before adding AI."
+    assert manifest.json()["suggested_post_copy"] == "Fix intake before adding AI."
+    assert (await client.post(
+        f"/api/recordings/{upload.json()['id']}/prepare-export", headers=headers
+    )).json() == prepared.json()
+    assert (
+        await client.post(
+            "/auth/login",
+            json={"email": "other@example.test", "password": TEST_PASSWORD, "workspace": "other"},
+        )
+    ).status_code == 200
+    other_headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    assert (
+        await client.post(
+            f"/api/recordings/{upload.json()['id']}/visual-review", headers=other_headers
+        )
+    ).status_code == 404
+    assert (
+        await client.post(
+            f"/api/recordings/{upload.json()['id']}/prepare-export", headers=other_headers
+        )
+    ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_audio_voice_sample_transcribes_only_with_clients_verified_key(
+    clients, monkeypatch
+):
+    client, _ = clients
+    assert (
+        await client.post(
+            "/auth/login",
+            json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+        )
+    ).status_code == 200
+    headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    sample = await client.post(
+        "/api/materials",
+        data={"kind": "voice", "notes": "Short and direct"},
+        files={"file": ("voice.wav", b"RIFFsynthetic voice", "audio/wav")},
+        headers=headers,
+    )
+    assert sample.status_code == 201
+    endpoint = f"/api/materials/{sample.json()['id']}/transcribe"
+    assert (await client.post(endpoint, headers=headers)).status_code == 409
+
+    async def verified(kind, value):
+        return kind == "openai_live"
+
+    monkeypatch.setattr(secrets_module, "_verify", verified)
+    key = await client.put(
+        "/api/secrets/openai_live", json={"value": FAKE_OPENAI_KEY}, headers=headers
+    )
+    assert key.status_code == 200 and key.json()["verified"]
+
+    class FakeProvider:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            assert url.endswith("/audio/transcriptions")
+            assert kwargs["data"]["model"] == "gpt-4o-mini-transcribe"
+            assert kwargs["headers"]["Authorization"].startswith("Bearer ")
+            return httpx.Response(200, json={"text": "I speak plainly about real client work."})
+
+    monkeypatch.setattr(materials_module.httpx, "AsyncClient", lambda **kwargs: FakeProvider())
+    result = await client.post(endpoint, headers=headers)
+    assert result.status_code == 200, result.text
+    assert result.json()["transcribed"] is True
+    assert "real client work" in result.json()["transcript_excerpt"]
+
+    assert (
+        await client.post(
+            "/auth/login",
+            json={"email": "other@example.test", "password": TEST_PASSWORD, "workspace": "other"},
+        )
+    ).status_code == 200
+    other_headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    assert (await client.post(endpoint, headers=other_headers)).status_code == 404
 
 
 @pytest.mark.asyncio

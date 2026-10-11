@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import uuid
 
 import httpx
@@ -35,6 +36,7 @@ async def ask_brain(
     *,
     web_search: bool = False,
     max_tokens: int = 2400,
+    images: list[bytes] | None = None,
 ) -> str:
     config = await client_config(db, workspace_id)
     if config.get("brain_mode") != "anthropic_api":
@@ -58,11 +60,25 @@ async def ask_brain(
             status_code=409, detail="Verify the Anthropic API connection in Settings"
         )
     key = decrypt(secret.encrypted_value, workspace_id, "anthropic_api")
+    content: str | list[dict] = prompt
+    if images:
+        content = [{"type": "text", "text": prompt}]
+        content.extend(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": base64.b64encode(image).decode("ascii"),
+                },
+            }
+            for image in images
+        )
     payload = {
         "model": config.get("brain_model") or "claude-sonnet-5",
         "max_tokens": max_tokens,
         "system": system,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": content}],
     }
     if web_search:
         payload["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]

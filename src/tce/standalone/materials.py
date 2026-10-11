@@ -7,6 +7,7 @@ import os
 import uuid
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
@@ -14,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import get_db
 from tce.standalone.auth import Principal, current_principal, require_scope
-from tce.standalone.models import StandaloneMaterial
+from tce.standalone.models import StandaloneMaterial, StandaloneSecret
+from tce.standalone.secrets import decrypt
 
 router = APIRouter(prefix="/api/materials", dependencies=[Depends(current_principal)])
 ALLOWED = {
@@ -49,6 +51,8 @@ def _public(row: StandaloneMaterial) -> dict:
         "size_bytes": row.size_bytes,
         "active": row.active,
         "notes": row.notes,
+        "transcribed": bool(row.transcript_text),
+        "transcript_excerpt": (row.transcript_text or "")[:600],
         "created_at": row.created_at,
     }
 
@@ -153,6 +157,63 @@ async def list_materials(
         )
     ).scalars()
     return [_public(row) for row in rows]
+
+
+@router.post("/{material_id}/transcribe")
+async def transcribe_voice_material(
+    material_id: uuid.UUID,
+    principal: Principal = Depends(require_scope("write")),
+    db: AsyncSession = Depends(get_db),
+):
+    row = (
+        await db.execute(
+            select(StandaloneMaterial).where(
+                StandaloneMaterial.id == material_id,
+                StandaloneMaterial.workspace_id == principal.workspace_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Voice sample not found")
+    if row.kind != "voice" or Path(row.name).suffix.lower() not in {".m4a", ".mp3", ".wav"}:
+        raise HTTPException(status_code=422, detail="Choose an audio voice sample")
+    if not row.active:
+        raise HTTPException(
+            status_code=409, detail="Use this voice sample again before transcribing"
+        )
+    secret = (
+        await db.execute(
+            select(StandaloneSecret).where(
+                StandaloneSecret.workspace_id == principal.workspace_id,
+                StandaloneSecret.kind == "openai_live",
+            )
+        )
+    ).scalar_one_or_none()
+    if secret is None or secret.verified_at is None:
+        raise HTTPException(status_code=409, detail="Verify your OpenAI key in Settings first")
+    path = (storage_root() / row.storage_key).resolve()
+    if not path.is_relative_to(storage_root()) or not path.is_file():
+        raise HTTPException(status_code=404, detail="Voice sample file is missing")
+    key = decrypt(secret.encrypted_value, principal.workspace_id, "openai_live")
+    try:
+        async with httpx.AsyncClient(timeout=90, follow_redirects=False) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {key}"},
+                data={"model": "gpt-4o-mini-transcribe"},
+                files={"file": (row.name, path.read_bytes(), row.mime_type)},
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Voice transcription is unavailable") from exc
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=503, detail=f"Voice transcription returned HTTP {response.status_code}"
+        )
+    transcript = response.json().get("text", "").strip()
+    if not transcript:
+        raise HTTPException(status_code=502, detail="Voice transcription returned no text")
+    row.transcript_text = transcript[:30000]
+    return _public(row)
 
 
 @router.get("/{material_id}/download")

@@ -9,6 +9,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -17,14 +18,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.db.session import get_db
 from tce.standalone.auth import Principal, current_principal, require_scope
+from tce.standalone.brain import ask_brain
 from tce.standalone.materials import storage_root
 from tce.standalone.models import (
     StandaloneIdea,
     StandaloneRecording,
     StandaloneRender,
     StandaloneScriptVersion,
+    StandaloneSecret,
     StandaloneSourceItem,
 )
+from tce.standalone.secrets import decrypt
 
 router = APIRouter(prefix="/api", dependencies=[Depends(current_principal)])
 MAX_VIDEO_BYTES = 500 * 1024 * 1024
@@ -85,6 +89,65 @@ def _probe(path: Path) -> dict:
     }
 
 
+def _sample_frame(path: Path, second: float) -> bytes:
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-nostdin", "-v", "error", "-ss", str(second),
+                "-i", str(path), "-frames:v", "1", "-vf", "scale=640:-2",
+                "-q:v", "5", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+            ],
+            capture_output=True,
+            timeout=30,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(status_code=503, detail="Could not inspect video frames") from exc
+    if not 100 < len(result.stdout) <= 1_000_000:
+        raise HTTPException(status_code=422, detail="Video frame is unavailable")
+    return result.stdout
+
+
+def _extract_audio(path: Path, target: Path) -> None:
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-nostdin", "-v", "error", "-i", str(path),
+                "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", str(target),
+            ],
+            capture_output=True,
+            timeout=180,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=503, detail="Could not prepare audio for captions") from exc
+    if not target.is_file() or not 0 < target.stat().st_size <= 24 * 1024 * 1024:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail="Audio is missing or too long for captions")
+
+
+def _srt_time(seconds: float) -> str:
+    millis = max(0, round(seconds * 1000))
+    hours, millis = divmod(millis, 3_600_000)
+    minutes, millis = divmod(millis, 60_000)
+    whole, millis = divmod(millis, 1000)
+    return f"{hours:02}:{minutes:02}:{whole:02},{millis:03}"
+
+
+def _captions(segments: list[dict]) -> str:
+    cues = []
+    for segment in segments[:2000]:
+        try:
+            start, end = float(segment["start"]), float(segment["end"])
+            words = str(segment["text"]).strip()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if words and 0 <= start < end:
+            cues.append(f"{len(cues) + 1}\n{_srt_time(start)} --> {_srt_time(end)}\n{words}")
+    return "\n\n".join(cues) + ("\n" if cues else "")
+
+
 async def _recording(db: AsyncSession, ws: uuid.UUID, recording_id: uuid.UUID):
     row = (
         await db.execute(
@@ -100,12 +163,19 @@ async def _recording(db: AsyncSession, ws: uuid.UUID, recording_id: uuid.UUID):
 
 
 def _json(row: StandaloneRecording) -> dict:
+    qc = dict(row.qc or {})
+    export = qc.pop("export", None)
+    if export:
+        qc["export"] = {
+            "prepared": True,
+            "transcript_excerpt": (export.get("transcript") or "")[:350],
+        }
     return {
         "id": str(row.id),
         "idea_id": str(row.idea_id),
         "script_version": row.script_version,
         "status": row.status,
-        "qc": row.qc,
+        "qc": qc,
         "notes": row.notes,
         "size_bytes": row.size_bytes,
         "original_url": f"/api/recordings/{row.id}/video?version=original",
@@ -264,6 +334,9 @@ async def export_manifest(
             )
         ).scalar_one_or_none()
     checksum = await asyncio.to_thread(_file_sha256, path)
+    prepared = (recording.qc or {}).get("export") or {}
+    if prepared.get("video_sha256") != checksum:
+        prepared = {}
     return {
         "manifest_version": 1,
         "workspace_id": str(principal.workspace_id),
@@ -281,9 +354,9 @@ async def export_manifest(
             {"id": str(source.id), "title": source.title, "url": source.url} if source else None
         ),
         "script": {"version": script.version, "text": script.script} if script else None,
-        "captions": None,
-        "transcript": None,
-        "suggested_post_copy": None,
+        "captions": prepared.get("captions"),
+        "transcript": prepared.get("transcript"),
+        "suggested_post_copy": prepared.get("suggested_post_copy"),
         "recording_notes": recording.notes,
     }
 
@@ -318,6 +391,139 @@ async def notes(
     row = await _recording(db, principal.workspace_id, recording_id)
     row.notes = body.notes
     return _json(row)
+
+
+@router.post("/recordings/{recording_id}/visual-review")
+async def visual_review(
+    recording_id: uuid.UUID,
+    principal: Principal = Depends(require_scope("record")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Review a bounded set of still frames using this client's own brain."""
+    row = await _recording(db, principal.workspace_id, recording_id)
+    path = _safe_path(row.edited_key or row.original_key)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Selected video is missing")
+    idea = (
+        await db.execute(
+            select(StandaloneIdea).where(
+                StandaloneIdea.id == row.idea_id,
+                StandaloneIdea.workspace_id == principal.workspace_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if idea is None:
+        raise HTTPException(status_code=409, detail="Recording idea is missing")
+    qc = await asyncio.to_thread(_probe, path)
+    duration = qc["duration_s"]
+    seconds = [round(min(duration - 0.1, duration * fraction), 2) for fraction in (0.1, 0.45, 0.8)]
+    frames = [await asyncio.to_thread(_sample_frame, path, second) for second in seconds]
+    summary = await ask_brain(
+        db,
+        principal.workspace_id,
+        "You are Jennifer, a video editor. Inspect only the supplied still frames. "
+        "Comment on composition, framing, lighting and visible continuity. "
+        "Do not infer speech, audio quality, exact timing or unseen parts of the video. "
+        "Be specific, kind and concise.",
+        f"Idea: {idea.title}\nAngle: {idea.angle}\n"
+        f"Three still frames were sampled at {seconds} seconds in order. "
+        f"Technical checks: {qc}. Editor notes: {row.notes}.",
+        images=frames,
+        max_tokens=850,
+    )
+    review = {"summary": summary[:5000], "sampled_seconds": seconds, "audio_reviewed": False}
+    row.qc = {**(row.qc or {}), "visual_review": review}
+    return review
+
+
+@router.post("/recordings/{recording_id}/prepare-export")
+async def prepare_export(
+    recording_id: uuid.UUID,
+    principal: Principal = Depends(require_scope("export")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create timed captions from the selected render with the client's OpenAI key."""
+    row = await _recording(db, principal.workspace_id, recording_id)
+    path = _safe_path(row.edited_key or row.original_key)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Selected video is missing")
+    checksum = await asyncio.to_thread(_file_sha256, path)
+    existing = (row.qc or {}).get("export") or {}
+    if existing.get("video_sha256") == checksum:
+        return {key: existing.get(key) for key in ("transcript", "captions", "suggested_post_copy")}
+    if not (row.qc or {}).get("has_audio"):
+        raise HTTPException(status_code=409, detail="This video has no audio track")
+    secret = (
+        await db.execute(
+            select(StandaloneSecret).where(
+                StandaloneSecret.workspace_id == principal.workspace_id,
+                StandaloneSecret.kind == "openai_live",
+            )
+        )
+    ).scalar_one_or_none()
+    if secret is None or secret.verified_at is None:
+        raise HTTPException(status_code=409, detail="Verify your OpenAI key in Settings first")
+    audio_path = path.parent / f"{uuid.uuid4().hex}.mp3"
+    try:
+        await asyncio.to_thread(_extract_audio, path, audio_path)
+        key = decrypt(secret.encrypted_value, principal.workspace_id, "openai_live")
+        try:
+            async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+                response = await client.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {key}"},
+                    data={
+                        "model": "whisper-1",
+                        "response_format": "verbose_json",
+                        "timestamp_granularities[]": "segment",
+                    },
+                    files={"file": ("selected-audio.mp3", audio_path.read_bytes(), "audio/mpeg")},
+                )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=503, detail="Caption transcription is unavailable"
+            ) from exc
+    finally:
+        audio_path.unlink(missing_ok=True)
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=503, detail=f"Caption transcription returned HTTP {response.status_code}"
+        )
+    data = response.json()
+    transcript = str(data.get("text") or "").strip()[:30000]
+    captions = _captions(data.get("segments") or [])[:120000]
+    if not transcript or not captions:
+        raise HTTPException(status_code=502, detail="Transcription returned no timed captions")
+    idea = (
+        await db.execute(
+            select(StandaloneIdea).where(
+                StandaloneIdea.id == row.idea_id,
+                StandaloneIdea.workspace_id == principal.workspace_id,
+            )
+        )
+    ).scalar_one_or_none()
+    post_copy = None
+    if idea is not None:
+        try:
+            post_copy = await ask_brain(
+                db,
+                principal.workspace_id,
+                "Draft a short optional social post in this client's voice. Use only the provided "
+                "transcript and verified idea evidence. Do not claim to publish or add "
+                "invented facts.",
+                f"Idea: {idea.title}\nEvidence: {idea.evidence}\nTranscript: {transcript[:12000]}",
+                max_tokens=500,
+            )
+        except HTTPException:
+            pass
+    prepared = {
+        "video_sha256": checksum,
+        "transcript": transcript,
+        "captions": captions,
+        "suggested_post_copy": post_copy[:4000] if post_copy else None,
+    }
+    row.qc = {**(row.qc or {}), "export": prepared}
+    return {key: prepared.get(key) for key in ("transcript", "captions", "suggested_post_copy")}
 
 
 def _trim(original: Path, target: Path, start: float, end: float) -> None:

@@ -132,6 +132,7 @@ class StandaloneMaterial(Base):
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
+    transcript_text: Mapped[str | None] = mapped_column(Text)
 
 
 class StandaloneSecret(Base):

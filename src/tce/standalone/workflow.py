@@ -71,6 +71,8 @@ def _parse_json(text: str) -> Any:
 
 
 def _material_text(row: StandaloneMaterial) -> str:
+    if row.kind == "voice" and row.transcript_text:
+        return row.transcript_text[:15000]
     root = storage_root()
     path = (root / row.storage_key).resolve()
     if not path.is_relative_to(root) or not path.is_file():
@@ -246,6 +248,43 @@ async def _sources(db: AsyncSession, ws: uuid.UUID, config: dict) -> list[Standa
                 await db.flush()
             items.append(row)
     return items
+
+
+@router.post("/sources/{lane_index}/preview")
+async def preview_source(
+    lane_index: int,
+    principal: Principal = Depends(require_scope("write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Show exactly what one saved lane can contribute before scouting."""
+    if lane_index not in (0, 1, 2):
+        raise HTTPException(status_code=404, detail="Source lane not found")
+    config = await client_config(db, principal.workspace_id)
+    lane = config["source_lanes"][lane_index]
+    if not lane.get("enabled"):
+        raise HTTPException(status_code=409, detail="Enable this source in Settings first")
+    single = {**config, "source_lanes": [
+        {**item, "enabled": index == lane_index}
+        for index, item in enumerate(config["source_lanes"])
+    ]}
+    items = await _sources(db, principal.workspace_id, single)
+    return {
+        "lane_index": lane_index,
+        "name": lane["name"],
+        "kind": lane["kind"],
+        "filter": lane.get("filter", ""),
+        "comments": lane.get("comments", ""),
+        "items_found": len(items),
+        "items": [
+            {"title": item.title, "url": item.url, "excerpt": item.content[:450]}
+            for item in items[:5]
+        ],
+        "research_note": (
+            "This lane is researched by your connected brain when you scout. "
+            "No source items are fetched in preview."
+            if lane["kind"] in {"ai_news", "research"} else None
+        ),
+    }
 
 
 def _idea_json(row: StandaloneIdea) -> dict:
@@ -466,7 +505,10 @@ async def generate_script(
         .scalars()
         .all()
     )
-    samples = "\n".join(_material_text(row)[:3000] for row in voice_rows[:3])
+    samples = "\n".join(
+        f"Sample note: {row.notes or 'none'}\nSample words: {_material_text(row)[:3000]}"
+        for row in voice_rows[:3]
+    )
     prompt = (
         "Write a natural 60 to 90 second talking-head video script. Start with a concrete hook, "
         "make one clear point, use only supported evidence, end with a useful close. "
@@ -571,7 +613,9 @@ async def _talk_context(db: AsyncSession, ws: uuid.UUID, mode: str, context_id: 
         return (
             f"Video: {idea.title}\nScript angle: {idea.angle}\n"
             f"Technical check: {recording.qc or 'not run'}\n"
-            f"Editor notes: {recording.notes}"
+            f"Editor notes: {recording.notes}\n"
+            "Visual review, if present, is based on three still frames only. "
+            "No audio or complete motion review has been performed."
         )
     raise HTTPException(status_code=422, detail="Choose week or a Jennifer recording")
 
