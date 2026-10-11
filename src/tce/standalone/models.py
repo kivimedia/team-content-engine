@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -262,6 +263,19 @@ class StandaloneJob(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     lease_hash: Mapped[str | None] = mapped_column(String(64))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class StandaloneRoutineRun(Base):
+    __tablename__ = "standalone_routine_runs"
+    __table_args__ = (UniqueConstraint("workspace_id", "routine_date"),)
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("standalone_workspaces.id"), nullable=False
+    )
+    routine_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="running", nullable=False)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("standalone_jobs.id"))
+    error_code: Mapped[str | None] = mapped_column(String(80))
 
 
 class StandaloneLiveSession(Base):

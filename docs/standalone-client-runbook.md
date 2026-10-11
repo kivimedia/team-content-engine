@@ -20,6 +20,8 @@ port 8875. The pilot has no client invitations or configured sender yet.
    These use `alembic_standalone.ini`, an independent migration history. The
    `tce_client` database is fresh and has no owner data. Do not point this at the owner TCE
    database or file volume.
+   The scheduler container starts after migration. It checks each workspace once
+   per minute but does nothing until that client's weekly routine is enabled.
 3. Read `GET /healthz` through the HTTPS proxy and check that `/app` loads its
    CSS and JavaScript. Confirm the proxy forwards HTTPS correctly and limits upload
    size to at least 500 MB.
@@ -51,6 +53,13 @@ settings, pause sources, remove provider keys, and deactivate uploaded material.
 They can preview each saved source lane before scouting. Audio voice samples can
 be transcribed on an explicit click with the client's own OpenAI key, then used
 alongside written samples when drafting scripts.
+The weekly scouting day and local time live in the same versioned Settings
+record. Disabling or restoring the routine takes effect on the next scheduler
+check. The scheduler uses the client's IANA timezone, including daylight saving
+changes, and writes one receipt per workspace and local date. API mode uses
+only the client's verified Anthropic key. Claude Code mode queues a job for the
+client's native worker. Failed runs show in Settings; the client can scout
+manually from Ideas. No routine publishes or emails content.
 
 For Ken's pilot, use a real Ken-owned email and agreed domain only after the
 isolated DB, HTTPS, backup, sender and provider keys are verified. Do not import
@@ -119,6 +128,7 @@ keys in their own systems; client keys can then be replaced in Settings.
 The pre-s004 client DB snapshot is at
 `/home/ziv/tce-client-backups/pre-s004-2026-10-11.dump` on the VPS. Its mode is
 0600. Restore only to an isolated copy before using it as a rollback source.
+Take another private snapshot before applying the routine schema s005.
 
 Before client launch, verify two independent client accounts cannot read or alter
 each other's settings, sources, recordings, tokens or deliveries. Run an actual

@@ -75,6 +75,25 @@ class SourceLane(BaseModel):
         return value
 
 
+class RoutineConfig(BaseModel):
+    enabled: bool = False
+    weekday: int = Field(default=0, ge=0, le=6)
+    local_time: str = "09:00"
+
+    @field_validator("local_time")
+    @classmethod
+    def valid_local_time(cls, value: str) -> str:
+        if (
+            len(value) != 5
+            or value[2] != ":"
+            or not (value[:2] + value[3:]).isdigit()
+            or int(value[:2]) > 23
+            or int(value[3:]) > 59
+        ):
+            raise ValueError("Choose a local time as HH:MM")
+        return value
+
+
 class ClientConfig(BaseModel):
     display_name: str = Field(min_length=1, max_length=160)
     timezone: str = Field(default="UTC", max_length=100)
@@ -85,6 +104,7 @@ class ClientConfig(BaseModel):
     source_lanes: list[SourceLane] = Field(min_length=3, max_length=3)
     brain_mode: str = "unconfigured"
     brain_model: str = Field(default="claude-sonnet-5", max_length=100)
+    routine: RoutineConfig = Field(default_factory=RoutineConfig)
 
     @field_validator("timezone")
     @classmethod
@@ -391,6 +411,7 @@ def create_standalone_app() -> FastAPI:
     from tce.standalone.live import router as live_router
     from tce.standalone.materials import router as materials_router
     from tce.standalone.recording import router as recording_router
+    from tce.standalone.routine import router as routine_router
     from tce.standalone.secrets import router as secrets_router
     from tce.standalone.workflow import router as workflow_router
 
@@ -429,6 +450,7 @@ def create_standalone_app() -> FastAPI:
     app.include_router(live_router)
     app.include_router(jobs_router)
     app.include_router(recording_router)
+    app.include_router(routine_router)
     app.include_router(secrets_router)
     app.include_router(workflow_router)
     web_root = Path(__file__).with_name("web")
