@@ -165,7 +165,7 @@ async def test_saved_source_preview_shows_only_active_material_from_own_lane(cli
     preview = await client.post("/api/sources/0/preview", headers=headers)
     assert preview.status_code == 200, preview.text
     assert preview.json()["items_found"] == 1
-    assert preview.json()["items"][0]["title"] == "chapter.txt"
+    assert preview.json()["items"][0]["title"] == "chapter.txt, opening"
     assert "intake form" in preview.json()["items"][0]["excerpt"]
     assert preview.json()["filter"] == "Chapter 1"
     assert (await client.post("/api/sources/4/preview", headers=headers)).status_code == 404
@@ -182,6 +182,38 @@ async def test_saved_source_preview_shows_only_active_material_from_own_lane(cli
     assert other.status_code == 200
     other_headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
     assert (await client.post("/api/sources/0/preview", headers=other_headers)).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_book_sections_keep_chapter_locations_in_preview(clients):
+    client, _ = clients
+    assert (await client.post(
+        "/auth/login",
+        json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+    )).status_code == 200
+    headers = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    assert (await client.put(
+        "/api/config", json={"expected_revision": 0, "config": config("Ken")}, headers=headers,
+    )).status_code == 200
+    material = await client.post(
+        "/api/materials",
+        data={"kind": "source", "lane_index": "0"},
+        files={"file": (
+            "my-book.md",
+            b"# Chapter 1 Opening\nThe intake form changed.\n# Chapter 2 Delivery\n"
+            b"The client learned to shorten the call.",
+            "text/markdown",
+        )},
+        headers=headers,
+    )
+    assert material.status_code == 201, material.text
+    preview = await client.post("/api/sources/0/preview", headers=headers)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["items_found"] == 2
+    assert [item["title"] for item in preview.json()["items"]] == [
+        "my-book.md, Chapter 1 Opening", "my-book.md, Chapter 2 Delivery"
+    ]
+    assert "shorten the call" in preview.json()["items"][1]["excerpt"]
 
 
 @pytest.mark.asyncio
@@ -441,6 +473,7 @@ async def test_claude_code_worker_leases_only_own_jobs_and_retries_failures(clie
     )
     assert completed.status_code == 200, completed.text
     assert completed.json()["status"] == "done"
+    assert "chapter.txt" in completed.json()["result"]["ideas"][0]["source_title"]
     idea_id = completed.json()["result"]["ideas"][0]["id"]
     assert (await client.post(
         f"/api/jobs/{job_id}/complete",
@@ -881,10 +914,12 @@ async def test_recording_review_and_edit_versions_are_private(clients, monkeypat
         )
     ).status_code == 200
     csrf = client.cookies[CSRF_COOKIE]
+    api_config = config("Ken")
+    api_config["brain_mode"] = "anthropic_api"
     assert (
         await client.put(
             "/api/config",
-            json={"expected_revision": 0, "config": config("Ken")},
+            json={"expected_revision": 0, "config": api_config},
             headers={"X-TCE-CSRF": csrf},
         )
     ).status_code == 200
@@ -1002,10 +1037,12 @@ async def test_live_session_uses_only_clients_verified_key(clients, monkeypatch)
         )
     ).status_code == 200
     csrf = client.cookies[CSRF_COOKIE]
+    api_config = config("Ken")
+    api_config["brain_mode"] = "anthropic_api"
     assert (
         await client.put(
             "/api/config",
-            json={"expected_revision": 0, "config": config("Ken")},
+            json={"expected_revision": 0, "config": api_config},
             headers={"X-TCE-CSRF": csrf},
         )
     ).status_code == 200
@@ -1041,3 +1078,105 @@ async def test_live_session_uses_only_clients_verified_key(clients, monkeypatch)
             headers={"X-TCE-CSRF": csrf},
         )
     ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_claude_code_conversation_proposes_but_does_not_apply_cut(clients, monkeypatch):
+    from tce.standalone import live, recording, secrets
+
+    monkeypatch.setattr(
+        recording,
+        "_probe",
+        lambda path: {"duration_s": 5, "width": 1080, "height": 1920, "has_audio": True},
+    )
+
+    async def verified(kind, value):
+        return True
+
+    async def provider(key, session, sdp):
+        return {"session": {"id": "jennifer_live_test"}, "transport": {"sdp": "answer-sdp"}}
+
+    monkeypatch.setattr(secrets, "_verify", verified)
+    monkeypatch.setattr(live, "_create_provider_session", provider)
+    client, _ = clients
+    assert (await client.post(
+        "/auth/login",
+        json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+    )).status_code == 200
+    csrf = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    assert (await client.put(
+        "/api/config", json={"expected_revision": 0, "config": config("Ken")}, headers=csrf
+    )).status_code == 200
+    assert (await client.put(
+        "/api/secrets/openai_live", json={"value": FAKE_OPENAI_KEY}, headers=csrf
+    )).status_code == 200
+    idea = await client.post(
+        "/api/ideas", json={"title": "Real lesson", "angle": "Use client proof"}, headers=csrf
+    )
+    recording_response = await client.post(
+        f"/api/ideas/{idea.json()['id']}/recordings",
+        files={"file": ("take.webm", b"synthetic video", "video/webm")}, headers=csrf,
+    )
+    assert recording_response.status_code == 201, recording_response.text
+    recording_id = recording_response.json()["id"]
+    session = await client.post(
+        "/api/live/session",
+        json={"sdp": "offer-sdp-more-than-ten", "mode": "jennifer", "context_id": recording_id},
+        headers=csrf,
+    )
+    assert session.status_code == 201, session.text
+    delegated = await client.post(
+        "/api/live/delegation",
+        json={"session_id": "jennifer_live_test", "delegation_id": "delegate_cut",
+              "transcript": "Keep seconds one through three"},
+        headers=csrf,
+    )
+    assert delegated.status_code == 202, delegated.text
+    job_id = delegated.json()["job_id"]
+    grant = await client.post(
+        "/api/tokens", json={"label": "Test Claude worker", "scopes": ["worker"]}, headers=csrf
+    )
+    assert grant.status_code == 200, grant.text
+    bearer = {"Authorization": f"Bearer {grant.json()['token']}"}
+    await client.post("/auth/logout", headers=csrf)
+    leased = (await client.post("/api/jobs/lease", headers=bearer)).json()["job"]
+    assert leased["id"] == job_id
+    assert "seconds one through three" in leased["prompt"]
+    completed = await client.post(
+        f"/api/jobs/{job_id}/complete",
+        json={"lease_token": leased["lease_token"],
+              "output": '{"answer":"I can prepare that cut.","proposal":{"kind":"trim",'
+                        '"start_s":1,"end_s":3,"note":"Keep the strongest section"}}'},
+        headers=bearer,
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["result"]["proposal"]["recording_id"] == recording_id
+    assert completed.json()["result"]["proposal"]["end_s"] == 3
+    assert (await client.post(
+        "/auth/login",
+        json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+    )).status_code == 200
+    csrf = {"X-TCE-CSRF": client.cookies[CSRF_COOKIE]}
+    assert (await client.get(f"/api/recordings/{recording_id}/renders")).json() == []
+    talk = await client.post(
+        f"/api/talk/jennifer?context_id={recording_id}",
+        json={"message": "Should I keep the opening?"}, headers=csrf,
+    )
+    assert talk.status_code == 202, talk.text
+    await client.post("/auth/logout", headers=csrf)
+    leased = (await client.post("/api/jobs/lease", headers=bearer)).json()["job"]
+    assert leased["id"] == talk.json()["job_id"]
+    invalid = await client.post(
+        f"/api/jobs/{leased['id']}/complete",
+        json={"lease_token": leased["lease_token"],
+              "output": '{"answer":"The opening is clear.","proposal":{"kind":"trim",'
+                        '"start_s":1,"end_s":50}}'},
+        headers=bearer,
+    )
+    assert invalid.status_code == 200, invalid.text
+    assert invalid.json()["result"]["proposal"] is None
+    assert (await client.post(
+        "/auth/login",
+        json={"email": "ken@example.test", "password": TEST_PASSWORD, "workspace": "ken"},
+    )).status_code == 200
+    assert (await client.get(f"/api/recordings/{recording_id}/renders")).json() == []

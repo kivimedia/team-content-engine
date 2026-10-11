@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce.db.session import get_db
 from tce.standalone.auth import Principal, current_principal, require_scope
 from tce.standalone.models import (
+    StandaloneChatMessage,
     StandaloneIdea,
     StandaloneJob,
     StandaloneScriptVersion,
@@ -219,7 +220,7 @@ async def complete_job(
             )
             db.add(idea)
             await db.flush()
-            made.append(_idea_json(idea, source.url))
+            made.append(_idea_json(idea, source.url, source.title))
         row.result = {"ideas": made, "sources_considered": len(refs)}
     elif row.kind == "script":
         script = body.output.strip()
@@ -258,6 +259,36 @@ async def complete_job(
             )
         )
         row.result = {"idea_id": str(idea_id), "version": version, "script": script}
+    elif row.kind == "live_reply":
+        from tce.standalone.live import parse_live_reply
+
+        row.result = await parse_live_reply(
+            db,
+            principal.workspace_id,
+            row.input["mode"],
+            uuid.UUID(row.input["context_id"]) if row.input.get("context_id") else None,
+            body.output,
+        )
+    elif row.kind == "talk_reply":
+        from tce.standalone.live import parse_live_reply
+
+        context_id = uuid.UUID(row.input["context_id"]) if row.input.get("context_id") else None
+        row.result = await parse_live_reply(
+            db, principal.workspace_id, row.input["mode"], context_id, body.output
+        )
+        db.add_all([
+            StandaloneChatMessage(
+                workspace_id=principal.workspace_id,
+                context=row.input["mode"],
+                context_id=context_id,
+                role=role,
+                content=content,
+            )
+            for role, content in (
+                ("client", row.input["message"]),
+                ("assistant", row.result["answer"]),
+            )
+        ])
     else:
         raise HTTPException(status_code=409, detail="Job kind is not supported")
     row.status = "done"

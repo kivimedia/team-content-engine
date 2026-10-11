@@ -98,6 +98,69 @@ def _material_text(row: StandaloneMaterial) -> str:
     return ""
 
 
+def _material_segments(row: StandaloneMaterial) -> list[tuple[str, str]]:
+    """Keep page and chapter locations visible to scouting and the client."""
+    root = storage_root()
+    path = (root / row.storage_key).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise HTTPException(status_code=409, detail=f"Material {row.name} is missing")
+    sections: list[tuple[str, str]] = []
+    if path.suffix == ".pdf":
+        try:
+            from pypdf import PdfReader
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail="PDF extraction is not installed") from exc
+        for index, page in enumerate(PdfReader(str(path)).pages[:100], start=1):
+            sections.append((f"page {index}", page.extract_text() or ""))
+    elif path.suffix == ".docx":
+        heading = "opening"
+        paragraphs: list[str] = []
+        for paragraph in Document(BytesIO(path.read_bytes())).paragraphs:
+            line = paragraph.text.strip()
+            if not line:
+                continue
+            if paragraph.style and paragraph.style.name.lower().startswith("heading"):
+                if paragraphs:
+                    sections.append((heading, "\n".join(paragraphs)))
+                heading, paragraphs = line[:120], []
+            else:
+                paragraphs.append(line)
+        if paragraphs:
+            sections.append((heading, "\n".join(paragraphs)))
+    elif path.suffix in {".txt", ".md"}:
+        heading = "opening"
+        lines: list[str] = []
+        for line in path.read_text(encoding="utf-8")[:500000].splitlines():
+            match = re.match(
+                r"^\s*(?:#{1,6}\s+)?((?:chapter|lesson|module|section)\s+"
+                r"[\w.-]+[^\n]{0,100})\s*$",
+                line, flags=re.I,
+            )
+            markdown_heading = re.match(r"^\s*#{1,6}\s+(.{2,120})$", line)
+            label = match.group(1) if match else (
+                markdown_heading.group(1) if markdown_heading else None
+            )
+            if label:
+                if lines:
+                    sections.append((heading, "\n".join(lines)))
+                heading, lines = label, []
+            else:
+                lines.append(line)
+        if lines:
+            sections.append((heading, "\n".join(lines)))
+    pieces: list[tuple[str, str]] = []
+    for label, content in sections:
+        content = content.strip()
+        for offset in range(0, len(content), 3000):
+            chunk = content[offset:offset + 3000].strip()
+            if chunk:
+                suffix = f", part {offset // 3000 + 1}" if len(content) > 3000 else ""
+                pieces.append((label + suffix, chunk))
+            if len(pieces) >= 120:
+                return pieces
+    return pieces
+
+
 async def _key(db: AsyncSession, ws: uuid.UUID, kind: str) -> str | None:
     row = (
         await db.execute(
@@ -210,12 +273,11 @@ async def _sources(db: AsyncSession, ws: uuid.UUID, config: dict) -> list[Standa
         fetched = []
         for material in materials:
             if material.lane_index == index:
-                content = _material_text(material)
-                if content.strip():
+                for section_index, (label, content) in enumerate(_material_segments(material)):
                     fetched.append(
                         {
-                            "external_id": str(material.id),
-                            "title": material.name,
+                            "external_id": f"{material.id}:{section_index}",
+                            "title": f"{material.name}, {label}",
                             "url": None,
                             "content": content,
                         }
@@ -227,7 +289,7 @@ async def _sources(db: AsyncSession, ws: uuid.UUID, config: dict) -> list[Standa
         elif kind in {"ai_news", "research"} and not fetched:
             # Web search is performed by the client's brain on the exact lane filter.
             continue
-        for item in fetched[:30]:
+        for item in fetched[:120]:
             digest = hashlib.sha256(item["content"].encode()).hexdigest()
             row = (
                 await db.execute(
@@ -293,7 +355,11 @@ async def preview_source(
     }
 
 
-def _idea_json(row: StandaloneIdea, source_url: str | None = None) -> dict:
+def _idea_json(
+    row: StandaloneIdea,
+    source_url: str | None = None,
+    source_title: str | None = None,
+) -> dict:
     result = {
         "id": str(row.id),
         "title": row.title,
@@ -308,10 +374,12 @@ def _idea_json(row: StandaloneIdea, source_url: str | None = None) -> dict:
     }
     if source_url:
         result["source_url"] = source_url
+    if source_title:
+        result["source_title"] = source_title
     return result
 
 
-async def _source_urls(db: AsyncSession, ws: uuid.UUID, ideas: list[StandaloneIdea]) -> dict:
+async def _source_details(db: AsyncSession, ws: uuid.UUID, ideas: list[StandaloneIdea]) -> dict:
     ids = {row.source_item_id for row in ideas if row.source_item_id}
     if not ids:
         return {}
@@ -323,7 +391,7 @@ async def _source_urls(db: AsyncSession, ws: uuid.UUID, ideas: list[StandaloneId
             )
         )
     ).scalars()
-    return {row.id: row.url for row in rows}
+    return {row.id: (row.url, row.title) for row in rows}
 
 
 async def generated_source(
@@ -409,11 +477,18 @@ async def scout(
     ]
     if not lane_specs:
         raise HTTPException(status_code=409, detail="Enable at least one idea source in Settings")
-    chosen = [
-        row
-        for lane_index in range(3)
-        for row in [item for item in sources if item.lane_index == lane_index][:4]
-    ]
+    chosen = []
+    for lane_index, lane in enumerate(config["source_lanes"]):
+        lane_sources = [item for item in sources if item.lane_index == lane_index]
+        terms = re.findall(r"[a-z0-9]{3,}", lane.get("filter", "").lower())
+        lane_sources.sort(
+            key=lambda item: sum(
+                3 * item.title.lower().count(term) + item.content[:3000].lower().count(term)
+                for term in terms
+            ),
+            reverse=True,
+        )
+        chosen.extend(lane_sources[:4])
     source_refs = {i + 1: row for i, row in enumerate(chosen)}
     source_text = "\n\n".join(
         f"SOURCE {i}: {row.title}\nURL: {row.url or 'private upload'}\n{row.content[:3000]}"
@@ -479,7 +554,7 @@ async def scout(
         )
         db.add(row)
         await db.flush()
-        made.append(_idea_json(row, source.url))
+        made.append(_idea_json(row, source.url, source.title))
     return {"ideas": made, "sources_considered": len(source_refs)}
 
 
@@ -495,8 +570,11 @@ async def list_ideas(
             .order_by(StandaloneIdea.created_at.desc())
         )
     ).scalars().all()
-    urls = await _source_urls(db, principal.workspace_id, rows)
-    return [_idea_json(row, urls.get(row.source_item_id)) for row in rows]
+    details = await _source_details(db, principal.workspace_id, rows)
+    return [
+        _idea_json(row, *details.get(row.source_item_id, (None, None)))
+        for row in rows
+    ]
 
 
 async def _idea(db: AsyncSession, ws: uuid.UUID, idea_id: uuid.UUID) -> StandaloneIdea:
@@ -577,10 +655,13 @@ async def week(
             )
         )
     ).scalars().all()
-    urls = await _source_urls(db, principal.workspace_id, rows)
+    details = await _source_details(db, principal.workspace_id, rows)
     return {
         "week_start": week_start,
-        "ideas": [_idea_json(row, urls.get(row.source_item_id)) for row in rows],
+        "ideas": [
+            _idea_json(row, *details.get(row.source_item_id, (None, None)))
+            for row in rows
+        ],
     }
 
 
@@ -784,7 +865,34 @@ async def talk(
         else "You are Jennifer, the client's video editor. Discuss the recording and edits. "
         "Use technical checks and notes. Never claim to have watched the video."
     )
-    answer = await ask_brain(db, principal.workspace_id, instruction, prompt, max_tokens=800)
+    if config.get("brain_mode") == "claude_code":
+        job = await queue_job(
+            db,
+            principal.workspace_id,
+            "talk_reply",
+            {
+                "prompt": instruction + "\nReturn JSON with answer and optional proposal. "
+                "For Jennifer, propose a trim only when the client gave explicit times; "
+                'use {"kind":"trim","start_s":number,"end_s":number,"note":"reason"}. '
+                "Never claim to have applied a proposal.\n" + prompt,
+                "mode": mode,
+                "context_id": str(context_id) if context_id else None,
+                "message": body.message,
+            },
+        )
+        return JSONResponse(status_code=202, content={"job_id": str(job.id)})
+    from tce.standalone.live import parse_live_reply
+
+    raw = await ask_brain(
+        db,
+        principal.workspace_id,
+        instruction + " Return JSON with answer and optional proposal. Propose a trim only "
+        "when the client gives explicit start and end times. Never claim to apply it.",
+        prompt,
+        max_tokens=800,
+    )
+    reply = await parse_live_reply(db, principal.workspace_id, mode, context_id, raw)
+    answer = reply["answer"]
     db.add_all(
         [
             StandaloneChatMessage(
@@ -803,4 +911,4 @@ async def talk(
             ),
         ]
     )
-    return {"answer": answer}
+    return reply

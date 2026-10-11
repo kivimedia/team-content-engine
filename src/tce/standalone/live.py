@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import math
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce.db.session import get_db
 from tce.standalone.auth import Principal, current_principal, require_scope
 from tce.standalone.brain import ask_brain, client_config
-from tce.standalone.models import StandaloneLiveSession, StandaloneSecret
+from tce.standalone.jobs import queue_job
+from tce.standalone.models import StandaloneLiveSession, StandaloneRecording, StandaloneSecret
 from tce.standalone.secrets import decrypt
 from tce.standalone.workflow import _talk_context
 
@@ -32,6 +37,60 @@ class LiveDelegation(BaseModel):
     delegation_id: str = Field(min_length=8, max_length=160)
     transcript: str = Field(min_length=1, max_length=5000)
     history: str = Field(default="", max_length=8000)
+
+
+async def parse_live_reply(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    mode: str,
+    context_id: uuid.UUID | None,
+    raw: str,
+) -> dict:
+    """Keep a spoken answer; accept only a client-scoped, inspectable cut proposal."""
+    clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I)
+    try:
+        parsed = json.loads(clean)
+    except json.JSONDecodeError:
+        return {"answer": raw.strip()[:1800], "proposal": None}
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("answer"), str):
+        return {"answer": raw.strip()[:1800], "proposal": None}
+    answer = parsed["answer"].strip()[:1800]
+    if not answer:
+        raise HTTPException(status_code=422, detail="Voice reply has no answer")
+    result = {"answer": answer, "proposal": None}
+    proposal = parsed.get("proposal")
+    if mode != "jennifer" or context_id is None or not isinstance(proposal, dict):
+        return result
+    if proposal.get("kind") != "trim":
+        return result
+    start, end = proposal.get("start_s"), proposal.get("end_s")
+    if (
+        isinstance(start, bool) or isinstance(end, bool)
+        or not isinstance(start, (int, float)) or not isinstance(end, (int, float))
+        or not math.isfinite(start) or not math.isfinite(end)
+    ):
+        return result
+    recording = (
+        await db.execute(
+            select(StandaloneRecording).where(
+                StandaloneRecording.id == context_id,
+                StandaloneRecording.workspace_id == workspace_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if recording is None:
+        return result
+    duration = float((recording.qc or {}).get("duration_s") or 0)
+    if not 0 <= start < end <= duration + 0.1:
+        return result
+    result["proposal"] = {
+        "kind": "trim",
+        "recording_id": str(context_id),
+        "start_s": round(float(start), 2),
+        "end_s": round(float(end), 2),
+        "note": str(proposal.get("note") or "Spoken edit proposal")[:400],
+    }
+    return result
 
 
 async def _create_provider_session(key: str, session: dict, sdp: str) -> dict:
@@ -144,15 +203,37 @@ async def delegate_to_client_brain(
         "Help plan this week's ideas. You may suggest changes, but do not claim to save them."
         if session.mode == "week"
         else "You are Jennifer, the video editor. Discuss cuts and pacing using notes and "
-        "technical checks only. You have not watched the video. Do not claim to have edited it."
+        "technical checks only. You have not watched the full video. Propose a trim only "
+        "when the client gave clear timing. Never claim to have edited it."
     )
-    answer = await ask_brain(
-        db,
-        principal.workspace_id,
-        "You support a live voice conversation. Give a concise factual response for speech. "
-        + mode_instruction,
+    prompt = (
+        "Return JSON with answer (short spoken response) and proposal (null or an object). "
+        "Only for Jennifer, when the client explicitly gave trim timing, proposal may be "
+        '{"kind":"trim","start_s":number,"end_s":number,"note":"brief reason"}. '
+        "Timing is measured on the original video. Never invent a cut from sampled frames. "
+        "The client must inspect and apply any proposal.\n"
         f"Workspace context: {context[:7000]}\nRecent transcript: {body.history[-6000:]}\n"
-        f"Latest user speech: {body.transcript}",
-        max_tokens=350,
+        f"Latest user speech: {body.transcript}"
     )
-    return {"delegation_id": body.delegation_id, "answer": answer[:1800]}
+    system = "You support a live voice conversation. " + mode_instruction
+    config = await client_config(db, principal.workspace_id)
+    if config.get("brain_mode") == "claude_code":
+        job = await queue_job(
+            db,
+            principal.workspace_id,
+            "live_reply",
+            {
+                "prompt": system + "\n" + prompt,
+                "mode": session.mode,
+                "context_id": str(session.context_id) if session.context_id else None,
+            },
+        )
+        return JSONResponse(
+            status_code=202,
+            content={"delegation_id": body.delegation_id, "job_id": str(job.id)},
+        )
+    raw = await ask_brain(db, principal.workspace_id, system, prompt, max_tokens=450)
+    reply = await parse_live_reply(
+        db, principal.workspace_id, session.mode, session.context_id, raw
+    )
+    return {"delegation_id": body.delegation_id, **reply}
