@@ -304,6 +304,8 @@
     await putTake({ talkId: state.talk.talkId, done: true, startedAt: state.talk.startedAt,
                     endedAt: new Date().toISOString(), durationMs });
     releaseCamera();
+    $("soloCameraHint").textContent = "Camera off. Tap Record another to film again.";
+    $("soloCameraEmpty").hidden = false;
     $("soloRecord").disabled = false;
     $("soloRecord").textContent = "Record another";
     top("Sending");

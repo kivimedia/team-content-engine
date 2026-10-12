@@ -438,3 +438,5 @@ body.solo-page { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr
 .solo-controls #soloCameraButton { grid-column: 1 / -1; }
 .solo-controls .control { font-size: 1.1rem; min-height: 60px; }
 .solo-controls .control small { font-size: .9rem; opacity: .9; }
+.solo-page .identity span { font-size: 1rem; }
+.solo-controls .control small { font-size: .95rem; }
