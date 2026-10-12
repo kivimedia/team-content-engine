@@ -37,6 +37,9 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 3
 main { width: min(100%, 980px); margin: 0 auto; }
 .queue-view { padding: 34px 18px 90px; }
 .queue-intro { max-width: 620px; }
+/* 12-Oct: Record without a script, under the intro, above the list. */
+.solo-entry { margin: 4px 0 0; }
+.solo-entry .secondary-button { display: inline-flex; align-items: center; text-decoration: none; color: var(--ink); }
 .kicker { color: var(--moss); font-weight: 800; margin: 0 0 6px; }
 .queue-intro h1 { font-family: Georgia, serif; font-size: clamp(2.1rem, 9vw, 4rem); line-height: .98; margin: 0 0 16px; letter-spacing: -.035em; }
 .queue-intro > p:last-child { font-size: 1.08rem; line-height: 1.55; color: #34435a; }
@@ -394,3 +397,19 @@ body:not(.rec-live) #textSmaller,
 body:not(.rec-live) #textSizeValue { display: none; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
 .talk-link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+
+/* 12-Oct: Record without a script. One screen: him on camera, a line of help or of
+   progress under it, and two buttons. Progress never covers the camera. */
+body.solo-page { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr; }
+.solo-back { display: inline-grid; place-items: center; text-decoration: none; }
+.solo-main { display: grid; grid-template-rows: minmax(0, 1fr) auto auto auto; gap: 12px; padding: 12px 12px calc(14px + env(safe-area-inset-bottom)); min-height: 0; }
+.solo-stage { min-height: 50dvh; border-radius: 14px; }
+.solo-stage video { position: absolute; inset: 0; }
+.solo-help, .solo-status { margin: 0; font-size: 1.05rem; line-height: 1.45; color: var(--ink); }
+.solo-status { padding: 10px 12px; border: 2px solid var(--moss); border-radius: 10px; background: var(--white); font-weight: 700; }
+.solo-status.is-bad { border-color: var(--signal); color: #8c1717; }
+.solo-library-link { color: var(--lake); font-weight: 900; }
+.solo-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.solo-controls #soloCameraButton { grid-column: 1 / -1; }
+.solo-controls .control { font-size: 1.1rem; min-height: 60px; }
+.solo-controls .control small { font-size: .9rem; opacity: .9; }

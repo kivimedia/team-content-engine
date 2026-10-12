@@ -38,5 +38,9 @@ def talk_topic(workspace_id: uuid.UUID, agent: str, started_at: datetime) -> Top
         citations_private=[],
         status="recorded",
         origin=ORIGIN_AGENT_TALK,
-        editor_notes=f"A voice call with {name}, filmed on the call's page.",
+        editor_notes=(
+            "A take he recorded with no script, on the studio's Record without a script."
+            if agent_talks.is_solo(agent)
+            else f"A voice call with {name}, filmed on the call's page."
+        ),
     )

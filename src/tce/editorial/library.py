@@ -163,7 +163,7 @@ def offers_edit_now(upload: RecordingUpload) -> bool:
         return True
     return (
         upload.archived_at is None
-        and upload.source == agent_talks.SOURCE
+        and upload.source in (agent_talks.SOURCE, agent_talks.SOLO_SOURCE)
         and upload.status == "uploaded"
         and _idle_and_never_edited(upload)
     )
@@ -176,6 +176,9 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
     again. `re_record` is last because it is the expensive one.
     """
     actions: list[dict[str, str]] = []
+    if upload.source == agent_talks.SOLO_SOURCE:
+        # 12-Oct: a take with no script is "Recording, 12 Oct" until he names it.
+        actions.append({"key": "rename", "label": "Rename"})
     if offers_edit_now(upload):
         # 4-Oct (C4.1): archived without an edit, by his choice after Stop, or brought
         # back without one. One tap starts the normal edit (and takes it out of Archived).
@@ -215,8 +218,8 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
             }
         )
     # A talk with an agent was a conversation, not a script: there is nothing to record
-    # again, so the button would lead nowhere.
-    if upload.source != agent_talks.SOURCE:
+    # again, so the button would lead nowhere. Nor is there for a take with no script.
+    if upload.source not in (agent_talks.SOURCE, agent_talks.SOLO_SOURCE):
         actions.append({"key": "re_record", "label": "Record it again"})
     return actions
 
@@ -224,6 +227,13 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
 def source_json(upload: RecordingUpload) -> dict[str, Any]:
     """Where a video came from, for the card: a walk he recorded (no label), or an agent
     talk: "Agent talk with Atlas" and a line saying what it is."""
+    if upload.source == agent_talks.SOLO_SOURCE:
+        return {
+            "source": agent_talks.SOLO_SOURCE,
+            "source_label": agent_talks.SOLO_LABEL,
+            "agent": None,
+            "source_line": "Recorded with no script. Jennifer edits it like any other take.",
+        }
     if upload.source != agent_talks.SOURCE:
         return {"source": upload.source, "source_label": None, "agent": None, "source_line": None}
     agent = upload.agent_name or "an agent"
@@ -669,6 +679,37 @@ async def set_archived(
     """Archive or bring back a recording. Nothing is deleted either way."""
     upload = await _get_upload(db, ws, upload_id)
     upload.archived_at = datetime.now(UTC).replace(tzinfo=None) if archived else None
+    await db.flush()
+    return upload
+
+
+TITLE_MAX = 120
+
+
+async def rename_recording(
+    db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID, title: str
+) -> RecordingUpload:
+    """12-Oct: name a take recorded with no script. The Library names every video by its
+    topic row, and a take with no script owns its row alone, so renaming it changes
+    nothing else. Any other video's name is its idea's, and is not renamed here."""
+    upload = await _get_upload(db, ws, upload_id)
+    if upload.source != agent_talks.SOLO_SOURCE:
+        raise LibraryError(
+            "not_renamable", "only a recording made without a script is renamed here", status=409
+        )
+    clean = " ".join(str(title or "").split())[:TITLE_MAX]
+    if len(clean) < 2:
+        raise LibraryError("bad_title", "give it a name of at least two letters", status=422)
+    topic = (
+        await db.execute(
+            select(TopicCandidate).where(
+                TopicCandidate.workspace_id == ws, TopicCandidate.id == upload.candidate_id
+            )
+        )
+    ).scalar_one_or_none()
+    if topic is None:
+        raise LibraryError("not_found", "that recording has no name to change", status=404)
+    topic.title = clean
     await db.flush()
     return upload
 

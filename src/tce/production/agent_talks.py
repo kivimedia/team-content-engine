@@ -46,6 +46,25 @@ from tce.production.media import ffmpeg_path, probe_media
 
 SOURCE = "agent_talk"
 SOURCE_LABEL = "Agent talk"
+
+# 12-Oct (Ziv, on a call): "record with no script... when I'm done... it gets uploaded,
+# transcribed, Jennifer does editing on it... and it just behaves as a regular video".
+# A take with no script travels the agent talk's road (pieces while recording, one join,
+# one library video, the edit), under a reserved name no agent can have. It is ONE voice,
+# his: its video gets a source of its own, so the edit treats it as a normal take and
+# never as a conversation whose other half must be kept.
+SOLO = "_solo"
+SOLO_SOURCE = "solo_take"
+SOLO_LABEL = "Recording"
+
+
+def is_solo(agent: str | None) -> bool:
+    return str(agent or "").strip() == SOLO
+
+
+def source_for(agent: str) -> str:
+    """The library source of the video a talk becomes."""
+    return SOLO_SOURCE if is_solo(agent) else SOURCE
 TIMEZONE = "Asia/Jerusalem"  # his clock, for the date in a talk's title
 
 # One MediaRecorder slice. A few seconds of the best selfie a phone records is a few MB;
@@ -122,7 +141,10 @@ def container_for(mime: str) -> str:
 
 def display_name(agent: str) -> str:
     """The agent as the library names it: "atlas" is "Atlas", "ai-news" is "AI News". A
-    name that already has capitals is kept as it came."""
+    name that already has capitals is kept as it came. A take with no script has no
+    agent: it is his own recording."""
+    if is_solo(agent):
+        return "your recording"
     raw = " ".join(str(agent or "").split()).strip()
     if not raw:
         return "the agent"
@@ -138,8 +160,11 @@ def local_time(moment: datetime) -> datetime:
 
 
 def talk_title(agent: str, started_at: datetime) -> str:
-    """ "Talk with Atlas, 3 Oct": the agent and the day, on his clock."""
+    """ "Talk with Atlas, 3 Oct": the agent and the day, on his clock. A take with no
+    script is "Recording, 12 Oct" until he renames it in the Library."""
     local = local_time(started_at)
+    if is_solo(agent):
+        return f"{SOLO_LABEL}, {local.day} {local:%b}"
     return f"Talk with {display_name(agent)}, {local.day} {local:%b}"
 
 
