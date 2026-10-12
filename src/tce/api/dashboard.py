@@ -65,9 +65,11 @@ def _page_language(request: Request) -> str:
 # /voice) or "Back to KM BOT": both lead outside its fence. Hidden by CSS before the
 # first paint (the scripts still find the elements they set), and the flag tells
 # workspace.js not to draw the bar's voice-call button. Owner pages never get it.
-SOLO_HIDDEN_HEAD = '<style id="tce-solo-off">.solo-entry{display:none!important}</style></head>'
 SCOPED_HEAD = (
-    '<style id="tce-scoped">.kmbot-link,#talkHeader,#talkFab{display:none!important}</style>'
+    # 12-Oct: .solo-entry too - Record without a script is the owner's until Ziv says a
+    # client gets it (then: this selector, /record/solo in SCOPED_PAGE_PATHS and the
+    # production_solo_for_clients setting).
+    '<style id="tce-scoped">.kmbot-link,#talkHeader,#talkFab,.solo-entry{display:none!important}</style>'
     "<script>window.TCE_SCOPED = true;</script>"
     "</head>"
 )
@@ -77,9 +79,6 @@ def _localize(html: str, request: Request) -> str:
     if _scoped_workspace(request) is None:
         return html
     html = html.replace("</head>", SCOPED_HEAD, 1)
-    if not settings.production_solo_for_clients:
-        # 12-Oct: Record without a script is the owner's until Ziv says a client gets it.
-        html = html.replace("</head>", SOLO_HIDDEN_HEAD, 1)
     if _page_language(request) != "he":
         return html
     html = html.replace('<html lang="en">', '<html lang="he" dir="rtl">', 1)

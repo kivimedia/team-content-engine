@@ -198,7 +198,7 @@ async def test_the_page_is_the_owners_and_a_client_sees_no_button(monkeypatch):
     assert page.status_code == 200 and 'id="soloRecord"' in page.text and 'id="soloDone"' in page.text
     assert 'id="soloCamera"' in page.text and 'id="soloStatus"' in page.text
     assert 'id="soloEntry"' in studio.text and "Record without a script" in studio.text
-    assert "tce-solo-off" not in studio.text
+    assert ".solo-entry{display:none" not in studio.text
     assert script.status_code == 200 and "javascript" in script.headers["content-type"]
 
     monkeypatch.setattr(dashboard, "_scoped_workspace", lambda request: WS)
@@ -207,7 +207,7 @@ async def test_the_page_is_the_owners_and_a_client_sees_no_button(monkeypatch):
         page = await c.get("/record/solo", follow_redirects=False)
         studio = await c.get("/record")
     assert page.status_code in (302, 307) and page.headers["location"] == "/record"
-    assert ".solo-entry{display:none!important}" in studio.text
+    assert ".solo-entry{display:none!important}" in studio.text and 'id="tce-scoped"' in studio.text
 
 
 # ---------------------------------------------------------------------------
