@@ -196,6 +196,9 @@ class Settings(BaseSettings):
     # 25-Sep: a finished session edits itself and editing requests run themselves,
     # on the subscription worker. Off = the old click-each-step flow.
     production_auto_edit: bool = True
+    # 12-Oct: "Record without a script". Owner first: a client workspace gets the button
+    # only when this is on, which waits for Ziv's own go.
+    production_solo_for_clients: bool = False
     # 28-Sep: his dogs. A short line with their name in it is talk to them, not to the
     # viewer, and is cut ("If I call my dogs maple, rain ... that needs to be edited out").
     production_aside_names: str = "Maple,Rain"

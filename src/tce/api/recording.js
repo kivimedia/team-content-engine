@@ -1633,7 +1633,7 @@ function rebindIdeas(ideas, next) {
   });
 
   // The nav ships absolute hrefs; this page is served at /record and /tce/record.
-  document.querySelectorAll("#bottomNav a").forEach((link) => {
+  document.querySelectorAll("#bottomNav a, #soloEntry").forEach((link) => {
     link.setAttribute("href", pathPrefix + link.getAttribute("href"));
   });
   $("moreHooksButton").addEventListener("click", askForMoreOpenings);

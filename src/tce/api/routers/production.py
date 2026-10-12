@@ -1995,6 +1995,12 @@ async def _script_context(s: AsyncSession, ws: uuid.UUID, row: RecordingUpload) 
         # 3-Oct: every job that reads an agent talk (the review, a request, a sitting's
         # notes) knows it is a conversation and who the other voice is.
         context += "\n\n" + autoedit.talk_context(row.agent_name or "the agent")
+    elif getattr(row, "source", None) == agent_talks.SOLO_SOURCE:
+        # 12-Oct: a take with no script. One voice, his; the cut is the usual one.
+        context += (
+            "\n\nHe recorded this with no script, speaking freely to camera. There is no "
+            "script to follow: keep what he means to say and edit it like any other take."
+        )
     return context
 
 

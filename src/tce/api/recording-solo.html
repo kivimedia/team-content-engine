@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#10213b">
+  <link rel="icon" href="data:,">
+  <title>TCE - Record without a script</title>
+  <link rel="stylesheet" href="../recording.css">
+</head>
+<body class="solo-page">
+  <!-- 12-Oct (Ziv): "record with no script... I see myself... when I'm done and I
+       click on Done, it gets uploaded, transcribed, Jennifer does editing on it, and
+       it just behaves as a regular video". The take travels in pieces while he talks;
+       Done joins them and starts the edit. Leaving early loses nothing: what did not
+       reach the server waits on this phone and is sent the next time this page opens. -->
+  <header class="topbar">
+    <a id="soloBack" class="icon-button solo-back" href="/record" aria-label="Back to Record">&#8592;</a>
+    <div class="identity">
+      <strong>Record without a script</strong>
+      <span id="soloState">Opening the camera</span>
+    </div>
+    <div class="topbar-actions"></div>
+  </header>
+
+  <main class="solo-main">
+    <div class="camera-stage solo-stage">
+      <video id="soloCamera" playsinline muted></video>
+      <div id="soloCameraEmpty" class="camera-empty">
+        <span class="lens"></span>
+        <strong>Front camera</strong>
+        <span id="soloCameraHint">Allow the camera and microphone to see yourself here.</span>
+      </div>
+      <div id="soloFlag" class="recording-flag" hidden><span></span> Recording</div>
+      <div id="soloTimer" class="camera-timer" hidden>00:00</div>
+    </div>
+
+    <p id="soloHelp" class="solo-help">Talk about anything. When you press Done, it is sent, transcribed and
+      edited by Jennifer, and it appears in your Library as a new video.</p>
+
+    <!-- Progress and failures show here, never as a screen in the way. -->
+    <p id="soloStatus" class="solo-status" role="status" aria-live="polite" hidden></p>
+
+    <div class="controls solo-controls" aria-label="Recording controls">
+      <button id="soloCameraButton" class="control" type="button" hidden>Turn on the camera</button>
+      <button id="soloRecord" class="control record" type="button" disabled>Record</button>
+      <button id="soloDone" class="control finish" type="button" disabled>Done<small>send it for editing</small></button>
+    </div>
+  </main>
+
+  <script src="../recording-solo.js" defer></script>
+</body>
+</html>

@@ -9,12 +9,17 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from tce.settings import settings
+
 router = APIRouter(tags=["dashboard"])
 
 _HTML_PATH = Path(__file__).parent / "dashboard.html"
 _RECORDING_HTML_PATH = Path(__file__).parent / "recording.html"
 _RECORDING_CSS_PATH = Path(__file__).parent / "recording.css"
 _RECORDING_JS_PATH = Path(__file__).parent / "recording.js"
+# 12-Oct: Record without a script.
+_SOLO_HTML_PATH = Path(__file__).parent / "recording-solo.html"
+_SOLO_JS_PATH = Path(__file__).parent / "recording-solo.js"
 _WORKSPACE_HTML_PATH = Path(__file__).parent / "workspace.html"
 _WORKSPACE_CSS_PATH = Path(__file__).parent / "workspace.css"
 _WORKSPACE_JS_PATH = Path(__file__).parent / "workspace.js"
@@ -60,6 +65,7 @@ def _page_language(request: Request) -> str:
 # /voice) or "Back to KM BOT": both lead outside its fence. Hidden by CSS before the
 # first paint (the scripts still find the elements they set), and the flag tells
 # workspace.js not to draw the bar's voice-call button. Owner pages never get it.
+SOLO_HIDDEN_HEAD = '<style id="tce-solo-off">.solo-entry{display:none!important}</style></head>'
 SCOPED_HEAD = (
     '<style id="tce-scoped">.kmbot-link,#talkHeader,#talkFab{display:none!important}</style>'
     "<script>window.TCE_SCOPED = true;</script>"
@@ -71,6 +77,9 @@ def _localize(html: str, request: Request) -> str:
     if _scoped_workspace(request) is None:
         return html
     html = html.replace("</head>", SCOPED_HEAD, 1)
+    if not settings.production_solo_for_clients:
+        # 12-Oct: Record without a script is the owner's until Ziv says a client gets it.
+        html = html.replace("</head>", SOLO_HIDDEN_HEAD, 1)
     if _page_language(request) != "he":
         return html
     html = html.replace('<html lang="en">', '<html lang="he" dir="rtl">', 1)
@@ -108,6 +117,15 @@ async def dashboard():
 @router.get("/record", response_class=HTMLResponse)
 async def recording_studio(request: Request):
     return HTMLResponse(_localize(_RECORDING_HTML_PATH.read_text(encoding="utf-8"), request))
+
+
+@router.get("/record/solo", response_class=HTMLResponse)
+async def recording_solo(request: Request):
+    """12-Oct: Record without a script. A client login never reaches it: the scoped
+    fence allows only its listed pages, and this one is listed when Ziv says go."""
+    if _scoped_workspace(request) is not None and not settings.production_solo_for_clients:
+        return RedirectResponse(url="/record")
+    return HTMLResponse(_localize(_SOLO_HTML_PATH.read_text(encoding="utf-8"), request))
 
 
 async def _workspace_enabled() -> bool:
@@ -262,6 +280,13 @@ async def recording_js():
         _RECORDING_JS_PATH.read_text(encoding="utf-8"),
         media_type="application/javascript",
     )
+
+
+@router.get("/recording-solo.js", include_in_schema=False)
+async def recording_solo_js():
+    from fastapi.responses import Response
+
+    return Response(_SOLO_JS_PATH.read_text(encoding="utf-8"), media_type="application/javascript")
 
 
 @router.get("/i18n-he.js", include_in_schema=False)

@@ -1449,7 +1449,7 @@
     catch (error) { state.libraryPoll = setTimeout(pollLibrary, 8000); return; }
     var playing = document.querySelector(".player:not([hidden])");
     var typing = document.activeElement && document.activeElement.closest
-      && document.activeElement.closest(".publish");
+      && document.activeElement.closest(".publish, .rename-form");
     if (JSON.stringify(data.items || []) !== before && !playing && !typing) { renderLibrary(); return; }
     scheduleLibraryPoll(data.items || []);
   }
@@ -1461,6 +1461,10 @@
     if (item.source === "agent_talk") {
       html += '<span class="tag is-talk">' + esc(item.source_label || "Agent talk")
            + (item.agent ? " with " + esc(item.agent) : "") + "</span> ";
+    }
+    // 12-Oct: a take he recorded with no script.
+    if (item.source === "solo_take") {
+      html += '<span class="tag is-talk">' + esc(item.source_label || "Recording") + "</span> ";
     }
     // The edit is what he comes here for: say so on the card (25-Sep).
     if (item.has_edit) html += '<span class="tag is-ready">Edited video</span> ';
@@ -1550,6 +1554,10 @@
         html += '<button class="btn" type="button" data-talk-edit="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "request_edit") {
         html += '<button class="btn" type="button" data-edit-request="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
+      } else if (action.key === "rename") {
+        // 12-Oct: "Recording, 12 Oct" until he names it.
+        html += '<button class="btn quiet" type="button" data-rename="' + esc(item.upload_id)
+             + '" data-title="' + esc(item.title) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "edit_now") {
         // 4-Oct: never edited, archived by his choice after Stop or brought back. One tap edits it.
         html += '<button class="btn primary" type="button" data-edit-now="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
@@ -1910,6 +1918,40 @@
       toast(error.message, true);
     } finally {
       delete editNowSent[uploadId];
+    }
+  }
+
+  /* 12-Oct: name a take recorded with no script. The box opens in the card, under its
+     buttons; Save sends it, and the Library draws the new name. */
+  function renameOpen(button) {
+    var card = button.closest(".card");
+    if (!card || card.querySelector(".rename-form")) return;
+    var form = document.createElement("div");
+    form.className = "rename-form";
+    form.innerHTML = '<label>New name <input type="text" maxlength="120" class="rename-input"></label>'
+      + '<button class="btn primary" type="button" data-rename-save="' + esc(button.dataset.rename) + '">Save</button>';
+    button.insertAdjacentElement("afterend", form);
+    var input = form.querySelector(".rename-input");
+    input.value = button.dataset.title || "";
+    input.focus();
+    input.select();
+  }
+
+  async function renameSave(button) {
+    var form = button.closest(".rename-form");
+    var title = ((form && form.querySelector(".rename-input")) || {}).value || "";
+    if (title.trim().length < 2) { toast("Give it a name of at least two letters.", true); return; }
+    button.disabled = true;
+    try {
+      var row = await api("/production/recordings/" + encodeURIComponent(button.dataset.renameSave) + "/title", {
+        method: "POST", body: { title: title.trim() }
+      });
+      toast("Renamed to " + row.title + ".");
+      if (form) form.remove();
+      renderLibrary();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, true);
     }
   }
 
@@ -2816,7 +2858,8 @@
     "watch", "watch-close", "voice-undo", "voice-restore",
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise", "pub-copy",
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
-    "check-again", "release-hold", "rule-delete"
+    "check-again", "release-hold", "rule-delete",
+    "rename", "rename-save"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -2845,6 +2888,8 @@
     if (d.unarchive !== undefined) { archiveRecording(d.unarchive, false); return; }
     if (d.editAgain !== undefined) { editAgain(d.editAgain); return; }
     if (d.editNow !== undefined) { editNow(d.editNow); return; }
+    if (d.renameSave !== undefined) { renameSave(target); return; }
+    if (d.rename !== undefined) { renameOpen(target); return; }
     if (d.checkAgain !== undefined) { checkAgain(d.checkAgain); return; }
     if (d.releaseHold !== undefined) { releaseHold(d.releaseHold); return; }
     if (d.ruleDelete !== undefined) { deleteRule(d.ruleDelete); return; }

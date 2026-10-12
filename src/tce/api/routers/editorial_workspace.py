@@ -961,6 +961,28 @@ async def archive_recording(
         return {"upload_id": str(row.id), "archived": row.archived_at is not None}
 
 
+class RenameBody(BaseModel):
+    title: str = Field(min_length=1, max_length=400)
+
+
+@production_router.post("/recordings/{upload_id}/title")
+async def rename_recording(
+    upload_id: str,
+    body: RenameBody,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """12-Oct: a take recorded with no script starts as "Recording, 12 Oct"; he names it."""
+    uid = _uuid(upload_id, "recording")
+    async with open_session(sm) as db:
+        try:
+            row = await library_service.rename_recording(db, ws, uid, body.title)
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+        return {"upload_id": str(row.id), "title": " ".join(body.title.split())[: library_service.TITLE_MAX]}
+
+
 @production_router.post("/recordings/{upload_id}/edit-requests")
 async def create_edit_request(
     upload_id: str,

@@ -30,6 +30,9 @@ ORIGIN_TECHNICAL_VALIDATION = "technical_validation"
 # 3 Oct"). It names the video in the library; it is not an idea, so the idea lists
 # (inbox, the week's candidates, the selector's "already on his list") leave it out.
 ORIGIN_AGENT_TALK = "agent_talk"
+# 12-Oct: a take he recorded with no script ("Recording, 12 Oct") hangs on a row of the
+# same kind. It is not an idea either, and reusing the origin keeps it out of every idea
+# list the agent talk is already kept out of; the video's own source tells the two apart.
 
 
 @asynccontextmanager

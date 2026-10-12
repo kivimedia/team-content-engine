@@ -36,7 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tce.api.private_access import require_private_workspace
+from tce.api.private_access import require_private_workspace, scoped_editor_workspace
 from tce.db.session import get_db
 from tce.editorial.agent_talk_topics import talk_topic
 from tce.models.editorial import RecordingUpload
@@ -89,6 +89,14 @@ class AgentTalkFinish(BaseModel):
     edit: bool | None = None
 
 
+def _subject(agent: str) -> str:
+    """What a status line calls it: "the talk with Atlas", or "your recording" for a take
+    with no script (12-Oct)."""
+    if agent_talks.is_solo(agent):
+        return "your recording"
+    return f"the talk with {agent_talks.display_name(agent)}"
+
+
 def _http(exc: TalkError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail=str(exc))
 
@@ -130,9 +138,17 @@ def talk_json(row: AgentTalk, *, pieces: int | None = None, bytes_total: int | N
 @router.post("", status_code=201)
 async def create_agent_talk(
     body: AgentTalkCreate,
+    request: Request,
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
+    # 12-Oct: a take with no script is the owner's first, until Ziv says a client gets it.
+    if (
+        agent_talks.is_solo(body.agent)
+        and not settings.production_solo_for_clients
+        and scoped_editor_workspace(request.headers.get("x-tce-editor-key")) is not None
+    ):
+        raise HTTPException(status_code=403, detail="Recording without a script is not on for this workspace yet")
     try:
         extension = agent_talks.container_for(body.mime)
         started = agent_talks.parse_instant(body.started_at)
@@ -166,7 +182,9 @@ async def create_agent_talk(
         file_extension=extension,
         status="recording",
         status_detail=(
-            f"Recording the talk with {agent_talks.display_name(agent)}: the pieces arrive "
+            "Recording: the pieces arrive while you record"
+            if agent_talks.is_solo(agent)
+            else f"Recording the talk with {agent_talks.display_name(agent)}: the pieces arrive "
             "while the call runs"
         ),
         join_meta={},
@@ -245,7 +263,7 @@ async def put_agent_talk_chunk(
     if row.status == "failed":  # a join failed; pieces still arriving make it a recording again
         row.status = "recording"
     row.status_detail = (
-        f"Recording the talk with {agent_talks.display_name(row.agent)}: "
+        f"Recording {_subject(row.agent)}: "
         f"{stored.pieces} {'piece' if stored.pieces == 1 else 'pieces'} here, "
         f"{stored.bytes_total / 1_000_000:.1f} MB, the last at {agent_talks.local_time(row.last_chunk_at):%H:%M:%S}"
     )
@@ -385,7 +403,7 @@ async def finish_talk(
         except TalkError as exc:
             if exc.status == 422:  # the pieces are here and do not make a video
                 row.status = "failed"
-                row.status_detail = f"The talk with {name} could not be joined: {exc}"[:500]
+                row.status_detail = f"{_subject(row.agent)[:1].upper()}{_subject(row.agent)[1:]} could not be joined: {exc}"[:500]
                 await db.commit()
             raise _http(exc) from exc
         sha = await asyncio.to_thread(agent_talks.sha256_of, joined.path)
@@ -428,28 +446,32 @@ async def finish_talk(
                 tail = " Jennifer starts the edit now: transcribing first."
             else:
                 tail = " Automatic editing is switched off on this server, so it waits as it is."
+            solo = agent_talks.is_solo(row.agent)
+            what = "Your recording" if solo else f"Agent talk with {name}"
             upload = RecordingUpload(
                 workspace_id=ws,
                 candidate_id=candidate.id,
                 packet_id=None,
-                original_filename=f"agent-talk-{row.id}.{joined.container}",
+                original_filename=f"{'recording' if solo else 'agent-talk'}-{row.id}.{joined.container}",
                 storage_path=str(joined.path),
                 sha256=sha,
                 duration_s=duration,
                 status="uploaded",
                 status_detail=(
                     (
-                        f"Agent talk with {name}, joined from {joined.pieces} "
+                        f"{what}, joined from {joined.pieces} "
                         f"{'piece' if joined.pieces == 1 else 'pieces'} without re-encoding."
                         if joined.pieces
-                        else f"Agent talk with {name}, joined without re-encoding."
+                        else f"{what}, joined without re-encoding."
                     )
                     + _missing_line(joined.missing, joined.missing_count)
                     + tail
                 )[:500],
                 job_ids=[],
-                source=agent_talks.SOURCE,
-                agent_name=name,
+                # 12-Oct: a take with no script is one voice, his, and edits as a normal
+                # take: its own source, no agent, never the conversation rules.
+                source=agent_talks.source_for(row.agent),
+                agent_name=None if solo else name,
                 call_transcript=lines,
                 # Archived the way the Library's own Archive button does it: kept, out
                 # of Still to do, listed under Archived (library.set_archived).
@@ -460,7 +482,7 @@ async def finish_talk(
         row.upload_id = upload.id
         row.status = "finished"
         row.status_detail = (
-            f"Finished: the talk with {name} is in the library as “"
+            f"Finished: {_subject(row.agent)} is in the library as “"
             f"{agent_talks.talk_title(row.agent, row.started_at)}”."
             + ("" if edit else " It is archived, not edited.")
             + _missing_line(joined.missing, joined.missing_count)
@@ -549,8 +571,8 @@ async def finish_idle_talks(ws: uuid.UUID | None = None, *, now: datetime | None
                         await db.refresh(row)
                         row.status = "failed"
                         row.status_detail = (
-                            f"No piece arrived for {IDLE_FINISH_S // 3600} hours and the talk with "
-                            f"{agent_talks.display_name(row.agent)} could not be made into a video: "
+                            f"No piece arrived for {IDLE_FINISH_S // 3600} hours and "
+                            f"{_subject(row.agent)} could not be made into a video: "
                             f"{exc.detail}"
                         )[:500]
                         await db.commit()
