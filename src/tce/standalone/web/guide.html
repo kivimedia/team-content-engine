@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#123846">
+  <title>Set up your TCE studio</title>
+  <link rel="stylesheet" href="/static/guide.css">
+</head>
+<body>
+  <header>
+    <strong>TCE studio</strong>
+    <h1>Your setup and recording guide</h1>
+    <p>Start with your own ideas, make a useful script, record a take, and take the video with you. You decide where and when to publish.</p>
+  </header>
+  <main>
+    <section>
+      <h2>1. Open your private studio</h2>
+      <ol>
+        <li>Use the one-time activation link in your invitation email. It works once and expires after seven days.</li>
+        <li>Create a password of at least 16 characters. Your invitation email is your sign-in email.</li>
+        <li>Open <a href="/app">TCE studio</a> in a modern browser on your computer or phone. Nothing needs to be installed. You may add the page to your phone home screen for quicker access; it still needs an internet connection.</li>
+      </ol>
+      <p class="note">If the link expires, ask for a new invitation. Do not forward your activation link or terminal token.</p>
+      <a class="button" href="/app">Open TCE studio</a>
+    </section>
+    <section>
+      <h2>2. Choose your three sources</h2>
+      <p>Give each source a name, type, filter, and comments. Your filters tell the scout what belongs; your comments add nuance. For example, a book chapter might use a filter for one coaching topic and a comment to avoid claims you no longer make. Your sources can be calls, commits, research, a book, a course, or your own material.</p>
+      <p>Set your audience, focus, voice notes, and things to avoid. Upload source files or voice examples in Settings. Text, Markdown, PDF, DOCX, and supported audio files can be uploaded. Audio voice samples can be transcribed with your OpenAI connection.</p>
+      <p>Onboarding is reversible. You can edit sources, filters, comments, connections, and materials in Settings later. Settings history can restore an earlier configuration.</p>
+    </section>
+    <section>
+      <h2>3. Connect the AI you want to use</h2>
+      <div class="grid">
+        <article><h3>Studio brain</h3><p>Choose your Anthropic API key or the Claude Code worker option in onboarding. Claude Code needs an active session to process queued work; choosing it does not start an always-on worker.</p></article>
+        <article><h3>Live voice</h3><p>Add your OpenAI GPT-Live 1 key to use live voice in Talk to the week and Talk to Jennifer. Text chat remains available without live voice.</p></article>
+        <article><h3>Connected sources</h3><p>Only connect Fathom or GitHub if one of your three source lanes needs it. Saved keys are encrypted and can be removed in Settings.</p></article>
+      </div>
+      <p class="note">A Claude subscription is not an Anthropic API key. For subscription use, select Claude Code and run it in your own terminal session.</p>
+    </section>
+    <section>
+      <h2>4. Make a first video</h2>
+      <ol>
+        <li>In Ideas, scout and choose one idea. Shape its script, then move it into This week.</li>
+        <li>Talk to the week if you want help deciding what to record first.</li>
+        <li>Open Record on a phone or computer with a camera and microphone. Allow this site to use both when your browser asks.</li>
+        <li>Make a short test take. Play it back to check picture, microphone level, and background noise before recording a full take.</li>
+        <li>Open Library. Talk to Jennifer about a cut, review her proposal, then select the edit you want. Your original take remains available.</li>
+      </ol>
+      <p>If camera or microphone access is denied, enable it in the browser's site permissions and reload the studio. A physical device test is still needed before relying on a full client recording.</p>
+    </section>
+    <section>
+      <h2>5. Take the video with you</h2>
+      <p>In Library, select the version you want and choose <strong>Download selected video</strong>. The downloaded file is the reliable handoff. <strong>Email this video to me</strong> sends to your verified sign-in email when the studio sender is configured; it does not send to arbitrary addresses.</p>
+      <p>For Claude Code, create a terminal token in Settings and connect the remote MCP endpoint <code>https://tce-clients.104-200-30-37.sslip.io/mcp</code> using that token as a Bearer authorization header. The terminal can inspect your workspace and request a delivery to your verified address. Keep the token private. See the <a href="https://code.claude.com/docs/en/mcp">Claude Code MCP setup guide</a> for your local installation.</p>
+      <p>The studio does not publish, schedule, or post your video. Download it or hand it to your own publishing workflow.</p>
+    </section>
+    <section>
+      <h2>What to check during your first session</h2>
+      <ul>
+        <li>The invitation opens your own workspace and all three source filters save.</li>
+        <li>A source file and voice example can be added, paused, and changed in Settings.</li>
+        <li>A camera and microphone test take plays back on your actual device.</li>
+        <li>The selected video downloads and opens outside the studio.</li>
+        <li>If email delivery is enabled, the delivery receipt shows success. Until then, use the download.</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

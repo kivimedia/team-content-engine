@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#123846">
+  <title>TCE studio</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/onboarding.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div id="app">
+    <main class="login-shell" id="login-shell">
+      <div class="login-mark"><span class="mark-dot"></span> TCE studio</div>
+      <div class="login-copy">
+        <h1>Make something worth saying.</h1>
+        <p>Find ideas in your own work. Shape a script in your voice. Record, review, and take the video with you.</p>
+      </div>
+      <form id="login-form" class="login-form">
+        <h2>Open your workspace</h2>
+        <label>Email <input name="email" type="email" autocomplete="username" required></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+        <label>Workspace <input name="workspace" autocomplete="organization" required placeholder="Your workspace name"></label>
+        <button type="submit" class="primary">Sign in</button>
+        <p class="form-note" id="login-message" role="status"></p>
+      </form>
+      <p><a class="login-guide-link" href="/guide">Setup and recording guide</a></p>
+    </main>
+    <div id="studio" hidden>
+      <header class="topbar">
+        <div class="brand"><span class="mark-dot"></span><span>TCE studio</span></div>
+        <div class="workspace-name" id="workspace-name"></div>
+        <button id="sign-out" class="quiet top-action">Sign out</button>
+      </header>
+      <div class="studio-layout">
+        <nav class="side-nav" id="side-nav" aria-label="Workspace">
+          <button data-view="today" class="nav-button active">Today</button>
+          <button data-view="ideas" class="nav-button">Ideas</button>
+          <button data-view="week" class="nav-button">This week</button>
+          <button data-view="record" class="nav-button">Record</button>
+          <button data-view="library" class="nav-button">Library</button>
+          <button data-view="settings" class="nav-button">Settings</button>
+        </nav>
+        <main id="view" class="view" tabindex="-1"></main>
+      </div>
+      <nav class="mobile-nav" id="mobile-nav" aria-label="Workspace on phone">
+        <button data-view="today" class="active">Today</button>
+        <button data-view="ideas">Ideas</button>
+        <button data-view="week">Week</button>
+        <button data-view="record">Record</button>
+        <button data-view="library">Library</button>
+        <button data-view="settings">Settings</button>
+      </nav>
+    </div>
+    <div id="toast" role="status" aria-live="polite"></div>
+  </div>
+</body>
+</html>
