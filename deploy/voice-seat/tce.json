@@ -34,7 +34,6 @@
   },
   "byContext": {
     "video": {
-      "model": "claude-haiku-5-5",
       "speaker": "marin"
     }
   }
