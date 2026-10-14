@@ -168,6 +168,22 @@ def test_the_news_shard_tells_the_model_the_rule():
     assert "MUST also cite at least one anchor" in prompt
 
 
+def test_the_news_shard_reads_connects_to_ziv_work_the_way_he_decided():
+    """Reproduction (14-Oct, live): six news items the appraiser approved, zero
+    topics. Three were rejected with "Kivi Media doesn't run that tool" and "the
+    link is a resemblance, not a named system": the selector read the
+    connects_to_ziv_work gate literally. His 21-Sep rule is wider: news is in
+    scope when it makes sense for the owners he coaches OR touches what Kivi
+    Media runs. Two more died on fixable drafting (two lessons, one unbacked
+    claim) instead of being narrowed."""
+    anchor = _pm("standing_fact")
+    prompt = build_selection_prompt("s", "f", [_news_pm([anchor.id])], 3, NOW, context=[anchor])
+    assert "connects_to_ziv_work passes for a news-led candidate" in prompt
+    assert "does not need Kivi Media to run the tool the news names" in prompt
+    assert "build the candidate on the one a coach would act on" in prompt
+    assert "drop a claim the news does not back" in prompt
+
+
 # ---------------------------------------------------------------------------
 # enforce_candidates with real news in the pool
 # ---------------------------------------------------------------------------

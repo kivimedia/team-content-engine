@@ -660,6 +660,17 @@ def build_selection_prompt(
                 "niche for coaches or event owners, click-bait without meat, corporate "
                 "rather than small business, or nothing to do with what he does."
             )
+            # 14-Oct, live: six approved items, zero topics. Three died on "Kivi
+            # Media doesn't run that tool", two on drafting the model could fix.
+            context_block.append(
+                "connects_to_ziv_work passes for a news-led candidate when the news "
+                "changes something in the working week of the owners he coaches (his "
+                "coaching is the point of view), or touches a tool or solution Kivi Media "
+                "runs. It does not need Kivi Media to run the tool the news names. If the "
+                "news carries two lessons, build the candidate on the one a coach would act "
+                "on. Say only what the news item's confirmed facts and the cited anchors "
+                "support: drop a claim the news does not back instead of rejecting the item."
+            )
     # The first three lines are durable headers parsed by tce.editorial.common.
     return "\n\n".join(
         [
