@@ -26,6 +26,13 @@ _USER_AGENT = (
 _TAG_BLOCKS_TO_DROP = ("script", "style", "noscript", "svg", "nav", "footer", "aside", "form", "header")
 _BODY_CHAR_CAP = 6000
 
+# Sites that answer 403 to the server's address whatever it sends (14-Oct:
+# every openai.com article). Only for these, and only on a 403, the page is read
+# through a public reader that returns the article as text. The source URL stays
+# the site's own.
+_READER = "https://r.jina.ai/"
+_READER_HOSTS = frozenset({"openai.com"})
+
 
 def extract_urls(text: str) -> list[str]:
     """Return unique URLs preserving first-seen order. Strips trailing punctuation."""
@@ -76,6 +83,25 @@ def _strip_html(raw_html: str) -> tuple[str, str, str]:
     return title, desc, body
 
 
+def _reader_host(url: str) -> bool:
+    host = (httpx.URL(url).host or "").lower()
+    return any(host == h or host.endswith("." + h) for h in _READER_HOSTS)
+
+
+def _from_reader(text: str) -> tuple[str, str]:
+    """(title, body_text) from the reader's "Title: ... Markdown Content:" page."""
+    title_match = re.search(r"^Title:\s*(.+)$", text, re.MULTILINE)
+    title = title_match.group(1).strip() if title_match else ""
+    _, marker, content = text.partition("Markdown Content:")
+    body = content if marker else text
+    body = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", body)
+    body = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", body)
+    body = re.sub(r"\s+", " ", body).strip()
+    if len(body) > _BODY_CHAR_CAP:
+        body = body[:_BODY_CHAR_CAP].rsplit(" ", 1)[0] + " ..."
+    return title, body
+
+
 async def fetch_url_text(url: str, timeout_s: float = 15.0) -> dict[str, Any]:
     """Fetch one URL and return {url, title, description, body_text, status, error}."""
     result: dict[str, Any] = {
@@ -97,6 +123,13 @@ async def fetch_url_text(url: str, timeout_s: float = 15.0) -> dict[str, Any]:
             },
         ) as client:
             resp = await client.get(url)
+            if resp.status_code == 403 and _reader_host(url):
+                via = await client.get(_READER + url, timeout=max(timeout_s, 40.0))
+                if via.status_code < 400:
+                    title, body = _from_reader(via.text)
+                    if body:
+                        result.update(title=title, body_text=body, via="reader")
+                        return result
             if resp.status_code >= 400:
                 result["status"] = "http_error"
                 result["error"] = f"HTTP {resp.status_code}"

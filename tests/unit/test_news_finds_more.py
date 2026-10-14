@@ -185,6 +185,61 @@ async def test_a_release_feed_does_not_imply_its_vendor(editorial_session, lane)
     assert not item.matched
 
 
+# --- B3: openai.com refuses the server, so nothing of OpenAI's could be checked
+
+
+READER_PAGE = (
+    "Title: GPT-6 and Intelligent UI for everyone\n\n"
+    "URL Source: https://openai.com/index/gpt-6-for-everyone\n\n"
+    "Markdown Content:\n"
+    "Today we are bringing [GPT-6](https://openai.com/gpt-6) to everyone who uses "
+    "ChatGPT.\n\n![chart](https://images.example/c.png)\n\n## Intelligent UI\n\n"
+    "Answers can now come back as interactive tools."
+)
+
+
+def _web(monkeypatch, seen):
+    from tce.services import url_fetcher
+
+    real = httpx.AsyncClient
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.host == "r.jina.ai":
+            return httpx.Response(200, text=READER_PAGE,
+                                  headers={"content-type": "text/plain; charset=utf-8"})
+        return httpx.Response(403, text="<html>Just a moment...</html>",
+                              headers={"content-type": "text/html"})
+
+    monkeypatch.setattr(url_fetcher.httpx, "AsyncClient",
+                        lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    return url_fetcher
+
+
+@pytest.mark.asyncio
+async def test_an_openai_page_that_refuses_the_server_is_read_through_the_reader(monkeypatch):
+    """Reproduction: every openai.com article answers 403 to the VPS, so each
+    OpenAI post that matched stayed "unverified" until it went stale. 12 of the
+    OpenAI blog's 21 posts in 14 days died that way."""
+    seen = []
+    fetcher = _web(monkeypatch, seen)
+    page = await fetcher.fetch_url_text("https://openai.com/index/gpt-6-for-everyone")
+    assert page["status"] == "ok", page
+    assert "bringing GPT-6 to everyone who uses ChatGPT" in page["body_text"]
+    assert "Answers can now come back as interactive tools." in page["body_text"]
+    assert "images.example" not in page["body_text"]
+    assert page["title"] == "GPT-6 and Intelligent UI for everyone"
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_from_any_other_site_is_still_a_refusal(monkeypatch):
+    seen = []
+    fetcher = _web(monkeypatch, seen)
+    page = await fetcher.fetch_url_text("https://vendor.example/post")
+    assert page["status"] == "http_error"
+    assert not any("r.jina.ai" in url for url in seen)
+
+
 # --- C: auto-parks ate the daily cap ------------------------------------------
 
 
