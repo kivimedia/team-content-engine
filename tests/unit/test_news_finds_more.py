@@ -188,6 +188,23 @@ async def test_a_parked_item_comes_back_once_it_has_something_to_cite(editorial_
     assert model.calls == 1, out
 
 
+@pytest.mark.asyncio
+async def test_a_stale_backlog_item_costs_no_model_call(editorial_session, lane):
+    """With parks no longer eating the cap, a quiet day would otherwise reach back
+    to matched items from weeks ago and spend calls on news that went stale."""
+    await _setup(editorial_session, [
+        PROBLEM,
+        StandingFact("vendor", "twilio",
+                     "Kivi Media runs AI phone reception on Twilio numbers for small shops."),
+    ])
+    await _discover(editorial_session)
+    model = Model()
+    await discovery.appraise_pending(
+        editorial_session, WS, complete=model, now=NOW + timedelta(days=10)
+    )
+    assert model.calls == 0
+
+
 # --- D: the appraiser prompt argued against his own answers -------------------
 
 

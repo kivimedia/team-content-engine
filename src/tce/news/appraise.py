@@ -81,7 +81,7 @@ has said so, and his experience running the systems is what goes in distinct_cla
 
 THE RULES
 
-1. The announcement is never the whole idea. The idea is what it changes: what Ziv does, changes or
+1. The announcement is never the idea on its own. The idea is what it changes: what Ziv does, changes or
 decides in his fleet or his clients' systems because of it, or what an owner should do this month.
 If nobody would do anything differently, it is not an idea.
 

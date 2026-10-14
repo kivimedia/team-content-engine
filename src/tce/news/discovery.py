@@ -42,9 +42,12 @@ WINDOW_DAYS = 2
 # calls count against it (a park costs nothing); 87 matched items had never been
 # looked at.
 MAX_APPRAISALS_PER_DAY = 10
-# A parked item ("nothing of yours to cite yet") is looked at again while it is
-# still news, so a standing fact or a commit added later can bring it back.
-RECHECK_DAYS = 5
+# Only news this fresh is appraised by the daily run. A parked item ("nothing of
+# yours to cite yet") is looked at again inside the same window, so a standing
+# fact or a commit added later can bring it back; past it, a model call would be
+# spent on a story that has already gone stale. A URL he checks himself is not
+# held to it.
+FRESH_DAYS = 7
 # How many matched items one pass may walk through. Parks are free, so the walk
 # is longer than the model budget.
 MAX_ITEMS_PER_PASS = 60
@@ -442,22 +445,24 @@ async def appraise_pending(
     parked_ids = select(NewsAppraisal.news_item_id).where(
         NewsAppraisal.workspace_id == ws, NewsAppraisal.job_id.is_(None)
     )
-    recheck_since = now - timedelta(days=RECHECK_DAYS)
     stmt = (
         select(NewsItem)
         .where(
             NewsItem.workspace_id == ws,
             NewsItem.matched.is_(True),
             NewsItem.id.not_in(judged_ids),
-            or_(
-                NewsItem.id.not_in(parked_ids),
-                NewsItem.published_at >= recheck_since,
-            ),
         )
         .order_by(NewsItem.published_at.desc().nullslast())
     )
     if only_item is not None:
         stmt = stmt.where(NewsItem.id == only_item)
+    else:
+        stmt = stmt.where(
+            or_(
+                NewsItem.published_at.is_(None),
+                NewsItem.published_at >= now - timedelta(days=FRESH_DAYS),
+            )
+        )
     pending = (
         await session.execute(stmt.limit(MAX_ITEMS_PER_PASS if budget else 0))
     ).scalars().all()
