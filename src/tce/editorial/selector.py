@@ -645,6 +645,21 @@ def build_selection_prompt(
             "anchor above, or it is rejected. The news is the trigger; his work is the "
             "point of view.",
         ]
+        if profile is None:
+            # 14-Oct: the one news item ever published reached this prompt and was
+            # rejected as "AI news commentary" under the general rule above, with
+            # nothing here saying what Ziv had actually decided about news.
+            context_block.append(
+                "NEWS IN SCOPE (Ziv, 21-Sep): AI news is fine when it makes sense for the "
+                "coaches and small service-business owners he coaches, or when it applies "
+                "to Kivi Media's clients or solutions - including the tools his own agent "
+                "fleet runs on. When it applies to Kivi Media, sharing it is the job, not "
+                "commentary; the rule against AI news commentary is about ideas written for "
+                "people who follow AI. The appraiser already judged each news item below "
+                "worth saying. Reject a news-led candidate only on the four gates: too "
+                "niche for coaches or event owners, click-bait without meat, corporate "
+                "rather than small business, or nothing to do with what he does."
+            )
     # The first three lines are durable headers parsed by tce.editorial.common.
     return "\n\n".join(
         [
@@ -1567,6 +1582,7 @@ async def select_candidates(
     on_activity: Any = None,
     source_ids: list[uuid.UUID] | None = None,
     adds_only: bool = False,
+    week_news_counts: bool = False,
 ) -> SelectionResult:
     """Run (or resume) one selection for a week.
 
@@ -1574,6 +1590,10 @@ async def select_candidates(
     only ever ADDS ideas. Nothing already on the week is withdrawn, and an idea
     that repeats one already on the list, this week included, is recorded as a
     duplicate instead of saved twice.
+
+    `week_news_counts` (the daily news step, 14-Oct): news ideas already on this
+    week's list count toward the weekly news ceiling. A run Ziv asked for himself
+    leaves it off, so asking for news is never refused by the engine's own ones.
 
     Passing the `selection_run_id` of a run whose jobs already exist resumes it: the
     stored requests are replayed under the same idempotency keys, so the queue returns
@@ -2101,11 +2121,23 @@ async def select_candidates(
         # A profiled workspace's trend lane is a lane of its own with a weekly target;
         # the owner's one-news-idea ceiling does not apply to it.
         if profile is None and any(c.get("news") for c in final):
+            # The daily news step adds to a week that may already hold a news
+            # idea. Those count, so the ceiling is a week's ceiling, not a run's.
+            already = (
+                sum(
+                    1
+                    for row in existing
+                    if row.news_item_id is not None and row.status in LIVE_STATUSES
+                )
+                if week_news_counts
+                else 0
+            )
             decision = news_rules.apply_slot_rules(
                 final,
                 is_news=lambda c: bool(c.get("news")),
                 score_of=lambda c: float(c.get("rank_score") or 0.0),
                 story_weight_of=lambda c: (c.get("news") or {}).get("story_weight", "small"),
+                already=already,
             )
             for cand, code, reason in decision.rejected:
                 out = _reject(cand, cand["moment_ids"], "unspecified", code, reason)

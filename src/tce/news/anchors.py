@@ -352,9 +352,9 @@ async def anchors_from_standing_facts(
         ref = ref or {}
         kind = ref.get("anchor_kind")
         term = ref.get("anchor_term") or lesson
-        if kind not in ("client_solution", "problem_pattern"):
+        if kind not in ("client_solution", "problem_pattern", "vendor"):
             # A standing fact with no anchor kind is a note, not an anchor. Skip
-            # it rather than guessing which of the two it meant to be.
+            # it rather than guessing which kind it meant to be.
             continue
         out.append(
             DerivedAnchor(
@@ -423,6 +423,11 @@ async def build_anchor_index(
             if current is not None and current.standing_moment_id and not anchor.standing_moment_id:
                 anchor.standing_moment_id = current.standing_moment_id
             best[key] = anchor
+        elif anchor.standing_moment_id and not current.standing_moment_id:
+            # A vendor is derived from an env key AND written as a standing fact.
+            # Whichever row wins on weight, the citable id must survive, or the
+            # vendor is matchable and still has nothing to cite.
+            current.standing_moment_id = anchor.standing_moment_id
 
     for anchor in best.values():
         result.by_kind[anchor.kind] = result.by_kind.get(anchor.kind, 0) + 1

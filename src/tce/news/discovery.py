@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from tce.models.editorial import EvidenceMoment, EvidenceSource, TopicCandidate
 from tce.models.news import NewsAnchor, NewsAppraisal, NewsFeed, NewsItem, NewsMatch
@@ -33,13 +33,21 @@ from tce.news.appraise import (
 )
 from tce.news.feeds import fetch_feed, is_blocked_host, record_items, sha256_of
 from tce.news.matcher import match_item
-from tce.news.record import record_appraisal
+from tce.news.record import NEWS_SOURCE_KIND, record_appraisal
 
 # Something older than this is not news, however it arrived.
 WINDOW_DAYS = 2
 # The daily cap on model calls. A cost and noise control; the positioning control
-# is the weekly ceiling in the selector.
-MAX_APPRAISALS_PER_DAY = 5
+# is the weekly ceiling in the selector. 14-Oct: 5 -> 10, and only real model
+# calls count against it (a park costs nothing); 87 matched items had never been
+# looked at.
+MAX_APPRAISALS_PER_DAY = 10
+# A parked item ("nothing of yours to cite yet") is looked at again while it is
+# still news, so a standing fact or a commit added later can bring it back.
+RECHECK_DAYS = 5
+# How many matched items one pass may walk through. Parks are free, so the walk
+# is longer than the model budget.
+MAX_ITEMS_PER_PASS = 60
 # How far back an anchor's own evidence counts as "recent" for the appraiser.
 RECENT_EVIDENCE_DAYS = 30
 
@@ -410,41 +418,66 @@ async def appraise_pending(
         return {"skipped": "the news lane is switched off"}
 
     start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Only a real model call counts. A park has no job id and cost nothing; when
+    # parks counted, an unanchored item could take the day's last slot and the
+    # citable one behind it waited until it went stale.
     done_today = len(
         (
             await session.execute(
                 select(NewsAppraisal.id).where(
                     NewsAppraisal.workspace_id == ws,
                     NewsAppraisal.created_at >= start_of_day,
+                    NewsAppraisal.job_id.is_not(None),
                 )
             )
         ).all()
     )
     budget = max(0, cap - done_today) if only_item is None else 1
 
-    appraised_ids = select(NewsAppraisal.news_item_id).where(NewsAppraisal.workspace_id == ws)
+    # Judged by the model = done for good. Parked = looked at again while it is
+    # still news, because "nothing of yours to cite" can stop being true.
+    judged_ids = select(NewsAppraisal.news_item_id).where(
+        NewsAppraisal.workspace_id == ws, NewsAppraisal.job_id.is_not(None)
+    )
+    parked_ids = select(NewsAppraisal.news_item_id).where(
+        NewsAppraisal.workspace_id == ws, NewsAppraisal.job_id.is_(None)
+    )
+    recheck_since = now - timedelta(days=RECHECK_DAYS)
     stmt = (
         select(NewsItem)
         .where(
             NewsItem.workspace_id == ws,
             NewsItem.matched.is_(True),
-            NewsItem.id.not_in(appraised_ids),
+            NewsItem.id.not_in(judged_ids),
+            or_(
+                NewsItem.id.not_in(parked_ids),
+                NewsItem.published_at >= recheck_since,
+            ),
         )
         .order_by(NewsItem.published_at.desc().nullslast())
     )
     if only_item is not None:
         stmt = stmt.where(NewsItem.id == only_item)
-    pending = (await session.execute(stmt.limit(max(budget, 0)))).scalars().all()
+    pending = (
+        await session.execute(stmt.limit(MAX_ITEMS_PER_PASS if budget else 0))
+    ).scalars().all()
+    already_parked = (
+        set((await session.execute(parked_ids)).scalars().all()) if pending else set()
+    )
 
     out = {"appraised": 0, "published": 0, "watched": 0, "rejected": 0,
            "waiting": 0, "invalid": 0, "budget_left": budget}
     for item in pending:
+        if budget <= 0:
+            break
         anchors, cite_ids, recent, demo_after = await _anchor_moments(session, ws, item, now)
         if not cite_ids:
             # Nothing of his to cite, so the selector would reject whatever the
             # model said. Parked on the watchlist with the reason instead, and no
             # model call is spent. It comes back when a commit touching this
             # vendor, or a matching standing fact, gives it something to stand on.
+            if item.id in already_parked:
+                continue  # parked already: one ledger row, not one a day
             await record_appraisal(
                 session, ws, item,
                 {
@@ -497,9 +530,75 @@ async def appraise_pending(
             anchors=anchors, anchor_moment_ids=cite_ids,
             job_id=getattr(result, "job_id", None), now=now,
         )
+        budget -= 1
+        out["budget_left"] = budget
         out["appraised"] += 1
         out[{"publish": "published", "watch": "watched"}.get(clean["verdict"], "rejected")] += 1
     await session.flush()
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Stage C (14-Oct): a published item becomes a topic the same day
+# ---------------------------------------------------------------------------
+
+
+def _expiry_of(moment: EvidenceMoment) -> datetime | None:
+    raw = (moment.news_ref or {}).get("expires_at")
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    return value.replace(tzinfo=None) if value.tzinfo else value
+
+
+async def news_awaiting_topic(
+    session: Any, ws: uuid.UUID, *, now: datetime | None = None
+) -> list[uuid.UUID]:
+    """Published news the selector has never looked at, still inside its life.
+
+    Before this, only Monday's weekly run selected. A story judged on a Tuesday
+    with a five-day life expired before anything could pick it, which is most of
+    why three weeks of news produced no topic at all. Anything the selector has
+    already judged - kept or rejected - is in some candidate's moment ids and is
+    not offered to it again, so a daily run never re-spends a model call on it.
+    """
+    now = now or _now()
+    rows = (
+        await session.execute(
+            select(EvidenceMoment, EvidenceSource)
+            .join(EvidenceSource, EvidenceMoment.source_id == EvidenceSource.id)
+            .where(
+                EvidenceMoment.workspace_id == ws,
+                EvidenceMoment.status == "active",
+                EvidenceSource.source_kind == NEWS_SOURCE_KIND,
+                EvidenceSource.occurred_at >= now - timedelta(days=RECENT_EVIDENCE_DAYS),
+            )
+            .order_by(EvidenceSource.occurred_at.desc())
+        )
+    ).all()
+    if not rows:
+        return []
+    judged: set[str] = set()
+    for ids in (
+        await session.execute(
+            select(TopicCandidate.moment_ids).where(
+                TopicCandidate.workspace_id == ws,
+                TopicCandidate.created_at >= now - timedelta(days=RECENT_EVIDENCE_DAYS),
+            )
+        )
+    ).scalars():
+        judged.update(str(i) for i in (ids or []))
+    out: list[uuid.UUID] = []
+    for moment, source in rows:
+        expires = _expiry_of(moment)
+        if expires is not None and expires <= now:
+            continue
+        if str(moment.id) in judged or source.id in out:
+            continue
+        out.append(source.id)
     return out
 
 

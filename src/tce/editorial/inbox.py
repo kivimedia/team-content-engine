@@ -40,6 +40,7 @@ from tce.editorial.lineup import (
     LANE_LABELS,
     filmed_candidate_ids,
     lane_for,
+    source_tags,
     taken_candidate_ids,
 )
 from tce.models.editorial import RecordingPacket, TopicCandidate
@@ -236,7 +237,13 @@ def _provenance(candidate: TopicCandidate) -> str:
     cites = [c for c in (candidate.citations_private or []) if isinstance(c, dict)]
     titles: list[str] = []
     for cite in cites:
-        title = (cite.get("title") or "").strip()
+        if cite.get("source_kind") == "standing_fact":
+            # One synthetic source holds every standing fact; its title says
+            # nothing about where this idea came from.
+            continue
+        # The selector stores `source_title`. Reading only `title` left this line
+        # empty on every selector idea until 14-Oct.
+        title = (cite.get("source_title") or cite.get("title") or "").strip()
         if title and title not in titles:
             titles.append(title)
     if not titles:
@@ -264,6 +271,7 @@ def _row_to_json(
         "provenance": _provenance(candidate),
         "lane": lane,
         "lane_label": LANE_LABELS.get(lane, lane),
+        "source_tags": source_tags(candidate),
         "timely": candidate.freshness_role == "news",
         "freshness_note": freshness_note_for(candidate),
         "decision": effective_decision(candidate, decision),
@@ -486,6 +494,7 @@ async def topic_room(
         "title": candidate.title,
         "lane": lane,
         "lane_label": LANE_LABELS.get(lane, lane),
+        "source_tags": source_tags(candidate),
         "timely": candidate.freshness_role == "news",
         "freshness_note": freshness_note_for(candidate),
         "provenance": _provenance(candidate),

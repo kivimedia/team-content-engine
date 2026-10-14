@@ -214,6 +214,7 @@ def apply_slot_rules(
     score_of: Any,
     story_weight_of: Any,
     ceiling_override: int | None = None,
+    already: int = 0,
 ) -> SlotDecision:
     """Apply the floor, the margin and the ceiling, in that order.
 
@@ -224,10 +225,14 @@ def apply_slot_rules(
     margin   a news candidate may only displace a call-or-commit candidate by
              beating it by 0.05 or more. A near-tie goes to his own work.
     ceiling  one news idea a week, two when the second is a major story.
+
+    `already` is the news ideas this week's list holds from earlier runs. Since
+    14-Oct a daily run turns fresh news into topics; without this count, seven
+    daily runs would each be "the first news idea this week".
     """
     kept: list[Any] = []
     rejected: list[tuple[Any, str, str]] = []
-    news_kept = 0
+    news_kept = max(0, int(already or 0))
 
     lowest_evergreen = None
     for candidate in ranked:

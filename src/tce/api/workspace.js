@@ -55,6 +55,13 @@
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
+  /* 14-Oct: "tce must be able to tell which idea is related to code or related
+     to ai news or related to fathom". One tag, every source it cites. */
+  function sourceTag(tags) {
+    if (!tags || !tags.length) return "";
+    return '<span class="tag is-src">From ' + esc(tags.join(" + ")) + "</span>";
+  }
+
   function toast(message, bad) {
     var existing = document.querySelector(".toast");
     if (existing) existing.remove();
@@ -402,6 +409,7 @@
     if (topic.provenance) {
       html += '<span class="source">' + esc(topic.provenance) + "</span>";
     }
+    html += sourceTag(topic.source_tags);
     if (topic.timely) html += '<span class="tag is-timely">' + esc(topic.freshness_note) + "</span>";
     if (topic.lane_label) html += '<span class="tag is-lane">' + esc(topic.lane_label) + "</span>";
     if (topic.has_script) html += '<span class="tag is-ready">Script written</span>';
@@ -504,6 +512,7 @@
     html += '<div class="card-title-row"><span class="rank">' + (item.rank || index + 1) + "</span>";
     html += "<h3>" + esc(item.title) + "</h3></div>";
     if (item.reason) html += '<p class="why">' + esc(item.reason) + "</p>";
+    html += sourceTag(item.source_tags);
     if (item.lane_label) html += '<span class="tag is-lane">' + esc(item.lane_label) + "</span>";
     /* 28-Sep: a script asked for while his Claude limit was used up waited two
        days, and the card said "No script yet" with "Prepare the script" all
@@ -594,6 +603,7 @@
     html += pairTabs("topic", data.candidate_id, data.script ? data.script.packet_id : null);
     html += voicePanel(voiceItems);
 
+    html += sourceTag(data.source_tags);
     if (data.timely) html += '<span class="tag is-timely">Timely</span>';
     if (data.lane_label) html += '<span class="tag is-lane">' + esc(data.lane_label) + "</span>";
     html += '<span class="tag">Version ' + (brief.version || 1) + "</span>";

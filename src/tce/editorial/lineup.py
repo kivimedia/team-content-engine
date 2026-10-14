@@ -76,6 +76,39 @@ def week_start_for(value: date | datetime | str | None) -> datetime:
     return week_bounds(value if value is not None else current_week_start())[0]
 
 
+# Where an idea came from, in the words Ziv used on 14-Oct ("code", "ai news",
+# "fathom"). The lane is not this: "Coaching" is read off the audience, so a
+# coaching idea from a commit and one from a call looked the same. Ordered so
+# the news trigger reads first and his own work after it. Standing facts are
+# the engine's internal anchors and never a source he would recognise.
+SOURCE_TAGS = (
+    ("news_item", "AI news"),
+    ("fathom_meeting", "Fathom call"),
+    ("github_commit_group", "Code"),
+    ("spoken_idea", "Your idea"),
+    ("curated_clip", "Clip"),
+    ("story_seed", "Story"),
+)
+
+
+def source_tags(candidate: TopicCandidate) -> list[str]:
+    """The kinds of evidence this idea cites, as short labels, each once.
+
+    A profiled workspace (Matan) already names its lanes by evidence kind, in
+    Hebrew; its cards stay as they were.
+    """
+    from tce.editorial import lane_profile
+
+    if lane_profile.profile_for(getattr(candidate, "workspace_id", None)) is not None:
+        return []
+    kinds = {
+        c.get("source_kind")
+        for c in (candidate.citations_private or [])
+        if isinstance(c, dict)
+    }
+    return [label for kind, label in SOURCE_TAGS if kind in kinds]
+
+
 def lane_for(candidate: TopicCandidate) -> str:
     """Which of the three content lanes this topic belongs to.
 
@@ -999,6 +1032,7 @@ def _item_to_json(
         "slot": item.slot,
         "lane": item.lane,
         "lane_label": LANE_LABELS.get(item.lane, item.lane),
+        "source_tags": source_tags(candidate) if candidate else [],
         "reason": item.reason,
         "status": item.status,
         # The one thing the week has to be honest about: is there a script yet.

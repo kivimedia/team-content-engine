@@ -171,7 +171,93 @@ CLIENT_PROBLEMS = [
     ),
 ]
 
-ALL_FACTS = CLIENT_SOLUTIONS + CLIENT_PROBLEMS
+# What Kivi Media runs ON each vendor, every day (14-Oct). Without these a vendor
+# match had nothing to cite unless a commit happened to name the vendor, so news
+# about the tools the whole fleet runs on - Claude, Google Workspace, the voice
+# stack - was parked without ever being read (69 of 116 appraisals). Written from
+# Ziv's own setup notes (his CLAUDE.md and the project list), in categories: no
+# client is named, only what Kivi Media does with the tool. The term must equal
+# the vendor anchor's term so the two rows collapse into one citable anchor.
+# Owed a review by Ziv, like the client solutions above.
+STACK = [
+    StandingFact(
+        "vendor", "anthropic",
+        "Kivi Media's agent fleet runs on Claude models: its email assistant, its client "
+        "agents, its coaching agents and its own content engine.",
+    ),
+    StandingFact(
+        "vendor", "claude code",
+        "Kivi Media builds and runs its agents in Claude Code every day, with its own "
+        "skills, hooks and rules, for its own work and for clients.",
+    ),
+    StandingFact(
+        "vendor", "openai",
+        "Kivi Media's systems call OpenAI for image generation and for some of the "
+        "services its client agents rely on.",
+    ),
+    StandingFact(
+        "vendor", "google workspace",
+        "Kivi Media's agents work inside Google Workspace: they read and draft email, "
+        "keep the calendar and file documents in Drive.",
+    ),
+    StandingFact(
+        "vendor", "elevenlabs",
+        "Kivi Media's voice agents speak with ElevenLabs voices.",
+    ),
+    StandingFact(
+        "vendor", "retell",
+        "Kivi Media runs AI phone agents on Retell that answer calls for small shops.",
+    ),
+    StandingFact(
+        "vendor", "twilio",
+        "Kivi Media's client phone lines and text messages run on Twilio.",
+    ),
+    StandingFact(
+        "vendor", "supabase",
+        "Kivi Media builds the systems it runs for clients on Supabase databases.",
+    ),
+    StandingFact(
+        "vendor", "vercel",
+        "Kivi Media's client web apps are deployed on Vercel.",
+    ),
+    StandingFact(
+        "vendor", "stripe",
+        "Kivi Media wires Stripe payments into the booking systems it runs for event "
+        "businesses.",
+    ),
+    StandingFact(
+        "vendor", "whatsapp business",
+        "Kivi Media's agents send and answer WhatsApp messages for the business and its "
+        "clients.",
+    ),
+    StandingFact(
+        "vendor", "fathom",
+        "Every coaching call is recorded in Fathom, and Kivi Media's content engine reads "
+        "those calls.",
+    ),
+    StandingFact(
+        "vendor", "meta business",
+        "Kivi Media runs Facebook and Instagram ads for its clients.",
+    ),
+    StandingFact(
+        "vendor", "freshdesk",
+        "Kivi Media's support desk runs on Freshdesk, with an agent answering tickets.",
+    ),
+    StandingFact(
+        "vendor", "dubsado",
+        "Kivi Media runs an integration that keeps an event business's Dubsado CRM in sync.",
+    ),
+    StandingFact(
+        "vendor", "17hats",
+        "Kivi Media runs an integration that keeps an event business's 17hats CRM in sync.",
+    ),
+    StandingFact(
+        "vendor", "zoho",
+        "Kivi Media runs an integration that keeps a client's Zoho CRM in sync.",
+    ),
+]
+
+ALL_FACTS = CLIENT_SOLUTIONS + CLIENT_PROBLEMS + STACK
 
 
 async def main() -> int:

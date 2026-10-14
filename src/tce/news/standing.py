@@ -54,9 +54,15 @@ SOURCE_EXTERNAL_ID = "standing-facts"
 # A system Kivi Media runs is demonstrated; a problem Ziv hears is paraphrased.
 # Neither is ever `measured`: a standing fact can never support an outcome claim,
 # which the selector's invented-outcome check already depends on.
+#
+# `vendor` (14-Oct): what Kivi Media runs ON a vendor, every day. Before it, a
+# vendor match had nothing to cite unless a commit's text happened to name the
+# vendor, so 69 of 116 appraisals were parked without a model call and news about
+# the tools his whole fleet runs on never became an idea.
 KIND_CLAIM_TYPES = {
     "client_solution": "demonstrated",
     "problem_pattern": "paraphrased",
+    "vendor": "demonstrated",
 }
 
 
@@ -68,7 +74,7 @@ class StandingFactRejectedError(ValueError):
 class StandingFact:
     """One durable fact, as Ziv or the team would write it."""
 
-    anchor_kind: str  # client_solution | problem_pattern
+    anchor_kind: str  # client_solution | problem_pattern | vendor
     anchor_term: str  # the matchable phrase
     lesson: str  # what it means, one line
     note: str | None = None  # optional context, private
@@ -76,7 +82,8 @@ class StandingFact:
     def validate(self) -> None:
         if self.anchor_kind not in KIND_CLAIM_TYPES:
             raise StandingFactRejectedError(
-                f"anchor_kind must be client_solution or problem_pattern, got {self.anchor_kind!r}"
+                "anchor_kind must be one of "
+                f"{', '.join(KIND_CLAIM_TYPES)}, got {self.anchor_kind!r}"
             )
         if not self.anchor_term.strip():
             raise StandingFactRejectedError("anchor_term is empty; there would be nothing to match")

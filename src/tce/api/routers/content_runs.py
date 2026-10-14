@@ -493,6 +493,9 @@ async def _news_step(sm: Any, run: ContentRun, *, appraise: bool) -> dict[str, A
                 from tce import llm as _llm
 
                 out = await discovery.appraise_pending(db, run.workspace_id, complete=_llm.complete)
+                await db.commit()
+                out["topics"] = await _news_topics(sm, run)
+                return out
             else:
                 import httpx
 
@@ -508,6 +511,59 @@ async def _news_step(sm: Any, run: ContentRun, *, appraise: bool) -> dict[str, A
             return out
     except Exception as exc:  # noqa: BLE001 - reported, never raised
         return {"error": f"{type(exc).__name__}: {exc}"[:500]}
+
+
+# A day's news ideas are judged in one small selection. Two is the weekly ceiling
+# at its widest (one, or two when the second is major); the ceiling itself is
+# applied by the selector against what the week already holds.
+NEWS_TOPICS_PER_DAY = 2
+
+
+async def _news_topics(sm: Any, run: ContentRun) -> dict[str, Any]:
+    """Turn today's published news into topics, the same day (14-Oct).
+
+    The daily run ends at `extracting`, so before this only Monday's weekly run
+    selected: a story judged on a Tuesday with a five-day life expired before
+    anything could pick it up. Its anchors (his commits, calls and standing
+    facts) come along as context automatically, because the selector loads the
+    anchors named by the news it is given. Adds only: nothing on the week is
+    withdrawn. Never raises; a busy worker is reported and the next daily run
+    resumes the same selection.
+    """
+    from tce.editorial import selector
+    from tce.editorial.common import current_week_start
+    from tce.news import discovery
+
+    async with open_session(sm) as db:
+        source_ids = await discovery.news_awaiting_topic(db, run.workspace_id)
+    if not source_ids:
+        return {"proposed": 0, "detail": "no published news waiting for a topic"}
+    # Same news, same selection id: a run interrupted while its jobs were queued
+    # is resumed tomorrow instead of being asked twice.
+    key = "news-topics:" + ",".join(sorted(str(s) for s in source_ids))
+    result = await selector.select_candidates(
+        sm,
+        run.workspace_id,
+        current_week_start(),
+        max_candidates=NEWS_TOPICS_PER_DAY,
+        selection_run_id=uuid.uuid5(run.workspace_id, key),
+        source_ids=source_ids,
+        adds_only=True,
+        week_news_counts=True,
+    )
+    out: dict[str, Any] = {
+        "news_items": len(source_ids),
+        "proposed": len(result.candidates),
+        "titles": [c.get("title") for c in result.candidates],
+        "status": result.status,
+    }
+    if result.status != "complete":
+        out["detail"] = result.detail or result.status
+    elif result.rejected:
+        out["held_back"] = [
+            f"{r.get('code')}: {str(r.get('reason') or '')[:200]}" for r in result.rejected[:5]
+        ]
+    return out
 
 
 async def _execute_stage_leased(sm: Any, run: ContentRun, stage: Any, owner: str) -> dict[str, Any]:
