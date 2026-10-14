@@ -37,6 +37,8 @@ from tce.news.record import NEWS_SOURCE_KIND, record_appraisal
 
 # Something older than this is not news, however it arrived.
 WINDOW_DAYS = 2
+# Feed tiers that are a vendor's own announcement blog (see seed_news_feeds).
+ANNOUNCEMENT_TIERS = ("1b",)
 # The daily cap on model calls. A cost and noise control; the positioning control
 # is the weekly ceiling in the selector. 14-Oct: 5 -> 10, and only real model
 # calls count against it (a park costs nothing); 87 matched items had never been
@@ -264,6 +266,21 @@ async def match_pending(
             )
         )
     ).scalars().all()
+    # A vendor's own announcement blog is about that vendor even when the
+    # headline never says so. Release feeds (tier 1a) do not count: their
+    # routine patches would spend the day's model calls on version bumps.
+    announcers = {
+        feed_id: vendor
+        for feed_id, vendor in (
+            await session.execute(
+                select(NewsFeed.id, NewsFeed.vendor).where(
+                    NewsFeed.workspace_id == ws,
+                    NewsFeed.tier.in_(ANNOUNCEMENT_TIERS),
+                    NewsFeed.vendor.is_not(None),
+                )
+            )
+        ).all()
+    }
 
     out = {"matched": 0, "blocked_shape": 0, "no_anchor": 0, "stale": 0, "unverified": 0}
     for item in items:
@@ -272,7 +289,8 @@ async def match_pending(
             out["stale"] += 1
             continue
         result = match_item(title=item.title, summary=item.summary, anchors=anchors,
-                            concept_of=problem_concept_for(ws))
+                            concept_of=problem_concept_for(ws),
+                            source_vendor=announcers.get(item.feed_id))
         if not result.matched:
             item.prefilter_reason = "blocked_shape" if result.blocked_shape else "no_anchor"
             out["blocked_shape" if result.blocked_shape else "no_anchor"] += 1

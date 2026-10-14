@@ -18,7 +18,7 @@ from sqlalchemy import select
 from tce.api.routers import content_runs
 from tce.editorial import news_rules
 from tce.models.editorial import EvidenceMoment, EvidenceSource, TopicCandidate
-from tce.models.news import NewsAppraisal, NewsFeed
+from tce.models.news import NewsAppraisal, NewsFeed, NewsItem
 from tce.news import appraise, discovery
 from tce.news.standing import StandingFact, seed_standing_facts
 from tce.settings import settings
@@ -131,6 +131,58 @@ async def test_a_stack_fact_makes_vendor_news_citable(editorial_session, lane):
     out = await discovery.appraise_pending(editorial_session, WS, complete=model, now=NOW, cap=5)
     assert model.calls >= 1, out
     assert out["published"] >= 1, out
+
+
+# --- B2: a vendor's own blog never names the vendor ---------------------------
+
+BLOG = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>tag:v,2026:blog-forwarding</id>
+    <title>Forwarded calls that nobody answers now fall back to voicemail</title>
+    <link rel="alternate" href="https://vendor.example/blog/forwarding"/>
+    <updated>2026-10-13T08:00:00Z</updated>
+    <summary>A new fallback for unanswered forwarded calls.</summary>
+  </entry>
+</feed>
+"""
+
+
+async def _discover_vendor_feed(session, tier):
+    session.add(
+        NewsFeed(id=uuid.uuid4(), workspace_id=WS, name="Vendor blog",
+                 url="https://vendor.example/blog.atom", kind="atom", tier=tier,
+                 vendor="twilio", enabled=True, consecutive_failures=0, items_seen_total=0)
+    )
+    await seed_standing_facts(session, WS, [
+        PROBLEM,
+        StandingFact("vendor", "twilio",
+                     "Kivi Media runs AI phone reception on Twilio numbers for small shops."),
+    ], now=NOW)
+    await session.flush()
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=BLOG))
+    )
+    async with client:
+        await discovery.discover(session, WS, client=client, fetch_text=Pages(), now=NOW)
+    return (await session.execute(select(NewsItem))).scalars().one()
+
+
+@pytest.mark.asyncio
+async def test_a_vendors_own_announcement_blog_is_news_about_that_vendor(editorial_session, lane):
+    """Reproduction: the OpenAI blog sent 50 posts in 14 days and matched none.
+    The matcher looked for "openai" in each headline, and OpenAI's own blog does
+    not name itself ("Introducing ...", "ChatGPT can now ...")."""
+    item = await _discover_vendor_feed(editorial_session, "1b")
+    assert item.matched, item.prefilter_reason
+
+
+@pytest.mark.asyncio
+async def test_a_release_feed_does_not_imply_its_vendor(editorial_session, lane):
+    """SDK release feeds are routine patches; letting them all through would spend
+    the 10 model calls a day on version bumps."""
+    item = await _discover_vendor_feed(editorial_session, "1a")
+    assert not item.matched
 
 
 # --- C: auto-parks ate the daily cap ------------------------------------------

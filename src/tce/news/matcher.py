@@ -219,11 +219,16 @@ def match_item(
     body: str | None = None,
     anchors: list[Any],
     concept_of: Callable[[str], str] | None = None,
+    source_vendor: str | None = None,
 ) -> MatchResult:
     """Decide whether one announcement lands on anything of Ziv's.
 
     `anchors` are NewsAnchor rows (or anything with kind / term /
     normalized_term / id / weight). Only active anchors should be passed in.
+
+    `source_vendor` is the vendor whose own announcement blog published the
+    item. A vendor's blog does not name itself in its headlines, so the source
+    stands in for the missing word (14-Oct: the OpenAI blog, 50 posts, 0 matched).
     """
     headline = " ".join(p for p in (title, summary) if p)
     full = " ".join(p for p in (title, summary, body) if p)
@@ -259,6 +264,24 @@ def match_item(
                 score=float(getattr(anchor, "weight", 1.0) or 1.0),
             )
         )
+
+    publisher = normalize(source_vendor or "")
+    if publisher and publisher not in seen:
+        for anchor in anchors:
+            term = getattr(anchor, "normalized_term", None) or normalize(
+                getattr(anchor, "term", "")
+            )
+            if getattr(anchor, "kind", None) == "vendor" and term == publisher:
+                matches.append(
+                    AnchorMatch(
+                        anchor_id=getattr(anchor, "id", None),
+                        kind="vendor",
+                        term=getattr(anchor, "term", term),
+                        matched_span=f"published by {source_vendor}",
+                        score=float(getattr(anchor, "weight", 1.0) or 1.0),
+                    )
+                )
+                break
 
     strong = [m for m in matches if m.kind in STRONG_KINDS]
 

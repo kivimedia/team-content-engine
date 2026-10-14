@@ -73,8 +73,14 @@ FEEDS: list[tuple[str, str, str, str, str | None]] = [
     # release feeds above (tier 1a, and closer to what actually changes for a
     # running system) and through the tier-2 discovery feed. A dead URL is worse
     # than an absent one: it looks exactly like a quiet day.
+    # A 1b feed with a vendor counts as news about that vendor even when the
+    # headline never names it (tce.news.discovery.ANNOUNCEMENT_TIERS).
     ("OpenAI blog", "https://openai.com/blog/rss.xml", "rss", "1b", "openai"),
     ("Google DeepMind blog", "https://deepmind.google/blog/rss.xml", "rss", "1b", "google"),
+    # 14-Oct: what changes in Gmail, Docs, Meet and Calendar for a small business,
+    # in plain words. The release-notes feed above is the admin-facing version.
+    ("Google Workspace blog", "https://blog.google/products/workspace/rss/", "rss", "1b",
+     "google workspace"),
 
     # --- 2: discovery only, never cited -----------------------------------
     ("Simon Willison", "https://simonwillison.net/atom/everything/", "atom", "2", None),
