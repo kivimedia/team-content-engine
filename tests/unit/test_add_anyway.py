@@ -111,6 +111,23 @@ async def test_add_anyway_puts_it_on_his_topics_marked_as_his_call(editorial_ses
     assert again["already"] is True
 
 
+async def test_a_lane_he_names_on_an_added_topic_wins_over_the_evidence(editorial_sessionmaker):
+    from tce.editorial.lineup import lane_for
+
+    sm, ws = editorial_sessionmaker, uuid.uuid4()
+    _, moment = await _spoken(sm, ws)
+    row = await _rejected(sm, ws, str(moment.id))
+    async with sm() as s:
+        await add_anyway.add_anyway(s, ws, row.id)
+    saved = next(r for r in await rows_for(sm, ws) if r.id == row.id)
+    assert lane_for(saved) == "coaching"  # his words alone cite no commit
+
+    saved.gates = {**saved.gates, "_override": {**saved.gates["_override"], "lane": "build"}}
+    assert lane_for(saved) == "build"
+    saved.gates = {**saved.gates, "_override": {**saved.gates["_override"], "lane": "nonsense"}}
+    assert lane_for(saved) == "coaching"
+
+
 async def test_an_engine_rejection_cannot_be_added_anyway(editorial_sessionmaker):
     sm, ws = editorial_sessionmaker, uuid.uuid4()
     row = await _rejected(sm, ws, str(uuid.uuid4()))

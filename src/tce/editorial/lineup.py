@@ -48,6 +48,9 @@ DEFAULT_PRIMARY_SLOTS = 3
 MIN_VIDEOS_PER_WEEK = 1
 MAX_VIDEOS_PER_WEEK = 14
 
+# The owner lanes a topic he added anyway may be set to (gates._override.lane).
+OWNER_LANES = ("build", "coaching", "ai_news", "other")
+
 LANE_LABELS = {
     "build": "Build",
     "coaching": "Coaching",
@@ -130,6 +133,12 @@ def lane_for(candidate: TopicCandidate) -> str:
         return "other"
     if candidate.freshness_role == "news":
         return "ai_news"
+    # 15-Oct: a topic he added anyway carries the lane he named ("Build" for Auth
+    # Buddy); his own words cite no commit, so the evidence alone said coaching.
+    override = (candidate.gates or {}).get("_override") if isinstance(candidate.gates, dict) else None
+    chosen = override.get("lane") if isinstance(override, dict) else None
+    if chosen in OWNER_LANES:
+        return chosen
     kinds = {
         c.get("source_kind")
         for c in (candidate.citations_private or [])
