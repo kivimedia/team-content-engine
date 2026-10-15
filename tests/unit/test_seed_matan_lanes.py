@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import importlib.util
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -110,7 +110,7 @@ async def test_sample_week_offline(editorial_sessionmaker, monkeypatch, capsys):
 
     monkeypatch.setattr(tce.llm, "complete", fake_complete)
     res = await selector.select_candidates(
-        editorial_sessionmaker, MATAN, datetime(2026, 10, 5), max_candidates=10
+        editorial_sessionmaker, MATAN, datetime.now(UTC), max_candidates=10
     )
     assert res.status == "complete", res.detail
     async with editorial_sessionmaker() as s:

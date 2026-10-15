@@ -199,7 +199,9 @@ def host(monkeypatch, tmp_path, clip):
 
     @app.get("/api/v1/production/uploads/{upload}/edited")
     async def edited(upload: str):
-        return FileResponse(clip, media_type="video/webm")
+        # The real edited-video route advertises byte ranges. Without this,
+        # Chromium reports seekable=[0, 0] and every pinned note falls at 0:00.
+        return FileResponse(clip, media_type="video/webm", headers={"Accept-Ranges": "bytes"})
 
     async def proxy(scope, receive, send):
         # The browser never holds the key; nginx injects it after Basic Auth.

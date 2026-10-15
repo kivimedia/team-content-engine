@@ -772,9 +772,13 @@ def test_split_screen_recording_can_always_be_stopped_and_the_layouts_switch(stu
             "() => getComputedStyle(document.getElementById('camera')).objectFit"
         ) == "contain"
         assert over["text"] == "rgb(255, 255, 255)", over["text"]
-        rail = page.evaluate(TAPPABLE_JS, ["overlayButton", "flipLayoutButton", "textBigger", "textSmaller"])
+        # Text size controls appear only while the camera is recording. After
+        # Stop, the overlay and swap controls remain reachable in idle mode.
+        rail = page.evaluate(TAPPABLE_JS, ["overlayButton", "flipLayoutButton"])
         for b in rail:
             assert b["tappable"], f"a rail button is covered in overlay mode: {b}"
+        assert page.locator("#textBigger").is_hidden()
+        assert page.locator("#textSmaller").is_hidden()
         page.screenshot(path=str(tmp_path / "split-overlay.png"))
         context.close()
         browser.close()
