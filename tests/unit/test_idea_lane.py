@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 import pytest
@@ -24,7 +24,7 @@ from tce.editorial import status as job_status
 from tce.editorial.common import current_week_start
 from tce.llm import LLMResult
 from tce.models.editorial import REJECTION_GATES, EvidenceMoment, EvidenceSource, TopicCandidate
-from tce.models.news import NewsItem
+from tce.models.news import NewsAnchor, NewsItem
 from tce.settings import settings
 
 KEY = "synthetic-test-key"
@@ -260,24 +260,69 @@ async def test_research_without_a_search_key_says_so(editorial_sessionmaker):
     assert run["result"]["web_status"] == "no_key"
 
 
-async def test_surprise_me_seeds_from_his_own_recent_work(editorial_sessionmaker):
+async def _his_recent_call(s, ws, lesson, excerpt="x"):
+    src = EvidenceSource(
+        workspace_id=ws, source_kind="fathom_meeting", external_id=str(uuid.uuid4()),
+        title="call", occurred_at=idea_lane._now(), version_hash="a" * 64,
+        fetch_status="ok", payload_private={}, meta={},
+    )
+    s.add(src)
+    await s.flush()
+    s.add(EvidenceMoment(
+        workspace_id=ws, source_id=src.id, source_version_hash="a" * 64,
+        excerpt_private=excerpt, lesson_summary=lesson,
+        claim_type="paraphrased", sensitivity_flags=[], status="active",
+    ))
+
+
+def _vendor(ws, term, weight=1.0):
+    return NewsAnchor(
+        workspace_id=ws, kind="vendor", term=term, normalized_term=term.casefold(),
+        origin_kind="manual", weight=weight, active=True,
+    )
+
+
+# 15-Oct (T-fa0f): three surprise-me hunts searched his raw lesson sentences
+# ("Ziv turned down a finished piece that had passed every automated check...")
+# and all nine pages they found were rejected as vendor how-to blogs.
+async def test_surprise_me_searches_news_about_his_vendors_not_his_lessons(editorial_sessionmaker):
     ws = uuid.uuid4()
+    lesson = "Ziv turned down a finished piece that had passed every automated check"
     async with editorial_sessionmaker() as s:
-        src = EvidenceSource(
-            workspace_id=ws, source_kind="fathom_meeting", external_id="m1",
-            title="call", occurred_at=idea_lane._now(), version_hash="a" * 64,
-            fetch_status="ok", payload_private={}, meta={},
-        )
-        s.add(src)
-        await s.flush()
-        s.add(EvidenceMoment(
-            workspace_id=ws, source_id=src.id, source_version_hash="a" * 64,
-            excerpt_private="x", lesson_summary="Follow up within a day of the demo call",
-            claim_type="paraphrased", sensitivity_flags=[], status="active",
-        ))
+        await _his_recent_call(s, ws, lesson, excerpt="we moved the leads into 17hats last week")
+        s.add_all([_vendor(ws, "stripe", 2.0), _vendor(ws, "17hats"), _vendor(ws, "twilio"),
+                   _vendor(ws, "zoho")])
         await s.commit()
         queries = await idea_lane.seed_queries(s, ws)
-    assert queries == ["Follow up within a day of the demo call"]
+    assert len(queries) == idea_lane.SEED_QUERIES
+    # The vendor his own call mentioned leads; the rest are his other vendors.
+    assert queries[0] == "17hats new feature"
+    assert len(set(queries)) == len(queries)
+    assert all(q.endswith(" new feature") for q in queries)
+    # Nothing of the call itself goes out as search text.
+    for q in queries:
+        assert "Ziv" not in q and "finished piece" not in q and "leads" not in q
+
+
+async def test_surprise_me_rotates_his_other_vendors_by_day(editorial_sessionmaker):
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        await _his_recent_call(s, ws, "Follow up within a day of the demo call")
+        s.add_all([_vendor(ws, t) for t in ("dubsado", "freshdesk", "retell", "stripe", "twilio")])
+        await s.commit()
+        day = idea_lane._now()
+        one = await idea_lane.seed_queries(s, ws, now=day)
+        two = await idea_lane.seed_queries(s, ws, now=day + timedelta(days=1))
+    assert one != two
+    assert len(one) == len(two) == idea_lane.SEED_QUERIES
+
+
+async def test_surprise_me_with_no_recent_work_falls_back_to_the_lane(editorial_sessionmaker):
+    ws = uuid.uuid4()
+    async with editorial_sessionmaker() as s:
+        s.add(_vendor(ws, "stripe"))
+        await s.commit()
+        assert await idea_lane.seed_queries(s, ws) == []
 
 
 # ---------------------------------------------------------------------------

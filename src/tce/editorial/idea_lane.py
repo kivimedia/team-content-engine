@@ -308,16 +308,30 @@ _BACKGROUND: set[Any] = set()
 # ---------------------------------------------------------------------------
 
 
-async def seed_queries(session: Any, ws: uuid.UUID, now: datetime | None = None) -> list[str]:
-    """"Surprise me": queries from what he has actually been working on lately.
+SEED_QUERIES = 3
+SEED_QUERY = "{term} new feature"
 
-    Never a feed and never a fixed list of sites: the seeds are the lessons of
-    his own most recent calls and commits.
+
+async def seed_queries(session: Any, ws: uuid.UUID, now: datetime | None = None) -> list[str]:
+    """"Surprise me": news searches about the tools his recent work runs on.
+
+    Never a feed and never a fixed list of sites. The lane only keeps an outside
+    change that lands on one of his anchors, so the searches name his vendors:
+    first the ones his own calls and commits of the last three weeks mention,
+    then the rest of his vendors, rotated by day so hunts do not repeat.
+
+    15-Oct (T-fa0f): the seeds used to be his raw lesson sentences ("Ziv turned
+    down a finished piece..."). Three hunts got nine how-to blogs and all nine
+    were rejected, and his private lessons went out as search text. Now nothing
+    of his calls leaves the box: a search is a vendor name and two words.
     """
+    from tce.models.news import NewsAnchor
+    from tce.news.anchors import normalize
+
     now = now or _now()
     rows = (
         await session.execute(
-            select(EvidenceMoment.lesson_summary, EvidenceSource.source_kind)
+            select(EvidenceMoment.lesson_summary, EvidenceMoment.excerpt_private)
             .join(EvidenceSource, EvidenceSource.id == EvidenceMoment.source_id)
             .where(
                 EvidenceMoment.workspace_id == ws,
@@ -326,10 +340,31 @@ async def seed_queries(session: Any, ws: uuid.UUID, now: datetime | None = None)
                 EvidenceSource.occurred_at >= now - timedelta(days=SEED_DAYS),
             )
             .order_by(EvidenceSource.occurred_at.desc())
-            .limit(3)
+            .limit(30)
         )
     ).all()
-    return [_clean(r[0], 120) for r in rows if r[0]]
+    if not rows:
+        # No recent work of his: the caller falls back to the lane profile's seeds.
+        return []
+    vendors = (
+        await session.execute(
+            select(NewsAnchor.term)
+            .where(
+                NewsAnchor.workspace_id == ws,
+                NewsAnchor.kind == "vendor",
+                NewsAnchor.active.is_(True),
+            )
+            .order_by(NewsAnchor.weight.desc(), NewsAnchor.normalized_term)
+        )
+    ).scalars().all()
+    said = " " + normalize(" ".join(f"{a or ''} {b or ''}" for a, b in rows)) + " "
+    mentioned = [v for v in vendors if f" {normalize(v)} " in said]
+    rest = [v for v in vendors if v not in mentioned]
+    if rest:
+        turn = now.toordinal() % len(rest)
+        rest = rest[turn:] + rest[:turn]
+    picked = (mentioned + rest)[:SEED_QUERIES]
+    return [SEED_QUERY.format(term=_clean(v, 80)) for v in picked]
 
 
 async def run_idea_research(
