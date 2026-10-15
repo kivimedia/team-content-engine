@@ -54,5 +54,41 @@ def test_leaving_right_after_finish_still_sends_the_take_for_editing(studio, mon
         ) as finished:
             page.goto(f"{studio['base']}/today")
         assert len(finished.value.post_data_json["selected_clip_ids"]) == 1
+        # And Today says so, in a line that pushes the page down rather than covering it.
+        page.wait_for_function(
+            "() => (document.getElementById('tceSavingBar')?.textContent || '')"
+            ".startsWith('Your take is saved and on its way to editing.')",
+            timeout=10000,
+        )
+        bar = page.evaluate(
+            "() => { const b = document.getElementById('tceSavingBar');"
+            " return { position: getComputedStyle(b).position, after: b.previousElementSibling?.tagName }; }"
+        )
+        assert bar == {"position": "static", "after": "HEADER"}, bar
+        assert page.evaluate("() => localStorage.getItem('tce-recording-pending')") == '{"clips":{},"sessions":{}}'
+        context.close()
+        browser.close()
+
+
+def test_the_finish_note_goes_on_one_tap(studio):  # noqa: F811
+    """The three-second note stays (8-Oct, his ask), but it never holds him."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, context, page = _studio_page(pw, studio["base"], LANDSCAPE_CAMERA, SLOW_CLIP_FINISH)
+        _record(page, 3)
+        page.evaluate("() => { window.__slowFinish = 4000; }")
+        page.click("#finishSessionButton")
+        page.wait_for_function("() => document.getElementById('finishDialog').open", timeout=5000)
+        assert "You can leave this page" in page.inner_text("#finishDialogNow")
+        page.click("#finishDialog")
+        page.wait_for_function("() => !document.getElementById('finishDialog').open", timeout=500)
+        page.wait_for_selector("#queueView:not([hidden])", timeout=2000)
+        # The end of the clip is still on its way, and the list says so without a wall.
+        assert "You can leave this page" in page.inner_text("#finishStatusNow")
+        with context.expect_event(
+            "request", lambda r: "/recording-sessions/" in r.url and r.url.endswith("/finish"), timeout=30000
+        ):
+            pass
         context.close()
         browser.close()
