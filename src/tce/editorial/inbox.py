@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tce.editorial import briefs
 from tce.editorial.common import (
     ORIGIN_AGENT_TALK,
+    ORIGIN_OWNER_OVERRIDE,
     ORIGIN_SELECTOR_REJECTED,
     ORIGIN_TECHNICAL_VALIDATION,
 )
@@ -237,9 +238,11 @@ def _provenance(candidate: TopicCandidate) -> str:
     cites = [c for c in (candidate.citations_private or []) if isinstance(c, dict)]
     titles: list[str] = []
     for cite in cites:
-        if cite.get("source_kind") == "standing_fact":
+        if cite.get("source_kind") in ("standing_fact", "spoken_idea"):
             # One synthetic source holds every standing fact; its title says
-            # nothing about where this idea came from.
+            # nothing about where this idea came from. A spoken idea's title IS the
+            # idea, so naming it repeats the card's own title (the "From Your idea"
+            # tag already says where it came from).
             continue
         # The selector stores `source_title`. Reading only `title` left this line
         # empty on every selector idea until 14-Oct.
@@ -279,6 +282,8 @@ def _row_to_json(
         and candidate.status == "withdrawn",
         "note": decision.note if decision else None,
         "has_script": packet_count > 0,
+        # He put it on the list past the checks; the card says so.
+        "added_anyway": candidate.origin == ORIGIN_OWNER_OVERRIDE,
         "rank": candidate.rank,
         "week_start": candidate.week_start.date().isoformat() if candidate.week_start else None,
     }

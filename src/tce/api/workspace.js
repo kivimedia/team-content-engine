@@ -429,6 +429,7 @@
     if (topic.timely) html += '<span class="tag is-timely">' + esc(topic.freshness_note) + "</span>";
     if (topic.lane_label) html += '<span class="tag is-lane">' + esc(topic.lane_label) + "</span>";
     if (topic.has_script) html += '<span class="tag is-ready">Script written</span>';
+    if (topic.added_anyway) html += '<span class="tag">Added anyway: your call</span>';
 
     if (topic.decision) {
       html += '<p class="section-hint">' + esc(topic.set_aside_by_engine

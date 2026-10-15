@@ -104,6 +104,8 @@ async def test_add_anyway_puts_it_on_his_topics_marked_as_his_call(editorial_ses
         listed = await inbox.list_topics(s, ws)
         assert [t["candidate_id"] for t in listed["topics"]] == [str(row.id)]
         assert listed["topics"][0]["why_this_is_yours"] == "It came out of an idea you said yourself."
+        assert listed["topics"][0]["added_anyway"] is True
+        assert listed["topics"][0]["provenance"] == ""  # never the title said twice
         assert await add_anyway.turned_down(s, ws) == []
         again = await add_anyway.add_anyway(s, ws, row.id)
     assert again["already"] is True

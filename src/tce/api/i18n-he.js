@@ -341,6 +341,7 @@
     "Your ideas that did not pass": "רעיונות שלך שלא עברו",
     "You said these, and the checks turned them down. Add one anyway if you still want it: it joins your topics, marked as your call.": "אמרת אותם, והבדיקות דחו אותם. אפשר להוסיף בכל זאת: הרעיון יצטרף לנושאים שלך, מסומן כהחלטה שלך.",
     "Add anyway": "להוסיף בכל זאת",
+    "Added anyway: your call": "נוסף בכל זאת: ההחלטה שלך",
     "Adding it to your topics...": "מוסיף לנושאים שלך...",
     "Put it away": "להניח בצד",
     "Marked to think about.": "סומן לחשוב עליו.",
