@@ -19,6 +19,9 @@
  *   tce_video_check          what her own check found on the edit, and why she is
  *                            holding it when she is (3-Oct)
  *   tce_video_rules          the rules she learned from his notes, to read out (3-Oct)
+ *   tce_video_plan           what she got and what her edit does overall: the length
+ *                            before and after, what she cut and why, her check, and
+ *                            his notes still waiting (15-Oct, T-11694)
  *
  * Save, then say back (not ask, then save): nothing renders until he says make it,
  * and that one irreversible step has its own read-back, check code and undo.
@@ -88,6 +91,71 @@ function noteLine(n) {
   const outcome = n.state === 'needs_you' && result.question ? `: ${sentence(result.question)}`
     : n.state === 'done' && result.reply ? `: ${clip(sentence(result.reply), 160)}` : '';
   return `${n.where}: ${what} (${NOTE_STATE[n.state] || n.state}${outcome})`;
+}
+
+const CUT_REASON = {
+  retake: 'retakes',
+  false_start: 'false starts',
+  filler: 'filler words',
+  aside: 'asides',
+  junk: 'stray bits',
+  sound: 'sounds',
+  partial: 'half sentences',
+};
+
+/** A length in plain words: "4:12", "38 seconds". */
+export function spoken(seconds) {
+  const s = Math.round(Number(seconds) || 0);
+  if (s < 60) return `${s} second${s === 1 ? '' : 's'}`;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+/*
+ * 15-Oct (T-11694): "what did you get, what are you going to do overall" had nothing
+ * to answer from on the 13-Oct call, because every other tool reads only his notes.
+ * This reads the edit plan on the upload and says it as one short recap.
+ */
+export function planSummary(title, upload) {
+  const plan = upload?.edit_plan;
+  const lines = [];
+  const before = Number(upload?.duration_s) || 0;
+  if (!plan || !Array.isArray(plan.keep)) {
+    const where = sentence(upload?.status_detail);
+    lines.push(`There is no edit plan on "${title}" yet${where ? `: ${where}` : ''}.`);
+    return { lines, data: { planned: false, status: upload?.status || null } };
+  }
+  const after = Number(plan.stats?.kept_seconds) || plan.keep.reduce((t, [a, b]) => t + (b - a), 0);
+  lines.push(before
+    ? `You got ${spoken(before)} of video; your edit keeps ${spoken(after)} of it, in ${plan.keep.length} piece${plan.keep.length === 1 ? '' : 's'}.`
+    : `Your edit keeps ${spoken(after)}, in ${plan.keep.length} piece${plan.keep.length === 1 ? '' : 's'}.`);
+  const dropped = Array.isArray(plan.dropped) ? plan.dropped : [];
+  const counts = {};
+  for (const d of dropped) {
+    if (d.reason === 'pause') continue;
+    const k = CUT_REASON[d.reason] || 'other bits';
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  const pauses = dropped.filter((d) => d.reason === 'pause').length;
+  const cut = Object.entries(counts).map(([k, n]) => `${n} ${k}`);
+  if (pauses) cut.push(`${pauses} pause${pauses === 1 ? '' : 's'} shortened to a breath`);
+  lines.push(cut.length ? `You cut: ${cut.join(', ')}.` : 'You cut nothing but the pauses.');
+  const samples = dropped.filter((d) => d.reason !== 'pause' && sentence(d.text)).slice(0, 3)
+    .map((d) => `"${clip(sentence(d.text), 70)}"`);
+  if (samples.length) lines.push(`For example: ${samples.join('; ')}.`);
+  const asked = Array.isArray(plan.overrides) ? plan.overrides.length : plan.overrides ? Object.keys(plan.overrides).length : 0;
+  if (asked) lines.push(`${asked} cut${asked === 1 ? '' : 's'} or restore${asked === 1 ? '' : 's'} came from what he asked for.`);
+  const mc = plan.meaning_check || {};
+  if (mc.status === 'blocked') {
+    const why = sentence(mc.issues?.[0]?.detail);
+    lines.push(`You are holding the cut because it could change what he means${why ? `: ${why}` : ''}.`);
+  } else {
+    lines.push('Nothing you cut changes what he means.');
+  }
+  return {
+    lines,
+    data: { planned: true, before_s: before || null, after_s: Math.round(after), pieces: plan.keep.length,
+      cut: counts, pauses, meaning: mc.status || null },
+  };
 }
 
 /** His words on a hold, as a tool passes them on: trimmed, and never longer than TCE takes. */
@@ -570,6 +638,31 @@ export function register(server, call, { reply, failure }) {
       }
       return reply(lines.join('\n'), { video: v.upload_id, checked: true, state: c.state, held: Boolean(v.held),
         numbers: c.numbers || {}, problems: c.problems || [] });
+    },
+  );
+
+  server.tool(
+    'tce_video_plan',
+    'What you got and what your edit of this video does overall: how long it was and how long your edit is, '
+      + 'what you cut and why (retakes, false starts, fillers, pauses), whether you are holding it and why, and '
+      + 'his notes still waiting. Use it FIRST when he asks what you got, what you are going to do, or to '
+      + 'summarise the edits, then say it as one short recap. It never changes anything.',
+    { type: 'object', properties: { video: VIDEO_ID }, required: ['video'] },
+    async ({ video }) => {
+      const f = await findVideo(video);
+      if (f.stop) return f.stop;
+      const v = f.found;
+      const u = await call('GET', `/production/uploads/${v.upload_id}`);
+      if (!u.ok) return failure(u, 'read the edit plan of that video');
+      const { lines, data } = planSummary(v.title, u.data);
+      if (v.held) lines.push('Your own check is holding this edit; tce_video_check says why.');
+      const s = v.live || v.made;
+      const waiting = s && s.state === 'open' ? (s.notes || []).filter((n) => n.state === 'held').length : 0;
+      if (waiting) {
+        lines.push(`On top of that, ${waiting} note${waiting === 1 ? '' : 's'} from him ${waiting === 1 ? 'is' : 'are'} `
+          + 'saved and waiting for make it; tce_video_notes reads them.');
+      }
+      return reply(lines.join('\n'), { video: v.upload_id, ...data, held: Boolean(v.held), notes_waiting: waiting });
     },
   );
 

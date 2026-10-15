@@ -206,6 +206,8 @@ VOICE_TOOLS = [
     # 3-Oct: what Jennifer's check found, and the rules she learned.
     "tce_video_check",
     "tce_video_rules",
+    # 15-Oct: what she got and what her edit does overall (T-11694).
+    "tce_video_plan",
 ]
 
 OLDER_TOOLS = [
