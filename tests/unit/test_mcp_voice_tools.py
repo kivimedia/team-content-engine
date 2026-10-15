@@ -194,6 +194,8 @@ def test_the_voice_family_registers_every_tool():
             # 3-Oct: what Jennifer's check found, and the rules she learned.
             "tce_video_check",
             "tce_video_rules",
+            # 15-Oct: what she got and what her edit does overall (T-11694).
+            "tce_video_plan",
         ]
     )
 
@@ -3337,8 +3339,9 @@ def test_the_installer_syncs_tools_and_contexts_and_keeps_what_only_the_box_has(
         and "kept as they are on this box ['legacy']" in proc.stdout
     )
     # 3-Oct: the repo seat also has tce_video_check and tce_video_rules (Jennifer's check
-    # and her rules); the box seat this test builds carries the tools before the video five.
-    assert "tools 20 -> 25" in proc.stdout
+    # and her rules), and since 15-Oct tce_video_plan; the box seat this test builds
+    # carries every tool but the video five.
+    assert "tools 21 -> 26" in proc.stdout
 
     # Run again on what it wrote: nothing to do, and nothing written.
     again, second = _install(tmp_path, after, name="second.json")
@@ -3703,3 +3706,62 @@ def test_find_ideas_passes_a_performers_lane_types():
     assert "magic_clip" not in out["texts"][0]
     assert "story seeds" in out["texts"][1]
     assert "1 new trend topic" in out["texts"][2]
+
+
+# 15-Oct (T-11694): "what did you get, what are you going to do overall" on the
+# 13-Oct call had nothing to answer from: every video tool read only his notes.
+
+PLAN_VID = "a953792f-0000-4000-8000-000000000001"
+
+
+def _plan_talk(live=None, held=None):
+    return {"ok": True, "status": 200, "data": {
+        "upload_id": PLAN_VID, "title": "Nobody opens the report", "status": "edited",
+        "check": None, "held": held, "live": live, "made": None}}
+
+
+def test_the_plan_says_the_length_the_cuts_and_his_waiting_notes():
+    upload = {"ok": True, "status": 200, "data": {
+        "duration_s": 252.4, "status": "edited", "status_detail": "Edited",
+        "edit_plan": {
+            "keep": [[0.0, 60.0], [70.0, 130.0], [140.0, 190.0]],
+            "stats": {"kept_seconds": 170.0},
+            "dropped": [
+                {"start": 60, "end": 70, "text": "no wait let me say that again", "reason": "retake"},
+                {"start": 130, "end": 140, "text": "so um", "reason": "false_start"},
+                {"start": 190, "end": 191, "text": "", "reason": "pause"},
+                {"start": 192, "end": 193, "text": "", "reason": "pause"},
+            ],
+            "meaning_check": {"status": "ok", "issues": []},
+        }}}
+    live = {"session_id": "s1", "state": "open", "notes": [
+        {"id": "n1", "where": "at 0:38", "understood": "cut the cough", "state": "held"},
+        {"id": "n2", "where": "at 1:10", "understood": "x", "state": "rejected"}]}
+    out = run({"steps": [step("tce_video_plan", video=PLAN_VID)], "responses": {
+        "GET /production/recordings/": _plan_talk(live=live),
+        f"GET /production/uploads/{PLAN_VID}": upload}})
+    text = out["texts"][0]
+    assert "You got 4:12 of video; your edit keeps 2:50 of it, in 3 pieces." in text
+    assert "1 retakes, 1 false starts, 2 pauses shortened to a breath" in text
+    assert '"no wait let me say that again"' in text
+    assert "Nothing you cut changes what he means." in text
+    assert "1 note from him is saved and waiting for make it" in text
+    assert [s["key"] for s in out["sent"]] == [
+        f"GET /production/recordings/{PLAN_VID}/talk", f"GET /production/uploads/{PLAN_VID}"]
+    assert "tce_video_plan" in out["descs"] and "summarise" in out["descs"]["tce_video_plan"]
+
+
+def test_a_video_with_no_plan_and_a_held_cut_say_so():
+    none = {"ok": True, "status": 200, "data": {
+        "duration_s": 30, "status": "transcribing", "status_detail": "Transcribing the audio", "edit_plan": None}}
+    out = run({"steps": [step("tce_video_plan", video=PLAN_VID)], "responses": {
+        "GET /production/recordings/": _plan_talk(), f"GET /production/uploads/{PLAN_VID}": none}})
+    assert out["texts"][0] == 'There is no edit plan on "Nobody opens the report" yet: Transcribing the audio.'
+    blocked = {"ok": True, "status": 200, "data": {"duration_s": 40, "edit_plan": {
+        "keep": [[0, 30]], "dropped": [],
+        "meaning_check": {"status": "blocked", "issues": [{"detail": "a cut drops a not"}]}}}}
+    out = run({"steps": [step("tce_video_plan", video=PLAN_VID)], "responses": {
+        "GET /production/recordings/": _plan_talk(held="a cut drops a not"), f"GET /production/uploads/{PLAN_VID}": blocked}})
+    text = out["texts"][0]
+    assert "holding the cut because it could change what he means: a cut drops a not." in text
+    assert "Your own check is holding this edit" in text

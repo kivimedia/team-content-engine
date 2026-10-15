@@ -227,6 +227,66 @@ def test_preflight_oauth_token_needs_explicit_opt_in():
     assert w.allowed_auth_methods(env) == frozenset({"claude.ai", "oauth_token"})
 
 
+def _auth_calls(runner):
+    return [c for c, _ in runner.calls if "auth" in c]
+
+
+def _version_calls(runner):
+    return [c for c, _ in runner.calls if "--version" in c]
+
+
+def test_check_reuses_an_ok_preflight_inside_its_window(monkeypatch):
+    # 07-Oct-2026: three workers polling every 10 s started a claude.exe about every
+    # 2 s on the PC just to re-read a login that had not changed (each check is two
+    # CLI starts). An ok result is now reused for a short window.
+    clock = [1000.0]
+    monkeypatch.setattr(w.time, "monotonic", lambda: clock[0])
+    runner = runner_for(AUTH_OK)
+    worker = w.Worker(FakeApi(), "w1", env=BASE_ENV, runner=runner, log=lambda _: None)
+    assert worker.check().ok
+    clock[0] += 30
+    assert worker.check().ok
+    assert len(_auth_calls(runner)) == 1, "second check inside the window must not start the CLI"
+    clock[0] += w.PREFLIGHT_CACHE_S
+    assert worker.check().ok
+    assert len(_auth_calls(runner)) == 2, "an expired cache re-checks the login"
+
+
+def test_check_between_jobs_uses_a_shorter_window(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(w.time, "monotonic", lambda: clock[0])
+    runner = runner_for(AUTH_OK)
+    worker = w.Worker(FakeApi(), "w1", env=BASE_ENV, runner=runner, log=lambda _: None)
+    worker.check()
+    clock[0] += 61
+    worker.check(max_age_s=60.0)
+    assert len(_auth_calls(runner)) == 2, "a 61 s old result is too old to run the next job on"
+
+
+def test_check_never_reuses_a_failed_preflight(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(w.time, "monotonic", lambda: clock[0])
+    runner = runner_for({**AUTH_OK, "loggedIn": False})
+    worker = w.Worker(FakeApi(), "w1", env=BASE_ENV, runner=runner, log=lambda _: None)
+    assert not worker.check().ok
+    clock[0] += 1
+    assert not worker.check().ok
+    assert len(_auth_calls(runner)) == 2, "a failed login is checked again every time"
+
+
+def test_cli_version_is_read_once_per_process(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(w.time, "monotonic", lambda: clock[0])
+    runner = runner_for(AUTH_OK)
+    worker = w.Worker(FakeApi(), "w1", env=BASE_ENV, runner=runner, log=lambda _: None)
+    for _ in range(3):
+        pf = worker.check(max_age_s=0.0)
+        assert pf.ok and pf.cli_version == "2.1.270"
+        clock[0] += 1
+    assert len(_auth_calls(runner)) == 3
+    assert len(_version_calls(runner)) == 1
+
+
 def test_worker_exits_nonzero_when_preflight_fails():
     api = FakeApi([job()])
     popen = FakePopen(FakeProc(stream()))

@@ -56,6 +56,12 @@ WORKER_ONLY_NAMES = frozenset({"TCE_PRIVATE_ACCESS_KEY"})
 # staleness window the API uses, so a long job never reads as an absent worker.
 HEARTBEAT_SECONDS = 60
 
+# How long an OK auth preflight is reused (see Worker.check). The idle loop may reuse
+# it for 2 minutes; before the next job of a batch it may be at most 1 minute old, so
+# a logout still stops the batch quickly. A failed preflight is never reused.
+PREFLIGHT_CACHE_S = 120.0
+PREFLIGHT_RECHECK_BETWEEN_JOBS_S = 60.0
+
 DEFAULT_ALLOWED_AUTH = frozenset({"claude.ai"})
 OPTIONAL_AUTH = frozenset({"oauth_token"})
 
@@ -161,6 +167,7 @@ def run_preflight(
     env: dict[str, str],
     *,
     runner: Runner = subprocess.run,
+    cli_version: str | None = None,
 ) -> Preflight:
     violations = env_violations(env)
     if violations:
@@ -195,12 +202,15 @@ def run_preflight(
     if not isinstance(data, dict):
         return Preflight(False, "claude auth status returned an unexpected shape")
 
-    version = None
-    try:
-        ver = runner(_command(bin_path, ["--version"]), **common)
-        version = (ver.stdout or "").strip().split(" ")[0] or None
-    except (OSError, subprocess.TimeoutExpired):
-        version = None
+    # The CLI version does not change under a running worker: a caller that already
+    # knows it passes it in and saves one CLI start per check.
+    version = cli_version
+    if version is None:
+        try:
+            ver = runner(_command(bin_path, ["--version"]), **common)
+            version = (ver.stdout or "").strip().split(" ")[0] or None
+        except (OSError, subprocess.TimeoutExpired):
+            version = None
 
     # Only these fields are kept; email / org id in the status output are discarded.
     pf = Preflight(
@@ -559,6 +569,8 @@ class Worker:
         self.log = log or (lambda msg: print(msg, file=sys.stderr, flush=True))
         self.bin_path = resolve_claude_bin(self.env)
         self.preflight: Preflight | None = None
+        self._preflight_at = 0.0  # time.monotonic() of the last real check
+        self._cli_version: str | None = None
         configured_outbox = self.env.get("TCE_WORKER_OUTBOX_DIR", "").strip()
         self.outbox_dir = Path(configured_outbox) if configured_outbox else None
         if self.outbox_dir is not None:
@@ -609,9 +621,29 @@ class Worker:
             stop.set()
             thread.join(timeout=2)
 
-    def check(self) -> Preflight:
-        pf = run_preflight(self.bin_path, self.env, runner=self.runner)
+    def check(self, max_age_s: float = PREFLIGHT_CACHE_S) -> Preflight:
+        """Return the auth preflight, reusing an OK result younger than ``max_age_s``.
+
+        07-Oct-2026: three workers polling every 10 s ran this on every loop pass,
+        and each check starts the CLI twice, so the PC launched a claude.exe about
+        every 2 s just to re-read an unchanged login. Only an OK result is reused; a
+        failure is always re-checked. The environment is fixed per process (copied
+        at init), so the env part of the check cannot change inside the window.
+        """
+        now = time.monotonic()
+        if (
+            self.preflight is not None
+            and self.preflight.ok
+            and now - self._preflight_at < max_age_s
+        ):
+            return self.preflight
+        pf = run_preflight(
+            self.bin_path, self.env, runner=self.runner, cli_version=self._cli_version
+        )
+        if pf.cli_version:
+            self._cli_version = pf.cli_version
         self.preflight = pf
+        self._preflight_at = now
         return pf
 
     def execute(self, job: dict[str, Any], preflight: Preflight) -> JobOutcome:
@@ -881,7 +913,9 @@ class Worker:
                 if outcome.body.get("error_code") == "capacity":
                     capacity_hit = True  # stop leasing until the subscription resets
                     break
-                pf = self.check()  # a logout mid-batch must not run the next job
+                # A logout mid-batch must not run the next job: between jobs the
+                # reused result may be at most a minute old.
+                pf = self.check(max_age_s=PREFLIGHT_RECHECK_BETWEEN_JOBS_S)
                 if not pf.ok:
                     self.log(f"preflight failed: {pf.reason}")
                     self.report_status("preflight_failed", pf)

@@ -129,5 +129,7 @@ def test_the_call_seat_has_her_introduce_herself():
     assert "never introduce yourself again" in video
     assert 'say only "Copy"' in video
     assert "one short recap with each displayed time" in video
+    assert seat["byContext"]["video"]["speaker"] == "marin"
+    assert "model" not in seat["byContext"]["video"]
     for text in (brief, video):
         assert "\u2014" not in text and "\u2013" not in text and "--" not in text

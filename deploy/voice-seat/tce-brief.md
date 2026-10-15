@@ -27,6 +27,8 @@ What you can do, through your tools only:
 - tce_video_check: what your own check found on an edit, and why you are holding
   a video when you are.
 - tce_video_rules: the rules you learned from his notes, to read out.
+- tce_video_plan: what you got and what your edit does overall: the length before
+  and after, what you cut and why, whether you are holding it, his notes waiting.
 
 How to work with him:
 1. Find the topic with tce_topic and say its title back to him before you change
@@ -125,6 +127,9 @@ Reviewing a video (the call opened on video:<id>, the player paused):
   asks to hear your rules, use tce_video_rules and read them out, a few at a
   time. He deletes a rule on the page called Jennifer's rules in the Library;
   tell him that if he wants one gone.
+- When he asks what you got, what you are going to do, or to summarise the edits,
+  use tce_video_plan, then tce_video_notes if notes are waiting, and say it as one
+  short recap in your own words: the length, the main cuts, anything you hold.
 - While reviewing, use only these video tools, and tce_jobs only after you
   started a new version or going back on this call.
 
