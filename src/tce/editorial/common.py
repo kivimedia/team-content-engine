@@ -23,6 +23,9 @@ ORIGIN_SELECTOR_REJECTED = "selector_rejected"
 # asked for more ideas. Its own origin so the list never pretends it was chosen.
 ORIGIN_SELECTOR_RESERVE = "selector_reserve"
 ORIGIN_CALIBRATION = "calibration"
+# 15-Oct: an idea he said, turned down by the gates, that he added anyway. Only
+# editorial/add_anyway.py sets it, and no selector run withdraws it.
+ORIGIN_OWNER_OVERRIDE = "owner_override"
 # A row created to prove the pipeline end to end, not an idea. It must never
 # appear anywhere Ziv reads.
 ORIGIN_TECHNICAL_VALIDATION = "technical_validation"

@@ -362,7 +362,15 @@
   async function renderTopics() {
     var view = $("view");
     view.innerHTML = '<div class="page">' + working("Reading the ideas waiting for you") + "</div>";
-    var data = await api("/editorial/topics?filter=" + encodeURIComponent(state.topicFilter) + "&limit=30");
+    var results = await Promise.all([
+      api("/editorial/topics?filter=" + encodeURIComponent(state.topicFilter) + "&limit=30"),
+      // His own ideas the checks turned down. A failure here never costs him the list.
+      state.topicFilter === "best"
+        ? api("/editorial/turned-down").catch(function () { return { ideas: [] }; })
+        : Promise.resolve({ ideas: [] })
+    ]);
+    var data = results[0];
+    var turnedDown = results[1].ideas || [];
     state.topics = data;
 
     var html = '<div class="page">';
@@ -392,6 +400,14 @@
            + (data.withheld_note ? ". " + esc(data.withheld_note) : "") + "</p>";
       html += '<div class="card-list">';
       topics.forEach(function (topic) { html += topicCard(topic); });
+      html += "</div>";
+    }
+    if (turnedDown.length) {
+      html += "<h2>Your ideas that did not pass</h2>";
+      html += '<p class="section-hint">You said these, and the checks turned them down. '
+           + "Add one anyway if you still want it: it joins your topics, marked as your call.</p>";
+      html += '<div class="card-list">';
+      turnedDown.forEach(function (idea) { html += turnedDownCard(idea); });
       html += "</div>";
     }
     html += "</div>";
@@ -437,6 +453,31 @@
     }
     html += "</article>";
     return html;
+  }
+
+  function turnedDownCard(idea) {
+    var html = '<article class="card">';
+    html += "<h3>" + esc(idea.idea) + "</h3>";
+    html += '<p class="why">' + esc(idea.gate ? "Did not pass the " + idea.gate + " check: " : "The checks said: ")
+         + esc(idea.reason) + "</p>";
+    html += '<div class="actions"><button class="btn" type="button" data-add-anyway="'
+         + esc(idea.candidate_id) + '">Add anyway</button></div>';
+    html += "</article>";
+    return html;
+  }
+
+  async function addAnyway(button, id) {
+    button.disabled = true;
+    button.textContent = "Adding it to your topics...";
+    try {
+      var r = await api("/editorial/turned-down/" + encodeURIComponent(id) + "/add-anyway", { method: "POST" });
+      toast((r.already ? "Already on your topics: " : "Added to your topics, marked as your call: ") + r.title);
+      await render();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Add anyway";
+      toast(error.message, true);
+    }
   }
 
   function decisionSentence(decision) {
@@ -2869,7 +2910,7 @@
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise", "pub-copy",
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
     "check-again", "release-hold", "rule-delete",
-    "rename", "rename-save"
+    "rename", "rename-save", "add-anyway"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -2907,6 +2948,7 @@
     if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; render(); return; }
     if (d.wtab !== undefined) { state.workshopTab = d.wtab; render(); return; }
     if (d.decide !== undefined) { decide(d.id, d.decide); return; }
+    if (d.addAnyway !== undefined) { addAnyway(target, d.addAnyway); return; }
     if (d.openRoom !== undefined) { go("/topics/" + d.openRoom); return; }
     if (d.openScript !== undefined) { go("/scripts/" + d.openScript); return; }
     if (d.move !== undefined) { moveItem(d.id, d.move); return; }

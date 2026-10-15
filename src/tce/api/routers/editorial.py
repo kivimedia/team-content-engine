@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from tce.api.private_access import require_private_workspace
+from tce.editorial import add_anyway as add_anyway_service
 from tce.editorial import more_ideas as more_ideas_service
 from tce.editorial import status as job_status
 from tce.editorial.common import (
@@ -1064,6 +1065,34 @@ async def more_ideas_available(
     async with open_session(sm) as db:
         ready = await more_ideas_service.available(db, ws)
     return {"available": len(ready)}
+
+
+@router.get("/turned-down")
+async def turned_down_ideas(
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """His own spoken ideas the checks turned down in the last 30 days, with why."""
+    async with open_session(sm) as db:
+        ideas = await add_anyway_service.turned_down(db, ws)
+    return {"ideas": ideas, "days": add_anyway_service.TURNED_DOWN_DAYS}
+
+
+@router.post("/turned-down/{candidate_id}/add-anyway")
+async def add_idea_anyway(
+    candidate_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Put one of those ideas on his Topics list past the checks, marked as his call."""
+    cid = _parse_uuid(candidate_id, "candidate")
+    async with open_session(sm) as db:
+        try:
+            return await add_anyway_service.add_anyway(db, ws, cid, by="ziv")
+        except add_anyway_service.AddAnywayError as error:
+            raise HTTPException(
+                status_code=error.status, detail={"code": error.code, "message": str(error)}
+            ) from error
 
 
 # ---------------------------------------------------------------------------

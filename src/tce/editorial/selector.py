@@ -37,6 +37,7 @@ from tce import llm as _llm
 from tce.editorial import lane_profile, lineup, news_rules
 from tce.editorial.common import (
     ORIGIN_AGENT_TALK,
+    ORIGIN_OWNER_OVERRIDE,
     ORIGIN_SELECTOR,
     ORIGIN_SELECTOR_REJECTED,
     WEEK_TIMEZONE,
@@ -2171,6 +2172,9 @@ async def select_candidates(
         # the week he has not looked at yet.
         for row in existing:
             if not _supersedable(row, scoped_ids, adds_only):
+                continue
+            # He added it past the gates himself; a new run does not get to undo that.
+            if row.origin == ORIGIN_OWNER_OVERRIDE:
                 continue
             if row.status == "proposed" or (
                 row.origin == ORIGIN_SELECTOR_REJECTED and row.status == "rejected"

@@ -118,6 +118,9 @@ def _why_this_is_yours(candidate: TopicCandidate) -> str:
     # back EMPTY, and an empty sentence makes is_inbox_eligible keep the idea out
     # of the inbox entirely: it would pass every gate and still never be seen.
     standing = sum(1 for k in kinds if k == "standing_fact")
+    # 15-Oct: an idea he said (a call or Add anyway) cites only his own words. Without
+    # this the sentence came back empty and the inbox kept his own idea out.
+    spoken = sum(1 for k in kinds if k == "spoken_idea")
     news = next(
         (c for c in cites if isinstance(c, dict) and c.get("source_kind") == "news_item"),
         None,
@@ -134,6 +137,8 @@ def _why_this_is_yours(candidate: TopicCandidate) -> str:
         parts.append(
             "the work you run for clients" if standing == 1 else "work you run for clients"
         )
+    if spoken:
+        parts.append("an idea you said yourself" if spoken == 1 else "ideas you said yourself")
     if not parts:
         return ""
 
