@@ -726,7 +726,17 @@
       // His words, first: they still land on his last note while the sheet closes.
       if (type === "hearing") {
         // Hands-free: his first words while it is paused are the press.
-        if (handsFree && d.text && !hold && !settling && listening()) press();
+        if (handsFree && d.text && !hold && listening()) {
+          /* A second pause at a different video second is a new note even if
+             the first note is still in its transcript grace period. Finish the
+             old capture before starting the new one, so the new words and pin
+             stay together. At the same second, keep trailing words on the
+             first note until its normal quiet window ends. */
+          if (settling && video && Math.abs((Number(video.currentTime) || 0) - settling.h.t) >= 0.5) {
+            finishSettle();
+          }
+          if (!settling) press();
+        }
         capture.hearing(d.text);
         if (settling && capture.owner === settling.h) armQuiet();
         paint();

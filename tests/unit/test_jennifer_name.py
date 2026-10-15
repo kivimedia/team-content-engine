@@ -124,6 +124,10 @@ def test_the_call_seat_has_her_introduce_herself():
     assert '"Hi, it\'s Jennifer, your video editor. From now on I\n  also check every edit."' in brief
     seat = json.loads((ROOT / "deploy" / "voice-seat" / "tce.json").read_text(encoding="utf-8"))
     video = seat["contexts"]["video"]
-    assert video.startswith("You are Jennifer, TCE's video editor, and from now on you also check every edit.")
+    assert video.startswith("You are Jennifer, TCE's video editor, and you check every edit.")
+    assert "In the opening greeting only, introduce yourself" in video
+    assert "never introduce yourself again" in video
+    assert 'say only "Copy"' in video
+    assert "one short recap with each displayed time" in video
     for text in (brief, video):
         assert "\u2014" not in text and "\u2013" not in text and "--" not in text

@@ -1409,6 +1409,62 @@ def test_hands_free_listens_while_paused_and_his_words_make_the_note_without_a_b
         browser.close()
 
 
+def test_hands_free_keeps_two_distinct_spoken_notes_with_second_pinned_at_157():
+    """Two comments in one sitting must keep their own words and paused seconds."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, page, errors = _bar_page(pw, BASE, before=HANDS_FREE)
+        phone = Phone(page)
+        phone.emit(0, "ear", {"open": True})
+        phone.wait_status("Listening. Say what is wrong here")
+        assert page.locator(".tv-hold").is_hidden()
+
+        phone.emit(0, "hearing", {"text": "Shorten the opening gap"})
+        page.wait_for_function("() => window.__posts === 1")
+        phone.emit(0, "said", {"text": "Shorten the opening gap here"})
+        page.wait_for_function(
+            "() => window.__calls.some(c => c.method === 'PATCH' && c.body"
+            " && String(c.body.heard || '').includes('Shorten the opening gap'))"
+        )
+        page.wait_for_timeout(1800)
+        assert _mic(page) is False
+
+        # The fixture clip is short. Override only its displayed paused clock so
+        # this test can prove the second pin is the user's actual 1:57 position.
+        page.evaluate("""() => {
+          const v = document.getElementById('player');
+          Object.defineProperty(v, 'currentTime', {
+            configurable: true, get: () => 117.25, set: () => {}
+          });
+          v.dispatchEvent(new Event('pause'));
+        }""")
+        phone.emit(0, "hearing", {"text": "Remove the repeated sentence"})
+        page.wait_for_function("() => window.__posts === 2")
+        phone.emit(0, "said", {"text": "Remove the repeated sentence at this point"})
+        page.wait_for_function(
+            "() => window.__calls.some(c => c.method === 'PATCH' && c.body"
+            " && String(c.body.heard || '').includes('Remove the repeated sentence'))"
+        )
+
+        pins = page.evaluate(
+            "() => window.__calls.filter(c => c.method === 'POST' && c.path.endsWith('/notes'))"
+        )
+        assert len(pins) == 2, pins
+        assert abs(pins[1]["body"]["edit_s"] - 117.25) < 0.01, pins
+        saved = page.evaluate(
+            "() => window.__calls.filter(c => c.method === 'PATCH' && c.body && c.body.heard)"
+        )
+        assert len(saved) == 2, saved
+        assert saved[0]["path"].endswith("/n1") and "opening gap" in saved[0]["body"]["heard"]
+        assert saved[1]["path"].endswith("/n2") and "repeated sentence" in saved[1]["body"]["heard"]
+        assert _mic(page) is False
+        page.evaluate("() => window.talk.close()")
+        assert errors == [], errors
+        browser.close()
+
+
 def test_a_client_login_stays_typed_only_even_with_the_hold_button_asked_for(host):
     """?hold=1 turns hands-free off and brings the hold button back, but never on a
     client's own login: typedOnly keeps the button hidden however the sheet is opened."""
