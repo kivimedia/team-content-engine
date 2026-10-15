@@ -24,8 +24,16 @@ from tests.unit.test_recording_studio_walk_safety import (
 pytest.importorskip("playwright.sync_api")
 
 
-def test_leaving_right_after_finish_still_sends_the_take_for_editing(studio):  # noqa: F811
+def test_leaving_right_after_finish_still_sends_the_take_for_editing(studio, monkeypatch):  # noqa: F811
     from playwright.sync_api import sync_playwright
+
+    from tce.api import dashboard
+
+    # Today is the page he goes back to. Off, it bounces to the studio instead.
+    async def enabled() -> bool:
+        return True
+
+    monkeypatch.setattr(dashboard, "_workspace_enabled", enabled)
 
     with sync_playwright() as pw:
         browser, context, page = _studio_page(pw, studio["base"], LANDSCAPE_CAMERA, SLOW_CLIP_FINISH)
