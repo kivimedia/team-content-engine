@@ -107,10 +107,20 @@
     "Putting the clips together and checking the sound.": "מחברים את הקליפים ובודקים את הקול.",
     "Editing the video": "עורכים את הסרטון",
     "Editing the video.": "עורכים את הסרטון.",
-    "Please stay on this screen: sending the end of your last clip from this phone.":
-      "נא להישאר במסך הזה: שולחים את סוף הקליפ האחרון מהטלפון.",
-    "Please stay on this screen: sending a clip that did not get through before.":
-      "נא להישאר במסך הזה: שולחים קליפ שלא עבר קודם.",
+    "Sending the last clip in the background. You can leave this page.":
+      "הקליפ האחרון נשלח ברקע. אפשר לצאת מהעמוד.",
+    "Sending the last clip in the background. You can leave this page: it carries on from any TCE page.":
+      "הקליפ האחרון נשלח ברקע. אפשר לצאת מהעמוד: השליחה ממשיכה מכל עמוד ב-TCE.",
+    "Not sent yet: the rest of the take is kept on this phone and sent again in a few seconds, from any TCE page.":
+      "עוד לא נשלח: שאר הטייק שמור בטלפון ונשלח שוב בעוד כמה שניות, מכל עמוד ב-TCE.",
+    "Saving your take in the background. You can keep working.": "הטייק נשמר ברקע. אפשר להמשיך לעבוד.",
+    "Your take has not arrived yet. It is kept on this phone and sent again in a few seconds.":
+      "הטייק עוד לא הגיע. הוא שמור בטלפון ונשלח שוב בעוד כמה שניות.",
+    "A clip did not arrive and could not be saved. The rest of the take is still sent for editing.":
+      "קליפ אחד לא הגיע ולא נשמר. שאר הטייק נשלח לעריכה.",
+    "Nothing was recorded, so there was nothing to send for editing.": "לא הוקלט כלום, אז לא היה מה לשלוח לעריכה.",
+    "Your take is saved and on its way to editing.": "הטייק נשמר ובדרך לעריכה.",
+    "Open the Library": "לפתוח את הספרייה",
     "Being put together for editing": "מחברים לעריכה",
     "Handing the clips to TCE.": "מעבירים את הקליפים ל-TCE.",
     "Putting the clips together and checking the sound. You do not have to wait for this.":
@@ -635,7 +645,7 @@
     "The phone switched the camera off. What you recorded is kept - press Record to go on.":
       "הטלפון כיבה את המצלמה. מה שהקלטת נשמר - לוחצים הקלטה כדי להמשיך.",
     "The camera did not open.": "המצלמה לא נפתחה.",
-    "Some of the video is still on this phone. Reconnect and press Finish again.": "חלק מהסרטון עדיין בטלפון. מתחברים שוב ולוחצים סיום שוב.",
+    "Some of the video is still on this phone. It is sent again in a few seconds, from any TCE page.": "חלק מהסרטון עדיין בטלפון. הוא נשלח שוב בעוד כמה שניות, מכל עמוד ב-TCE.",
     "That take was too short to keep. Press Record again.": "הטייק היה קצר מדי. לוחצים הקלטה שוב.",
     "Finish at least one clip before finishing the session.": "צריך לסיים לפחות קליפ אחד לפני שמסיימים.",
     "Keeping everything on this phone until you are back online": "שומר הכול בטלפון עד שתחזור לרשת"

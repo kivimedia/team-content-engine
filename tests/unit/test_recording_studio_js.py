@@ -390,6 +390,7 @@ def test_while_recording_the_right_hand_button_finishes_for_real():
     js = JS.read_text(encoding="utf-8")
     # And it is never the greyed-out one.
     assert '$("finishSessionButton").disabled = false;' in js
-    # The message about unsent video must name the button that is on screen.
-    assert "press Finish again" in js
+    # The message about unsent video must never send him to a button. Since 15-Oct
+    # (T-11436) nothing is pressed again: it is sent again by itself, from any page.
+    assert "It is sent again in a few seconds, from any TCE page." in js
     assert "press Finish clip again" not in js

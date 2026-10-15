@@ -17,6 +17,8 @@ _HTML_PATH = Path(__file__).parent / "dashboard.html"
 _RECORDING_HTML_PATH = Path(__file__).parent / "recording.html"
 _RECORDING_CSS_PATH = Path(__file__).parent / "recording.css"
 _RECORDING_JS_PATH = Path(__file__).parent / "recording.js"
+# 15-Oct (T-11436): the save that carries on after he leaves the studio, on every page.
+_RECORDING_RESUME_JS_PATH = Path(__file__).parent / "recording-resume.js"
 # 12-Oct: Record without a script.
 _SOLO_HTML_PATH = Path(__file__).parent / "recording-solo.html"
 _SOLO_JS_PATH = Path(__file__).parent / "recording-solo.js"
@@ -279,6 +281,13 @@ async def recording_js():
         _RECORDING_JS_PATH.read_text(encoding="utf-8"),
         media_type="application/javascript",
     )
+
+
+@router.get("/recording-resume.js", include_in_schema=False)
+async def recording_resume_js():
+    from fastapi.responses import Response
+
+    return Response(_RECORDING_RESUME_JS_PATH.read_text(encoding="utf-8"), media_type="application/javascript")
 
 
 @router.get("/recording-solo.js", include_in_schema=False)

@@ -1158,6 +1158,8 @@ function rebindIdeas(ideas, next) {
         method: "POST", body: JSON.stringify({ local_clip_id: localId, mime_type: supportedMime, extension }),
       });
       state.clip = response.clip;
+      // Written down beside its pieces, so a page he moves to can close it (T-11436).
+      window.TCEResume.rememberClip({ clipId: state.clip.id, sessionId: state.session.id, stopped: false });
       state.sequence = 0;
       resetTimer({ hide: false });
       state.activeStartedAt = performance.now();
@@ -1279,11 +1281,12 @@ function rebindIdeas(ideas, next) {
   async function sendClip(entry) {
     const { clip, session, activeSeconds, takeMarkers } = entry;
     const synced = await retryStoredChunks(clip.id);
-    if (!synced) throw new Error("Some of the video is still on this phone. Reconnect and press Finish again.");
+    if (!synced) throw new Error("Some of the video is still on this phone. It is sent again in a few seconds, from any TCE page.");
     const response = await api(`/recording-clips/${clip.id}/finish`, {
       method: "POST", body: JSON.stringify({ active_duration_s: activeSeconds, take_markers: takeMarkers }),
     });
     await idbDeleteClip(clip.id);
+    window.TCEResume.forgetClip(clip.id);
     session.clips = [...(session.clips || []).filter((item) => item.id !== response.clip.id), response.clip].sort((a, b) => a.position - b.position);
     state.unfinished = (state.unfinished || []).filter((item) => item.clip.id !== clip.id);
     return response.clip;
@@ -1307,9 +1310,15 @@ function rebindIdeas(ideas, next) {
     const clip = state.clip;
     const session = state.session;
     const takeMarkers = [...state.takeMarkers];
+    // Stop is pressed: from here the clip is owed to the server even if he leaves
+    // before the recorder hands over its last piece (T-11436).
+    const running = state.recorder?.state === "recording" ? performance.now() - state.activeStartedAt : 0;
+    const owed = { clipId: clip.id, sessionId: session.id, stopped: true, takeMarkers };
+    window.TCEResume.rememberClip({ ...owed, activeSeconds: Number(((state.activeMs + running) / 1000).toFixed(3)) });
     await stopRecorderLocally();
     setRecordingChrome(false);
     const activeSeconds = Number((state.activeMs / 1000).toFixed(3));
+    window.TCEResume.rememberClip({ ...owed, activeSeconds });
     await Promise.all(state.pendingWrites);
     // Pieces of video the recorder actually handed over. A quick Record-then-Stop
     // can hand over none; the server would refuse it as "missing chunk sequences".
@@ -1322,6 +1331,7 @@ function rebindIdeas(ideas, next) {
     const finalize = (async () => {
       if (!pieces) {
         await idbDeleteClip(clip.id);
+        window.TCEResume.forgetClip(clip.id);
         freeStudio(clip);
         const error = new Error("That take was too short to keep. Press Record again.");
         error.tooShort = true;
@@ -1389,61 +1399,79 @@ function rebindIdeas(ideas, next) {
     paintNow($("finishDialogNow"), text, mode);
   }
 
+  /* In the background (12-Oct, T-11436). "I don't want you to hold me and make me
+     wait until you finish saving, I want the save to happen in the background."
+     Finish no longer waits on this phone. What is still owed (the clip Stop is
+     ending, a clip that did not get through, handing the take set over) is written
+     down at the press, and recording-resume.js sends it from whichever TCE page he
+     is on. The three-second note stays (8-Oct, his ask), but a tap or Escape puts it
+     away at once, and the list shows the take's progress at the top. */
   async function finishSession() {
     if (state.finishing) return;
-    state.finishing = true;
-    const button = $("finishSessionButton");
-    button.hidden = true;
-    const opened = Date.now();
-    const dialog = $("finishDialog");
-    finishNote("send", "Sending the last clip from this phone.");
-    if (!dialog.open) dialog.showModal();
-    const giveBack = (message) => {
-      if (dialog.open) dialog.close();
-      button.hidden = false;
-      state.finishing = false;
-      showNotice(message, 7000);
-    };
-    let response;
-    try {
-      // A clip Stop is already ending must not be ended a second time.
-      if (state.recorder && state.recorder.state !== "inactive" && !state.finalizing.size) await finishClip().catch(() => {});
-      if (state.finalizing.size) {
-        finishNote("send", "Please stay on this screen: sending the end of your last clip from this phone.", "wait");
-        await Promise.all([...state.finalizing]);
-      }
-      // Clips whose send failed earlier: send them now, or refuse to build without them.
-      for (const entry of [...(state.unfinished || [])]) {
-        if (entry.session.id !== state.session?.id) continue;
-        finishNote("send", "Please stay on this screen: sending a clip that did not get through before.", "wait");
-        await sendClip(entry);
-      }
-      if (!(state.session?.clips || []).some((clip) => clip.status === "ready")) {
-        giveBack("Nothing recorded yet, so there is nothing to send for editing.");
-        return;
-      }
-      await ensureSession();
-      const ready = (state.session.clips || []).filter((clip) => clip.status === "ready").sort((a, b) => a.position - b.position);
-      if (!ready.length) throw new Error("Finish at least one clip before finishing the session.");
-      finishNote("build", "Handing the clips to TCE.");
-      response = await api(`/recording-sessions/${state.session.id}/finish`, {
-        method: "POST", body: JSON.stringify({ selected_clip_ids: ready.map((clip) => clip.id) }),
-      });
-    } catch (error) {
-      giveBack(error.message);
+    const session = state.session;
+    const live = state.recorder && state.recorder.state !== "inactive";
+    const owedHere = live || state.finalizing.size
+      || (state.unfinished || []).some((entry) => entry.session.id === session?.id);
+    if (!session || (!owedHere && !(session.clips || []).some((clip) => clip.status === "ready"))) {
+      showNotice("Nothing recorded yet, so there is nothing to send for editing.", 7000);
       return;
     }
-    state.session = response.session;
-    const tracked = { sessionId: response.session.id, title: state.idea?.title || "", at: Date.now() };
-    localStorage.setItem(FINISH_KEY, JSON.stringify(tracked));
-    finishNote("build", "Putting the clips together and checking the sound. You do not have to wait for this.");
-    await new Promise((resolve) => setTimeout(resolve, Math.max(0, FINISH_NOTE_MS - (Date.now() - opened))));
+    state.finishing = true;
+    $("finishSessionButton").hidden = true;
+    const dialog = $("finishDialog");
+    // A clip Stop is already ending must not be ended a second time.
+    if (live && !state.finalizing.size) finishClip({ waitForServer: false });
+    const title = state.idea?.title || "";
+    window.TCEResume.rememberFinish({ sessionId: session.id, title });
+    finishNote("send", "Sending the last clip in the background. You can leave this page.");
+    if (!dialog.open) dialog.showModal();
+    // This page's own sends first; the shared saver closes what is left and hands the take set over.
+    Promise.all([...state.finalizing]).then(() => window.TCEResume.drain());
+    await new Promise((resolve) => {
+      setTimeout(resolve, FINISH_NOTE_MS);
+      dialog.addEventListener("close", resolve, { once: true });
+    });
     if (dialog.open) dialog.close();
     resetTimer();
     state.finishing = false;
     showQueue();
-    trackFinish(tracked);
+    if (window.TCEResume.owes(session.id)) paintSaving({ kind: "sending" }, title);
   }
+
+  /* The card at the top of the list, while the take is still leaving this phone.
+     Once it is handed over, trackFinish follows the build and the edit. */
+  function paintSaving(event, title) {
+    clearTimeout(state.finishPoll);
+    $("finishStatus").hidden = false;
+    if (title !== undefined) $("finishStatusTitle").textContent = title || "Your take";
+    else if (!$("finishStatusTitle").textContent) $("finishStatusTitle").textContent = "Your take";
+    $("finishOpen").hidden = true;
+    $("finishRetry").hidden = true;
+    const steps = $("finishStatusSteps");
+    const now = $("finishStatusNow");
+    if (event.kind === "sending") {
+      paintSteps(steps, "send");
+      paintNow(now, "Sending the last clip in the background. You can leave this page: it carries on from any TCE page.");
+    } else if (event.kind === "waiting") {
+      paintSteps(steps, "send");
+      paintNow(now, "Not sent yet: the rest of the take is kept on this phone and sent again in a few seconds, from any TCE page.", "wait");
+    } else if (event.kind === "lost") {
+      paintSteps(steps, "send", true);
+      paintNow(now, `A clip did not arrive and could not be saved (${event.error.message}). The rest of the take is still sent for editing.`, "failed");
+    }
+  }
+
+  window.TCEResume.onStatus((event) => {
+    if (event.kind === "sent") {
+      if (!$("queueView").hidden) loadQueue();
+      trackFinish(event.tracked);
+    } else if (event.kind === "nothing") {
+      stopTracking();
+      showNotice("Nothing recorded yet, so there is nothing to send for editing.", 7000);
+    } else if (!state.finishing) {
+      paintSaving(event);
+    }
+  });
 
   function readTracked() {
     try {
@@ -1695,8 +1723,8 @@ function rebindIdeas(ideas, next) {
   $("finishClipButton").addEventListener("click", () => finishClip());
   $("finishSessionButton").addEventListener("click", finishSession);
   $("finishStatusClose").addEventListener("click", stopTracking);
-  // Escape must not hide the note while the end of a clip is still leaving this phone.
-  $("finishDialog").addEventListener("cancel", (event) => event.preventDefault());
+  // The note never holds him (T-11436): a tap anywhere on it puts it away, and so does Escape.
+  $("finishDialog").addEventListener("click", () => $("finishDialog").close());
   $("reader").addEventListener("scroll", syncScrollRail, { passive: true });
   $("switchDialog").addEventListener("close", async () => {
     if ($("switchDialog").returnValue !== "confirm" || !state.pendingIdea) { state.pendingIdea = null; return; }
@@ -1769,4 +1797,6 @@ function rebindIdeas(ideas, next) {
   // Back on the page after sending a take: its progress is still at the top.
   const lastSent = readTracked();
   if (lastSent) trackFinish(lastSent);
+  // A take left on its way from an earlier visit is sent from here too.
+  window.TCEResume.drain();
 })();

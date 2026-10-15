@@ -179,7 +179,7 @@ def refuse_lane_workspace(ws: uuid.UUID | None, what: str, what_he: str | None =
 SCOPED_PAGE_PATHS = frozenset({
     "/", "/record", "/today", "/topics", "/week", "/library", "/settings",
     "/workspace.css", "/workspace.js", "/workspace-sw.js", "/workspace.webmanifest",
-    "/talk-voice.js", "/talk-voice.css", "/recording.css", "/recording.js",
+    "/talk-voice.js", "/talk-voice.css", "/recording.css", "/recording.js", "/recording-resume.js",
     "/i18n-he.js", "/i18n-he.css",
 })
 SCOPED_PAGE_PREFIXES = ("/topics/", "/scripts/", "/library/")
