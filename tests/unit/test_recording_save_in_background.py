@@ -92,3 +92,81 @@ def test_the_finish_note_goes_on_one_tap(studio):  # noqa: F811
             pass
         context.close()
         browser.close()
+
+
+def test_a_no_script_take_left_after_done_is_sent_from_another_page(studio, monkeypatch):  # noqa: F811
+    """Record without a script, Done, leave: Today sends what is left and starts the edit.
+
+    Until 16-Oct the no-script recorder sent its leftover pieces only when its own page
+    opened again, so a take he walked away from sat on the phone.
+    """
+    from playwright.sync_api import sync_playwright
+
+    from tce.api import dashboard
+
+    async def enabled() -> bool:
+        return True
+
+    monkeypatch.setattr(dashboard, "_workspace_enabled", enabled)
+
+    seen = []
+
+    def server(route, request):
+        seen.append((request.method, request.url.split("/agent-talks/")[1], request.post_data))
+        route.fulfill(status=200, content_type="application/json", body='{"ok": true}')
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 390, "height": 844})
+        page = context.new_page()
+        page.route("**/api/v1/production/agent-talks/**", server)
+        page.goto(f"{studio['base']}/today")
+        # What the no-script page leaves behind when he presses Done and goes: one piece
+        # still to send, and a take marked done.
+        page.evaluate(
+            """() => new Promise((resolve, reject) => {
+              const open = indexedDB.open('tce-solo-v1', 1);
+              open.onupgradeneeded = () => {
+                open.result.createObjectStore('pieces', { keyPath: 'key' });
+                open.result.createObjectStore('takes', { keyPath: 'talkId' });
+              };
+              open.onerror = () => reject(open.error);
+              open.onsuccess = () => {
+                const tx = open.result.transaction(['pieces', 'takes'], 'readwrite');
+                tx.objectStore('pieces').put({ key: 'talk-1:0', talkId: 'talk-1', sequence: 0,
+                  blob: new Blob(['x'], { type: 'video/webm' }), at: 1 });
+                tx.objectStore('takes').put({ talkId: 'talk-1', done: true,
+                  startedAt: '2026-10-16T08:00:00Z', endedAt: '2026-10-16T08:01:00Z', durationMs: 60000 });
+                tx.oncomplete = () => { open.result.close(); resolve(); };
+                tx.onerror = () => reject(tx.error);
+              };
+            })"""
+        )
+        with page.expect_request(
+            lambda r: r.method == "POST" and r.url.endswith("/agent-talks/talk-1/finish"), timeout=15000
+        ) as finished:
+            page.goto(f"{studio['base']}/today")
+        assert finished.value.post_data_json == {
+            "ended_at": "2026-10-16T08:01:00Z", "duration_ms": 60000, "edit": True,
+        }
+        page.wait_for_function(
+            "() => (document.getElementById('tceSavingBar')?.textContent || '')"
+            ".startsWith('Your take is saved and on its way to editing.')",
+            timeout=10000,
+        )
+        # The piece first, then the finish, once each.
+        assert [(m, path) for m, path, _ in seen] == [("PUT", "talk-1/chunks/0"), ("POST", "talk-1/finish")]
+        left = page.evaluate(
+            """() => new Promise((resolve) => {
+              const open = indexedDB.open('tce-solo-v1', 1);
+              open.onsuccess = () => {
+                const tx = open.result.transaction(['pieces', 'takes'], 'readonly');
+                const p = tx.objectStore('pieces').count();
+                const t = tx.objectStore('takes').count();
+                tx.oncomplete = () => resolve([p.result, t.result]);
+              };
+            })"""
+        )
+        assert left == [0, 0]
+        context.close()
+        browser.close()
