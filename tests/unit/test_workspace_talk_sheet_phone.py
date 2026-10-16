@@ -17,8 +17,10 @@ Asserts, each one a sentence in plans/30-Sep-26-talk-to-the-editor.md (sections 
 - drawing the page again never takes the player away mid-sitting;
 - hold to talk pins the paused second and saves his words on that note;
 - a typed note is pinned to the second the player is paused on;
-- Make the new version reads the notes back, sends the read-back's check code, shows
-  the batch's live step, renders once, and then each note says what was done;
+- Make the new version reads the notes back and sends the read-back's check code; his
+  yes ends the call and lands him on the Library at once with the video's card in
+  sight, saying Jennifer has the notes (16-Oct); the card shows her live step, renders once, and then
+  each note says what was done;
 - closing keeps the notes (the close route leaves a sitting with notes open), the card
   says "1 note waiting - Make the new version", and opening it again finds them;
 - a request typed on the card does not stop a video playing in that card.
@@ -560,6 +562,9 @@ def test_the_notes_sheet_from_the_card_to_one_new_version(host, tmp_path):
         layout = page.evaluate(SHEET_LAYOUT_JS)
         assert layout["overlaps"] == [] and layout["overflowX"] is False, layout
         page.screenshot(path=str(shots / "talk-sheet-read-back-phone.png"))
+        # A tall Library head, as with many recordings above this one: landing back must
+        # still bring this video's card into sight, below the sticky top bar.
+        page.add_style_tag(content=".page-head { min-height: 2400px; }")
         with page.expect_response(
             lambda r: r.url.endswith(f"/talk/{sid}/submit") and r.request.method == "POST"
         ) as made:
@@ -571,28 +576,36 @@ def test_the_notes_sheet_from_the_card_to_one_new_version(host, tmp_path):
         page.wait_for_function("() => window.__voice.starts[0].stopped === true", timeout=3_000)
         assert page.evaluate("() => window.__wake.released") == 1
 
-        # The live step, never a bare spinner: the batch's own, then the render's.
-        phone.wait_status("Reading your 2 notes on the subscription")
-        page.wait_for_function(
-            "() => document.querySelector('.ns-make-row button').textContent === 'Making the new version (2 notes)'"
+        # 16-Oct: his yes leaves the sheet at once. He lands on the Library with this
+        # video's card in sight, saying Jennifer has the notes and showing each step.
+        page.wait_for_function("() => window.location.pathname === '/library'", timeout=5_000)
+        assert page.locator("#notesSheet").is_hidden()
+        card = page.locator(f"article.card[data-upload='{uid}']")
+        card.locator("[data-notes-tag='working']").wait_for(timeout=5_000)
+        assert card.locator("[data-notes-tag='working']").inner_text() == "Jennifer is on your 2 notes"
+        assert "Making the new version from your 2 notes:" in card.inner_text()
+        # Nothing floats over the card's live step.
+        assert page.locator(".toast").count() == 0
+        sight = page.evaluate(
+            "(id) => { const r = document.querySelector(`article.card[data-upload='${id}'] h3`).getBoundingClientRect();"
+            " const bar = document.querySelector('.topbar').getBoundingClientRect();"
+            " return {top: r.top, bottom: r.bottom, bar: bar.bottom, h: window.innerHeight, y: window.scrollY}; }", uid,
         )
-        page.screenshot(path=str(shots / "talk-sheet-making-phone.png"))
-        phone.wait_status("Cutting and burning in your captions")
-        phone.wait_status("New version made from your 2 notes.", timeout=30_000)
+        assert sight["top"] >= sight["bar"] and sight["bottom"] <= sight["h"], sight
+        assert page.evaluate("() => document.documentElement.scrollWidth <= window.innerWidth") is True
+        page.screenshot(path=str(shots / "talk-sheet-sent-library-phone.png"))
 
-        # Each note says what was done, and the player has the new version.
-        phone.wait_row("Removed the 'Not'.")
-        phone.wait_row("The pause after service stays as it is.")
-        page.wait_for_function("(ref) => document.querySelector('.ns-player').getAttribute('src').endsWith('v=' + ref)",
-                               arg=NEW_REF)
-        assert page.locator("[data-ns-again]").inner_text() == "Give notes on the new version"
-        # The notes strip starts at the first note, with what was done with it.
-        assert page.evaluate(IN_NOTES_JS, ".ns-list .tv-note") is True
-        assert page.locator(".ns-list .tv-note").first.locator(".tv-answer").inner_text() == "Removed the 'Not'."
+        # The card follows the batch by itself until the new version is made, and then
+        # each note says what was done with it.
+        made_box = card.locator("details.notes-made")
+        made_box.wait_for(timeout=40_000)
+        assert card.locator("[data-notes-tag]").count() == 0
+        assert made_box.locator("summary").inner_text() == "Your last 2 notes"
+        assert "New version made from your 2 notes." in made_box.text_content()
+        assert "Removed the 'Not'." in made_box.text_content()
+        assert "The pause after service stays as it is." in made_box.text_content()
         assert len(host["asked"]) == 1 and len(host["renders"]) == 1
-        layout = page.evaluate(SHEET_LAYOUT_JS)
-        assert layout["overlaps"] == [] and layout["overflowX"] is False, layout
-        page.screenshot(path=str(shots / "talk-sheet-made-phone.png"))
+        page.screenshot(path=str(shots / "talk-sheet-made-library-phone.png"))
 
         # ---- the card says what was made, note by note
         lib = page.evaluate("async () => (await fetch('/api/v1/production/library?filter=all')).json()")
@@ -607,11 +620,13 @@ def test_the_notes_sheet_from_the_card_to_one_new_version(host, tmp_path):
 
         # ---- more notes on the new version: a fresh sitting on it, and a fresh call
         with page.expect_response(_opened) as fresh:
-            page.locator("[data-ns-again]").click()
+            card.locator("button[data-talk-edit]", has_text="Talk to Jennifer").click()
         again = fresh.value.json()
         assert again["session_id"] != sid and again["render_ref"] == NEW_REF and again["state"] == "open"
         page.wait_for_function("() => window.__voice.starts.length === 2")
         assert phone.voice()[0]["stopped"] is True
+        page.wait_for_function("(ref) => document.querySelector('.ns-player').getAttribute('src').endsWith('v=' + ref)",
+                               arg=NEW_REF)
         page.wait_for_function(
             "() => (document.querySelector('[data-ns-make]') || {}).textContent === 'Make the new version (no notes yet)'"
         )

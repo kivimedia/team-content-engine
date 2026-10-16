@@ -797,6 +797,9 @@
     [/^Your last (\d+) notes?(?:: (\d+) needs? you)?$/, function (_, n, k) {
       return (n === "1" ? "ההערה האחרונה שלך" : n + " ההערות האחרונות שלך") + (k ? ": " + k + " מחכות לך" : "");
     }],
+    // 16-Oct: the card says where his last notes are.
+    [/^Jennifer is on your (\d+) notes?$/, "ג'ניפר עובדת על $1 ההערות שלך"],
+    [/^(\d+) notes? needs? you$/, function (_, n) { return n === "1" ? "הערה אחת מחכה לך" : n + " הערות מחכות לך"; }],
     [/^Applied on (\d+) videos?(?: · learned (.+))?$/, function (_, n, when) {
       return "יושם ב-" + n + " סרטונים" + (when ? " · נלמד ב-" + when : "");
     }],

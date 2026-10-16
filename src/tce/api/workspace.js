@@ -1458,6 +1458,11 @@
     }
     html += "</div>";
     view.innerHTML = html;
+    // 16-Oct: back from his yes on the notes sheet, that video's card is in sight.
+    var focus = state.libraryFocus;
+    state.libraryFocus = null;
+    var mine = focus && view.querySelector('article.card[data-upload="' + focus + '"]');
+    if (mine) mine.scrollIntoView({ block: "start" });
     status(items.length + " " + plural(items.length, "recording"));
     scheduleLibraryPoll(items);
   }
@@ -1507,7 +1512,7 @@
   }
 
   function libraryCard(item) {
-    var html = '<article class="card">';
+    var html = '<article class="card" data-upload="' + esc(item.upload_id) + '">';
     html += "<h3>" + esc(item.title) + "</h3>";
     // 3-Oct: a voice call with an agent he filmed says so, and with whom.
     if (item.source === "agent_talk") {
@@ -1520,6 +1525,7 @@
     }
     // The edit is what he comes here for: say so on the card (25-Sep).
     if (item.has_edit) html += '<span class="tag is-ready">Edited video</span> ';
+    html += notesMadeTag(item.notes_made);
     html += '<span class="source">' + esc(when(item.recorded_at))
          + (item.duration_s ? " &middot; " + clock(item.duration_s) : "") + "</span>";
     html += '<p class="big-idea">' + esc(item.state_sentence) + "</p>";
@@ -2174,6 +2180,23 @@
 
   /* The card's account of the last notes made into a new version: the batch's own
      step while it runs, then every note with what came of it. */
+  /* 16-Oct: the card says at a glance where his last notes are, under its title, so
+     he never has to open it to know whether Jennifer has them. */
+  function notesMadeTag(made) {
+    if (!made) return "";
+    var notes = made.notes || [];
+    if (NOTES_WORKING.indexOf(made.state) >= 0) {
+      return '<span class="tag is-talk" data-notes-tag="working">Jennifer is on your '
+           + esc(noteWord(notes.length)) + "</span> ";
+    }
+    var needs = notes.filter(function (n) { return n.state === "needs_you" && !n.undone; }).length;
+    if (needs) {
+      return '<span class="tag is-timely" data-notes-tag="needs">' + needs
+           + (needs === 1 ? " note needs" : " notes need") + " you</span> ";
+    }
+    return "";
+  }
+
   function notesMadeHtml(made, item) {
     var notes = made.notes || [];
     if (NOTES_WORKING.indexOf(made.state) >= 0) {
@@ -2621,14 +2644,14 @@
       if (state.notesSheet !== sheet) return;
       hideReadBack(sheet);
       sheet.sitting = payload;
-      notesSay(sheet, "Jennifer is reading every note now. The bar says each step, "
-        + "and each note says what was done with it.");
-      if (sheet.talk) {
-        // 1-Oct final review: nothing more is said on the call while the notes are made,
-        // so it ends (Live bills every minute, silence too) and the screen may sleep.
-        sheet.talk.hangUp();
-        sheet.talk.refresh();
-      }
+      /* 16-Oct: after his yes there is nothing left to do here, and a sheet with a
+         greyed button left him unsure his notes had gone. Back to the Library at once:
+         the call ends with the sheet (nothing more is said while the notes are made, and
+         Live bills every minute), and this video's card, in sight, says Jennifer is on
+         his notes and shows each step until the new version is ready. */
+      state.libraryFocus = sheet.uploadId;
+      leaveNotesSheet();
+      return;
     } catch (error) {
       if (state.notesSheet !== sheet) return;
       var d = error.detail || {};

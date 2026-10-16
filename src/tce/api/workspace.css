@@ -138,6 +138,8 @@ main { width: min(100%, 860px); margin: 0 auto; }
   border: 2px solid var(--ink); border-radius: 16px; background: var(--white);
   padding: 16px; box-shadow: 4px 4px 0 var(--ink);
 }
+/* 16-Oct: a card scrolled into sight stops below the sticky top bar, not under it. */
+.card[data-upload] { scroll-margin-top: calc(80px + env(safe-area-inset-top)); }
 .card > h3 {
   margin: 0; font-family: Georgia, serif; font-size: 1.18rem; line-height: 1.22;
 }
