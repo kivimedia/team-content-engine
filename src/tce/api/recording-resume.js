@@ -221,6 +221,91 @@
     return drainNow().catch(() => {});
   }
 
+  /* --------------------------------------------- Record without a script */
+
+  /* The no-script recorder keeps its pieces and its Done takes in its own IndexedDB and
+     used to send them only when its own page opened again. Every page that loads this
+     script now sends them too, the same way that page does: pieces oldest first, then
+     the finish of each take whose Done was pressed and whose pieces are all in. Both
+     server steps are safe to repeat (a piece already joined answers 409, a finished
+     talk answers with the same video). */
+  const SOLO_DB = "tce-solo-v1";
+  let soloRetryId = null;
+
+  async function soloExists() {
+    if (!indexedDB.databases) return true;
+    try { return (await indexedDB.databases()).some((db) => db.name === SOLO_DB); } catch { return true; }
+  }
+
+  function soloStore(name, mode, work) {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(SOLO_DB, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains("pieces")) db.createObjectStore("pieces", { keyPath: "key" });
+        if (!db.objectStoreNames.contains("takes")) db.createObjectStore("takes", { keyPath: "talkId" });
+      };
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction(name, mode);
+        const out = work(tx.objectStore(name));
+        tx.oncomplete = () => { db.close(); resolve(out && out.result !== undefined ? out.result : undefined); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+      };
+    });
+  }
+
+  async function soloDrainNow() {
+    if (!(await soloExists())) return;
+    const pieces = (await soloStore("pieces", "readonly", (s) => s.getAll()))
+      .sort((a, b) => (a.talkId === b.talkId ? a.sequence - b.sequence : a.at - b.at));
+    const takes = (await soloStore("takes", "readonly", (s) => s.getAll())).filter((take) => take.done);
+    if (!pieces.length && !takes.length) return;
+    paintBar({ kind: "sending" });
+    let failed = null;
+    for (const piece of pieces) {
+      try {
+        await api(`/agent-talks/${encodeURIComponent(piece.talkId)}/chunks/${piece.sequence}`, {
+          method: "PUT", body: piece.blob,
+        });
+        await soloStore("pieces", "readwrite", (s) => s.delete(piece.key));
+      } catch (error) {
+        if (error.status === 409 || error.status === 404) await soloStore("pieces", "readwrite", (s) => s.delete(piece.key));
+        else { failed = error; break; }
+      }
+    }
+    if (!failed) {
+      const left = await soloStore("pieces", "readonly", (s) => s.getAll());
+      for (const take of takes) {
+        if (left.some((piece) => piece.talkId === take.talkId)) continue;
+        try {
+          await api(`/agent-talks/${encodeURIComponent(take.talkId)}/finish`, {
+            method: "POST",
+            body: JSON.stringify({ ended_at: take.endedAt, duration_ms: take.durationMs, edit: true }),
+          });
+          await soloStore("takes", "readwrite", (s) => s.delete(take.talkId));
+          paintBar({ kind: "sent" });
+        } catch (error) {
+          failed = error;
+        }
+      }
+    }
+    if (failed) {
+      paintBar({ kind: "waiting", error: failed });
+      clearTimeout(soloRetryId);
+      soloRetryId = setTimeout(soloDrain, RETRY_MS);
+    }
+  }
+
+  function soloDrain() {
+    if (!window.indexedDB) return Promise.resolve();
+    if (navigator.locks && navigator.locks.request) {
+      return navigator.locks.request(SOLO_DB, () => soloDrainNow()).catch(() => {});
+    }
+    return soloDrainNow().catch(() => {});
+  }
+
   /* -------------------------------------------------------------- the status */
 
   function tell(event) {
@@ -272,4 +357,8 @@
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", drain, { once: true });
     else drain();
   }
+  // The studio's card follows studio takes only, so these always use the bar.
+  window.addEventListener("online", soloDrain);
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", soloDrain, { once: true });
+  else soloDrain();
 })();
