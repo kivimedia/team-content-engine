@@ -12,6 +12,7 @@
  * a file: they come from the environment.
  */
 import { readdirSync } from 'node:fs';
+import { wrapHandler } from './card.mjs';
 
 export const SERVER_NAME = 'tce';
 export const SERVER_VERSION = '1.1.0';
@@ -268,7 +269,7 @@ export async function registerTools(server, call, only = familyFilter()) {
       if (tools.includes(name)) {
         throw new Error(`two families claim the tool name ${name}`);
       }
-      server.registerTool(name, { description, inputSchema: inputShape(schema, z) }, handler);
+      server.registerTool(name, { description, inputSchema: inputShape(schema, z) }, name.startsWith('tce_video') ? wrapHandler(handler) : handler);
       // Counted only once the SDK took it, so the startup line is true.
       tools.push(name);
     },

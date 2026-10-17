@@ -20,7 +20,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
-from tce.editorial import lineup, voice_retrieval
+from tce.editorial import lineup, script_check, voice_retrieval
 from tce.editorial.common import (
     SessionSource,
     coerce_uuid,
@@ -686,6 +686,7 @@ async def build_packet(
             )
 
         request: LLMRequest | None = None
+        slip_inputs: tuple[str, str] | None = None
         requeue = False
         if resume_job_id is not None:
             job = (
@@ -746,6 +747,7 @@ async def build_packet(
             voice_block, voice_used = await voice_retrieval.block_for_idea(
                 session, ws, title=cand.title, lesson=cand.lesson
             )
+            slip_inputs = (strategy.text, voice_block)
             nonce = str(uuid.uuid4())
             # The header line lets a restarted process rebuild this job's key.
             rules = await lineup.post_rules(session, ws)
@@ -817,10 +819,51 @@ async def build_packet(
                 errors=["hook moment IDs must belong to the candidate"],
             )
 
+        # The script check (T-13569): score the script against his own lines, replace the
+        # phrases that do not sound like him once, keep the report on the packet. Only the
+        # owner's writer has the lines to compare against; a resumed job has none.
+        slip_report: dict[str, Any] | None = None
+        if slip_inputs is not None and not lane_ws:
+            activity("Checking the script against his own lines")
+            slips, slip_report = await script_check.check_script(
+                ws=ws,
+                candidate_id=cand.id,
+                title=cand.title,
+                phrases=list(clean["script_phrases"]),
+                voice_spec=slip_inputs[0],
+                voice_block=slip_inputs[1],
+            )
+            if slips:
+                try:
+                    rewritten = script_check.apply_rewrites(list(clean["script_phrases"]), slips)
+                    revised = validate_packet_output(
+                        {**data, "script_phrases": rewritten},
+                        news_terms=news_terms,
+                        forbid_asks=True,
+                    )
+                    clean = revised
+                    slip_report["applied"] = [
+                        {
+                            "phrase_id": x["phrase_id"],
+                            "slip": x["slip"],
+                            "was": x["was"],
+                            "now": x["rewrite"],
+                        }
+                        for x in slips
+                    ]
+                except PacketValidationError as exc:
+                    slip_report["status"] = "rewrites_refused"
+                    slip_report["detail"] = str(exc)[:200]
+                    slip_report["named"] = [
+                        {"phrase_id": x["phrase_id"], "slip": x["slip"]} for x in slips
+                    ]
+
         safety = await scan_packet_safety(
             session, ws, safety_fields(clean), candidate_id=cand.id
         )
         safety["model_self_check"] = clean["self_check"]
+        if slip_report is not None:
+            safety["script_check"] = slip_report
 
         # A job's output is saved once, even if two requests resumed the same job.
         # The check below only held when the two took turns: arriving together
