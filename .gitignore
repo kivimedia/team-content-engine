@@ -14,3 +14,5 @@ plans/
 .venv/
 corpus/
 mcp-server/node_modules/
+# dated .env backups hold secrets
+.env.before-*

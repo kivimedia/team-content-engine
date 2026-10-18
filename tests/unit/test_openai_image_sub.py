@@ -95,3 +95,57 @@ def test_no_sub_url_keeps_the_direct_api(monkeypatch, captured):
     assert captured["url"] == "https://api.openai.com/v1/images/generations"
     assert "x-km-sub-key" not in captured["headers"]
     assert out["generation_cost_usd"] == 0.19
+
+
+_REAL_ASYNC_CLIENT = httpx.AsyncClient  # bound at import, before any fixture patches it
+
+
+def _client_with(monkeypatch, handler):
+    real = _REAL_ASYNC_CLIENT
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(oi.httpx, "AsyncClient", factory)
+
+
+def test_proxy_down_falls_back_to_the_paid_api_with_our_key(monkeypatch, captured):
+    _sub_on(monkeypatch)
+    hosts = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        if request.url.host == "127.0.0.1":
+            raise httpx.ConnectError("connection refused", request=request)
+        assert request.headers["authorization"] == "Bearer sk-test-callerkey"
+        assert "x-km-sub-key" not in request.headers
+        return httpx.Response(200, json={"created": 1, "data": [{"b64_json": _PNG}]})
+
+    _client_with(monkeypatch, handler)
+    out = asyncio.run(oi.OpenAIImageService().generate_image("a red kite", model="gpt-image-2"))
+    assert hosts == ["127.0.0.1", "api.openai.com"]
+    assert out["status"] == "generated"
+
+
+def test_proxy_refusing_our_key_falls_back_instead_of_failing(monkeypatch, captured):
+    _sub_on(monkeypatch)
+    hosts = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        if request.url.host == "127.0.0.1":
+            return httpx.Response(401, json={"error": {"message": "bad key"}})
+        return httpx.Response(200, json={"created": 1, "data": [{"b64_json": _PNG}]})
+
+    _client_with(monkeypatch, handler)
+    out = asyncio.run(oi.OpenAIImageService().generate_image("a red kite", model="gpt-image-2"))
+    assert hosts == ["127.0.0.1", "api.openai.com"]
+    assert out["status"] == "generated"
+
+
+def test_empty_sub_key_goes_straight_to_the_paid_api(monkeypatch, captured):
+    _sub_on(monkeypatch)
+    monkeypatch.setattr(settings, "image_sub_key", "")
+    asyncio.run(oi.OpenAIImageService().generate_image("a red kite", model="gpt-image-2"))
+    assert captured["url"] == "https://api.openai.com/v1/images/generations"

@@ -54,7 +54,10 @@ class OpenAIImageService:
 
     def __init__(self, api_key: str | None = None) -> None:
         self.api_key = api_key or settings.openai_api_key
-        self.sub_url = (settings.image_sub_url or "").rstrip("/")
+        # The plan proxy is only used with its key; without one it would answer 401.
+        self.sub_url = (
+            (settings.image_sub_url or "").rstrip("/") if settings.image_sub_key else ""
+        )
         self.base_url = (
             f"{self.sub_url}/v1/images/generations"
             if self.sub_url
@@ -117,7 +120,28 @@ class OpenAIImageService:
 
         start = time.monotonic()
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(self.base_url, json=payload, headers=headers)
+            response = None
+            try:
+                response = await client.post(self.base_url, json=payload, headers=headers)
+            except httpx.TransportError as e:
+                if not (self.sub_url and self.api_key):
+                    raise
+                logger.warning("openai_image.sub_unreachable", error=str(e)[:200])
+            if (
+                self.sub_url
+                and self.api_key
+                and (response is None or response.status_code in (401, 502, 503, 504))
+            ):
+                # The proxy is down or refused us: draw on the paid API with our own key
+                # rather than lose the image.
+                logger.warning(
+                    "openai_image.sub_fallback_direct",
+                    status=None if response is None else response.status_code,
+                )
+                direct = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
+                response = await client.post(
+                    "https://api.openai.com/v1/images/generations", json=payload, headers=direct, timeout=180
+                )
             if response.status_code != 200:
                 logger.error(
                     "openai_image.http_error",
