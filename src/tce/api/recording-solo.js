@@ -32,17 +32,22 @@
     "video/mp4;codecs=h264,aac", "video/mp4",
   ].find((value) => window.MediaRecorder && MediaRecorder.isTypeSupported(value));
 
-  // The studio's portrait modes first, then whatever the front camera gives.
+  // The studio's ladder (recording.js): portrait modes first, then the tallest frame on offer,
+  // which is cropped to 9:16 below. The old last resort, {}, handed back a raw landscape frame.
   const CAMERA_ATTEMPTS = [
     { width: { exact: 1080 }, height: { exact: 1920 } },
     { width: { exact: 720 }, height: { exact: 1280 } },
     { aspectRatio: { exact: 9 / 16 } },
-    {},
+    { width: { ideal: 4096 }, height: { ideal: 3072 }, aspectRatio: { ideal: 4 / 3 } },
+    { width: { ideal: 1440 }, height: { ideal: 1920 }, aspectRatio: { ideal: 3 / 4 } },
+    { width: { ideal: 1080 }, height: { ideal: 1440 }, aspectRatio: { ideal: 3 / 4 } },
+    { width: { ideal: 1080 }, height: { ideal: 1920 } },
   ];
+  const TARGET = 9 / 16;
 
   const state = {
     stream: null, recorder: null, talk: null, sequence: 0, startedAt: 0,
-    timerId: null, wakeLock: null, sending: false, retryId: null, done: false,
+    timerId: null, wakeLock: null, raw: null, paintId: 0, painting: false, sending: false, retryId: null, done: false,
   };
 
   const cameraFlag = (on) => {
@@ -195,19 +200,69 @@
 
   /* ----------------------------------------------------------------- camera */
 
+  /* The size a <video> reports once it has real frames, not the size the track claims at open. */
+  function measure(stream) {
+    const element = document.createElement("video");
+    element.playsInline = true;
+    element.muted = true;
+    element.srcObject = stream;
+    element.play().catch(() => {});
+    return new Promise((resolve) => {
+      const done = () => resolve({ stream, element, width: element.videoWidth || 0, height: element.videoHeight || 0 });
+      if (element.videoWidth) { done(); return; }
+      element.addEventListener("loadedmetadata", done, { once: true });
+      setTimeout(done, 2500);
+    });
+  }
+
+  /* A camera that is not already 9:16 is drawn through a 9:16 canvas, centre cropped, and the
+     canvas is what is previewed AND recorded, so the file is what he sees (as recording.js). */
+  function portraitStream(camera) {
+    const raw = camera.stream;
+    const { width, height } = camera;
+    if (!width || !height) return raw;
+    if (Math.abs(width / height - TARGET) < 0.01 && height <= 1920) return raw;
+    const cropWidth = width / height > TARGET ? height * TARGET : width;
+    const cropHeight = width / height > TARGET ? height : width / TARGET;
+    const cropX = (width - cropWidth) / 2;
+    const cropY = (height - cropHeight) / 2;
+    const canvas = document.createElement("canvas");
+    canvas.height = Math.round(Math.min(1920, cropHeight) / 2) * 2;
+    canvas.width = Math.round(canvas.height * TARGET / 2) * 2;
+    const context = canvas.getContext("2d");
+    const source = camera.element;
+    state.painting = true;
+    const draw = () => {
+      if (!state.painting) return;
+      if (source.readyState >= 2) context.drawImage(source, cropX, cropY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
+      state.paintId = requestAnimationFrame(draw);
+    };
+    draw();
+    const out = canvas.captureStream(30);
+    raw.getAudioTracks().forEach((audio) => out.addTrack(audio));
+    return out;
+  }
+
   async function openCamera() {
     if (state.stream) return state.stream;
     const audio = { echoCancellation: false, noiseSuppression: true };
+    const open = (attempt) => navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", ...attempt }, audio }).then(measure);
+    const stop = (opened) => opened.stream.getTracks().forEach((track) => track.stop());
+    let chosen = null;
+    let best = null;
     let lastError = null;
+    // One camera at a time: Android opens it once, so each attempt is measured and closed.
     for (const attempt of CAMERA_ATTEMPTS) {
-      try {
-        state.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", ...attempt }, audio });
-        break;
-      } catch (error) {
-        lastError = error;
-      }
+      let opened = null;
+      try { opened = await open(attempt); } catch (error) { lastError = error; continue; }
+      if (opened.width && opened.height && opened.height >= opened.width) { chosen = opened; break; }
+      if (!best || opened.height > best.height) best = { attempt, height: opened.height };
+      stop(opened);
     }
-    if (!state.stream) throw lastError || new Error("The camera did not open.");
+    if (!chosen && best) chosen = await open(best.attempt);
+    if (!chosen) throw lastError || new Error("The camera did not open.");
+    state.raw = chosen.stream;
+    state.stream = portraitStream(chosen);
     const video = $("soloCamera");
     video.srcObject = state.stream;
     await video.play().catch(() => {});
@@ -229,7 +284,11 @@
   }
 
   function releaseCamera() {
+    state.painting = false;
+    cancelAnimationFrame(state.paintId);
+    if (state.raw) state.raw.getTracks().forEach((track) => track.stop());
     if (state.stream) state.stream.getTracks().forEach((track) => track.stop());
+    state.raw = null;
     state.stream = null;
     $("soloCamera").srcObject = null;
   }
