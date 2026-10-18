@@ -33,6 +33,7 @@
     workshopTab: "outline",
     library: null,
     libraryFilter: "todo",
+    libraryCount: null,
     pending: null,     // a change set awaiting his yes or no
     thread: null,      // the open conversation
     talkMode: "discuss",
@@ -1438,8 +1439,14 @@
     });
     html += "</div>";
 
-    var items = data.items || [];
-    if (!items.length && data.filter === "todo") {
+    // 18-Oct (T-13905): the two numbers he comes for, up front. Counted over everything
+    // still on his plate, whichever list he is looking at.
+    var counts = await libraryCounts(data);
+    html += libraryCountsHtml(counts);
+    var items = (data.items || []).filter(function (i) { return countMatch(state.libraryCount, i); });
+    if (!items.length && state.libraryCount) {
+      html += '<div class="empty"><strong>None right now</strong>Tap the number again to see every video.</div>';
+    } else if (!items.length && data.filter === "todo") {
       html += '<div class="empty"><strong>Nothing waiting on you</strong>'
             + "Everything you recorded has gone out. Published videos are under Published.</div>";
     } else if (!items.length && data.filter === "archived") {
@@ -1511,6 +1518,37 @@
     scheduleLibraryPoll(data.items || []);
   }
 
+  /* 18-Oct (T-13905). "Unedited": recorded, no edit yet and not set aside. "Unreviewed":
+     the edit exists but none of its posts has gone out or been scheduled, so he has not
+     been through it. There is no per-video review flag; this is the honest stand-in. */
+  function countMatch(kind, i) {
+    if (!kind) return true;
+    if (i.archived) return false;
+    if (kind === "unedited") return !i.has_edit && LIBRARY_LIVE.indexOf(i.status) < 0;
+    var pubs = i.publishing || [];
+    return !!i.has_edit && !pubs.some(function (p) {
+      return p.status === "posted" || p.status === "scheduled" || p.status === "posting";
+    });
+  }
+  async function libraryCounts(data) {
+    var pool = data.items || [];
+    if (data.filter !== "todo" && data.filter !== "all") {
+      try { pool = (await api("/production/library?filter=todo")).items || []; } catch (e) { pool = []; }
+    }
+    return {
+      unedited: pool.filter(function (i) { return countMatch("unedited", i); }).length,
+      unreviewed: pool.filter(function (i) { return countMatch("unreviewed", i); }).length
+    };
+  }
+  function libraryCountsHtml(c) {
+    function tile(kind, n, label) {
+      return '<button class="count-tile" type="button" data-libcount="' + kind + '" aria-pressed="'
+           + (state.libraryCount === kind ? "true" : "false") + '"><strong>' + n + "</strong> " + label + "</button>";
+    }
+    return '<div class="count-strip" role="group" aria-label="What is waiting">'
+         + tile("unedited", c.unedited, "unedited") + tile("unreviewed", c.unreviewed, "unreviewed") + "</div>";
+  }
+
   function libraryCard(item) {
     var html = '<article class="card" data-upload="' + esc(item.upload_id) + '">';
     html += "<h3>" + esc(item.title) + "</h3>";
@@ -1534,6 +1572,9 @@
     (item.issues || []).forEach(function (issue) {
       html += '<p class="notice is-bad">' + esc(issue) + "</p>";
     });
+    // 18-Oct (T-13905): what the editor changed on its own is one tap away, not in the way.
+    var foldHead = '<details class="card-fold"><summary>What the editor changed</summary>';
+    html += foldHead;
     // What the subscription changed on its own, and what it did with his last
     // request (25-Sep: TCE edits by itself). Nothing changes unseen.
     (item.proofread || []).forEach(function (fix) {
@@ -1563,6 +1604,8 @@
       });
       html += '</ul><p class="source">To bring one back, use Request an editing change.</p></details>';
     }
+    if (html.slice(-foldHead.length) === foldHead) html = html.slice(0, -foldHead.length);
+    else html += "</details>";
     // 1-Oct: the last notes he gave in the notes sheet, every one with what came of it.
     var made = item.notes_made;
     if (made) html += notesMadeHtml(made, item);
@@ -1678,10 +1721,18 @@
           + '<div class="actions"><button class="btn primary" type="button" data-pub-draft="' + id + '">Write the posts</button></div>';
       return html + "</section>";
     }
-    pubs.forEach(function (p) {
+    // 18-Oct (T-13905): one tab per post; only the open one shows. The others stay in the
+    // page, hidden, so ticking, posting and copying read every post as before.
+    html += '<div class="pub-tabs" role="tablist">';
+    pubs.forEach(function (p, n) {
+      html += '<button class="chip" type="button" role="tab" data-pubtab="' + esc(p.platform) + '" aria-pressed="'
+           + (n === 0 ? "true" : "false") + '">' + esc(p.label.split(" ")[0]) + "</button>";
+    });
+    html += "</div>";
+    pubs.forEach(function (p, n) {
       var done = p.status === "posted" || p.status === "scheduled" || p.status === "posting"
         || p.status === "revising";
-      html += '<div class="pub-platform" data-platform="' + esc(p.platform) + '">';
+      html += '<div class="pub-platform" data-platform="' + esc(p.platform) + '"' + (n === 0 ? "" : " hidden") + ">";
       html += '<div class="pub-head"><label class="pub-pick"><input type="checkbox" data-pub-pick="' + esc(p.platform) + '"'
            + (done ? " disabled" : " checked") + "> <strong>" + esc(p.label) + "</strong></label>"
            + '<span class="tag' + (p.status === "posted" ? " is-ready" : p.status === "failed" ? " is-timely" : "") + '">'
@@ -1694,6 +1745,12 @@
         html += '<p class="source">Goes out ' + esc(new Date(p.scheduled_for + "Z").toLocaleString()) + "</p>";
       }
       if (p.detail && p.status !== "posted") html += '<p class="source">' + esc(p.detail) + "</p>";
+      var first = (PUB_FIELDS[p.platform] || [])[0];
+      var preview = first ? p.copy[first[0]] : "";
+      if (Array.isArray(preview)) preview = preview.join(", ");
+      if (preview) html += '<p class="pub-preview">' + esc(String(preview).slice(0, 160)) + (String(preview).length > 160 ? "\u2026" : "") + "</p>";
+      // The words themselves stay out of sight until he asks for them.
+      html += '<details class="pub-words"><summary>Edit the words</summary>';
       (PUB_FIELDS[p.platform] || []).forEach(function (f) {
         var value = p.copy[f[0]];
         if (Array.isArray(value)) value = value.join(", ");
@@ -1703,6 +1760,9 @@
           : '<input type="text" data-pub-field="' + f[0] + '" value="' + esc(value || "") + '"' + (done ? " readonly" : "") + ">";
         html += "</label>";
       });
+      html += "</details>";
+      // Every post gets Jennifer, on the same notes sheet the video card uses.
+      html += '<div class="actions"><button class="btn" type="button" data-talk-edit="' + id + '">Talk to Jennifer about this post</button></div>';
       html += "</div>";
     });
     var open = pubs.some(function (p) { return p.status === "draft" || p.status === "failed"; });
@@ -1719,6 +1779,17 @@
            + '<button class="btn quiet" type="button" data-pub-draft="' + id + '">Write them again</button></div>';
     }
     return html + "</section>";
+  }
+
+  function pickPubTab(button) {
+    var section = button.closest("[data-pub-upload]");
+    var which = button.getAttribute("data-pubtab");
+    section.querySelectorAll("[data-pubtab]").forEach(function (b) {
+      b.setAttribute("aria-pressed", b === button ? "true" : "false");
+    });
+    section.querySelectorAll(".pub-platform").forEach(function (box) {
+      box.hidden = box.getAttribute("data-platform") !== which;
+    });
   }
 
   /* 5-Oct (Ziv): "Publishing optional: he downloads the finished video and the post copy
@@ -2958,7 +3029,7 @@
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise", "pub-copy",
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
     "check-again", "release-hold", "settle-hold", "rule-delete",
-    "rename", "rename-save", "add-anyway"
+    "rename", "rename-save", "add-anyway", "pubtab", "libcount"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -2994,7 +3065,14 @@
     if (d.settleHold !== undefined) { settleHold(d.settleHold, d.choice); return; }
     if (d.ruleDelete !== undefined) { deleteRule(d.ruleDelete); return; }
     if (d.filter !== undefined) { state.topicFilter = d.filter; render(); return; }
-    if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; render(); return; }
+    if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; state.libraryCount = null; render(); return; }
+    if (d.libcount !== undefined) {
+      // 18-Oct (T-13905): tap a count to see just those videos; tap again to clear.
+      state.libraryCount = state.libraryCount === d.libcount ? null : d.libcount;
+      render();
+      return;
+    }
+    if (d.pubtab !== undefined) { pickPubTab(target); return; }
     if (d.wtab !== undefined) { state.workshopTab = d.wtab; render(); return; }
     if (d.decide !== undefined) { decide(d.id, d.decide); return; }
     if (d.addAnyway !== undefined) { addAnyway(target, d.addAnyway); return; }
