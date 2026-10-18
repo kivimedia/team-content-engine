@@ -200,6 +200,14 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
         # 1-Oct: watch the edit, pause, say what is wrong; one new version at the end.
         # 3-Oct: the editor is Jennifer.
         actions.append({"key": "talk_edit", "label": f"Talk to {EDITOR_NAME}"})
+    elif meaning_hold(upload) is not None:
+        # 18-Oct (T-13809): a first edit the meaning check blocked has no edit to give
+        # notes on, but this is exactly when he needs her: a call on the video, where
+        # she can settle the hold by voice, and taps that settle it here.
+        actions.append({"key": "talk_hold", "label": f"Talk to {EDITOR_NAME}"})
+        actions.append({"key": "keep_mine", "label": "Keep what I said"})
+        if (meaning_hold(upload) or {}).get("can_use_script"):
+            actions.append({"key": "use_script", "label": "Use the script line"})
     actions.append({"key": "request_edit", "label": "Request an editing change"})
     if upload.edited_path and upload.transcript and upload.status not in _LIVE_STATUSES:
         # 28-Sep: the tight cut and the word-box captions, for an edit made before them.
@@ -371,15 +379,80 @@ def _removed(upload: RecordingUpload) -> list[dict[str, Any]]:
     ]
 
 
+_NEG_SCRIPT = re.compile(
+    r'^Kept take at (?P<at>\d+:\d\d) \("(?P<said>.*)"\) and script phrase \d+ \("(?P<script>.*)"\) differ on negation$'
+)
+_NEG_DROPPED = re.compile(
+    r'^Dropped take at (?P<at>\d+:\d\d) says "(?P<said>.*)" with "(?P<neg>[^"]*)" but the kept take at '
+    r'(?P<kat>\d+:\d\d) says "(?P<kept>.*)"$'
+)
+_SCRIPT_ORDER = re.compile(r"^Kept take at (?P<at>\d+:\d\d) is script phrase")
+
+
+def issue_sentence(issue: Any) -> str:
+    """One plain sentence for a meaning-check issue, in his words. The check stores a
+    dict (kind, detail, kept_index); the card used to print its repr (18-Oct)."""
+    if not isinstance(issue, dict):
+        return str(issue)
+    detail = str(issue.get("detail") or "").strip()
+    kind = str(issue.get("kind") or "")
+    if kind == "negation_differs_from_script":
+        m = _NEG_SCRIPT.match(detail)
+        if m:
+            return (
+                f'At {m["at"]} you said "{m["said"]}" The script says "{m["script"]}" '
+                "Keep what you said, or use the script line?"
+            )
+    elif kind == "negation_dropped":
+        m = _NEG_DROPPED.match(detail)
+        if m:
+            return (
+                f'The take at {m["at"]} ("{m["said"]}") says "{m["neg"]}", and the take the cut keeps at '
+                f'{m["kat"]} ("{m["kept"]}") does not. Keep what you said, or use the script line?'
+            )
+    elif kind == "script_order":
+        m = _SCRIPT_ORDER.match(detail)
+        if m:
+            return f"The line at {m['at']} comes after a later script line, so the cut would reorder what you said."
+    return detail or "The planned cut would change what you said."
+
+
 def _issues(upload: RecordingUpload) -> list[str]:
     """Problems the pipeline found, in plain words. Empty when there are none."""
     plan = upload.edit_plan or {}
     check = plan.get("meaning_check") or {}
     if check.get("status") == "blocked":
-        return [str(i) for i in (check.get("issues") or [])] or [
+        return [issue_sentence(i) for i in (check.get("issues") or [])] or [
             "The planned cut would change what you said."
         ]
     return []
+
+
+def meaning_hold(upload: Any) -> dict[str, Any] | None:
+    """The video is waiting for him because the cut the editor planned would change the
+    meaning of what he said (status needs_review, a blocked plan), else None.
+
+    Not Jennifer's own hold on a finished render (qc_hold is that one), and not a cut
+    already rendered once: his two answers are keep what he said, or use the script
+    line (cut his take). Both settle it from the card or by voice (T-13809)."""
+    if getattr(upload, "status", None) != "needs_review" or qc_hold(upload) is not None:
+        return None
+    if getattr(upload, "edited_path", None):
+        return None
+    check = (getattr(upload, "edit_plan", None) or {}).get("meaning_check") or {}
+    if check.get("status") != "blocked":
+        return None
+    issues = [i for i in (check.get("issues") or []) if isinstance(i, dict)]
+    if not issues:
+        return None
+    return {
+        "sentence": issue_sentence(issues[0]),
+        "choices": [
+            {"key": "keep_mine", "label": "Keep what I said"},
+            {"key": "use_script", "label": "Use the script line"},
+        ],
+        "can_use_script": any(i.get("kind") == "negation_differs_from_script" for i in issues),
+    }
 
 
 async def list_library(
@@ -572,6 +645,7 @@ async def list_library(
                 "has_captions": bool(upload.captions_path),
                 "has_transcript": bool(upload.transcript),
                 "issues": _issues(upload),
+                "meaning_hold": meaning_hold(upload),
                 "open_requests": open_count,
                 # Notes given in a sitting that wait for "Make the new version".
                 "waiting_notes": waiting_by_upload.get(upload.id, 0),

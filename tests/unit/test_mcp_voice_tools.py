@@ -196,6 +196,7 @@ def test_the_voice_family_registers_every_tool():
             "tce_video_rules",
             # 15-Oct: what she got and what her edit does overall (T-11694).
             "tce_video_plan",
+            "tce_video_settle_hold",
         ]
     )
 
@@ -3339,9 +3340,9 @@ def test_the_installer_syncs_tools_and_contexts_and_keeps_what_only_the_box_has(
         and "kept as they are on this box ['legacy']" in proc.stdout
     )
     # 3-Oct: the repo seat also has tce_video_check and tce_video_rules (Jennifer's check
-    # and her rules), and since 15-Oct tce_video_plan; the box seat this test builds
-    # carries every tool but the video five.
-    assert "tools 21 -> 26" in proc.stdout
+    # and her rules), since 15-Oct tce_video_plan and since 18-Oct tce_video_settle_hold; the box seat this test builds
+    # carries every tool but the video five (so 22 of 27).
+    assert "tools 22 -> 27" in proc.stdout
 
     # Run again on what it wrote: nothing to do, and nothing written.
     again, second = _install(tmp_path, after, name="second.json")
@@ -3765,3 +3766,36 @@ def test_a_video_with_no_plan_and_a_held_cut_say_so():
     text = out["texts"][0]
     assert "holding the cut because it could change what he means: a cut drops a not." in text
     assert "Your own check is holding this edit" in text
+
+
+# 18-Oct (T-13809): a first cut the meaning check blocked has no edit to give notes on;
+# Jennifer settles it on the call.
+
+_HOLD = {"sentence": 'At 0:33 you said "Few clicks came in, no leads." The script says "A few clicks came in." '
+                     "Keep what you said, or use the script line?", "can_use_script": True}
+
+
+def _hold_talk(hold=_HOLD):
+    return {"ok": True, "status": 200, "data": {
+        "upload_id": PLAN_VID, "title": "Nobody opens the report", "status": "needs_review",
+        "check": None, "held": None, "meaning_hold": hold, "live": None, "made": None}}
+
+
+def test_settle_hold_with_no_choice_only_reads_the_question_back():
+    out = run({"steps": [step("tce_video_settle_hold", video=PLAN_VID)], "responses": {
+        "GET /production/recordings/": _hold_talk()}})
+    assert "At 0:33 you said" in out["texts"][0] and "keep what he said, or use the script line" in out["texts"][0]
+    assert [s["key"] for s in out["sent"]] == [f"GET /production/recordings/{PLAN_VID}/talk"]
+
+
+def test_settle_hold_posts_his_choice_and_a_video_with_no_hold_changes_nothing():
+    out = run({"steps": [step("tce_video_settle_hold", video=PLAN_VID, choice="keep_mine")], "responses": {
+        "GET /production/recordings/": _hold_talk(),
+        f"POST /production/uploads/{PLAN_VID}/meaning-hold": {"ok": True, "status": 202, "data": {}}}})
+    assert "what he said stays" in out["texts"][0]
+    posts = [s for s in out["sent"] if s["key"].startswith("POST ")]
+    assert len(posts) == 1 and posts[0]["body"] == {"choice": "keep_mine"}
+    out = run({"steps": [step("tce_video_settle_hold", video=PLAN_VID, choice="keep_mine")], "responses": {
+        "GET /production/recordings/": _hold_talk(hold=None)}})
+    assert "not waiting on a choice" in out["texts"][0] and "Nothing was changed" in out["texts"][0]
+    assert not [s for s in out["sent"] if s["key"].startswith("POST ")]

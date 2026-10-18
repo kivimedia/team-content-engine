@@ -1386,6 +1386,86 @@ async def render_upload(
     return upload_json(row)
 
 
+class MeaningHoldChoice(BaseModel):
+    choice: Literal["keep_mine", "use_script"]
+
+
+def _without_span(keep: list[list[float]], start: float, end: float) -> list[list[float]]:
+    """The keep ranges with [start, end] taken out."""
+    out: list[list[float]] = []
+    for s, e in keep:
+        if e <= start or s >= end:
+            out.append([s, e])
+            continue
+        if start - s >= 0.05:
+            out.append([s, round(start, 3)])
+        if e - end >= 0.05:
+            out.append([round(end, 3), e])
+    return out
+
+
+@router.post("/uploads/{upload_id}/meaning-hold", status_code=202)
+async def settle_meaning_hold(
+    upload_id: uuid.UUID,
+    body: MeaningHoldChoice,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """He answers a cut the meaning check blocked (T-13809). `keep_mine`: what he said
+    stays, and the plan renders as planned. `use_script`: the take that differs from the
+    script is cut out, the rest renders. Either way the plan records his answer, and it
+    renders exactly like a render he started by hand."""
+    await reconcile_interrupted_uploads(db, ws)
+    row = await _upload(db, ws, upload_id)
+    hold = library_service.meaning_hold(row)
+    if hold is None:
+        raise HTTPException(status_code=409, detail="This video is not waiting on a meaning check")
+    await _refuse_while_sitting(db, ws, row.id)
+    plan = dict(row.edit_plan or {})
+    check = dict(plan.get("meaning_check") or {})
+    issues = [i for i in check.get("issues") or [] if isinstance(i, dict)]
+    if body.choice == "use_script":
+        differ = [i for i in issues if i.get("kind") == "negation_differs_from_script"]
+        if not differ:
+            raise HTTPException(status_code=409, detail="There is no script line to use for this hold")
+        units = {int(u["index"]): u for u in plan.get("units") or [] if "index" in u}
+        keep = [list(r) for r in plan.get("keep") or []]
+        dropped = list(plan.get("dropped") or [])
+        for issue in differ:
+            unit = units.get(int(issue.get("kept_index", -1)))
+            if unit is None:
+                raise HTTPException(status_code=409, detail="That line is not in the plan any more")
+            # The keep ranges carry a breath of padding around each take: cut it with the take.
+            keep = _without_span(keep, float(unit["start"]) - 0.1, float(unit["end"]) + 0.1)
+            unit["kept"] = False
+            unit["reason"] = "script_line"
+            dropped.append(
+                {"start": unit["start"], "end": unit["end"], "text": unit.get("text", ""), "reason": "script_line"}
+            )
+        dropped.sort(key=lambda d: d["start"])
+        plan["keep"] = keep
+        plan["dropped"] = dropped
+        plan["units"] = list(units.values())
+        remaining = [i for i in issues if i not in differ]
+    else:
+        remaining = []
+    plan["meaning_check"] = {
+        **check,
+        "status": "blocked" if remaining else "ok",
+        "issues": remaining,
+        "settled": {"choice": body.choice, "at": _utcnow().isoformat(), "issues": issues},
+    }
+    row.edit_plan = plan
+    await db.commit()
+    await db.refresh(row)
+    if remaining:
+        row.status_detail = f"Needs review: {library_service.issue_sentence(remaining[0])}"[:500]
+        await db.commit()
+        await db.refresh(row)
+        return upload_json(row)
+    return await render_upload(upload_id, RenderRequest(), ws, db)
+
+
 STREAM_PART_BYTES = 32 * 1024 * 1024
 
 

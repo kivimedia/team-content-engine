@@ -19,6 +19,7 @@
  *   tce_video_check          what her own check found on the edit, and why she is
  *                            holding it when she is (3-Oct)
  *   tce_video_rules          the rules she learned from his notes, to read out (3-Oct)
+ *   tce_video_settle_hold    answer a first cut the meaning check blocked: keep what he said, or the script line
  *   tce_video_plan           what she got and what her edit does overall: the length
  *                            before and after, what she cut and why, her check, and
  *                            his notes still waiting (15-Oct, T-11694)
@@ -638,6 +639,52 @@ export function register(server, call, { reply, failure }) {
       }
       return reply(lines.join('\n'), { video: v.upload_id, checked: true, state: c.state, held: Boolean(v.held),
         numbers: c.numbers || {}, problems: c.problems || [] });
+    },
+  );
+
+  /*
+   * 18-Oct (T-13809): a first cut the meaning check blocked has no edit to give notes on,
+   * so he cannot sit with it. He settles it here: keep what he said, or use the script line.
+   */
+  server.tool(
+    'tce_video_settle_hold',
+    'Settle a video whose first edit is waiting for him because the cut would change what he said (the cut '
+      + 'keeps a line whose meaning differs from the script). With no choice it only reads the question back. '
+      + 'choice keep_mine: what he said stays, and the video is edited as planned. choice use_script: the line '
+      + 'that differs from the script is cut out. Call it with a choice only after he clearly says which: '
+      + '"keep what I said" or "use the script line". Do not use it for anything else.',
+    {
+      type: 'object',
+      properties: {
+        video: VIDEO_ID,
+        choice: { type: 'string', enum: ['keep_mine', 'use_script'] },
+      },
+      required: ['video'],
+    },
+    async ({ video, choice }) => {
+      const f = await findVideo(video);
+      if (f.stop) return f.stop;
+      const v = f.found;
+      const hold = v.meaning_hold;
+      if (!hold) {
+        return reply(`"${v.title}" is not waiting on a choice about what he said. Nothing was changed.`,
+          { ok: false, code: 'no_hold', video: v.upload_id });
+      }
+      if (!choice) {
+        const opts = hold.can_use_script ? 'keep what he said, or use the script line' : 'keep what he said';
+        return reply(`${sentence(hold.sentence)}. He can ${opts}. Ask him which, then call this again with his choice. Nothing was changed.`,
+          { ok: true, video: v.upload_id, asked: true, can_use_script: Boolean(hold.can_use_script) });
+      }
+      if (choice === 'use_script' && !hold.can_use_script) {
+        return reply('There is no script line to use for this one; he can only keep what he said. Nothing was changed.',
+          { ok: false, code: 'no_script_line', video: v.upload_id });
+      }
+      const r = await call('POST', `/production/uploads/${v.upload_id}/meaning-hold`, { choice });
+      if (!r.ok) return refused(r, 'settle this video', 'Nothing was changed.');
+      return reply(choice === 'keep_mine'
+        ? `Done: what he said stays in "${v.title}", and the edit is being made now. tce_recordings says when it is ready.`
+        : `Done: the line that differs from the script is cut out of "${v.title}", and the edit is being made now. tce_recordings says when it is ready.`,
+      { ok: true, video: v.upload_id, settled: choice });
     },
   );
 

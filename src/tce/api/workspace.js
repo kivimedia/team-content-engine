@@ -1610,6 +1610,14 @@
       } else if (action.key === "talk_edit") {
         // 1-Oct: the notes sheet, at /library/<id>/talk.
         html += '<button class="btn" type="button" data-talk-edit="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
+      } else if (action.key === "talk_hold") {
+        // 18-Oct (T-13809): no edit to give notes on yet, so the call on this video (she
+        // can settle the hold by voice).
+        html += (window.TCE_SCOPED ? "" : '<a class="btn" href="' + esc(voiceCallUrl("video:" + item.upload_id)) + '">'
+             + esc(action.label) + "</a>");
+      } else if (action.key === "keep_mine" || action.key === "use_script") {
+        html += '<button class="btn primary" type="button" data-settle-hold="' + esc(item.upload_id)
+             + '" data-choice="' + action.key + '">' + esc(action.label) + "</button>";
       } else if (action.key === "request_edit") {
         html += '<button class="btn" type="button" data-edit-request="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "rename") {
@@ -1865,6 +1873,22 @@
     try {
       await api("/production/uploads/" + encodeURIComponent(uploadId) + "/check", { method: "POST" });
       toast("Jennifer is checking this edit. The card shows each thing she checks as she goes.");
+      await refreshLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  /* 18-Oct (T-13809): his answer to a cut the meaning check blocked. */
+  async function settleHold(uploadId, choice) {
+    var question = choice === "keep_mine"
+      ? "Keep what you said? The video is edited as planned."
+      : "Use the script line? The line that differs from the script is cut out, and the video is edited.";
+    if (!window.confirm(question)) return;
+    try {
+      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/meaning-hold",
+        { method: "POST", body: { choice: choice } });
+      toast("Done. The edit is being made now.");
       await refreshLibrary();
     } catch (error) {
       toast(error.message, true);
@@ -2933,7 +2957,7 @@
     "watch", "watch-close", "voice-undo", "voice-restore",
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise", "pub-copy",
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
-    "check-again", "release-hold", "rule-delete",
+    "check-again", "release-hold", "settle-hold", "rule-delete",
     "rename", "rename-save", "add-anyway"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
@@ -2967,6 +2991,7 @@
     if (d.rename !== undefined) { renameOpen(target); return; }
     if (d.checkAgain !== undefined) { checkAgain(d.checkAgain); return; }
     if (d.releaseHold !== undefined) { releaseHold(d.releaseHold); return; }
+    if (d.settleHold !== undefined) { settleHold(d.settleHold, d.choice); return; }
     if (d.ruleDelete !== undefined) { deleteRule(d.ruleDelete); return; }
     if (d.filter !== undefined) { state.topicFilter = d.filter; render(); return; }
     if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; render(); return; }
@@ -3123,7 +3148,11 @@
        is ready it is now one, from wherever he happens to be. */
     /* The header microphone: the same call as the bar's Talk button, or the
        week when this page has nothing specific to talk about. */
-    $("talkHeader").href = voiceCallUrl(state.talkContext ? state.talkContext.voice : "week");
+    /* 18-Oct (T-13809): on a video's notes sheet the header microphone is a call about
+       that video (Jennifer), not the weekly content call. */
+    $("talkHeader").href = voiceCallUrl(route.name === "talk" && route.id
+      ? "video:" + route.id
+      : (state.talkContext ? state.talkContext.voice : "week"));
     var record = recordTarget(route);
     var bar = $("actionBar");
     bar.innerHTML = "";

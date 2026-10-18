@@ -1177,6 +1177,9 @@ async def find_talk(
             # her one line when she is holding the video.
             "check": library_service.qc_json(upload),
             "held": library_service.qc_hold(upload),
+            # 18-Oct (T-13809): a first cut the meaning check blocked, with no edit to
+            # open a sitting on: the voice tool settles it from here.
+            "meaning_hold": library_service.meaning_hold(upload),
             "live": await _sitting_payload(db, ws, live) if live is not None else None,
             "made": await _sitting_payload(db, ws, made) if made is not None else None,
         }

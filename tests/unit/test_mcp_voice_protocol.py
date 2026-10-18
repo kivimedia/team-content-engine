@@ -208,6 +208,8 @@ VOICE_TOOLS = [
     "tce_video_rules",
     # 15-Oct: what she got and what her edit does overall (T-11694).
     "tce_video_plan",
+    # 18-Oct: a first cut the meaning check blocked (T-13809).
+    "tce_video_settle_hold",
 ]
 
 OLDER_TOOLS = [
