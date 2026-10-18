@@ -57,16 +57,22 @@ def test_a_call_idea_says_fathom_call():
     assert source_tags(cand([CALL])) == ["Fathom call"]
 
 
+def code_cand(cites, **kw):
+    c = cand(cites, **kw)
+    c.title = "Ship the bug fix before the feature"
+    return c
+
+
 def test_a_code_idea_says_code():
-    assert source_tags(cand([COMMIT])) == ["Code"]
+    assert source_tags(code_cand([COMMIT])) == ["Code"]
 
 
 def test_a_news_idea_says_ai_news_first_and_keeps_its_anchor():
-    assert source_tags(cand([STANDING, COMMIT, NEWS], role="news")) == ["AI news", "Code"]
+    assert source_tags(code_cand([STANDING, COMMIT, NEWS], role="news")) == ["AI news", "Code"]
 
 
 def test_a_mixed_idea_names_every_source_once():
-    assert source_tags(cand([COMMIT, CALL, CALL])) == ["Fathom call", "Code"]
+    assert source_tags(code_cand([COMMIT, CALL, CALL])) == ["Fathom call", "Code"]
 
 
 def test_a_spoken_idea_says_so():
@@ -74,5 +80,5 @@ def test_a_spoken_idea_says_so():
 
 
 def test_the_card_carries_the_tags():
-    row = _row_to_json(cand([CALL, COMMIT]), {}, None, 0)
+    row = _row_to_json(code_cand([CALL, COMMIT]), {}, None, 0)
     assert row["source_tags"] == ["Fathom call", "Code"]

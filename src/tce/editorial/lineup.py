@@ -20,6 +20,7 @@ phone in his pocket and the tab on his desk are the same week.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, date, datetime
 from typing import Any
@@ -94,6 +95,40 @@ SOURCE_TAGS = (
 )
 
 
+# Words that make an idea about software. Deliberately not "build" or "built":
+# a coaching lesson builds trust and builds a list just as often as it builds an app.
+_CODE_WORDS = re.compile(
+    r"\b(code|coding|coder|software|app|apps|bug|bugs|deploy|deploys|deployed|"
+    r"deployment|api|apis|database|databases|server|servers|repo|repos|commit|"
+    r"commits|prompt|prompts|agent|agents|developer|developers|programmer|"
+    r"programming|script|scripts|feature flag|pull request|refactor)\b",
+    re.IGNORECASE,
+)
+
+
+def is_code_topic(candidate: TopicCandidate) -> bool:
+    """True when the idea is about software, not just mined from a commit.
+
+    18-Oct: Ziv saw a Code label on a topic that had nothing to do with code. The
+    engine mines coaching lessons out of commits ("A no and a not now need
+    different follow-up" came from a LeadIQ commit), so a cited commit group says
+    where the idea began, not what it is about. The idea's own words decide: a
+    commit is cited AND the title, point or angle talks about software. The
+    "From ..." provenance line still names the commit.
+    """
+    kinds = {
+        c.get("source_kind")
+        for c in (candidate.citations_private or [])
+        if isinstance(c, dict)
+    }
+    if "github_commit_group" not in kinds:
+        return False
+    words = " ".join(
+        str(x or "") for x in (candidate.title, candidate.lesson, candidate.public_angle)
+    )
+    return _CODE_WORDS.search(words) is not None
+
+
 def source_tags(candidate: TopicCandidate) -> list[str]:
     """The kinds of evidence this idea cites, as short labels, each once.
 
@@ -109,7 +144,11 @@ def source_tags(candidate: TopicCandidate) -> list[str]:
         for c in (candidate.citations_private or [])
         if isinstance(c, dict)
     }
-    return [label for kind, label in SOURCE_TAGS if kind in kinds]
+    return [
+        label
+        for kind, label in SOURCE_TAGS
+        if kind in kinds and (kind != "github_commit_group" or is_code_topic(candidate))
+    ]
 
 
 def lane_for(candidate: TopicCandidate) -> str:
@@ -144,7 +183,7 @@ def lane_for(candidate: TopicCandidate) -> str:
         for c in (candidate.citations_private or [])
         if isinstance(c, dict)
     }
-    if "github_commit_group" in kinds:
+    if is_code_topic(candidate):
         return "build"
     if candidate.audience in ("coaches", "both"):
         return "coaching"

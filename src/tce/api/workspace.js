@@ -27,6 +27,7 @@
     today: null,
     topics: null,
     topicFilter: "best",
+    catFilter: "all",
     week: null,
     room: null,
     workshop: null,
@@ -61,6 +62,34 @@
   function sourceTag(tags) {
     if (!tags || !tags.length) return "";
     return '<span class="tag is-src">From ' + esc(tags.join(" + ")) + "</span>";
+  }
+
+  /* 18-Oct (T-13812): the same three one-tap categories on Today and This week
+     that Topics has, read off the tags the server already sends on every item. */
+  var CATS = [["all", "All"], ["calls", "Calls"], ["code", "Code"], ["news", "AI news"]];
+
+  function catMatch(item, key) {
+    var tags = item.source_tags || [];
+    if (key === "calls") return tags.indexOf("Fathom call") !== -1;
+    if (key === "code") return tags.indexOf("Code") !== -1;
+    if (key === "news") return item.lane === "ai_news" || tags.indexOf("AI news") !== -1;
+    return true;
+  }
+
+  function catChips(items) {
+    if (!items || !items.length) return "";
+    var html = '<div class="chips" role="group" aria-label="Filter by kind of idea">';
+    CATS.forEach(function (c) {
+      html += '<button class="chip" type="button" data-catfilter="' + c[0] + '" aria-pressed="'
+           + (c[0] === state.catFilter ? "true" : "false") + '">' + c[1] + "</button>";
+    });
+    return html + "</div>";
+  }
+
+  function catList(items, empty) {
+    var shown = (items || []).filter(function (i) { return catMatch(i, state.catFilter); });
+    if (!shown.length) return '<p class="section-hint">' + empty + "</p>";
+    return shown;
   }
 
   function toast(message, bad) {
@@ -246,11 +275,16 @@
       html += '<div class="actions"><button class="btn primary" type="button" data-go="/topics">Choose this week\'s topics</button></div>';
     } else {
       html += '<p class="section-hint">' + esc(week.mix || "") + "</p>";
-      html += '<div class="card-list">';
-      primary.forEach(function (item, index) {
-        html += weekCard(item, index, false);
-      });
-      html += "</div>";
+      html += catChips(primary);
+      var shownToday = catList(primary, "Nothing in this week's list matches that.");
+      if (typeof shownToday === "string") html += shownToday;
+      else {
+        html += '<div class="card-list">';
+        shownToday.forEach(function (item) {
+          html += weekCard(item, primary.indexOf(item), false);
+        });
+        html += "</div>";
+      }
       var readyFirst = primary.filter(toFilmNow)[0];
       if (readyFirst) {
         html += '<div class="actions"><a class="btn primary" href="' + prefix
@@ -522,16 +556,29 @@
     } else {
       html += "<h2>Record first</h2>";
       html += '<p class="section-hint">The order here is the order you record in.</p>';
-      html += '<div class="card-list">';
-      primary.forEach(function (item, index) { html += weekCard(item, index, true, primary.length); });
-      html += "</div>";
+      html += catChips(primary.concat(reserve));
+      var shownWeek = catList(primary, "Nothing in your list matches that.");
+      if (typeof shownWeek === "string") html += shownWeek;
+      else {
+        html += '<div class="card-list">';
+        shownWeek.forEach(function (item) {
+          html += weekCard(item, primary.indexOf(item), true, primary.length);
+        });
+        html += "</div>";
+      }
 
       if (reserve.length) {
         html += "<h2>Possible replacements</h2>";
         html += '<p class="section-hint">Ready to swap in, or add to the week if it is a good one.</p>';
-        html += '<div class="card-list">';
-        reserve.forEach(function (item, index) { html += weekCard(item, index, true, reserve.length, true); });
-        html += "</div>";
+        var shownReserve = catList(reserve, "Nothing here matches that.");
+        if (typeof shownReserve === "string") html += shownReserve;
+        else {
+          html += '<div class="card-list">';
+          shownReserve.forEach(function (item) {
+            html += weekCard(item, reserve.indexOf(item), true, reserve.length, true);
+          });
+          html += "</div>";
+        }
       }
     }
     html += "</div>";
@@ -3022,7 +3069,7 @@
      rule-delete), so tests/unit/test_workspace_click_actions.py now fails on
      any branch below whose action is missing from this list. */
   var CLICK_ACTIONS = [
-    "go", "filter", "libfilter", "decide", "open-room", "open-script", "move",
+    "go", "filter", "catfilter", "libfilter", "decide", "open-room", "open-script", "move",
     "slot", "remove", "ask-script", "change", "edit", "restore", "wtab",
     "edit-request", "review", "rewrite", "notify", "choose-hook", "more-hooks",
     "watch", "watch-close", "voice-undo", "voice-restore",
@@ -3064,6 +3111,7 @@
     if (d.releaseHold !== undefined) { releaseHold(d.releaseHold); return; }
     if (d.settleHold !== undefined) { settleHold(d.settleHold, d.choice); return; }
     if (d.ruleDelete !== undefined) { deleteRule(d.ruleDelete); return; }
+    if (d.catfilter !== undefined) { state.catFilter = d.catfilter; render(); return; }
     if (d.filter !== undefined) { state.topicFilter = d.filter; render(); return; }
     if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; state.libraryCount = null; render(); return; }
     if (d.libcount !== undefined) {

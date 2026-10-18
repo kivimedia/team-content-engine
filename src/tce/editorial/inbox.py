@@ -40,6 +40,7 @@ from tce.editorial.common import (
 from tce.editorial.lineup import (
     LANE_LABELS,
     filmed_candidate_ids,
+    is_code_topic,
     lane_for,
     source_tags,
     taken_candidate_ids,
@@ -57,6 +58,9 @@ FILTERS = ("best", "calls", "code", "news", "evergreen", "later", "away")
 # Short on purpose. These wrap onto two rows at 390px; "From my calls" and
 # "Saved for later" pushed it to three and shoved the first real card off the
 # screen, which costs him a scroll before he has decided anything.
+# The category chips: they follow what the idea is about and include the week.
+CATEGORY_FILTERS = ("calls", "code", "news")
+
 FILTER_LABELS = {
     "best": "Best matches",
     "calls": "Calls",
@@ -212,9 +216,11 @@ def _matches(
     if filter_key == "away":
         return decided == "away"
 
-    # Every other filter is a view of what is still undecided. A topic already
-    # put in the week or put away does not belong in a list of things to decide.
-    if decided in ("away", "later", "this_week"):
+    # Best, Evergreen are views of what is still undecided. The category chips
+    # (Calls, Code, AI news) also show what he already put in his week, marked
+    # as such on the card, so a category is never missing the topics he chose.
+    in_week = decided == "this_week"
+    if decided in ("away", "later") or (in_week and filter_key not in CATEGORY_FILTERS):
         return False
 
     kinds = {
@@ -225,7 +231,7 @@ def _matches(
     if filter_key == "calls":
         return "fathom_meeting" in kinds
     if filter_key == "code":
-        return "github_commit_group" in kinds
+        return is_code_topic(candidate)
     if filter_key == "news":
         return candidate.freshness_role == "news"
     if filter_key == "evergreen":
@@ -284,6 +290,7 @@ def _row_to_json(
         "has_script": packet_count > 0,
         # He put it on the list past the checks; the card says so.
         "added_anyway": candidate.origin == ORIGIN_OWNER_OVERRIDE,
+        "audience": candidate.audience,
         "rank": candidate.rank,
         "week_start": candidate.week_start.date().isoformat() if candidate.week_start else None,
     }

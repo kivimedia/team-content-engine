@@ -336,7 +336,7 @@ async def test_the_lane_is_read_from_the_evidence_not_guessed(editorial_session)
     built = await add_candidate(
         editorial_session,
         ws,
-        "Something I built",
+        "Code I wrote this week",
         citations_private=[
             {"moment_id": str(uuid.uuid4()), "source_kind": "github_commit_group", "title": "repo"}
         ],
@@ -372,7 +372,7 @@ async def test_the_mix_is_shown_as_information_and_never_blocks_an_add(editorial
         candidate = await add_candidate(
             editorial_session,
             ws,
-            f"Build topic {n}",
+            f"Code topic {n}",
             citations_private=[
                 {
                     "moment_id": str(uuid.uuid4()),
