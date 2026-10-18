@@ -93,6 +93,13 @@ class Settings(BaseSettings):
 
     # Audio / Narration (Whisper alignment)
     openai_api_key: str = ""
+
+    # OpenAI images through the ChatGPT-plan proxy (codex-image-proxy, 18-Oct-26).
+    # Set TCE_IMAGE_SUB_URL=http://127.0.0.1:8962 + TCE_IMAGE_SUB_KEY to bill the plan;
+    # the proxy falls back to api.openai.com only with our own Bearer key. Empty = off.
+    image_sub_url: str = ""
+    image_sub_key: str = ""
+    image_sub_caller: str = "team-content-engine"
     audio_upload_dir: str = str(_TMPDIR / "tce-audio")
 
     # ElevenLabs TTS (voiceover generation)

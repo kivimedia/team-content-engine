@@ -54,7 +54,12 @@ class OpenAIImageService:
 
     def __init__(self, api_key: str | None = None) -> None:
         self.api_key = api_key or settings.openai_api_key
-        self.base_url = "https://api.openai.com/v1/images/generations"
+        self.sub_url = (settings.image_sub_url or "").rstrip("/")
+        self.base_url = (
+            f"{self.sub_url}/v1/images/generations"
+            if self.sub_url
+            else "https://api.openai.com/v1/images/generations"
+        )
 
     @staticmethod
     def supports(model: str) -> bool:
@@ -69,7 +74,7 @@ class OpenAIImageService:
         aspect_ratio: str | None = None,
         model: str = "gpt-image-2",
     ) -> dict[str, Any]:
-        if not self.api_key:
+        if not self.api_key and not self.sub_url:
             logger.warning("openai_image.no_api_key")
             return {
                 "status": "skipped",
@@ -97,13 +102,21 @@ class OpenAIImageService:
             payload["quality"] = _DEFAULT_QUALITY
             payload["output_format"] = "png"
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        timeout = 180
+        if self.sub_url:
+            # The plan proxy runs one codex job at a time, so a batch queues;
+            # give it room, and let it hand over to the paid API (with our
+            # Bearer key) before our own client gives up.
+            headers["x-km-sub-key"] = settings.image_sub_key
+            headers["x-km-caller"] = settings.image_sub_caller or "team-content-engine"
+            headers["x-km-sub-deadline-ms"] = "480000"
+            timeout = 660
 
         start = time.monotonic()
-        async with httpx.AsyncClient(timeout=180) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(self.base_url, json=payload, headers=headers)
             if response.status_code != 200:
                 logger.error(
@@ -115,6 +128,8 @@ class OpenAIImageService:
             response.raise_for_status()
             result = response.json()
         elapsed = time.monotonic() - start
+        transport = response.headers.get("x-km-transport") or ("api" if not self.sub_url else None)
+        logger.info("openai_image.done", model=model, transport=transport, seconds=round(elapsed, 1))
 
         # gpt-image-* returns base64 by default; DALL-E 3 returns a URL.
         data = (result.get("data") or [{}])[0]
@@ -174,7 +189,10 @@ class OpenAIImageService:
             "provider": "openai",
             "fal_request_id": None,
             "generation_time_seconds": round(elapsed, 2),
-            "generation_cost_usd": _COST_ESTIMATES.get(model.lower(), 0.10),
+            "generation_cost_usd": (
+                0.0 if transport == "subscription" else _COST_ESTIMATES.get(model.lower(), 0.10)
+            ),
+            "km_transport": transport,
             "prompt_text": prompt_text,
             "negative_prompt": negative_prompt,
         }
