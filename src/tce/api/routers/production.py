@@ -3324,14 +3324,14 @@ async def _apply_request(
     ws: uuid.UUID,
     upload_id: uuid.UUID,
     words: list[dict[str, Any]],
-    change: tuple[list[dict[str, Any]], list[Any], list[Any], list[Any]],
+    change: tuple[list[dict[str, Any]], list[Any], list[Any], list[Any], list[Any]],
     settle,
 ) -> RecordingUpload | str:
     """Write what the request changes and render once, under the render lock. Returns
     the video as it ended, or "joined" (he is giving notes: it joined them), "gate" (a
     sitting's notes started being made: wait for them), "changed" (the words moved
     while it read: read them again)."""
-    fixed, cut, restore, hold = change
+    fixed, cut, restore, hold, trim = change
     fp = library_service.transcript_fingerprint
     async with _render_lock(upload_id):
         async with session_factory()() as s:
@@ -3345,7 +3345,7 @@ async def _apply_request(
                 return "changed"
             row.transcript = fixed
             plan = dict(row.edit_plan or {})
-            plan["overrides"] = autoedit.merge_overrides(plan.get("overrides"), cut, restore, hold)
+            plan["overrides"] = autoedit.merge_overrides(plan.get("overrides"), cut, restore, hold, trim)
             row.edit_plan = plan
             await s.commit()
         await settle("in_progress", {"status": "Applying your changes and re-rendering"})
@@ -3425,12 +3425,13 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             cut = autoedit.word_ranges(words, out.get("cut") or [])
             restore = autoedit.word_ranges(words, out.get("restore") or [])
             hold = autoedit.word_holds(words, out.get("hold") or [])
-            if not (applied or cut or restore or hold) and str(out.get("reply") or "").strip():
+            trim, _bad_trim = autoedit.word_trims(words, out.get("trim") or [], keep, got["kept"])
+            if not (applied or cut or restore or hold or trim) and str(out.get("reply") or "").strip():
                 # An answer, not a change (30-Sep: "the phone cut the 's' off 'course'; no
                 # cut can bring it back" is the whole answer, not a question back to him).
                 await settle("done", {"reply": str(out["reply"]), "changed": False, "model": answer.model})
                 return
-            if not (applied or cut or restore or hold):
+            if not (applied or cut or restore or hold or trim):
                 await settle(
                     "needs_you",
                     {
@@ -3440,7 +3441,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
                     },
                 )
                 return
-            row = await _apply_request(request_id, ws, upload_id, words, (fixed, cut, restore, hold), settle)
+            row = await _apply_request(request_id, ws, upload_id, words, (fixed, cut, restore, hold, trim), settle)
             if row == "joined":
                 return
             if row == "gate":
@@ -3458,6 +3459,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             "cut": cut,
             "restore": restore,
             "hold": hold,
+            "trim": trim,
             "file": f"/api/v1/production/uploads/{upload_id}/edited",
             "model": answer.model,
         }
@@ -3704,7 +3706,8 @@ async def _apply_notes(
             return None
         plan = dict(row.edit_plan or {})
         batch = autoedit.apply_batch(
-            got["words"], plan.get("overrides"), answer.structured or {}, len(got["notes"])
+            got["words"], plan.get("overrides"), answer.structured or {}, len(got["notes"]),
+            keep=got.get("keep"), kept=got.get("kept"),
         )
         outcomes = [{**o, "id": str(nid)} for o, nid in zip(batch["notes"], got["note_ids"], strict=True)]
         result = {

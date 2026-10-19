@@ -27,6 +27,10 @@ are his; they hold on every video unless his note on this video says otherwise.
 - `~~word~~` is not in the edit; `restore` brings it back.
 - `/cut 1.4s/` between two words is a join: the edit skips that much audio there (a pause,
   or a removed piece). Every join is listed; there are many, not only the removed words.
+- `/quiet 4.9s/` after a word: that much pause still plays before the next word (the
+  recogniser often stretches a word over the silence after it). When a note asks to cut a
+  pause, dead air or a part where nobody talks, `trim` after that word takes it out and
+  leaves a breath. Never answer "my tools can only cut whole words" about a pause.
 - `(phone cut its end short)` after a word: the recording itself lost the end of that
   word (his phone switched the mic off). No edit tool can bring back a sound that was
   never recorded; say so plainly, and name the fix: re-record the line, or patch the sound

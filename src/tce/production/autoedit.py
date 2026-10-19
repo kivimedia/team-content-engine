@@ -32,6 +32,16 @@ PROMPT_VERSION = "autoedit-v1"
 MAX_CORRECTIONS = 12
 MAX_HOLD_MS = 600
 
+# 19-Oct: "long pause from 1:32 to 1:38, remove that clip" was refused five times ("my
+# tools can only cut whole words"): the quiet sat inside one kept range, between two
+# kept words. A `trim` takes it out of the keep itself, as Jennifer's check does.
+QUIET_SHOWN_S = 1.0  # quiet between two kept words this long is written /quiet Ns/
+WORD_OWNS_S = 1.2  # a word owns at most this from its start (qc.MAX_WORD_S); the rest of a
+# longer stamp is the recogniser stretching it over the silence after it
+TRIM_BREATH_AFTER_S = 0.12  # air left after the word before the pause (tightcut.POST_SENTENCE_S)
+TRIM_BREATH_BEFORE_S = 0.05  # ... and before the word after it (tightcut.PRE_S)
+MIN_TRIM_S = 0.2  # a trim shorter than this is not a pause anyone hears (qc.MIN_TRIM_S)
+
 # His standing rules, one file both editor jobs read (30-Sep: "the editor agent needs to be
 # opus 5.5 with the right skill files"). Edited in the repo; the next job picks it up.
 EDITOR_SKILL_PATH = Path(__file__).parent / "skills" / "video_editor.md"
@@ -120,7 +130,12 @@ def numbered_transcript(
     Every join between two kept words where the edit skips audio is written `/cut 1.4s/`
     (30-Sep: told only of the removed words, the editor said "the only cut is at 0:42"
     in an edit of 61 pieces). `marks` adds a note after a word (see word_marks).
+
+    Quiet the viewer still hears between two kept words, a second or more, is written
+    `/quiet 4.9s/` after the first (19-Oct): the editor could not see the pauses he asked
+    it to take out.
     """
+    quiet = _quiet_after(words, keep, kept) if keep is not None else {}
     timed = {int(w["index"]): float(w["start"]) for w in kept or [] if "index" in w}
     lines: list[str] = []
     cur: list[str] = []
@@ -164,6 +179,8 @@ def numbered_transcript(
                 token = " ".join(f"<note {n}>" for n in pins[-1]) + " " + token
             if i in pins:
                 token = token + " " + " ".join(f"<note {n}>" for n in pins[i])
+        if i in quiet:
+            token = f"{token} /quiet {quiet[i]:.1f}s/"
         cur.append(token)
         if str(w["text"])[-1:] in ".?!" or len(cur) >= 24:
             lines.append(stamp + " ".join(cur))
@@ -171,6 +188,88 @@ def numbered_transcript(
     if cur:
         lines.append(stamp + " ".join(cur))
     return "\n".join(lines)
+
+
+def _word_spans(
+    words: list[dict[str, Any]], keep: list[list[float]], kept: list[dict[str, Any]] | None
+) -> list[tuple[float, float, bool]]:
+    """(start, end, in the edit) for every word, read as numbered_transcript reads it:
+    the plan's kept times on the speech when there are any, else the recogniser's."""
+    timed = {int(w["index"]): (float(w["start"]), float(w["end"])) for w in kept or [] if "index" in w}
+    out: list[tuple[float, float, bool]] = []
+    for i, w in enumerate(words):
+        start, end = timed.get(i, (float(w["start_s"]), float(w["end_s"])))
+        inside = i in timed if timed else map_to_edit((start + end) / 2, keep) is not None
+        out.append((start, end, inside))
+    return out
+
+
+def _next_kept(spans: list[tuple[float, float, bool]], i: int) -> int | None:
+    return next((j for j in range(i + 1, len(spans)) if spans[j][2]), None)
+
+
+def _played(a: float, b: float, keep: list[list[float]]) -> float:
+    """How much of [a, b] on the recording is in the edit."""
+    return sum(max(0.0, min(b, float(e)) - max(a, float(s))) for s, e in keep)
+
+
+def _quiet_after(
+    words: list[dict[str, Any]], keep: list[list[float]], kept: list[dict[str, Any]] | None
+) -> dict[int, float]:
+    """Kept word index -> seconds of edit that play after it before the next kept word,
+    where that is QUIET_SHOWN_S or more."""
+    spans = _word_spans(words, keep, kept)
+    out: dict[int, float] = {}
+    for i, (start, end, inside) in enumerate(spans):
+        j = _next_kept(spans, i) if inside else None
+        if j is None:
+            continue
+        gap = _played(min(end, start + WORD_OWNS_S), spans[j][0], keep)
+        if gap >= QUIET_SHOWN_S:
+            out[i] = round(gap, 1)
+    return out
+
+
+def word_trims(
+    words: list[dict[str, Any]],
+    trims: list[dict[str, Any]],
+    keep: list[list[float]] | None,
+    kept: list[dict[str, Any]] | None = None,
+) -> tuple[list[list[float]], list[str]]:
+    """The model's trims ({after: word index}) as ranges on the recording: the quiet after
+    that kept word up to the next kept word, a breath left on both sides. Only quiet
+    between two words is reachable, so a trim can never take a word out. Returns
+    (ranges, what was skipped and why)."""
+    out: list[list[float]] = []
+    skipped: list[str] = []
+    if not trims:
+        return out, skipped
+    if not keep:
+        return out, ["a pause trim on a video that has no edit yet"]
+    spans = _word_spans(words, keep, kept)
+    for t in trims:
+        try:
+            i = int(t["after"])
+        except (KeyError, TypeError, ValueError):
+            skipped.append("a pause trim that did not say after which word")
+            continue
+        if not 0 <= i < len(spans) or not spans[i][2]:
+            skipped.append("a pause trim that pointed outside the words in the edit")
+            continue
+        j = _next_kept(spans, i)
+        if j is None:
+            skipped.append(f'a pause trim after "{words[i]["text"]}", the last word in the edit')
+            continue
+        start, end, _ = spans[i]
+        a = min(end, start + WORD_OWNS_S) + TRIM_BREATH_AFTER_S
+        b = spans[j][0] - TRIM_BREATH_BEFORE_S
+        if b - a < MIN_TRIM_S or _played(a, b, keep) < MIN_TRIM_S:
+            skipped.append(
+                f'a pause trim between "{words[i]["text"]}" and "{words[j]["text"]}", where there is no pause to take out'
+            )
+            continue
+        out.append([round(a, 3), round(b, 3)])
+    return out, skipped
 
 
 def _piece(keep: list[list[float]], start: float, end: float) -> int | None:
@@ -682,6 +781,10 @@ EDIT_REQUEST_SYSTEM = (
     "- hold: give one kept word more room at its start or end, in ms (up to 600), when the "
     "edit clipped it (marked 'the edit ends inside this word', or heard cut short at a "
     "/cut/ join). It cannot bring back a sound the phone never recorded.\n"
+    "- trim: take out the pause after one kept word (by index), up to the next kept word; "
+    "a breath stays on both sides and no word is lost. Use it when he asks to cut a pause, "
+    "dead air, or a part where nobody talks. Every pause of a second or more that is still "
+    "in the edit is written /quiet Ns/ right after the word it follows; one trim per pause.\n"
     "Times in the transcript are where each line lands in the EDITED video, the clock he "
     "watches. Do exactly what he asked and nothing more. If the request cannot be done "
     "with these tools, or you cannot tell what he means, set needs_you true and ask ONE "
@@ -717,6 +820,12 @@ _HOLD = {
     "required": ["index", "side", "extra_ms", "why"],
 }
 
+_TRIM = {
+    "type": "object",
+    "properties": {"after": {"type": "integer"}, "why": {"type": "string"}},
+    "required": ["after", "why"],
+}
+
 EDIT_REQUEST_SCHEMA = {
     "type": "object",
     "properties": {
@@ -727,8 +836,9 @@ EDIT_REQUEST_SCHEMA = {
         "cut": {"type": "array", "items": _RANGE},
         "restore": {"type": "array", "items": _RANGE},
         "hold": {"type": "array", "items": _HOLD},
+        "trim": {"type": "array", "items": _TRIM},
     },
-    "required": ["reply", "needs_you", "corrections", "cut", "restore", "hold"],
+    "required": ["reply", "needs_you", "corrections", "cut", "restore", "hold", "trim"],
 }
 
 
@@ -751,7 +861,8 @@ def edit_request_prompt(
         where = f"\nHe pointed at {_clock(start_s)} to {_clock(end_s)} in the edited video."
     return (
         f"{context}\n\n{_earlier_block(history)}His request now:\n{request.strip()}{where}\n\n"
-        f"Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join):\n"
+        f"Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
+        f"/quiet Ns/ is a pause still in the edit):\n"
         f"{numbered_transcript(words, keep, kept, marks, speakers=speakers)}"
     )
 
@@ -895,7 +1006,7 @@ def edit_batch_prompt(
         f"His notes from this sitting, in the order he gave them:\n" + "\n".join(blocks) + "\n\n"
         + (PLAN_MOVED_LINE + "\n\n" if plan_moved else "")
         + "Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
-        "<note N> is where the video was when he paused for note N):\n"
+        "/quiet Ns/ is a pause still in the edit; <note N> is where the video was when he paused for note N):\n"
         f"{numbered_transcript(words, keep, kept, marks, pins=pins, speakers=speakers)}"
     )
 
@@ -1017,8 +1128,14 @@ def apply_batch(
     overrides: dict[str, Any] | None,
     answer: dict[str, Any] | None,
     count: int,
+    *,
+    keep: list[list[float]] | None = None,
+    kept: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """What one sitting's answer does, before anything is written (pure).
+
+    `keep`/`kept` (19-Oct): the edit the notes were given on, so a `trim` can find the
+    pause after a word.
 
     Every note's changes are checked against the ONE transcript the job read. Word
     fixes share one set of taken words: a fix touching words an earlier note already
@@ -1061,7 +1178,8 @@ def apply_batch(
         restore, bad_restore = _checked_ranges(words, item.get("restore") or [], "restore")
         proposed_holds = item.get("hold") or []
         hold = word_holds(words, proposed_holds)
-        skipped += bad_cut + bad_restore
+        trim, bad_trim = word_trims(words, item.get("trim") or [], keep, kept)
+        skipped += bad_cut + bad_restore + bad_trim
         if len(hold) < len(proposed_holds):
             skipped.append("a hold that pointed outside the transcript or asked for no time")
         entry: dict[str, Any] = {
@@ -1071,13 +1189,14 @@ def apply_batch(
             "cut": cut,
             "restore": restore,
             "hold": hold,
+            "trim": trim,
             "skipped": skipped,
         }
-        proposed = any(item.get(k) for k in ("corrections", "cut", "restore", "hold"))
-        if valid or cut or restore or hold:
+        proposed = any(item.get(k) for k in ("corrections", "cut", "restore", "hold", "trim"))
+        if valid or cut or restore or hold or trim:
             fixes.extend(valid)
-            if cut or restore or hold:
-                merged = merge_overrides(merged, cut, restore, hold)
+            if cut or restore or hold or trim:
+                merged = merge_overrides(merged, cut, restore, hold, trim)
             changed = True
             entry["outcome"] = "change"
         elif proposed and skipped:
