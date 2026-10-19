@@ -325,6 +325,24 @@ LOUDNESS_SILENT_LUFS = -60.0  # quieter than this is not speech to bring up
 _LOUDNORM_JSON = re.compile(r"\{[^{}]*\"input_i\"[^{}]*\}", re.S)
 
 
+# 19-Oct: "remove background noise that are loud" (a walk in wind). Measured on that walk
+# (229.6-233.6 s, no word said): the wind sits under 300 Hz and was LOUDER than his voice
+# (p90 -13.6 dB against -18.7). Two 200 Hz high-passes took the wind down 9 dB and his voice
+# 2 dB, so his voice stood 11.8 dB over the wind instead of 4.9; afftdn alone gained 1-2 dB
+# on wind (it models steady hiss), so it only follows the high-pass for what is left.
+DENOISE_LEVELS = ("light", "medium", "strong")
+DENOISE_FILTERS = {
+    "light": "highpass=f=120,highpass=f=120,afftdn=nr=10:nf=-40:tn=1",
+    "medium": "highpass=f=200,highpass=f=200,afftdn=nr=15:nf=-35:tn=1",
+    "strong": "highpass=f=250,highpass=f=250,afftdn=nr=24:nf=-32:tn=1",
+}
+
+
+def denoise_filter(level: str | None) -> str | None:
+    """The cleaning chain for a level, or None for no cleaning (off, unknown, unset)."""
+    return DENOISE_FILTERS.get(str(level or ""))
+
+
 def loudnorm_filter(measured: dict[str, float] | None = None) -> str:
     """The loudnorm filter: the listening pass without `measured`, the correcting pass
     with it (linear when the target can be reached without touching the dynamics)."""
@@ -378,8 +396,13 @@ async def render_edit(
     make_preview: bool = False,
     loudness: bool = True,
     report: dict[str, Any] | None = None,
+    denoise: str | None = None,
 ) -> Path:
     """Cut the kept ranges into `out_path` (MP4 when captions are given).
+
+    `denoise` (19-Oct): light, medium or strong background-noise cleaning of the cut
+    audio (DENOISE_FILTERS), before the loudness is measured and set, so the level is
+    set on the cleaned sound. Anything else leaves the sound as recorded.
 
     `loudness` (3-Oct): the cut audio is brought to LOUDNESS_LUFS with its peaks under
     LOUDNESS_PEAK_DB inside this one render. A first pass only listens to the cut audio;
@@ -460,15 +483,25 @@ async def render_edit(
     graph = out.parent / f"{tmp_tag}.graph"
     listen = out.parent / f"{tmp_tag}.listen"
     audio_out = "[outa]"
+    cleaning = denoise_filter(denoise)
+    if cleaning:
+        cleaned = f"[outa]{cleaning}[outc]"
+        parts.append(cleaned)
+        heard.append(cleaned)
+        audio_out = "[outc]"
+    if report is not None:
+        report["denoise"] = denoise if cleaning else None
     try:
+        if cleaning:
+            await on_status(f"Cleaning the background noise ({denoise})")
         if loudness:
             await on_status(
                 f"Listening to the cut audio to set its loudness to {LOUDNESS_LUFS:g} LUFS"
             )
-            measured, why = await _measure_loudnorm(ff, src, heard, listen, out.parent)
+            measured, why = await _measure_loudnorm(ff, src, heard, listen, out.parent, label=audio_out)
             if measured is not None:
                 # loudnorm works at 192 kHz inside; back to the edit's own rate after it.
-                parts.append(f"[outa]{loudnorm_filter(measured)},aresample={SAMPLE_RATE}[outn]")
+                parts.append(f"{audio_out}{loudnorm_filter(measured)},aresample={SAMPLE_RATE}[outn]")
                 audio_out = "[outn]"
             if report is not None:
                 report["loudness"] = (
@@ -541,12 +574,13 @@ async def render_edit(
 
 
 async def _measure_loudnorm(
-    ff: str, src: Path, heard: list[str], listen: Path, cwd: Path
+    ff: str, src: Path, heard: list[str], listen: Path, cwd: Path, label: str = "[outa]"
 ) -> tuple[dict[str, float] | None, str | None]:
-    """The listening pass: the cut audio through loudnorm into nothing. Returns what it
-    measured, or (None, why). Never raises: a render does not fail for its loudness."""
+    """The listening pass: the cut audio (`label`, cleaned when the render cleans it)
+    through loudnorm into nothing. Returns what it measured, or (None, why). Never
+    raises: a render does not fail for its loudness."""
     listen.write_text(
-        ";\n".join([*heard, f"[outa]{loudnorm_filter()}[heard]"]), encoding="utf-8"
+        ";\n".join([*heard, f"{label}{loudnorm_filter()}[heard]"]), encoding="utf-8"
     )
     try:
         log = await _ffmpeg(

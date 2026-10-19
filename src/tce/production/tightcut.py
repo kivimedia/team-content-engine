@@ -48,6 +48,19 @@ TAIL_MAX_S = 0.3  # ... but no further than this from the speech region
 TAIL_RELEASE_S = 0.04
 TAIL_OVER_NOISE_DB = 8.0  # ... and only while this far above the noise in the gap beside it
 
+# 19-Oct, a walk in wind: the wind (under 300 Hz, louder than his voice) kept the level
+# above `low`, so ONE region ran from "I" through 4.9 s of wind to "recommend", touched a
+# kept word, and was kept whole; six such stretches (3.6-8.1 s) stayed in one edit. A
+# region is his speech only near his words: what runs further than HOLE_REACH_S from every
+# word of the run, for HOLE_MIN_S or more, is taken out. A word owns at most what its
+# letters take to say (the recogniser stretched a one-letter "I" over 1.2 s of wind).
+HOLE_REACH_S = 0.3
+HOLE_MIN_S = 0.4
+WORD_OWN_BASE_S = 0.25
+WORD_OWN_PER_LETTER_S = 0.09
+WORD_OWN_MIN_S = 0.5
+WORD_OWN_MAX_S = 1.2
+
 
 HISS_HZ = 3500  # an "s" lives above this; vowels and the wind mostly below
 
@@ -289,6 +302,50 @@ def _edges(
     return max(0.0, lo), min(end_bound, hi)
 
 
+def word_owns(word: dict[str, Any]) -> tuple[float, float]:
+    """The stretch a word can be heard in: from its start, no longer than its letters
+    take to say (WORD_OWN_*), never past the recogniser's end."""
+    start, end = float(word["start_s"]), float(word["end_s"])
+    letters = sum(1 for ch in str(word.get("text") or "") if ch.isalnum())
+    owns = min(WORD_OWN_MAX_S, max(WORD_OWN_MIN_S, WORD_OWN_BASE_S + WORD_OWN_PER_LETTER_S * letters))
+    return start, max(start, min(end, start + owns))
+
+
+def wordless_holes(
+    piece: list[float], words: list[dict[str, Any]]
+) -> list[list[float]]:
+    """Stretches of `piece` further than HOLE_REACH_S from every word in `words`, each
+    HOLE_MIN_S or longer: sound held up by wind or noise, not his speech."""
+    near = sorted(
+        [s - HOLE_REACH_S, e + HOLE_REACH_S] for s, e in (word_owns(w) for w in words)
+    )
+    holes: list[list[float]] = []
+    at = piece[0]
+    for s, e in near:
+        if e <= at:
+            continue
+        if s >= piece[1]:
+            break
+        if s - at >= HOLE_MIN_S:
+            holes.append([at, s])
+        at = max(at, e)
+    if piece[1] - at >= HOLE_MIN_S:
+        holes.append([at, piece[1]])
+    return holes
+
+
+def _minus(piece: list[float], holes: list[list[float]]) -> list[list[float]]:
+    out: list[list[float]] = []
+    at = piece[0]
+    for s, e in holes:
+        if s > at:
+            out.append([at, s])
+        at = max(at, e)
+    if piece[1] > at:
+        out.append([at, piece[1]])
+    return out
+
+
 def tight_keep(
     words: list[dict[str, Any]],
     kept: list[bool],
@@ -350,7 +407,9 @@ def tight_keep(
             start_floor = floor if before is None else max(floor, before + TAIL_OVER_NOISE_DB)
             end = max(re_ + post, _follow(activity.levels, re_, hi, end_floor, +1) + TAIL_RELEASE_S)
             start = min(rs - PRE_S, _follow(activity.levels, rs, lo, start_floor, -1) - PRE_S)
-            run_pieces.append([max(lo, start), min(hi, end)])
+            piece = [max(lo, start), min(hi, end)]
+            # A region held up by wind runs on past his words: keep only what is near them.
+            run_pieces.extend(_minus(piece, wordless_holes(piece, words[i : j + 1])))
         for w in words[i : j + 1]:
             ws, we = float(w["start_s"]), float(w["end_s"])
             # Measured against the speech found, not the padded pieces: a quiet word

@@ -286,23 +286,54 @@ def _wordless(
     """Stretches between two kept words, longer than `max_gap_s`, where the recogniser
     listening to the render heard no word either. Empty without `heard` or its times."""
     timed = [
-        (float(h["start"]), float(h["end"]))
+        (float(h["start"]), float(h["end"]), _token(str(h.get("text") or "")))
         for h in heard or []
         if h.get("start") is not None and h.get("end") is not None
     ]
     if not timed or len(words) < 2:
         return []
     ordered = sorted(words, key=lambda w: float(w["start"]))
+    tokens = [_token(str(w.get("text") or "")) for w in ordered]
     out: list[tuple[float, float]] = []
-    for a, b in zip(ordered, ordered[1:], strict=False):
+    for k, (a, b) in enumerate(zip(ordered, ordered[1:], strict=False)):
         s = min(float(a["end"]), float(a["start"]) + MAX_WORD_S)
         e = min(float(b["start"]), total)
         if e - s <= max_gap_s:
             continue
-        if any(s + WORD_PAD_S < (hs + he) / 2 < e - WORD_PAD_S for hs, he in timed):
+        # 19-Oct, a walk in wind: the recogniser listening to the render smeared the words
+        # on either side into the gap by seconds ("most owner i coach" inside the 5.5 s
+        # after "out."), so every gap looked spoken in. A word it heard there counts only
+        # when it is none of the words around the gap.
+        around = tokens[max(0, k + 1 - SMEAR_WORDS) : k + 1 + SMEAR_WORDS]
+        if any(
+            s + WORD_PAD_S < (hs + he) / 2 < e - WORD_PAD_S and not _smeared(t, around)
+            for hs, he, t in timed
+        ):
             continue  # something is said there that the transcript does not hold
         out.append((s, e))
     return out
+
+
+SMEAR_WORDS = 12  # words each side of a gap a smeared re-listen word may belong to
+
+
+def _smeared(heard: str, around: list[str]) -> bool:
+    """A heard word that is one of the words around a gap, give or take the recogniser's
+    spelling ("cloud" for "Claude", "inside" for "In")."""
+    if not heard:
+        return True
+    for t in around:
+        if not t:
+            continue
+        if t == heard:
+            return True
+        if min(len(t), len(heard)) < 2:
+            continue  # "a" is not "at": short words match only exactly
+        if t.startswith(heard) or heard.startswith(t):
+            return True
+        if min(len(t), len(heard)) >= 4 and SequenceMatcher(None, t, heard).ratio() >= 0.6:
+            return True
+    return False
 
 
 def edit_to_source(a: float, b: float, keep: list[list[float]]) -> list[list[float]]:

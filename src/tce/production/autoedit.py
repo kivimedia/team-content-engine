@@ -42,6 +42,11 @@ TRIM_BREATH_AFTER_S = 0.12  # air left after the word before the pause (tightcut
 TRIM_BREATH_BEFORE_S = 0.05  # ... and before the word after it (tightcut.PRE_S)
 MIN_TRIM_S = 0.2  # a trim shorter than this is not a pause anyone hears (qc.MIN_TRIM_S)
 
+# 19-Oct: "remove background noise that are loud" had no tool. The levels are
+# media.DENOISE_FILTERS (kept here as names so this module stays pure).
+DENOISE_LEVELS = ("light", "medium", "strong")
+DENOISE_CHOICES = ("off", *DENOISE_LEVELS)
+
 # His standing rules, one file both editor jobs read (30-Sep: "the editor agent needs to be
 # opus 5.5 with the right skill files"). Edited in the repo; the next job picks it up.
 EDITOR_SKILL_PATH = Path(__file__).parent / "skills" / "video_editor.md"
@@ -785,6 +790,10 @@ EDIT_REQUEST_SYSTEM = (
     "a breath stays on both sides and no word is lost. Use it when he asks to cut a pause, "
     "dead air, or a part where nobody talks. Every pause of a second or more that is still "
     "in the edit is written /quiet Ns/ right after the word it follows; one trim per pause.\n"
+    "- denoise: clean wind and background noise out of the whole video's sound: light, "
+    "medium or strong ('off' takes it out again, 'unchanged' leaves it as it is now). "
+    "Start with medium; strong thins his voice. It cannot take out a sound louder than his "
+    "voice (a car passing, a bark): cut or trim that stretch instead.\n"
     "Times in the transcript are where each line lands in the EDITED video, the clock he "
     "watches. Do exactly what he asked and nothing more. If the request cannot be done "
     "with these tools, or you cannot tell what he means, set needs_you true and ask ONE "
@@ -837,9 +846,33 @@ EDIT_REQUEST_SCHEMA = {
         "restore": {"type": "array", "items": _RANGE},
         "hold": {"type": "array", "items": _HOLD},
         "trim": {"type": "array", "items": _TRIM},
+        "denoise": {"type": "string", "enum": ["unchanged", *DENOISE_CHOICES]},
     },
-    "required": ["reply", "needs_you", "corrections", "cut", "restore", "hold", "trim"],
+    "required": ["reply", "needs_you", "corrections", "cut", "restore", "hold", "trim", "denoise"],
 }
+
+
+def denoise_choice(value: Any) -> str | None:
+    """The model's denoise answer as a change: a level, "off", or None (no change)."""
+    value = str(value or "").strip().lower()
+    return value if value in DENOISE_CHOICES else None
+
+
+def noise_change(now: str | None, asked: Any) -> str | None:
+    """The cleaning a note asks for when it differs from what the video has now: a level,
+    "off" (only when something is on), or None (nothing to change)."""
+    want = denoise_choice(asked)
+    have = now if now in DENOISE_LEVELS else "off"
+    return want if want is not None and want != have else None
+
+
+def noise_line(level: str | None) -> str:
+    """What the editor is told about the sound's cleaning now (19-Oct)."""
+    return (
+        f"Background noise cleaning on this video now: {level}."
+        if level in DENOISE_LEVELS
+        else "Background noise cleaning on this video now: off (the sound is as recorded)."
+    )
 
 
 def edit_request_prompt(
@@ -855,12 +888,14 @@ def edit_request_prompt(
     marks: dict[int, str] | None = None,
     history: list[dict[str, str]] | None = None,
     speakers: dict[int, str] | None = None,
+    denoise_now: str | None = None,
 ) -> str:
     where = ""
     if scope == "timestamp" and start_s is not None and end_s is not None:
         where = f"\nHe pointed at {_clock(start_s)} to {_clock(end_s)} in the edited video."
     return (
-        f"{context}\n\n{_earlier_block(history)}His request now:\n{request.strip()}{where}\n\n"
+        f"{context}\n\n{noise_line(denoise_now)}\n\n"
+        f"{_earlier_block(history)}His request now:\n{request.strip()}{where}\n\n"
         f"Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
         f"/quiet Ns/ is a pause still in the edit):\n"
         f"{numbered_transcript(words, keep, kept, marks, speakers=speakers)}"
@@ -978,8 +1013,11 @@ def edit_batch_prompt(
     history: list[dict[str, Any]] | None = None,
     plan_moved: bool = False,
     speakers: dict[int, str] | None = None,
+    denoise_now: str | None = None,
 ) -> str:
     """Every note of the sitting, numbered in the order he gave them.
+
+    `denoise_now` (19-Oct): the background-noise cleaning the video has now.
 
     Each note: `said` (his words as heard), `understood` (the reading he heard back),
     `edit_s` (the paused second on the edit clock) or `where` (a typed note's place),
@@ -1002,7 +1040,7 @@ def edit_batch_prompt(
         if note.get("source_s") is not None and words:
             pins.setdefault(pin_index(words, float(note["source_s"]), kept), []).append(n)
     return (
-        f"{context}\n\n{_earlier_block(history)}"
+        f"{context}\n\n{noise_line(denoise_now)}\n\n{_earlier_block(history)}"
         f"His notes from this sitting, in the order he gave them:\n" + "\n".join(blocks) + "\n\n"
         + (PLAN_MOVED_LINE + "\n\n" if plan_moved else "")
         + "Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
@@ -1179,6 +1217,7 @@ def apply_batch(
         proposed_holds = item.get("hold") or []
         hold = word_holds(words, proposed_holds)
         trim, bad_trim = word_trims(words, item.get("trim") or [], keep, kept)
+        denoise = noise_change((merged or {}).get("denoise"), item.get("denoise"))
         skipped += bad_cut + bad_restore + bad_trim
         if len(hold) < len(proposed_holds):
             skipped.append("a hold that pointed outside the transcript or asked for no time")
@@ -1190,13 +1229,14 @@ def apply_batch(
             "restore": restore,
             "hold": hold,
             "trim": trim,
+            "denoise": denoise,
             "skipped": skipped,
         }
         proposed = any(item.get(k) for k in ("corrections", "cut", "restore", "hold", "trim"))
-        if valid or cut or restore or hold or trim:
+        if valid or cut or restore or hold or trim or denoise:
             fixes.extend(valid)
-            if cut or restore or hold or trim:
-                merged = merge_overrides(merged, cut, restore, hold, trim)
+            if cut or restore or hold or trim or denoise:
+                merged = merge_overrides(merged, cut, restore, hold, trim, denoise)
             changed = True
             entry["outcome"] = "change"
         elif proposed and skipped:
@@ -1284,14 +1324,19 @@ def merge_overrides(
     restore: list[list[float]],
     hold: list[list[Any]] | None = None,
     trim: list[list[float]] | None = None,
+    denoise: str | None = None,
 ) -> dict[str, Any]:
     """The newest instruction wins: restoring what an earlier request cut lifts that cut,
     and a new hold on the same word edge replaces the old one.
 
     `trim` (3-Oct, Jennifer's check): dead air taken out of the finished file, as
     ranges on the recording. Trims survive every later change, like the cuts; a restore
-    over the same stretch lifts the trim there, because his word wins over her check."""
+    over the same stretch lifts the trim there, because his word wins over her check.
+
+    `denoise` (19-Oct): a level sets the sound's cleaning, "off" takes it out, None
+    keeps whatever an earlier note set."""
     old = old or {}
+    level = old.get("denoise") if denoise is None else denoise
     old_cut = _subtract([list(r) for r in old.get("cut") or []], restore)
     old_restore = _subtract([list(r) for r in old.get("restore") or []], cut)
     out: dict[str, Any] = {"cut": _merge(old_cut + cut), "restore": _merge(old_restore + restore)}
@@ -1303,6 +1348,8 @@ def merge_overrides(
     )
     if trims:
         out["trim"] = [[round(s, 3), round(e, 3)] for s, e in trims]
+    if level in DENOISE_LEVELS:
+        out["denoise"] = level
     return out
 
 

@@ -14,7 +14,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from tce.production import qc, wordbox
+from tce.production import qc, tightcut, wordbox
 from tests.unit.test_jennifer_flow import (  # noqa: F401 - the fixtures are used by name
     CLEAN,
     GAP_HUM,
@@ -97,6 +97,9 @@ async def test_the_longest_pause_and_the_dead_air_are_the_files_own(wired, tmp_p
     from tce.settings import settings
 
     monkeypatch.setattr(settings, "production_qc", "report")
+    # Since 19-Oct the cut itself drops a hum this far from his words; the meters are
+    # checked on a file that keeps it (that guard off for this one).
+    monkeypatch.setattr(tightcut, "HOLE_MIN_S", 1e9)
     _ws, _uid, row = await edit(wired, tmp_path, GAP_WORDS, GAP_HUM)
     numbers = row.qc["numbers"]
     # The hum sits about 35 dB under the words: -30 dB is silence for both meters.

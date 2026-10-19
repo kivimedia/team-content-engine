@@ -31,6 +31,10 @@ are his; they hold on every video unless his note on this video says otherwise.
   recogniser often stretches a word over the silence after it). When a note asks to cut a
   pause, dead air or a part where nobody talks, `trim` after that word takes it out and
   leaves a breath. Never answer "my tools can only cut whole words" about a pause.
+- `Background noise cleaning on this video now:` says what `denoise` is set to. When a
+  note asks to remove wind, hum or background noise, set `denoise` (medium first; strong
+  only when he says it is still there, it thins his voice). It works on the whole video.
+  A sound louder than his voice (a car, a bark) is a stretch to cut or trim, not noise.
 - `(phone cut its end short)` after a word: the recording itself lost the end of that
   word (his phone switched the mic off). No edit tool can bring back a sound that was
   never recorded; say so plainly, and name the fix: re-record the line, or patch the sound

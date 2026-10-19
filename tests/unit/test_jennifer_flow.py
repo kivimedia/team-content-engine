@@ -31,7 +31,7 @@ from tce.llm import LLMUnavailable
 from tce.llm.provider import LLMResult
 from tce.models.editorial import RecordingUpload, TopicCandidate
 from tce.models.jennifer import EditorRule, RenderCheck
-from tce.production import autoedit, qc
+from tce.production import tightcut, autoedit, qc
 from tce.settings import settings
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
@@ -178,7 +178,19 @@ async def test_a_clean_edit_ends_checked_by_jennifer_with_its_numbers(wired, tmp
 
 
 @needs_ffmpeg
-async def test_a_gap_is_cut_with_one_rerender_and_a_recheck(wired, tmp_path):
+async def test_the_cut_itself_leaves_no_hum_held_pause(wired, tmp_path):
+    # 19-Oct: the hum runs on past "smart." and touches it, so the cut used to keep it
+    # whole and only her check took it out. It is no longer in the first render.
+    ws, uid, row = await edit(wired, tmp_path, GAP_WORDS, GAP_HUM)
+    assert len(wired["renders"]) == 1 and row.qc["state"] == "passed"
+    assert row.qc["numbers"]["longest_gap_s"] < 1.2
+    assert [w["text"] for w in row.edit_plan["words"]] == ["It", "is", "smart.", "Call", "them."]
+
+
+@needs_ffmpeg
+async def test_a_gap_is_cut_with_one_rerender_and_a_recheck(wired, tmp_path, monkeypatch):
+    # Her fix flow, on a gap the cut lets through (the 19-Oct guard off for this one).
+    monkeypatch.setattr(tightcut, "HOLE_MIN_S", 1e9)
     ws, uid, row = await edit(wired, tmp_path, GAP_WORDS, GAP_HUM)
     assert len(wired["renders"]) == 2, "her fix renders once more, never twice"
     assert row.status == "edited" and row.qc["state"] == "fixed" and row.qc["round"] == 1
@@ -295,6 +307,7 @@ async def test_a_caption_that_does_not_match_holds_at_once_with_one_plain_line(w
 @needs_ffmpeg
 async def test_report_mode_measures_and_says_and_changes_nothing(wired, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "production_qc", "report")
+    monkeypatch.setattr(tightcut, "HOLE_MIN_S", 1e9)  # a gap the cut lets through
     ws, uid, row = await edit(wired, tmp_path, GAP_WORDS, GAP_HUM)
     assert len(wired["renders"]) == 1 and row.status == "edited"
     assert row.qc["state"] == "report"

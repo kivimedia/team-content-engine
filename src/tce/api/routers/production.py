@@ -1121,6 +1121,8 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             row = await _load(s, upload_id, ws)
             src, plan, duration = Path(row.storage_path), dict(row.edit_plan or {}), row.duration_s
             words = list(row.transcript or [])
+        # 19-Oct: background-noise cleaning asked for in a note; the uncut version too.
+        denoise = (plan.get("overrides") or {}).get("denoise")
         if mode == "uncut":
             if not duration:
                 duration = await media.probe_duration(src)
@@ -1167,6 +1169,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
                 caption_band=band,
                 make_preview=not audio_only,
                 report=made,
+                denoise=denoise,
             )
         finally:
             shutil.rmtree(band_dir, ignore_errors=True)
@@ -1183,6 +1186,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
                 "keep": frame_keep(keep),
                 "captions": qc.caption_data(on_edit, pages if band else None, cues),
                 "loudness": made.get("loudness"),
+                "denoise": made.get("denoise"),
             },
         )
         async with session_factory()() as s:
@@ -3301,6 +3305,7 @@ async def _request_inputs(request_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any
             "words": list(row.transcript or []),
             "keep": [list(r) for r in (row.edit_plan or {}).get("keep") or []],
             "kept": list((row.edit_plan or {}).get("words") or []),
+            "denoise": ((row.edit_plan or {}).get("overrides") or {}).get("denoise"),
             "context": await _script_context(s, ws, row),
             "speakers": await _speakers(row),
             "text": req.request,
@@ -3324,14 +3329,14 @@ async def _apply_request(
     ws: uuid.UUID,
     upload_id: uuid.UUID,
     words: list[dict[str, Any]],
-    change: tuple[list[dict[str, Any]], list[Any], list[Any], list[Any], list[Any]],
+    change: tuple[list[dict[str, Any]], list[Any], list[Any], list[Any], list[Any], str | None],
     settle,
 ) -> RecordingUpload | str:
     """Write what the request changes and render once, under the render lock. Returns
     the video as it ended, or "joined" (he is giving notes: it joined them), "gate" (a
     sitting's notes started being made: wait for them), "changed" (the words moved
     while it read: read them again)."""
-    fixed, cut, restore, hold, trim = change
+    fixed, cut, restore, hold, trim, denoise = change
     fp = library_service.transcript_fingerprint
     async with _render_lock(upload_id):
         async with session_factory()() as s:
@@ -3345,7 +3350,7 @@ async def _apply_request(
                 return "changed"
             row.transcript = fixed
             plan = dict(row.edit_plan or {})
-            plan["overrides"] = autoedit.merge_overrides(plan.get("overrides"), cut, restore, hold, trim)
+            plan["overrides"] = autoedit.merge_overrides(plan.get("overrides"), cut, restore, hold, trim, denoise)
             row.edit_plan = plan
             await s.commit()
         await settle("in_progress", {"status": "Applying your changes and re-rendering"})
@@ -3403,7 +3408,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             prompt = autoedit.edit_request_prompt(
                 words, keep, got["context"], got["text"], scope=got["scope"], start_s=got["start_s"],
                 end_s=got["end_s"], kept=got["kept"], marks=marks, history=got["history"],
-                speakers=got.get("speakers"),
+                speakers=got.get("speakers"), denoise_now=got.get("denoise"),
             )
             system = autoedit.edit_request_system(await _persona(ws))
             try:
@@ -3426,12 +3431,13 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             restore = autoedit.word_ranges(words, out.get("restore") or [])
             hold = autoedit.word_holds(words, out.get("hold") or [])
             trim, _bad_trim = autoedit.word_trims(words, out.get("trim") or [], keep, got["kept"])
-            if not (applied or cut or restore or hold or trim) and str(out.get("reply") or "").strip():
+            denoise = autoedit.noise_change(got.get("denoise"), out.get("denoise"))
+            if not (applied or cut or restore or hold or trim or denoise) and str(out.get("reply") or "").strip():
                 # An answer, not a change (30-Sep: "the phone cut the 's' off 'course'; no
                 # cut can bring it back" is the whole answer, not a question back to him).
                 await settle("done", {"reply": str(out["reply"]), "changed": False, "model": answer.model})
                 return
-            if not (applied or cut or restore or hold or trim):
+            if not (applied or cut or restore or hold or trim or denoise):
                 await settle(
                     "needs_you",
                     {
@@ -3441,7 +3447,9 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
                     },
                 )
                 return
-            row = await _apply_request(request_id, ws, upload_id, words, (fixed, cut, restore, hold, trim), settle)
+            row = await _apply_request(
+                request_id, ws, upload_id, words, (fixed, cut, restore, hold, trim, denoise), settle
+            )
             if row == "joined":
                 return
             if row == "gate":
@@ -3460,6 +3468,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             "restore": restore,
             "hold": hold,
             "trim": trim,
+            "denoise": denoise,
             "file": f"/api/v1/production/uploads/{upload_id}/edited",
             "model": answer.model,
         }
@@ -3625,6 +3634,7 @@ async def _talk_inputs(session_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any] |
             "words": list(row.transcript or []),
             "keep": keep,
             "kept": kept or [],
+            "denoise": (plan.get("overrides") or {}).get("denoise"),
             "plan_moved": bool(watched) and bool(plan_keep) and kept is None,
             "context": await _script_context(s, ws, row),
             "speakers": await _speakers(row),
@@ -3914,7 +3924,7 @@ async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
             prompt = autoedit.edit_batch_prompt(
                 got["words"], got["keep"], got["context"], got["notes"],
                 kept=got["kept"], marks=marks, history=got["history"], plan_moved=got["plan_moved"],
-                speakers=got.get("speakers"),
+                speakers=got.get("speakers"), denoise_now=got.get("denoise"),
             )
             system = autoedit.edit_batch_system(await _persona(ws))
             key = talk_key(session_id, prompt, system, got["attempt"])
