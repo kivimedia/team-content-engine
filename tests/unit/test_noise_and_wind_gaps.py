@@ -36,11 +36,23 @@ def test_wind_between_two_kept_words_is_not_kept_whole():
     act = Activity([(0.0, 9.0)], -48.0, -58.0, levels)
     keep, _timed = tight_keep(words, [True] * 4, act, 9.0)
     played = sum(e - s for s, e in keep)
-    assert played < 9.0 - 3.5, keep  # the 4.9 s of wind is down to about a second
+    assert played < 9.0 - 3.5, keep  # the 4.9 s between "I" and "recommend" is down to 0.6 s
     # Every word is still in the edit, whole.
     for w in words:
-        mid = (w["start_s"] + min(w["end_s"], w["start_s"] + 0.5)) / 2
+        mid = (w["start_s"] + w["end_s"]) / 2
         assert any(s <= mid <= e for s, e in keep), (w["text"], keep)
+
+
+def test_a_stretched_word_keeps_its_whole_span():
+    # Same walk, 4:49: he said "I ran... I ran Fable 5.1"; the recogniser merged the two
+    # "I ran" and stretched "Fable" 2.4 s back over the second one. Where in that span
+    # the word sounds is unknown (the first cut guessed its start, and took out the
+    # repeated "I ran"), so nothing inside a word's own span is taken for wind.
+    words = words_at(("I", 0.0, 0.44), ("ran", 0.44, 0.98), ("Fable", 0.98, 3.36), ("5", 3.36, 4.2))
+    act = Activity([(0.0, 4.4)], -48.0, -58.0, loud(4.6))
+    keep, _ = tight_keep(words, [True] * 4, act, 4.6)
+    inside = sum(max(0.0, min(e, 3.36) - max(s, 0.98)) for s, e in keep)
+    assert inside > 3.36 - 0.98 - 1e-6, keep
 
 
 def test_speech_that_runs_on_between_words_is_left_alone():
@@ -49,12 +61,6 @@ def test_speech_that_runs_on_between_words_is_left_alone():
     act = Activity([(0.15, 2.4)], -48.0, -58.0, loud(3.0))
     keep, _ = tight_keep(words, [True] * len(words), act, 3.0)
     assert len(keep) == 1
-
-
-def test_a_word_owns_what_its_letters_take_to_say():
-    assert tightcut.word_owns({"text": "I", "start_s": 1.0, "end_s": 2.2}) == (1.0, 1.5)
-    s, e = tightcut.word_owns({"text": "switching", "start_s": 1.0, "end_s": 2.04})
-    assert s == 1.0 and abs(e - 2.04) < 1e-9  # a long word keeps its stamp
 
 
 # ---------------------------------------------------------------- Jennifer's check

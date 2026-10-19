@@ -52,14 +52,12 @@ TAIL_OVER_NOISE_DB = 8.0  # ... and only while this far above the noise in the g
 # above `low`, so ONE region ran from "I" through 4.9 s of wind to "recommend", touched a
 # kept word, and was kept whole; six such stretches (3.6-8.1 s) stayed in one edit. A
 # region is his speech only near his words: what runs further than HOLE_REACH_S from every
-# word of the run, for HOLE_MIN_S or more, is taken out. A word owns at most what its
-# letters take to say (the recogniser stretched a one-letter "I" over 1.2 s of wind).
+# word of the run, for HOLE_MIN_S or more, is taken out. Never inside a word's own span:
+# the recogniser merged "I ran... I ran Fable" and stretched "Fable" 2.4 s back over the
+# second "I ran", and a cut that guessed the word sat at its start took out real speech.
+# Gaps between words hold 96-98 % of the wind (measured on three windy walks).
 HOLE_REACH_S = 0.3
 HOLE_MIN_S = 0.4
-WORD_OWN_BASE_S = 0.25
-WORD_OWN_PER_LETTER_S = 0.09
-WORD_OWN_MIN_S = 0.5
-WORD_OWN_MAX_S = 1.2
 
 
 HISS_HZ = 3500  # an "s" lives above this; vowels and the wind mostly below
@@ -302,22 +300,14 @@ def _edges(
     return max(0.0, lo), min(end_bound, hi)
 
 
-def word_owns(word: dict[str, Any]) -> tuple[float, float]:
-    """The stretch a word can be heard in: from its start, no longer than its letters
-    take to say (WORD_OWN_*), never past the recogniser's end."""
-    start, end = float(word["start_s"]), float(word["end_s"])
-    letters = sum(1 for ch in str(word.get("text") or "") if ch.isalnum())
-    owns = min(WORD_OWN_MAX_S, max(WORD_OWN_MIN_S, WORD_OWN_BASE_S + WORD_OWN_PER_LETTER_S * letters))
-    return start, max(start, min(end, start + owns))
-
-
 def wordless_holes(
     piece: list[float], words: list[dict[str, Any]]
 ) -> list[list[float]]:
-    """Stretches of `piece` further than HOLE_REACH_S from every word in `words`, each
-    HOLE_MIN_S or longer: sound held up by wind or noise, not his speech."""
+    """Stretches of `piece` further than HOLE_REACH_S from every word in `words` (its
+    whole recogniser span), each HOLE_MIN_S or longer: sound held up by wind or noise,
+    not his speech."""
     near = sorted(
-        [s - HOLE_REACH_S, e + HOLE_REACH_S] for s, e in (word_owns(w) for w in words)
+        [float(w["start_s"]) - HOLE_REACH_S, float(w["end_s"]) + HOLE_REACH_S] for w in words
     )
     holes: list[list[float]] = []
     at = piece[0]
