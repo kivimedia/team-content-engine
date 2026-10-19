@@ -3900,6 +3900,8 @@ async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
             async with _render_lock(upload_id):
                 await _render_notes_locked(session_id, ws, upload_id)
             return
+        if not await _first_edit_for_notes(session_id, ws, upload_id):
+            return
         for _ask_round in range(TALK_MAX_ASKS):
             got = await _talk_inputs(session_id, ws)
             if got is None:
@@ -3962,6 +3964,45 @@ async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
             )
         elif state == "rendering":
             await _settle_talk(session_id, ws, stopped=f"Stopped with an error: {str(exc)[:300]}")
+
+
+TALK_FIRST_EDIT = "Making Jennifer's first edit of this video; your notes go in right after"
+
+
+async def _first_edit_for_notes(session_id: uuid.UUID, ws: uuid.UUID, upload_id: uuid.UUID) -> bool:
+    """19-Oct: notes given over the original of a video with no edit yet. Jennifer makes
+    her normal first edit (transcript, review, tight cut, captions, her check), then the
+    sitting moves onto it the way a sitting moves onto any new render: every note keeps
+    its second on the recording. True when there is an edit to read the notes against;
+    False when the notes were handed back, unchanged, with the reason."""
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        if row.edited_path:
+            return True
+        row.archived_at = None  # an edit is on its way: it belongs in Still to do
+        await s.commit()
+    await _talk_status(session_id, ws, TALK_FIRST_EDIT)
+    await auto_edit(upload_id, ws)
+    while upload_id in _auto_editing:
+        # After a restart the resumed edit may already hold the video: wait for it.
+        await _sitting_recheck()
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        ref, keep = library_service.watched_render(row)
+        made = row.status == "edited" or library_service.qc_hold(row)
+        if not row.edited_path or not made or not keep:
+            said = row.status_detail or "the first edit did not finish"
+            await s.commit()
+            await _hand_back(
+                session_id, ws, f"The first edit stopped: {said}. Your notes are kept; make the new version again."
+            )
+            return False
+        sitting = await _load_sitting(s, session_id, ws)
+        if sitting is None or sitting.state != "thinking":
+            return False
+        await library_service.move_to_render(s, ws, sitting, ref, keep)
+        await s.commit()
+    return True
 
 
 def start_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:

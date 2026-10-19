@@ -405,12 +405,13 @@ def _type_note(page, phone: Phone, at: float, text: str) -> dict:
 # ------------------------------------------------------------------- the card
 
 
-def test_the_card_offers_talk_to_the_editor_only_where_there_is_an_edit():
+def test_the_card_offers_talk_to_the_editor_on_every_video():
     from tce.editorial import library
 
     def keys(**fields) -> list[str]:
         upload = RecordingUpload(
-            workspace_id=WS, original_filename="take.mp4", storage_path="/tmp/take.mp4",
+            workspace_id=WS, original_filename="take.mp4",
+            storage_path=fields.pop("storage_path", "/tmp/take.mp4"),
             sha256="c" * 64, status=fields.pop("status", "edited"), **fields,
         )
         return [a["key"] for a in library._actions(upload, 0)]
@@ -419,7 +420,10 @@ def test_the_card_offers_talk_to_the_editor_only_where_there_is_an_edit():
     assert "talk_edit" in edited
     # Right after watching it, before the older typed request.
     assert edited.index("talk_edit") < edited.index("request_edit")
-    assert "talk_edit" not in keys(status="uploaded")
+    # 19-Oct: "should always be possible on any video": with no edit yet, on the original.
+    unedited = keys(status="uploaded")
+    assert "talk_edit" in unedited and unedited.index("talk_edit") < unedited.index("request_edit")
+    assert "talk_edit" not in keys(status="uploaded", storage_path=None)
 
 
 # ------------------------------------------------------------------- walks

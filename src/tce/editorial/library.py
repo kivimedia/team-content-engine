@@ -196,11 +196,13 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
         actions.append({"key": "captions", "label": "Captions"})
     if upload.transcript:
         actions.append({"key": "transcript", "label": "Transcript"})
-    if upload.edited_path:
+    held_first_edit = not upload.edited_path and meaning_hold(upload) is not None
+    if upload.edited_path or (upload.storage_path and not held_first_edit):
         # 1-Oct: watch the edit, pause, say what is wrong; one new version at the end.
-        # 3-Oct: the editor is Jennifer.
+        # 3-Oct: the editor is Jennifer. 19-Oct: on every video ("should always be
+        # possible"); with no edit yet he talks over the original and she edits from it.
         actions.append({"key": "talk_edit", "label": f"Talk to {EDITOR_NAME}"})
-    elif meaning_hold(upload) is not None:
+    elif held_first_edit:
         # 18-Oct (T-13809): a first edit the meaning check blocked has no edit to give
         # notes on, but this is exactly when he needs her: a call on the video, where
         # she can settle the hold by voice, and taps that settle it here.
@@ -1101,8 +1103,13 @@ def watched_render(upload: RecordingUpload) -> tuple[str | None, list[list[float
     An edit rendered before renders were stamped has no stamp. Its plan's keep is the
     file's own only while the video says edited and the plan was not blocked (a blocked
     plan was rendered uncut, or not at all).
+
+    19-Oct: a video with no edit yet is watched as the original, whole: no render id, and
+    the keep is the full recording, so a second on it is a second of the recording.
     """
     if not upload.edited_path:
+        if upload.storage_path and upload.duration_s:
+            return None, [[0.0, round(float(upload.duration_s), 3)]]
         return None, None
     if upload.render_ref and upload.rendered_keep:
         return upload.render_ref, [list(r) for r in upload.rendered_keep]
@@ -1118,9 +1125,10 @@ def watched_render(upload: RecordingUpload) -> tuple[str | None, list[list[float
 
 def edit_file_url(upload: RecordingUpload, render_ref: str | None) -> str | None:
     """The address the sheet plays: the light copy when there is one, and the render's
-    id, so a new render never plays from the old one's cached pieces."""
+    id, so a new render never plays from the old one's cached pieces. With no edit yet,
+    the original recording (19-Oct)."""
     if not upload.edited_path:
-        return None
+        return f"/api/v1/production/uploads/{upload.id}/video" if upload.storage_path else None
     query = []
     if _has_preview(upload):
         query.append("preview=1")
@@ -1191,13 +1199,13 @@ async def open_sitting(
                 await db.flush()
                 return current
     if current.render_ref != ref or current.keep_snapshot != keep:
-        await _move_to_render(db, ws, current, ref, keep)
+        await move_to_render(db, ws, current, ref, keep)
     current.last_seen = now
     await db.flush()
     return current
 
 
-async def _move_to_render(
+async def move_to_render(
     db: AsyncSession,
     ws: uuid.UUID,
     sitting: EditSession,

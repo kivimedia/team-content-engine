@@ -285,10 +285,87 @@ async def test_a_render_whose_process_died_does_not_hold_the_notes_shut(client, 
         assert (await prod._load(s, uid, ws)).status == "interrupted"
 
 
-async def test_there_is_no_sitting_without_an_edit(client, renders, tmp_path):
+async def test_with_no_edit_the_sitting_opens_on_the_original(client, renders, tmp_path):
+    # 19-Oct: "talk to jennifer should always be possible on any video".
     ws, uid = await seed(renders["sm"], tmp_path)
+    body = await open_talk(client, ws, uid)
+    assert body["state"] == "open" and body["render_ref"] is None
+    assert body["file_url"] == f"/api/v1/production/uploads/{uid}/video"
+    assert body["edit_length_s"] == pytest.approx(8.0)
+    # On the original a paused second is a second of the recording.
+    r = await pin(client, ws, body["session_id"], 3.0, None)
+    assert r.status_code == 200, r.text
+    assert r.json()["source_s"] == pytest.approx(3.0)
+
+
+async def test_a_video_whose_length_is_unknown_still_has_no_sitting(client, renders, tmp_path):
+    ws, uid = await seed(renders["sm"], tmp_path)
+    async with renders["sm"]() as s:
+        (await prod._load(s, uid, ws)).duration_s = None
+        await s.commit()
     r = await client.post(f"/api/v1/production/recordings/{uid}/talk", headers=headers(ws))
     assert r.status_code == 409 and r.json()["detail"]["code"] == "no_edit"
+
+
+async def thinking_on_the_original(client, renders, tmp_path, monkeypatch):
+    """Notes given over the original, then "make it": the sitting is thinking."""
+    ws, uid = await seed(renders["sm"], tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    first = (await pin(client, ws, sid, 3.0, None)).json()
+    async with renders["sm"]() as s:
+        (await s.get(EditSession, uuid.UUID(sid))).state = "thinking"
+        await s.commit()
+    said: list[str] = []
+
+    async def hand_back(_sid, _ws, status):
+        said.append(status)
+
+    monkeypatch.setattr(prod, "_hand_back", hand_back)
+    return ws, uid, uuid.UUID(sid), first, said
+
+
+async def test_make_it_on_the_original_makes_the_first_edit_and_moves_the_notes_onto_it(
+    client, renders, tmp_path, monkeypatch
+):
+    ws, uid, sid, first, said = await thinking_on_the_original(client, renders, tmp_path, monkeypatch)
+    async with renders["sm"]() as s:
+        (await prod._load(s, uid, ws)).archived_at = library._now()
+        await s.commit()
+    made: list[uuid.UUID] = []
+
+    async def first_edit(upload_id, _ws):
+        made.append(upload_id)
+        await render_once(renders["sm"], ws, upload_id)
+
+    monkeypatch.setattr(prod, "auto_edit", first_edit)
+    assert await prod._first_edit_for_notes(sid, ws, uid) is True
+    assert made == [uid] and said == []
+    async with renders["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        sitting = await s.get(EditSession, sid)
+        [note] = await library.sitting_notes(s, ws, sid)
+    assert row.archived_at is None  # an edit is on its way: back in Still to do
+    assert sitting.state == "thinking" and sitting.render_ref == row.render_ref
+    assert sitting.keep_snapshot == [list(r) for r in row.rendered_keep]
+    # The note keeps its second on the recording and gets its place on the edit.
+    assert float(note.source_s) == pytest.approx(first["source_s"])
+    assert float(note.start_s) == pytest.approx(edit_join(first["source_s"], row.rendered_keep), abs=0.01)
+    # Already edited: nothing is edited again.
+    assert await prod._first_edit_for_notes(sid, ws, uid) is True and made == [uid]
+
+
+async def test_a_first_edit_that_stops_hands_the_notes_back(client, renders, tmp_path, monkeypatch):
+    ws, uid, sid, _first, said = await thinking_on_the_original(client, renders, tmp_path, monkeypatch)
+
+    async def stopped(upload_id, _ws):
+        async with renders["sm"]() as s:
+            row = await prod._load(s, upload_id, ws)
+            row.status, row.status_detail = "failed", "ffmpeg exploded"
+            await s.commit()
+
+    monkeypatch.setattr(prod, "auto_edit", stopped)
+    assert await prod._first_edit_for_notes(sid, ws, uid) is False
+    assert said and "ffmpeg exploded" in said[0] and "Your notes are kept" in said[0]
 
 
 async def test_an_edit_made_before_the_stamp_opens_on_its_plan(client, renders, tmp_path):
