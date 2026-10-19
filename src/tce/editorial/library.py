@@ -897,6 +897,8 @@ NOTES_BEING_MADE = (
 LEFT_OUT = "No words were caught for this note, so it was left out of the new version."
 # The new version cut the second a waiting note was pinned to: it now sits at that cut.
 NOTE_CUT_IN_NEW_VERSION = "The new version cut this moment; the note now sits where that cut is."
+# 19-Oct: notes given over the original of a video with no edit yet.
+FIRST_EDIT_FOR_NOTES = "Making Jennifer's first edit of this video; your notes go in right after"
 
 # 1-Oct final review: every hold on the sheet is pinned, so his "that's all, make it",
 # his "yes", "no, I meant...", "scratch that" and "go back" each arrived as a note too.
@@ -2101,8 +2103,11 @@ async def submit(
     sitting.submitted_at = now
     sitting.last_seen = now
     sitting.summary = preview["read_back"]
+    upload = await _get_upload(db, ws, sitting.upload_id)
     sitting.result = {
-        "status": f"Reading your {count} note{'s' if count != 1 else ''} on the subscription",
+        # 19-Oct: notes given over the original wait for her first edit; say that first.
+        "status": FIRST_EDIT_FOR_NOTES if not upload.edited_path
+        else f"Reading your {count} note{'s' if count != 1 else ''} on the subscription",
         "notes": [n["id"] for n in preview["notes"]],
         "by": by,
         # Each "make it" is its own job: after a failed one, the same notes ask afresh

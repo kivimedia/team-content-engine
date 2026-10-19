@@ -298,6 +298,20 @@ async def test_with_no_edit_the_sitting_opens_on_the_original(client, renders, t
     assert r.json()["source_s"] == pytest.approx(3.0)
 
 
+async def test_make_it_on_the_original_says_the_first_edit_comes_first(client, renders, tmp_path, monkeypatch):
+    # 19-Oct live test: the sheet said "Reading your 1 note" for its first 15 s, while
+    # what was really running was her first edit.
+    monkeypatch.setattr(prod, "start_talk_session", lambda *_a: None)
+    ws, uid = await seed(renders["sm"], tmp_path)
+    sid = (await open_talk(client, ws, uid))["session_id"]
+    nid = (await pin(client, ws, sid, 3.0, None)).json()["note_id"]
+    assert (await say(client, ws, sid, nid, heard="Cut the start.")).status_code == 200
+    preview = (await client.get(f"/api/v1/production/talk/{sid}/submit", headers=headers(ws))).json()
+    r = await client.post(f"/api/v1/production/talk/{sid}/submit", json={"check": preview["check"]}, headers=headers(ws))
+    assert r.status_code == 200, r.text
+    assert r.json()["result"]["status"] == library.FIRST_EDIT_FOR_NOTES
+
+
 async def test_a_video_whose_length_is_unknown_still_has_no_sitting(client, renders, tmp_path):
     ws, uid = await seed(renders["sm"], tmp_path)
     async with renders["sm"]() as s:

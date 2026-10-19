@@ -188,6 +188,7 @@
     "Reading your week": "קורא את השבוע שלך",
     "Reading your settings": "קורא את ההגדרות שלך",
     "Reading your notes back": "קורא את ההערות שלך",
+    "Making Jennifer's first edit of this video; your notes go in right after": "ג'ניפר עורכת את הסרטון הזה בפעם הראשונה; ההערות שלך נכנסות מיד אחר כך",
     "Reading what you have recorded": "קורא מה שהקלטת",
     "Reading this week's list": "קורא את הרשימה של השבוע",
     "Reading the ideas waiting for you": "קורא את הרעיונות שמחכים לך",
@@ -812,6 +813,7 @@
     [/^Jennifer already has a rule for this: ([\s\S]*)$/, "לג'ניפר כבר יש כלל לזה: $1"],
     [/^Put back the version from before your (\d+) notes?$/, "להחזיר את הגרסה שלפני $1 ההערות שלך"],
     [/^Reading your (\d+) notes? on the subscription$/, "קורא את $1 ההערות שלך"],
+    [/^The first edit stopped: ([\s\S]*)\. Your notes are kept; make the new version again\.$/, "העריכה הראשונה נעצרה: $1. ההערות שלך נשמרו; אפשר ליצור את הגרסה החדשה שוב."],
     [/^(\d+) notes? still waiting here, so these notes stay open\.$/, "$1 הערות עוד מחכות כאן, אז ההערות האלה נשארות פתוחות."],
     // The notes sheet
     [/^Yes, make it \((\d+) notes?\)$/, "כן, ליצור ($1 הערות)"],

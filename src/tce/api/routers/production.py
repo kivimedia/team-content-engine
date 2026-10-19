@@ -3966,7 +3966,7 @@ async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
             await _settle_talk(session_id, ws, stopped=f"Stopped with an error: {str(exc)[:300]}")
 
 
-TALK_FIRST_EDIT = "Making Jennifer's first edit of this video; your notes go in right after"
+TALK_FIRST_EDIT = library_service.FIRST_EDIT_FOR_NOTES
 
 
 async def _first_edit_for_notes(session_id: uuid.UUID, ws: uuid.UUID, upload_id: uuid.UUID) -> bool:
