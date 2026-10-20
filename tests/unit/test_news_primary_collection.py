@@ -175,6 +175,90 @@ def test_primary_source_allowlist_rejects_lookalikes_credentials_and_homepages()
         assert not url_fetcher.is_primary_announcement(url)
 
 
+@pytest.mark.parametrize("url", [
+    "https://www.anthropic.com/news/claude-code",
+    "https://openai.com/index/introducing-the-codex-app/",
+    "https://deepmind.google/blog/veo-3/",
+    "https://developers.googleblog.com/en/gemini-api-release/",
+    "https://x.ai/news/grok-voice-3",
+    "https://ai.meta.com/blog/meta-llama-3/",
+    "https://fal.ai/learn/devs/nemotron-3-nano-omni-is-now-on-fal",
+    "https://blog.fal.ai/introducing-h3-max-by-fal/",
+    "https://runwayml.com/research/gen-1",
+    "https://runway.com/research/gen-1",
+    "https://higgsfield.ai/blog/introducing-higgsfield-apps",
+    "https://suno.com/blog/introducing-speech-beta",
+    "https://blog.suno.com/blog/suno-updates-tos",
+    "https://seed.bytedance.com/en/blog/one-take-creation-flexible-referencing-introducing-seedance-2-5",
+    "https://blog.modelcontextprotocol.io/posts/2026-07-28-specification/",
+])
+def test_named_scout_providers_have_explicit_primary_article_routes(url):
+    # Providers come from KMBot's existing morning/evening AI-news beat.
+    assert url_fetcher.is_primary_announcement(url)
+
+
+@pytest.mark.parametrize("url", [
+    "https://x.ai/",
+    "https://x.ai/news/",
+    "https://x.ai/pricing",
+    "https://x.ai.evil.test/news/new-model",
+    "https://unknown.example/blog/new-model",
+    "https://user.fal.ai/learn/devs/new-model",
+    "https://fal.ai/models/some-user/model",
+    "https://blog.fal.ai/",
+    "https://blog.fal.ai/tag/models/",
+    "https://blog.fal.ai/author/team/",
+    "https://ai.meta.com/research/",
+    "https://runway.com/product",
+    "https://runway.com.evil.test/research/gen-1",
+    "https://higgsfield.ai/create",
+    "https://suno.com/song/123",
+    "https://seed.bytedance.com/en/",
+    "https://bytedance.com/en/blog/new-model",
+    "https://modelcontextprotocol.io/docs/introduction",
+    "https://blog.modelcontextprotocol.io/posts/",
+    "https://github.com/some-user/some-repo/releases/tag/v1",
+    "https://secret@x.ai/news/new-model",
+])
+def test_scout_publisher_roots_do_not_trust_arbitrary_pages_or_subdomains(url):
+    assert not url_fetcher.is_primary_announcement(url)
+
+
+@pytest.mark.asyncio
+async def test_new_primary_provider_without_date_still_waits_for_a_source_date(
+    monkeypatch, editorial_session,
+):
+    from sqlalchemy import select
+    from tce.models.news import NewsItem
+    from tce.news import discovery
+    from tce.settings import settings
+
+    workspace = uuid.UUID("3e8c3f9c-0213-57cd-ab30-173d5700090f")
+    monkeypatch.setattr(settings, "editor_default_workspace_id", str(workspace))
+    monkeypatch.setattr(settings, "owner_workspace_ids", "")
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **kw: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+    ])
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(url_fetcher.httpx, "AsyncClient", lambda **kw: client_type(
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, text=(
+                "<title>AI now drafts follow-up emails after client meetings</title>"
+                "<main>An AI assistant can prepare client follow-up email drafts.</main>"
+            ), headers={"content-type": "text/html"},
+        )),
+    ))
+    result = await discovery.check_one(
+        editorial_session, workspace, url="https://x.ai/news/assistant-release",
+        fetch_text=url_fetcher.fetch_url_text, now=datetime(2026, 10, 20, 12),
+    )
+    item = (await editorial_session.execute(select(NewsItem))).scalars().one()
+    assert result["item_id"] == str(item.id)
+    assert item.editorial_meta["primary_source_verified"] is True
+    assert item.published_at is None
+    assert item.editorial_meta["appraisal_retry"]["state"] == "needs_source_date"
+
+
 @pytest.mark.asyncio
 async def test_secondary_story_resolves_and_fetches_primary_before_verification(monkeypatch):
     calls = []

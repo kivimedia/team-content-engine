@@ -48,10 +48,29 @@ _PRIMARY_PATHS = {
     "blog.google": ("/products/", "/technology/"),
     "workspaceupdates.googleblog.com": ("/20",),
     "developers.googleblog.com": ("/en/",),
+    # Named KMBot AI-news beats, with exact official publishing hosts.
+    # Provider recognition does not replace publication-date or quality gates.
+    "x.ai": ("/news/",),
+    "ai.meta.com": ("/blog/",),
+    "fal.ai": ("/learn/devs/",),
+    "runwayml.com": ("/research/",),
+    "runway.com": ("/research/",),  # runwayml.com articles now redirect here
+    "higgsfield.ai": ("/blog/",),
+    "suno.com": ("/blog/",),
+    "blog.suno.com": ("/blog/",),
+    "seed.bytedance.com": ("/en/blog/",),
+    "blog.modelcontextprotocol.io": ("/posts/",),
     "elevenlabs.io": ("/blog/", "/docs/changelog"),
     "deepgram.com": ("/learn/",),
     "twilio.com": ("/en-us/changelog/", "/en-us/blog/"),
     "updates.dubsado.com": ("/",),
+}
+
+# fal's dedicated blog publishes at root slugs. Limit this exception to one
+# article-shaped slug; home, tag, author, pagination and arbitrary subdomains
+# are not announcement sources.
+_PRIMARY_ARTICLE_PATTERNS = {
+    "blog.fal.ai": re.compile(r"/[a-z0-9]+(?:-[a-z0-9]+)+/?"),
 }
 
 
@@ -75,8 +94,12 @@ def is_primary_announcement(url: str) -> bool:
         return bool(
             not parsed.username and not parsed.password
             and parsed.scheme in ("https", "http")
-            and any(parsed.path.startswith(p) and len(parsed.path) > len(p)
+            and (
+                any(parsed.path.startswith(p) and len(parsed.path) > len(p)
                     for p in _PRIMARY_PATHS.get(host, ()))
+                or (host in _PRIMARY_ARTICLE_PATTERNS
+                    and _PRIMARY_ARTICLE_PATTERNS[host].fullmatch(parsed.path))
+            )
         )
     except ValueError:
         return False
