@@ -638,7 +638,7 @@ def test_the_prompt_has_one_block_a_note_and_a_marker_where_he_paused():
     ]
     history = [{"request": "it sounds like cou", "reply": "The phone cut it.", "where": "At 0:38"}]
     text = autoedit.edit_batch_prompt(LETTERS, [[0.0, 10.0]], "Topic: letters", notes, history=history)
-    assert text.startswith("Topic: letters\n\nBackground noise cleaning on this video now: off (the sound is as recorded).\n\nEarlier notes on this video, oldest first:\n")
+    assert text.startswith("Topic: letters\n\nBackground noise cleaning on this video now: off (the sound is as recorded).\nFixed line at the top of the video now: none.\n\nEarlier notes on this video, oldest first:\n")
     assert "- At 0:38, he said: it sounds like cou | You answered: The phone cut it." in text
     assert '[note 1 | 0:01 in the edit | he said "cut the c" | agreed: "At 0:01 you want \'c\' gone."]' in text
     assert '[note 2 | 0:00 in the edit | his own words were not caught | agreed: "At 0:00 a longer start."]' in text
