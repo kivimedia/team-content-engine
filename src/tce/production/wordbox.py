@@ -321,6 +321,85 @@ def render_band(
     return {"list": listing, "y": layout.band_y, "h": layout.band_h, "states": len(entries)}
 
 
+# A fixed line at the top over the whole video (20-Oct, Angel: "Add this caption that
+# shows at the top part of the video, entire video"; the editor had no tool for it).
+# White bold on a dark rounded panel: over sky or a pale shirt, shadowed white alone
+# disappears. Its top sits at 10 % of the height, under the phone apps' own top bar.
+TOP_FONT_SIZE = 64  # at a 1080-wide frame
+TOP_Y = 0.10
+TOP_MAX_WIDTH = 0.86  # text width, share of the frame width
+TOP_MAX_LINES = 3
+TOP_PAD_EM = 0.45
+TOP_LINE_PITCH_EM = 1.22
+TOP_PANEL = (0, 0, 0, 175)
+TOP_MAX_CHARS = 140
+
+
+def top_caption_drawable(text: str, language: str = "en") -> bool:
+    text = str(text or "").strip()
+    if not text or len(text) > TOP_MAX_CHARS:
+        return False
+    if language == "he":
+        return _rtl_ok() and bool(_HEBREW.match(text))
+    return bool(_LATIN.match(text))
+
+
+def _wrap(text: str, font: Any, width: float, opts: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for word in text.split():
+        if lines and font.getlength(f"{lines[-1]} {word}", **opts) <= width:
+            lines[-1] = f"{lines[-1]} {word}"
+        else:
+            lines.append(word)
+    return lines
+
+
+def render_top_caption(
+    text: str, frame_w: int, frame_h: int, path: Path, language: str = "en"
+) -> dict[str, Any] | None:
+    """Draw the fixed top line as one PNG. Returns {"png": path, "y": top on the frame}
+    or None when it cannot be drawn in the caption font (the render then says so)."""
+    from PIL import Image, ImageDraw
+
+    text = " ".join(str(text or "").split())
+    if not top_caption_drawable(text, language):
+        return None
+    layout = _Layout(frame_w, frame_h, language)
+    size = round(TOP_FONT_SIZE * frame_w / BASE_W)
+    while True:
+        font = layout.font(size)
+        lines = _wrap(text, font, frame_w * TOP_MAX_WIDTH, layout.opts)
+        widths = [font.getlength(line, **layout.opts) for line in lines]
+        fits = len(lines) <= TOP_MAX_LINES and max(widths) <= frame_w * TOP_MAX_WIDTH
+        if fits or size <= TOP_FONT_SIZE * frame_w / BASE_W * 0.6:
+            break
+        size -= 2
+    # Even lines, no word left alone on the last one: the narrowest width that still
+    # wraps into the same number of lines.
+    target = max(widths)
+    while len(lines) > 1:
+        tighter = _wrap(text, font, target - 8, layout.opts)
+        if len(tighter) != len(lines):
+            break
+        target -= 8
+        lines = tighter
+    widths = [font.getlength(line, **layout.opts) for line in lines]
+    pad = TOP_PAD_EM * size
+    pitch = TOP_LINE_PITCH_EM * size
+    panel_w = min(frame_w, max(widths) + 2 * pad)
+    panel_h = len(lines) * pitch + 2 * pad - (pitch - size)
+    image = Image.new("RGBA", (frame_w, int(panel_h) + 2), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    left = (frame_w - panel_w) / 2
+    draw.rounded_rectangle((left, 0, left + panel_w, panel_h), radius=0.35 * size, fill=TOP_PANEL)
+    for k, (line, width) in enumerate(zip(lines, widths, strict=True)):
+        x = (frame_w - width) / 2
+        draw.text((x, pad + k * pitch + size * 0.82), line, font=font, fill=WHITE, anchor="ls", **layout.opts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path, compress_level=1)
+    return {"png": path, "y": int(frame_h * TOP_Y), "lines": len(lines), "size": size}
+
+
 def on_edit_timeline(words: list[dict[str, Any]], keep: list[list[float]]) -> list[dict[str, Any]]:
     """Kept words moved onto the edited clock (shared with the subtitles)."""
     from tce.production.retakes import words_on_edit
