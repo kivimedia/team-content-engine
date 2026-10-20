@@ -192,8 +192,8 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
                 "label": "Watch the original" if upload.edited_path else "Watch it",
             }
         )
-    if upload.captions_path:
-        actions.append({"key": "captions", "label": "Captions"})
+    # 20-Oct: no "Captions" button. It only downloaded the subtitle file, and the team
+    # read it as the place to change captions; every change goes through Jennifer.
     if upload.transcript:
         actions.append({"key": "transcript", "label": "Transcript"})
     held_first_edit = not upload.edited_path and meaning_hold(upload) is not None

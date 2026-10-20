@@ -794,6 +794,11 @@ EDIT_REQUEST_SYSTEM = (
     "medium or strong ('off' takes it out again, 'unchanged' leaves it as it is now). "
     "Start with medium; strong thins his voice. It cannot take out a sound louder than his "
     "voice (a car passing, a bark): cut or trim that stretch instead.\n"
+    "- top_caption: one fixed line of text shown at the top of the frame for the whole "
+    "video (a title or hook, e.g. 'Meet Jack the CTO'). action 'set' with his exact text "
+    "(up to 140 characters, his wording, not yours), 'off' takes it out, 'unchanged' "
+    "leaves it as it is now. It is not the spoken captions at the bottom: those come from "
+    "the words.\n"
     "Times in the transcript are where each line lands in the EDITED video, the clock he "
     "watches. Do exactly what he asked and nothing more. If the request cannot be done "
     "with these tools, or you cannot tell what he means, set needs_you true and ask ONE "
@@ -835,6 +840,15 @@ _TRIM = {
     "required": ["after", "why"],
 }
 
+_TOP_CAPTION = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["unchanged", "set", "off"]},
+        "text": {"type": "string"},
+    },
+    "required": ["action", "text"],
+}
+
 EDIT_REQUEST_SCHEMA = {
     "type": "object",
     "properties": {
@@ -847,9 +861,38 @@ EDIT_REQUEST_SCHEMA = {
         "hold": {"type": "array", "items": _HOLD},
         "trim": {"type": "array", "items": _TRIM},
         "denoise": {"type": "string", "enum": ["unchanged", *DENOISE_CHOICES]},
+        "top_caption": _TOP_CAPTION,
     },
-    "required": ["reply", "needs_you", "corrections", "cut", "restore", "hold", "trim", "denoise"],
+    "required": [
+        "reply", "needs_you", "corrections", "cut", "restore", "hold", "trim", "denoise", "top_caption",
+    ],
 }
+
+TOP_CAPTION_MAX = 140
+
+
+def top_caption_change(now: Any, asked: Any) -> str | None:
+    """The top line a note asks for when it differs from what the video has now: the new
+    text, "" to take it out (only when one is on), or None (nothing to change)."""
+    have = " ".join(str(now or "").split())
+    if not isinstance(asked, dict):
+        return None
+    action = str(asked.get("action") or "").strip().lower()
+    if action == "off":
+        return "" if have else None
+    if action != "set":
+        return None
+    text = " ".join(str(asked.get("text") or "").split())[:TOP_CAPTION_MAX]
+    return text if text and text != have else None
+
+
+def top_caption_line(text: Any) -> str:
+    text = " ".join(str(text or "").split())
+    return (
+        f'Fixed line at the top of the video now: "{text}".'
+        if text
+        else "Fixed line at the top of the video now: none."
+    )
 
 
 def denoise_choice(value: Any) -> str | None:
@@ -889,12 +932,13 @@ def edit_request_prompt(
     history: list[dict[str, str]] | None = None,
     speakers: dict[int, str] | None = None,
     denoise_now: str | None = None,
+    top_caption_now: str | None = None,
 ) -> str:
     where = ""
     if scope == "timestamp" and start_s is not None and end_s is not None:
         where = f"\nHe pointed at {_clock(start_s)} to {_clock(end_s)} in the edited video."
     return (
-        f"{context}\n\n{noise_line(denoise_now)}\n\n"
+        f"{context}\n\n{noise_line(denoise_now)}\n{top_caption_line(top_caption_now)}\n\n"
         f"{_earlier_block(history)}His request now:\n{request.strip()}{where}\n\n"
         f"Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
         f"/quiet Ns/ is a pause still in the edit):\n"
@@ -1014,6 +1058,7 @@ def edit_batch_prompt(
     plan_moved: bool = False,
     speakers: dict[int, str] | None = None,
     denoise_now: str | None = None,
+    top_caption_now: str | None = None,
 ) -> str:
     """Every note of the sitting, numbered in the order he gave them.
 
@@ -1040,7 +1085,8 @@ def edit_batch_prompt(
         if note.get("source_s") is not None and words:
             pins.setdefault(pin_index(words, float(note["source_s"]), kept), []).append(n)
     return (
-        f"{context}\n\n{noise_line(denoise_now)}\n\n{_earlier_block(history)}"
+        f"{context}\n\n{noise_line(denoise_now)}\n{top_caption_line(top_caption_now)}\n\n"
+        f"{_earlier_block(history)}"
         f"His notes from this sitting, in the order he gave them:\n" + "\n".join(blocks) + "\n\n"
         + (PLAN_MOVED_LINE + "\n\n" if plan_moved else "")
         + "Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
@@ -1218,6 +1264,7 @@ def apply_batch(
         hold = word_holds(words, proposed_holds)
         trim, bad_trim = word_trims(words, item.get("trim") or [], keep, kept)
         denoise = noise_change((merged or {}).get("denoise"), item.get("denoise"))
+        top = top_caption_change((merged or {}).get("top_caption"), item.get("top_caption"))
         skipped += bad_cut + bad_restore + bad_trim
         if len(hold) < len(proposed_holds):
             skipped.append("a hold that pointed outside the transcript or asked for no time")
@@ -1230,13 +1277,14 @@ def apply_batch(
             "hold": hold,
             "trim": trim,
             "denoise": denoise,
+            "top_caption": top,
             "skipped": skipped,
         }
         proposed = any(item.get(k) for k in ("corrections", "cut", "restore", "hold", "trim"))
-        if valid or cut or restore or hold or trim or denoise:
+        if valid or cut or restore or hold or trim or denoise or top is not None:
             fixes.extend(valid)
-            if cut or restore or hold or trim or denoise:
-                merged = merge_overrides(merged, cut, restore, hold, trim, denoise)
+            if cut or restore or hold or trim or denoise or top is not None:
+                merged = merge_overrides(merged, cut, restore, hold, trim, denoise, top)
             changed = True
             entry["outcome"] = "change"
         elif proposed and skipped:
@@ -1325,9 +1373,13 @@ def merge_overrides(
     hold: list[list[Any]] | None = None,
     trim: list[list[float]] | None = None,
     denoise: str | None = None,
+    top_caption: str | None = None,
 ) -> dict[str, Any]:
     """The newest instruction wins: restoring what an earlier request cut lifts that cut,
     and a new hold on the same word edge replaces the old one.
+
+    `top_caption` (20-Oct): text sets the fixed top line, "" takes it out, None keeps
+    whatever an earlier note set.
 
     `trim` (3-Oct, Jennifer's check): dead air taken out of the finished file, as
     ranges on the recording. Trims survive every later change, like the cuts; a restore
@@ -1350,6 +1402,9 @@ def merge_overrides(
         out["trim"] = [[round(s, 3), round(e, 3)] for s, e in trims]
     if level in DENOISE_LEVELS:
         out["denoise"] = level
+    top = old.get("top_caption") if top_caption is None else top_caption
+    if top:
+        out["top_caption"] = str(top)
     return out
 
 

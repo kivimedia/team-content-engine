@@ -1123,6 +1123,8 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             words = list(row.transcript or [])
         # 19-Oct: background-noise cleaning asked for in a note; the uncut version too.
         denoise = (plan.get("overrides") or {}).get("denoise")
+        # 20-Oct: a fixed line at the top over the whole video, asked for in a note.
+        top_text = (plan.get("overrides") or {}).get("top_caption")
         if mode == "uncut":
             if not duration:
                 duration = await media.probe_duration(src)
@@ -1157,6 +1159,15 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
                 wordbox.render_band,
                 pages, size[0], size[1], band_dir, sum(e - s for s, e in keep), lang,
             )
+        top = None
+        if top_text and not audio_only:
+            top = await asyncio.to_thread(
+                wordbox.render_top_caption, top_text, size[0], size[1], band_dir / "top.png", lang
+            )
+            if top is None:
+                await report("The top line has letters the caption font cannot draw; left it off")
+            else:
+                await report(f'Adding the top line: "{top_text}"')
         made: dict[str, Any] = {}
         try:
             await media.render_edit(
@@ -1170,6 +1181,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
                 make_preview=not audio_only,
                 report=made,
                 denoise=denoise,
+                top_caption=top,
             )
         finally:
             shutil.rmtree(band_dir, ignore_errors=True)
@@ -1187,6 +1199,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
                 "captions": qc.caption_data(on_edit, pages if band else None, cues),
                 "loudness": made.get("loudness"),
                 "denoise": made.get("denoise"),
+                "top_caption": top_text if top else None,
             },
         )
         async with session_factory()() as s:
@@ -3306,6 +3319,7 @@ async def _request_inputs(request_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any
             "keep": [list(r) for r in (row.edit_plan or {}).get("keep") or []],
             "kept": list((row.edit_plan or {}).get("words") or []),
             "denoise": ((row.edit_plan or {}).get("overrides") or {}).get("denoise"),
+            "top_caption": ((row.edit_plan or {}).get("overrides") or {}).get("top_caption"),
             "context": await _script_context(s, ws, row),
             "speakers": await _speakers(row),
             "text": req.request,
@@ -3329,14 +3343,14 @@ async def _apply_request(
     ws: uuid.UUID,
     upload_id: uuid.UUID,
     words: list[dict[str, Any]],
-    change: tuple[list[dict[str, Any]], list[Any], list[Any], list[Any], list[Any], str | None],
+    change: tuple[list[dict[str, Any]], list[Any], list[Any], list[Any], list[Any], str | None, str | None],
     settle,
 ) -> RecordingUpload | str:
     """Write what the request changes and render once, under the render lock. Returns
     the video as it ended, or "joined" (he is giving notes: it joined them), "gate" (a
     sitting's notes started being made: wait for them), "changed" (the words moved
     while it read: read them again)."""
-    fixed, cut, restore, hold, trim, denoise = change
+    fixed, cut, restore, hold, trim, denoise, top = change
     fp = library_service.transcript_fingerprint
     async with _render_lock(upload_id):
         async with session_factory()() as s:
@@ -3350,7 +3364,9 @@ async def _apply_request(
                 return "changed"
             row.transcript = fixed
             plan = dict(row.edit_plan or {})
-            plan["overrides"] = autoedit.merge_overrides(plan.get("overrides"), cut, restore, hold, trim, denoise)
+            plan["overrides"] = autoedit.merge_overrides(
+                plan.get("overrides"), cut, restore, hold, trim, denoise, top
+            )
             row.edit_plan = plan
             await s.commit()
         await settle("in_progress", {"status": "Applying your changes and re-rendering"})
@@ -3409,6 +3425,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
                 words, keep, got["context"], got["text"], scope=got["scope"], start_s=got["start_s"],
                 end_s=got["end_s"], kept=got["kept"], marks=marks, history=got["history"],
                 speakers=got.get("speakers"), denoise_now=got.get("denoise"),
+                top_caption_now=got.get("top_caption"),
             )
             system = autoedit.edit_request_system(await _persona(ws))
             try:
@@ -3432,12 +3449,14 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             hold = autoedit.word_holds(words, out.get("hold") or [])
             trim, _bad_trim = autoedit.word_trims(words, out.get("trim") or [], keep, got["kept"])
             denoise = autoedit.noise_change(got.get("denoise"), out.get("denoise"))
-            if not (applied or cut or restore or hold or trim or denoise) and str(out.get("reply") or "").strip():
+            top = autoedit.top_caption_change(got.get("top_caption"), out.get("top_caption"))
+            looks = top is not None
+            if not (applied or cut or restore or hold or trim or denoise or looks) and str(out.get("reply") or "").strip():
                 # An answer, not a change (30-Sep: "the phone cut the 's' off 'course'; no
                 # cut can bring it back" is the whole answer, not a question back to him).
                 await settle("done", {"reply": str(out["reply"]), "changed": False, "model": answer.model})
                 return
-            if not (applied or cut or restore or hold or trim or denoise):
+            if not (applied or cut or restore or hold or trim or denoise or looks):
                 await settle(
                     "needs_you",
                     {
@@ -3448,7 +3467,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
                 )
                 return
             row = await _apply_request(
-                request_id, ws, upload_id, words, (fixed, cut, restore, hold, trim, denoise), settle
+                request_id, ws, upload_id, words, (fixed, cut, restore, hold, trim, denoise, top), settle
             )
             if row == "joined":
                 return
@@ -3469,6 +3488,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             "hold": hold,
             "trim": trim,
             "denoise": denoise,
+            "top_caption": top,
             "file": f"/api/v1/production/uploads/{upload_id}/edited",
             "model": answer.model,
         }
@@ -3635,6 +3655,7 @@ async def _talk_inputs(session_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any] |
             "keep": keep,
             "kept": kept or [],
             "denoise": (plan.get("overrides") or {}).get("denoise"),
+            "top_caption": (plan.get("overrides") or {}).get("top_caption"),
             "plan_moved": bool(watched) and bool(plan_keep) and kept is None,
             "context": await _script_context(s, ws, row),
             "speakers": await _speakers(row),
@@ -3927,6 +3948,7 @@ async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
                 got["words"], got["keep"], got["context"], got["notes"],
                 kept=got["kept"], marks=marks, history=got["history"], plan_moved=got["plan_moved"],
                 speakers=got.get("speakers"), denoise_now=got.get("denoise"),
+                top_caption_now=got.get("top_caption"),
             )
             system = autoedit.edit_batch_system(await _persona(ws))
             key = talk_key(session_id, prompt, system, got["attempt"])

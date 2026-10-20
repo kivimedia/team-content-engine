@@ -397,8 +397,12 @@ async def render_edit(
     loudness: bool = True,
     report: dict[str, Any] | None = None,
     denoise: str | None = None,
+    top_caption: dict[str, Any] | None = None,
 ) -> Path:
     """Cut the kept ranges into `out_path` (MP4 when captions are given).
+
+    `top_caption` (20-Oct): {"png", "y"}, one fixed image laid over the whole video
+    (wordbox.render_top_caption); a single frame, which overlay repeats to the end.
 
     `denoise` (19-Oct): light, medium or strong background-noise cleaning of the cut
     audio (DENOISE_FILTERS), before the loudness is measured and set, so the level is
@@ -526,6 +530,14 @@ async def render_edit(
                 f"{video}[band]overlay=x=0:y={int(caption_band['y'])}:format=auto:shortest=1[capv]"
             )
             video = "[capv]"
+        if video is not None and top_caption:
+            index = inputs.count("-i")
+            inputs += ["-i", str(Path(top_caption["png"]).resolve())]
+            parts.append(
+                f"[{index}:v]format=rgba[top];"
+                f"{video}[top]overlay=x=0:y={int(top_caption['y'])}:format=auto:eof_action=repeat[topv]"
+            )
+            video = "[topv]"
         if video is not None:
             maps += ["-map", video]
         maps += ["-map", audio_out]
