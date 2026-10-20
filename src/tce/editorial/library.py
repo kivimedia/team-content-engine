@@ -22,7 +22,7 @@ import json
 import re
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -590,7 +590,19 @@ async def list_library(
         uploads = [u for u in uploads if u.archived_at is not None]
     else:
         uploads = [u for u in uploads if u.archived_at is None]
-    uploads.sort(key=lambda u: not u.edited_path)
+    # 20-Oct (T-14299): a take recorded in the last day and not yet edited sits at the
+    # very top, so a video that is mid-edit is not buried under every finished one.
+    recent_cut = datetime.now(UTC) - timedelta(hours=24)
+
+    def _is_recent_take(u: RecordingUpload) -> bool:
+        made = u.created_at
+        if made is None or u.edited_path:
+            return False
+        if made.tzinfo is None:
+            made = made.replace(tzinfo=UTC)
+        return made >= recent_cut
+
+    uploads.sort(key=lambda u: (not _is_recent_take(u), not u.edited_path))
     items: list[dict[str, Any]] = []
     for upload in uploads:
         if wanted and upload.status not in wanted:
@@ -642,6 +654,7 @@ async def list_library(
                 "packet_id": str(upload.packet_id) if upload.packet_id else None,
                 "packet_version": packet_versions.get(upload.packet_id),
                 "has_edit": bool(upload.edited_path),
+                "recent_take": _is_recent_take(upload),
                 "archived": upload.archived_at is not None,
                 "published": published,
                 "has_captions": bool(upload.captions_path),

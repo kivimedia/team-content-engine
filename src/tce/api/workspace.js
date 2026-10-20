@@ -1572,6 +1572,8 @@
     if (!kind) return true;
     if (i.archived) return false;
     if (kind === "unedited") return !i.has_edit && LIBRARY_LIVE.indexOf(i.status) < 0;
+    // 20-Oct (T-14299): recorded, the edit is being made right now.
+    if (kind === "editing") return !i.has_edit && LIBRARY_LIVE.indexOf(i.status) >= 0;
     var pubs = i.publishing || [];
     return !!i.has_edit && !pubs.some(function (p) {
       return p.status === "posted" || p.status === "scheduled" || p.status === "posting";
@@ -1583,6 +1585,7 @@
       try { pool = (await api("/production/library?filter=todo")).items || []; } catch (e) { pool = []; }
     }
     return {
+      editing: pool.filter(function (i) { return countMatch("editing", i); }).length,
       unedited: pool.filter(function (i) { return countMatch("unedited", i); }).length,
       unreviewed: pool.filter(function (i) { return countMatch("unreviewed", i); }).length
     };
@@ -1593,7 +1596,7 @@
            + (state.libraryCount === kind ? "true" : "false") + '"><strong>' + n + "</strong> " + label + "</button>";
     }
     return '<div class="count-strip" role="group" aria-label="What is waiting">'
-         + tile("unedited", c.unedited, "unedited") + tile("unreviewed", c.unreviewed, "unreviewed") + "</div>";
+         + tile("editing", c.editing, "being edited") + tile("unedited", c.unedited, "unedited") + tile("unreviewed", c.unreviewed, "unreviewed") + "</div>";
   }
 
   function libraryCard(item) {
