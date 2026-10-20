@@ -283,6 +283,7 @@ async def run(args):
                     previous.status = "stale"
             receipt = await record_submission(db, ws, item, "ziv-editorial-review", brief["test_proposal"])
             receipts.append({**receipt, "slug": brief["slug"], "candidate_id": str(candidate.id),
+                             "state": "ready_to_record", "next": "Ziv can open the brief and record.",
                              "packet_id": str(packet.id), "status": packet.status,
                              "created_candidate": old is None,
                              "score": candidate.rank_score,

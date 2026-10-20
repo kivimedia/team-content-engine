@@ -100,7 +100,10 @@ async def submit_story(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         await db.commit()
-    return receipt
+    # Re-submitting an existing story must not reset its reported progress to
+    # intake when its recording brief is already ready.
+    progress = await handoff_status(item.id, ws, sessionmaker)
+    return {**receipt, **progress}
 
 
 @router.get("/workflow")

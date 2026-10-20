@@ -128,6 +128,28 @@ async def test_owner_submission_routes_are_scoped_and_reuse_the_item(
     rechecked = client.post("/api/v1/news/submissions", json=body, headers=owner_headers)
     assert rechecked.status_code == 200
     assert checks == ["https://example.com/story"]
+    from datetime import date
+    from tce.models.editorial import TopicCandidate, RecordingPacket
+    async with editorial_sessionmaker() as db:
+        saved = await db.get(NewsItem, item_id)
+        saved.editorial_meta = {**saved.editorial_meta, "primary_source_verified": True}
+        cand = TopicCandidate(workspace_id=owner, week_start=date.today(), title="Reviewed story",
+                              lesson="A useful test", audience="both", public_angle="A proposed test",
+                              moment_ids=[], gates={}, status="proposed", news_item_id=item_id)
+        db.add(cand)
+        await db.flush()
+        packet = RecordingPacket(workspace_id=owner, candidate_id=cand.id, version=1,
+                                 status="ready", bullets=[], script_phrases=[],
+                                 facebook_post="", linkedin_post="", interviewer_prompt="",
+                                 prompt_version="test", citations_private=[])
+        db.add(packet)
+        await db.commit()
+        packet_id = str(packet.id)
+    current = client.post("/api/v1/news/submissions", json=body, headers=owner_headers)
+    assert current.status_code == 200
+    assert current.json()["state"] == "ready_to_record"
+    assert current.json()["packet_id"] == packet_id
+    assert current.json()["receipt_id"] == first.json()["receipt_id"]
 
 
 @pytest.mark.asyncio
