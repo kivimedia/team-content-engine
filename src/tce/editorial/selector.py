@@ -204,6 +204,7 @@ class PoolMoment:
     moment: EvidenceMoment
     source: EvidenceSource
     in_week: bool
+    editorial_notes: list[str] = field(default_factory=list)
 
     @property
     def id(self) -> str:
@@ -427,6 +428,21 @@ async def collect_pool(
         elif when is not None and when < start and str(moment.id) not in used:
             reserve.append(PoolMoment(moment, source, False))
 
+    if news_rules.owner_policy(workspace_id):
+        from tce.models.news import NewsItem
+        from tce.news.discovery import _editorial_notes
+
+        news_moments = [pm for pm in week if pm.source.source_kind == news_rules.NEWS_KIND]
+        item_ids = {
+            item_id for pm in news_moments
+            if (item_id := _coerce_news_id(pm.moment.news_ref)) is not None
+        }
+        items = (await session.execute(select(NewsItem).where(
+            NewsItem.workspace_id == workspace_id, NewsItem.id.in_(item_ids),
+        ))).scalars().all() if item_ids else []
+        notes = {item.id: _editorial_notes(item) for item in items}
+        for pm in news_moments:
+            pm.editorial_notes = notes.get(_coerce_news_id(pm.moment.news_ref), [])
     week.sort(key=_pm_sort_key)
     picked = [] if source_ids else _pick_reserve(reserve, RESERVE_POOL_LIMIT)
     picked = picked + lane_seeds
@@ -512,6 +528,7 @@ def _news_fields(cited: list[PoolMoment]) -> dict[str, Any] | None:
             "expires_at": _parse_dt(ref.get("expires_at")),
             "story_weight": ref.get("story_weight") or "small",
             "perishability": ref.get("perishability"),
+            "news_category": ref.get("news_category") or "other",
         }
     return None
 
@@ -588,7 +605,7 @@ async def load_context(
 
 def _pool_prompt_item(pm: PoolMoment) -> dict[str, Any]:
     m, s = pm.moment, pm.source
-    return {
+    out = {
         "moment_id": pm.id,
         "pool": "this_week" if pm.in_week else "evergreen_reserve",
         "source_kind": s.source_kind,
@@ -602,6 +619,9 @@ def _pool_prompt_item(pm: PoolMoment) -> dict[str, Any]:
         "sensitivity_flags": list(m.sensitivity_flags or []),
         "excerpt_private": (m.excerpt_private or "")[:EXCERPT_CHARS],
     }
+    if pm.editorial_notes:
+        out["editor_suggestions_not_evidence"] = pm.editorial_notes
+    return out
 
 
 def build_selection_prompt(
@@ -672,6 +692,19 @@ def build_selection_prompt(
                 "on. Say only what the news item's confirmed facts and the cited anchors "
                 "support: drop a claim the news does not back instead of rejecting the item."
             )
+            if pool and news_rules.owner_policy(pool[0].source.workspace_id):
+                context_block.append(
+                    "OWNER UPDATE (20-Oct): aim for about 25% of published original videos "
+                    "over rolling 42 days from useful AI news. Count each original once "
+                    "across platforms; the last 12 originals are secondary context. "
+                    "This is a mix goal, never a hard quota or a weekly topic ceiling. Keep "
+                    "the actual change visible in the title and lesson, explain the "
+                    "owner consequence, and preserve its date and source. His view "
+                    "can be what he would test next. Never invent a client anecdote, "
+                    "a past conversation, a test he ran, or a measured outcome. "
+                    "Editor suggestions are directions to evaluate against the cited "
+                    "facts, never evidence or permission to weaken a gate."
+                )
     # The first three lines are durable headers parsed by tce.editorial.common.
     return "\n\n".join(
         [
@@ -740,6 +773,7 @@ def _reject(
         "reasons_to_care": raw.get("reasons_to_care")
         if isinstance(raw.get("reasons_to_care"), list)
         else [],
+        "news": raw.get("news"),
     }
 
 
@@ -834,6 +868,14 @@ def enforce_candidates(
             )
             continue
 
+        # Resolve provenance before evaluating editorial gates. A turned-down
+        # angle still has real evidence and must remain traceable to the news.
+        cited = [by_id[i] for i in ids]
+        if cited and news_rules.owner_policy(cited[0].source.workspace_id):
+            raw = {
+                **raw, "news": _news_fields(cited),
+                "citations_private": [_citation(pm) for pm in cited],
+            }
         gates = raw.get("gates") if isinstance(raw.get("gates"), dict) else {}
         failed_gate = None
         for g in gate_names:
@@ -966,6 +1008,7 @@ def enforce_candidates(
                     published_at=news["published_at"],
                     expires_at=news["expires_at"],
                     now=datetime.now(UTC).replace(tzinfo=None),
+                    owner_workspace=cited[0].source.workspace_id if cited else None,
                 )
                 rank_score = parts.total
                 freshness_role = "news"
@@ -992,6 +1035,109 @@ def enforce_candidates(
             out["lane"] = lane_key
         accepted.append(out)
     return accepted, rejected
+
+
+async def save_reviewed_news_candidate(
+    db: AsyncSession,
+    ws: uuid.UUID,
+    raw: dict[str, Any],
+    pool: list[PoolMoment],
+    review_ref: str,
+) -> TopicCandidate:
+    """Persist an in-session editorial review through the normal quality gates.
+
+    No model job is created or impersonated. Proof is reloaded from this
+    workspace, and the caller owns the transaction. Existing human choices and
+    other candidates are preserved, including on a repeated import.
+    """
+    from tce.editorial.common import current_week_start
+    from tce.models.news import NewsItem
+
+    if not news_rules.owner_policy(ws):
+        raise ValueError("Reviewed news is owner-only.")
+    review_ref = str(review_ref or "").strip()
+    if not review_ref or len(review_ref) > 200:
+        raise ValueError("A review reference of 1 to 200 characters is required.")
+    try:
+        ids = {uuid.UUID(str(value)) for value in raw.get("moment_ids", [])}
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid reviewed news proof IDs.") from exc
+    supplied_ids = {pm.moment.id for pm in pool}
+    if not ids or not ids.issubset(supplied_ids):
+        raise ValueError("All reviewed news proof must be in the supplied pool.")
+    rows = (await db.execute(
+        select(EvidenceMoment, EvidenceSource)
+        .join(EvidenceSource, EvidenceMoment.source_id == EvidenceSource.id)
+        .where(
+            EvidenceMoment.id.in_(supplied_ids), EvidenceMoment.workspace_id == ws,
+            EvidenceSource.workspace_id == ws, EvidenceMoment.status == "active",
+            EvidenceMoment.source_version_hash == EvidenceSource.version_hash,
+        )
+    )).all()
+    if {m.id for m, _ in rows} != supplied_ids or any(source_is_excluded(s) for _, s in rows):
+        raise ValueError("Reviewed news proof is foreign, stale, missing or excluded.")
+    verified = [PoolMoment(m, s, True) for m, s in rows]
+    cited = [pm for pm in verified if pm.moment.id in ids]
+    news = [pm for pm in cited if pm.source.source_kind == news_rules.NEWS_KIND]
+    if len(news) != 1:
+        raise ValueError("Reviewed news requires exactly one announcement as proof.")
+    ref = news[0].moment.news_ref or {}
+    anchor_ids = set(str(value) for value in ref.get("anchor_moment_ids") or [])
+    if not any(
+        pm.id in anchor_ids and pm.source.source_kind == news_rules.STANDING_KIND
+        and pm.moment.extraction_job_id is None
+        and (pm.moment.news_ref or {}).get("standing") is True
+        and (pm.moment.news_ref or {}).get("anchor_kind") in {"problem_pattern", "client_solution", "vendor"}
+        for pm in cited
+    ):
+        raise ValueError("Reviewed news requires its actual human standing proof.")
+    item_id = _coerce_news_id(ref)
+    item = (await db.execute(select(NewsItem).where(
+        NewsItem.id == item_id, NewsItem.workspace_id == ws,
+    ).with_for_update())).scalar_one_or_none()
+    now = _now()
+    expiry = _parse_dt(ref.get("expires_at"))
+    if (item is None or not item.matched or not item.primary_url
+            or item.published_at is None or item.published_at > now
+            or expiry is None or expiry <= now):
+        raise ValueError("Reviewed news needs a dated primary source and valid expiry.")
+    accepted, rejected = enforce_candidates([raw], verified, {pm.id for pm in verified})
+    if rejected or len(accepted) != 1:
+        rejection = rejected[0] if rejected else {}
+        raise ValueError(
+            f"Reviewed news gate refused: {rejection.get('code', 'invalid')} "
+            f"{rejection.get('reason', '')}"
+        )
+    clean = accepted[0]
+    if not clean.get("news") or clean["rank_score"] < news_rules.FIRST_SLOT_FLOOR:
+        raise ValueError("Reviewed news does not meet the 0.70 news quality floor.")
+    cid = uuid.uuid5(ws, "reviewed-news:" + review_ref + str(item_id))
+    existing = await db.get(TopicCandidate, cid)
+    if existing is not None:
+        if existing.workspace_id != ws or existing.news_item_id != item_id:
+            raise ValueError("Review identity does not match this story.")
+        return existing
+    start, _ = week_bounds(current_week_start())
+    gates = {
+        **clean["gates"], "_news_category": clean["news"].get("news_category", "other"),
+        "_news_recovery": {"state": "qualified", "policy": news_rules.OWNER_POLICY_VERSION},
+        "_editorial_review": {"reference": review_ref, "reviewed_at": now.isoformat()},
+    }
+    candidate = TopicCandidate(
+        id=cid, workspace_id=ws, week_start=start,
+        selection_run_id=uuid.uuid5(ws, "reviewed-news:" + review_ref),
+        moment_ids=clean["moment_ids"], title=clean["title"], lesson=clean["lesson"],
+        audience=clean["audience"], reasons_to_care=clean["reasons_to_care"],
+        public_angle=clean["public_angle"], public_safety_notes=clean["public_safety_notes"],
+        gates=gates, rank_score=clean["rank_score"], freshness_role="news",
+        citations_private=clean["citations_private"], status="proposed",
+        prompt_version="reviewed_news.v1", job_id=None, origin=ORIGIN_SELECTOR,
+        editor_notes=f"In-session editorial review: {review_ref}. No model job.",
+        news_item_id=item_id, expires_at=expiry, created_at=now, updated_at=now,
+    )
+    db.add(candidate)
+    await db.flush()
+    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -2150,6 +2296,7 @@ async def select_candidates(
                 score_of=lambda c: float(c.get("rank_score") or 0.0),
                 story_weight_of=lambda c: (c.get("news") or {}).get("story_weight", "small"),
                 already=already,
+                owner_workspace=ws,
             )
             for cand, code, reason in decision.rejected:
                 out = _reject(cand, cand["moment_ids"], "unspecified", code, reason)
@@ -2188,6 +2335,12 @@ async def select_candidates(
         now = _now()
         rows: list[TopicCandidate] = []
         for rank, cand in enumerate(final, start=1):
+            gates = dict(cand["gates"])
+            if news_rules.owner_policy(ws) and cand.get("news"):
+                gates["_news_category"] = cand["news"].get("news_category", "other")
+                gates["_news_recovery"] = {
+                    "state": "qualified", "policy": news_rules.OWNER_POLICY_VERSION,
+                }
             row = TopicCandidate(
                 workspace_id=ws,
                 week_start=start,
@@ -2199,7 +2352,7 @@ async def select_candidates(
                 reasons_to_care=cand["reasons_to_care"],
                 public_angle=cand["public_angle"],
                 public_safety_notes=cand["public_safety_notes"],
-                gates=cand["gates"],
+                gates=gates,
                 rank=rank,
                 rank_score=cand["rank_score"],
                 freshness_role=cand["freshness_role"],
@@ -2226,6 +2379,48 @@ async def select_candidates(
                 "reason": rej["reason"],
             }
             reserve = rej["code"] in RESERVE_CODES and bool(rej.get("citations_private"))
+            cited_news = [
+                pool_by_id[value] for value in rej["moment_ids"]
+                if value in pool_by_id
+                and pool_by_id[value].source.source_kind == news_rules.NEWS_KIND
+            ]
+            retained_news = news_rules.owner_policy(ws) and bool(cited_news)
+            news = _news_fields(cited_news) if retained_news else None
+            if retained_news:
+                from tce.news.discovery import selection_fingerprint
+                from tce.models.news import NewsItem
+
+                citations = [
+                    _citation(pool_by_id[value]) for value in rej["moment_ids"]
+                    if value in pool_by_id
+                ]
+                # Raw model rejections may cite only the announcement. Keep its
+                # stored anchors too, without pretending they passed a gate.
+                pm = cited_news[0]
+                for value in (pm.moment.news_ref or {}).get("anchor_moment_ids") or []:
+                    if value in pool_by_id and value not in rej["moment_ids"]:
+                        citations.append(_citation(pool_by_id[value]))
+                rej["citations_private"] = citations
+                code = rej["code"]
+                state = (
+                    "waiting_for_slot" if code in RESERVE_CODES | {"news_ceiling", "news_margin"}
+                    else "waiting_for_evidence" if code in {"news_floor", "news_needs_anchor"}
+                    or rej["gate"] == "connects_to_ziv_work"
+                    else "needs_angle" if rej["gate"] == "concrete_supported_substance"
+                    and code not in {"invented_outcome", "invalid_citation"}
+                    else "hard_reject"
+                )
+                gates["_news_recovery"] = {
+                    "state": state, "policy": news_rules.OWNER_POLICY_VERSION,
+                    "fingerprint": await selection_fingerprint(session, ws, pm.source, pm.moment),
+                }
+                item_id = _coerce_news_id(news)
+                item = await session.get(NewsItem, item_id) if item_id else None
+                if item is not None and item.workspace_id == ws:
+                    gates["_news_recovery"]["retry_nonce"] = (
+                        item.editorial_meta or {}
+                    ).get("retry_nonce")
+                gates["_news_category"] = (news or {}).get("news_category", "other")
             # A news candidate that lost its week must never be promotable by
             # "more ideas": it would come back weeks later as a fresh card about
             # something that already happened. Belt and braces with _pick_reserve,
@@ -2246,9 +2441,12 @@ async def select_candidates(
                     public_angle=rej["public_angle"],
                     public_safety_notes=None,
                     gates=gates,
-                    rank_score=rej.get("rank_score") if reserve else None,
-                    freshness_role="evergreen",
-                    citations_private=rej.get("citations_private") or [] if reserve else [],
+                    rank_score=rej.get("rank_score") if reserve or retained_news else None,
+                    freshness_role="news" if retained_news else "evergreen",
+                    citations_private=rej.get("citations_private") or []
+                    if reserve or retained_news else [],
+                    news_item_id=_coerce_news_id(news),
+                    expires_at=(news or {}).get("expires_at"),
                     status="rejected",
                     editor_notes=rej["reason"],
                     prompt_version=PROMPT_VERSION,

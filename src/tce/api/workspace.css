@@ -559,3 +559,11 @@ body[data-reader="largest"] .msg .bubble { font-size: 1.3rem; }
 .pub-platform[hidden] { display: none; }
 .pub-preview { margin: 6px 0; color: var(--ink); }
 .pub-words > summary, .card-fold > summary { min-height: 44px; display: flex; align-items: center; font-weight: 700; cursor: pointer; }
+/* News stays visible until there is a recording, rather than ending at an idea. */
+.news-progress { margin: 1.4rem 0 2rem; padding: 1.25rem; border: 1px solid #64748b; border-radius: 18px; background: var(--surface, #fff); color: var(--text, #182235); }
+.news-progress-head { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: center; }
+.news-progress h2 { margin: .2rem 0 .7rem; }
+.news-share { font-size: 1.6rem; }
+.news-progress-item { display: flex; flex-wrap: wrap; gap: .8rem; justify-content: space-between; align-items: center; border-top: 1px solid #aab5c3; padding: 1rem 0; }
+.news-progress-item > div { flex: 1 1 220px; min-width: 0; }
+.news-progress-item p { margin: .4rem 0; }

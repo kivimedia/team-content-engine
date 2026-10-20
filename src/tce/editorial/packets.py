@@ -377,7 +377,10 @@ def validate_packet_output(
     if news_terms is not None:
         from tce.editorial.news_packet import news_errors
 
-        problems = news_errors(clean_packet, news_terms)
+        problems = news_errors(
+            clean_packet, news_terms,
+            allow_announcement=getattr(news_terms, "allow_announcement", False),
+        )
         if problems:
             raise PacketValidationError("; ".join(problems))
     return clean_packet
@@ -436,7 +439,8 @@ async def news_terms_for(
     None is the important return: it is what keeps every evergreen packet on
     exactly the validation it had before the third lane existed.
     """
-    from tce.editorial.news_packet import forbidden_terms_for
+    from tce.editorial.news_packet import NewsTerms, forbidden_terms_for
+    from tce.editorial.news_rules import owner_policy
     from tce.models.news import NewsAppraisal, NewsItem
 
     cand = await session.get(TopicCandidate, coerce_uuid(candidate_id))
@@ -455,7 +459,10 @@ async def news_terms_for(
         )
     ).scalar_one_or_none()
     ref = {"publisher": item.publisher} if item is not None else {}
-    return forbidden_terms_for(ref, (appraisal.anchors if appraisal else None) or [])
+    return NewsTerms(
+        forbidden_terms_for(ref, (appraisal.anchors if appraisal else None) or []),
+        allow_announcement=owner_policy(ws),
+    )
 
 
 async def _participants(
@@ -604,6 +611,20 @@ def build_packet_prompt(
         if not item["moment_id"]:
             item["moment_id"] = fallback
     parts = ["STRATEGY:\n" + (strategy_text or "(none)")]
+    if cand.news_item_id:
+        from tce.editorial.news_rules import owner_policy
+
+        if owner_policy(cand.workspace_id):
+            parts.append(
+                "AI NEWS EDITORIAL POLICY (overrides old news-opening style rules):\n"
+                "Keep the actual product change visible. A sourced company, product, date "
+                "or number may open the video and appear in beat one. Explain why an owner "
+                "should care. Never invent a client episode, test, adoption, result, or "
+                "first-person experience to make the news sound personal. A proposed demo "
+                "must be described as something to try. Separate announcement date, rollout "
+                "and availability. Keep limitations. No manufactured urgency. "
+                "Use only the supplied evidence."
+            )
     if post_rules:
         parts.append(
             "HIS POST RULES (they win over any call to action in the strategy above):\n"
@@ -976,6 +997,63 @@ async def list_packets(
         .scalars()
         .all()
     )
+
+
+async def save_reviewed_news_packet(
+    session: AsyncSession, ws: uuid.UUID, candidate_id: uuid.UUID,
+    data: dict[str, Any], *, review_ref: str,
+) -> RecordingPacket:
+    """Save an in-session editorial draft through normal packet and safety gates.
+
+    No network writer, fabricated job, export or replacement. This is used by
+    the owner recovery command after a source-backed candidate has passed the
+    selector. A repeated review returns the same immutable packet.
+    """
+    from tce.editorial.news_rules import owner_policy
+    if not owner_policy(ws) or not review_ref.strip():
+        raise ValueError("A configured owner workspace and review reference are required.")
+    cand = (await session.execute(select(TopicCandidate).where(
+        TopicCandidate.id == candidate_id, TopicCandidate.workspace_id == ws,
+    ).with_for_update())).scalar_one_or_none()
+    if cand is None or not cand.news_item_id or cand.status in {"rejected", "withdrawn"}:
+        raise ValueError("A qualified news candidate is required.")
+    if cand.expires_at and cand.expires_at <= datetime.now(UTC).replace(tzinfo=None):
+        raise ValueError("The story must be refreshed before a recording brief is saved.")
+    packet_id = uuid.uuid5(ws, f"reviewed-news-packet:{review_ref}:{candidate_id}")
+    existing = await session.get(RecordingPacket, packet_id)
+    if existing is not None:
+        return existing
+    prior = (await session.execute(select(RecordingPacket.id).where(
+        RecordingPacket.workspace_id == ws, RecordingPacket.candidate_id == candidate_id,
+        RecordingPacket.status != "superseded",
+    ).limit(1))).scalar_one_or_none()
+    if prior is not None:
+        raise ValueError("This topic already has a script. Review it before replacing it.")
+    clean = validate_packet_output(
+        data, news_terms=await news_terms_for(session, ws, candidate_id), forbid_asks=True,
+    )
+    cited = {m for h in clean["hook_options"] for m in h["moment_ids"]}
+    if not cited.issubset({str(m) for m in cand.moment_ids or []}):
+        raise ValueError("A hook cites evidence outside the selected idea.")
+    safety = await scan_packet_safety(session, ws, safety_fields(clean), candidate_id=candidate_id)
+    safety["editor_review"] = {
+        "reference": review_ref, "method": "in-session editorial review",
+        "model_job": False, "demo_tested": False,
+    }
+    news_block, news_format = await news_block_for(session, ws, cand)
+    packet = RecordingPacket(
+        id=packet_id, workspace_id=ws, candidate_id=candidate_id, version=1,
+        bullets=clean["bullets"], script_phrases=clean["script_phrases"],
+        facebook_post=clean["facebook_post"], linkedin_post=clean["linkedin_post"],
+        interviewer_prompt=clean["interviewer_prompt"], hook_options=clean["hook_options"],
+        selected_hook_id=clean["selected_hook_id"], beats=clean["beats"],
+        citations_private=list(cand.citations_private or []), public_safety=safety,
+        status=status_for_safety(safety), prompt_version="owner-news-review.v1", job_id=None,
+        news_block=news_block, format=news_format,
+    )
+    session.add(packet)
+    await session.flush()
+    return packet
 
 
 # ---------------------------------------------------------------------------

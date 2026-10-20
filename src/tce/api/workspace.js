@@ -223,11 +223,52 @@
 
   // ------------------------------------------------------------------ Today
 
+  function newsProgressPanel(data) {
+    if (!data || (!data.enabled && !data.unavailable)) return "";
+    if (data.unavailable) return '<section class="news-progress"><h2>AI news</h2>'
+      + '<p>Could not read news progress. Refresh to try again.</p></section>';
+    var mix = data.mix || {};
+    var count = mix.published_originals || 0;
+    var share = count ? Math.round(mix.share * 100) + "%" : "No published videos yet";
+    var html = '<section class="news-progress" aria-label="AI news progress">';
+    html += '<div class="news-progress-head"><div><p class="kicker">Your content mix</p>'
+      + '<h2>AI news: aim for about 1 in 4 videos</h2></div>'
+      + '<strong class="news-share">' + esc(share) + '</strong></div>';
+    html += '<p>' + (mix.ai_news_originals || 0) + " of " + count
+      + " original videos in the last " + data.window_days + " days. "
+      + "Posting the same video on several platforms counts once.</p>";
+    if (mix.unclassified_news) html += '<p class="notice">' + mix.unclassified_news
+      + " older news videos still need an AI or software label.</p>";
+    html += '<p class="section-hint">' + data.ready_to_record
+      + " AI news briefs ready. Recording owner: " + esc(data.recording_owner) + ".</p>";
+    var choices = (data.queue || []).filter(function (q) {
+      return q.category === "ai" && q.state !== "recorded";
+    }).slice(0, 4);
+    if (!choices.length) html += '<p>No AI news brief is ready yet. The next news run checks sources,'
+      + ' judges relevance and prepares qualifying stories for recording.</p>';
+    choices.forEach(function (q) {
+      html += '<article class="news-progress-item"><div><strong>' + esc(q.title) + '</strong>'
+        + '<p>' + esc(q.next_action) + '</p>';
+      if (q.reason) html += '<p class="section-hint">' + esc(q.reason) + '</p>';
+      if (q.deadline) html += '<p class="section-hint">Review by '
+        + esc(new Date(q.deadline).toLocaleDateString()) + '</p>';
+      html += '</div>';
+      if (q.candidate_id) html += '<button class="btn" type="button" data-go="/topics/'
+        + esc(q.candidate_id) + '">' + (q.state === "ready_to_record" ? "Open brief" : "Review topic")
+        + '</button>';
+      html += '</article>';
+    });
+    return html + '</section>';
+  }
+
   async function renderToday() {
     var view = $("view");
     view.innerHTML = '<div class="page">' + working("Reading your week") + "</div>";
     var data = await api("/editorial/today");
     state.today = data;
+    var newsProgress = null;
+    try { newsProgress = await api("/news/workflow"); }
+    catch (e) { newsProgress = e.status === 403 ? null : { unavailable: true }; }
     var voiceItems = await voiceActivity();
     // Best effort. Today must still paint if the push config cannot be read.
     try { state.notifyConfig = await api("/editorial/notifications/config"); }
@@ -267,6 +308,7 @@
 
     // What the voice agent changed, right where he lands after a call.
     html += voicePanel(voiceItems);
+    html += newsProgressPanel(newsProgress);
 
     html += "<h2>This week's recording list</h2>";
     if (!primary.length) {
@@ -532,6 +574,8 @@
     view.innerHTML = '<div class="page">' + working("Reading this week's list") + "</div>";
     var data = await api("/editorial/weeks/current/lineup");
     state.week = data;
+    var newsProgress = null;
+    try { newsProgress = await api("/news/workflow"); } catch (e) { newsProgress = null; }
 
     var primary = data.primary || [];
     var reserve = data.reserve || [];
@@ -548,6 +592,7 @@
     html += '<p class="lede">' + lede + (data.mix ? " " + esc(data.mix) + "." : "")
          + ' <a href="settings" data-go="/settings">Change how many a week</a></p></div>';
 
+    html += newsProgressPanel(newsProgress);
     if (!primary.length && !reserve.length) {
       html += '<div class="empty"><strong>Nothing chosen yet</strong>'
             + "Open Topics and put " + data.primary_slots + " "

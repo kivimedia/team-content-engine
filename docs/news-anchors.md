@@ -14,6 +14,19 @@ The two remaining anchor kinds, `client_solution` and `problem_pattern`, are
 that cannot be cited cannot satisfy the non-news citation rule, which is the one
 rule the whole lane rests on.
 
+Owner news discovery also recognizes concrete business capabilities, such as
+inbox triage, client follow-up, meeting notes, spreadsheet assistance and client
+web tools. A recent implementation is not required to consider a new capability.
+This admission is only an invitation to appraise the source, availability,
+audience consequence and possible demonstration. It does not verify a claim or
+promise a recording slot. Client workspaces retain their own anchor policy.
+
+Official releases may mention benchmarks in their summaries. For the owner
+lane, an official release title survives a summary-only benchmark mention.
+Benchmark headlines, funding, valuations and other corporate story shapes
+remain excluded. Primary sources are resolved and fetched before secondary
+commentary can be used as evidence.
+
 ## Format
 
 `## <anchor kind>` then `- <term>` bullets. Everything else is prose and is

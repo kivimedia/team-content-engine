@@ -495,6 +495,8 @@ async def _news_step(sm: Any, run: ContentRun, *, appraise: bool) -> dict[str, A
                 out = await discovery.appraise_pending(db, run.workspace_id, complete=_llm.complete)
                 await db.commit()
                 out["topics"] = await _news_topics(sm, run)
+                from tce.editorial.news_workflow import prepare_news_briefs
+                out["recording_briefs"] = await prepare_news_briefs(sm, run.workspace_id)
                 return out
             else:
                 import httpx
@@ -536,11 +538,17 @@ async def _news_topics(sm: Any, run: ContentRun) -> dict[str, Any]:
 
     async with open_session(sm) as db:
         source_ids = await discovery.news_awaiting_topic(db, run.workspace_id)
+        from tce.editorial.news_rules import owner_policy
+        owner = owner_policy(run.workspace_id)
+        evidence_key = (
+            await discovery.news_selection_key(db, run.workspace_id, source_ids)
+            if owner and source_ids else None
+        )
     if not source_ids:
         return {"proposed": 0, "detail": "no published news waiting for a topic"}
     # Same news, same selection id: a run interrupted while its jobs were queued
     # is resumed tomorrow instead of being asked twice.
-    key = "news-topics:" + ",".join(sorted(str(s) for s in source_ids))
+    key = "news-topics:" + (evidence_key or ",".join(sorted(str(s) for s in source_ids)))
     result = await selector.select_candidates(
         sm,
         run.workspace_id,

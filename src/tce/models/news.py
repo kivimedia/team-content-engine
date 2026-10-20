@@ -159,6 +159,8 @@ class NewsItem(_PrivateWorkspaceMixin, Base):
     source_version: Mapped[str | None] = mapped_column(String(200), nullable=True)
     raw_private: Mapped[str | None] = mapped_column(Text, nullable=True)
     extract_private: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Editorial receipts and recovery state are not part of the source document.
+    editorial_meta: Mapped[dict | None] = mapped_column(JSONType, nullable=True, default=dict)
 
     # Stage A outcome. `prefilter_reason` is set when the item never became
     # evidence, so the ledger can say what was read and why nothing happened.

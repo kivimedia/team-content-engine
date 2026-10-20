@@ -119,6 +119,32 @@ _ACQUISITION = re.compile(
 
 _CONDITIONAL_SHAPES = frozenset({"acquisition"})
 
+# Owner-news discovery can qualify an actual business capability without a
+# matching recent commit. This only admits a story for appraisal, never verifies
+# its claims or reserves a video slot. Client workspace callers keep the default.
+_BUSINESS_CAPABILITIES = (
+    ("client follow-up", r"\bfollow up (emails?|messages?)\b|\bpost meeting\b.{0,60}\b(next steps|tasks|recaps)\b"),
+    ("meeting notes", r"\bmeeting (recaps|notes|summaries|tasks)\b"),
+    ("inbox triage", r"\b(ai inbox|inbox triage|gmail live)\b|\bprioriti[sz]\w*\b.{0,30}\b(emails?|inbox)\b"),
+    ("business knowledge", r"\bskills\b.{0,60}\b(gemini|workspace|drive)\b|\bgems\b.{0,50}\b(share|sharing|team)\b"),
+    ("client web tools", r"\b(calculators?|quizzes|planners?|interactive apps)\b.{0,70}\b(website|sites|publish|share)\b|\bpublish\b.{0,60}\binteractive apps\b"),
+    ("spreadsheet assistance", r"\bgemini in (google )?sheets\b|\b(spreadsheet|sheets)\b.{0,60}\b(analy[sz]|summari[sz]|questions)\w*"),
+    ("voice reception", r"\b(voice agents?|ai receptionists?)\b.{0,60}\b(calls?|booking|scheduling|answer)\b"),
+    ("lead handling", r"\b(lead|enquiry|inquiry)\b.{0,40}\b(qualif|sort|rout|follow)\w*"),
+    ("creative production", r"\b(image|video)\b.{0,50}\b(editing|generation|ads)\b"),
+)
+_CAPABILITY_PATTERNS = tuple((name, re.compile(pattern)) for name, pattern in _BUSINESS_CAPABILITIES)
+_RELEASE_SIGNAL = re.compile(r"\b(now|launch\w*|introduc\w*|releases?|available|rolling|rollout|adds?|new|create|publish|can)\b")
+_MODEL_RELEASE_TITLE = re.compile(r"\b(claude|gpt|gemini)\b.{0,35}\b\d")
+
+
+def business_capability(title: str, summary: str | None = None) -> str | None:
+    """A named owner task plus a concrete change, not just the word 'AI'."""
+    text = normalize(" ".join(filter(None, (title, summary))))
+    if not _RELEASE_SIGNAL.search(text):
+        return None
+    return next((name for name, pattern in _CAPABILITY_PATTERNS if pattern.search(text)), None)
+
 
 @dataclass
 class AnchorMatch:
@@ -151,6 +177,8 @@ class MatchResult:
     def why(self) -> str:
         """The sentence the terminal prints when Ziv asks about one item."""
         if not self.matched:
+            return self.reason
+        if not self.matches:
             return self.reason
         named = ", ".join(f"{m.term} ({m.kind})" for m in self.matches[:4])
         return f"matches {named}"
@@ -220,6 +248,7 @@ def match_item(
     anchors: list[Any],
     concept_of: Callable[[str], str] | None = None,
     source_vendor: str | None = None,
+    business_relevance: bool = False,
 ) -> MatchResult:
     """Decide whether one announcement lands on anything of Ziv's.
 
@@ -237,6 +266,16 @@ def match_item(
     # Shape first: it is cheaper, and a funding round stays a funding round even
     # when it mentions a vendor Ziv uses.
     shape = blocked_shape(headline)
+    # A real model announcement often describes its benchmark results. Only an
+    # official release title can rescue a summary-only benchmark mention. A
+    # benchmark headline, funding, earnings, etc. remain blocked.
+    if (
+        business_relevance and source_vendor and shape == "benchmark"
+        and blocked_shape(title) is None
+        and (_RELEASE_SIGNAL.search(normalize(title))
+             or _MODEL_RELEASE_TITLE.search(normalize(title)))
+    ):
+        shape = None
 
     matches: list[AnchorMatch] = []
     seen: set[str] = set()
@@ -301,6 +340,18 @@ def match_item(
 
     if strong:
         return MatchResult(matched=True, reason="strong anchor", matches=matches)
+
+    capability = business_capability(title, summary) if business_relevance else None
+    if capability:
+        return MatchResult(matched=True, reason=f"business capability: {capability}", matches=matches)
+    if (
+        business_relevance and publisher in {"anthropic", "openai", "google", "google deepmind"}
+        and (_RELEASE_SIGNAL.search(normalize(title))
+             or _MODEL_RELEASE_TITLE.search(normalize(title)))
+    ):
+        # Trusted feed metadata admits a frontier release for appraisal, not a
+        # fabricated claim that this vendor already runs in the owner's stack.
+        return MatchResult(matched=True, reason="official AI release for appraisal", matches=matches)
 
     problems = [m for m in matches if m.kind == "problem_pattern"]
     # 5-Oct review: for a lane workspace, two forms of one word (Hanukkah /

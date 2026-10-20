@@ -21,6 +21,30 @@ from typing import Any
 
 NEWS_KIND = "news_item"
 STANDING_KIND = "standing_fact"
+OWNER_POLICY_VERSION = "owner-news-25pct.v1"
+
+
+def owner_policy(workspace_id: Any) -> bool:
+    """Only the owner's workspaces opt into the 20-Oct policy."""
+    import uuid
+    from tce.settings import settings
+
+    try:
+        wanted = uuid.UUID(str(workspace_id))
+    except (TypeError, ValueError):
+        return False
+    # General legacy reads have a hardcoded fallback workspace. An opt-in
+    # editorial policy must not inherit that fallback on a fresh installation.
+    configured = ",".join(filter(None, (
+        settings.owner_workspace_ids, settings.editor_default_workspace_id,
+    )))
+    for value in configured.split(","):
+        try:
+            if uuid.UUID(value.strip()) == wanted:
+                return True
+        except ValueError:
+            continue
+    return False
 
 # The floors. A weak evergreen idea costs one mediocre clip; a weak news idea
 # costs positioning, so the bar is higher and absolute where evergreen has none.
@@ -175,6 +199,7 @@ def score_news(
     published_at: datetime | None,
     expires_at: datetime | None,
     now: datetime,
+    owner_workspace: Any = None,
 ) -> NewsScoreParts:
     """The news formula. Freshness is 10 percent, and that is not an accident.
 
@@ -195,7 +220,13 @@ def score_news(
         consequence=norm("consequence_specificity"),
         distinctiveness=norm("distinctiveness"),
         owner_relevance=norm("owner_relevance"),
-        freshness=freshness_value(published_at, expires_at, now=now),
+        # Expiry is checked separately by the pool and recording workflow. A
+        # still-current idea's quality must not fall while it waits for a script.
+        freshness=(
+            1.0 if owner_policy(owner_workspace) and expires_at is not None
+            and now < expires_at and published_at is not None
+            else freshness_value(published_at, expires_at, now=now)
+        ),
     )
 
 
@@ -215,6 +246,7 @@ def apply_slot_rules(
     story_weight_of: Any,
     ceiling_override: int | None = None,
     already: int = 0,
+    owner_workspace: Any = None,
 ) -> SlotDecision:
     """Apply the floor, the margin and the ceiling, in that order.
 
@@ -232,6 +264,18 @@ def apply_slot_rules(
     """
     kept: list[Any] = []
     rejected: list[tuple[Any, str, str]] = []
+    if owner_policy(owner_workspace):
+        # The 25% goal is measured on published originals downstream, never used as an
+        # excuse to discard useful choices or lower the evidence/quality bar.
+        for candidate in ranked:
+            if is_news(candidate) and score_of(candidate) < FIRST_SLOT_FLOOR:
+                rejected.append((
+                    candidate, CODE_FLOOR,
+                    f"scored {score_of(candidate):.3f}, below the {FIRST_SLOT_FLOOR:.2f} quality floor.",
+                ))
+            else:
+                kept.append(candidate)
+        return SlotDecision(kept=kept, rejected=rejected)
     news_kept = max(0, int(already or 0))
 
     lowest_evergreen = None

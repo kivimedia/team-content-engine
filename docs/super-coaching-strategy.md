@@ -50,8 +50,13 @@ Rules that follow from this:
   coaches, saying so is the job, not commentary.
 - **A product release is evidence, not the idea.** The publishable idea is the decision
   behind it, the owner problem it solves, and something the reader can use.
-- **Evergreen beats news.** Recent news is optional context. A news claim must be verified
-  as current before it is stated. Freshness is a small bonus, never the reason to pick a topic.
+- **Useful AI changes are a regular part of Ziv's mix.** For Ziv's owner workspace,
+  aim for about 25% of published original videos over rolling 42 days (six weeks).
+  Count each original once across platforms; show the last 12 originals as secondary
+  context. Count actual published
+  AI-news videos, not discovered links, ordinary software updates or unused topic cards.
+  A news claim must be verified as current before it is stated. The same evidence and
+  quality bar applies to every news idea; later ideas do not face a higher threshold.
 - **Fewer is fine.** Three strong original ideas a week is the recommended launch. Return
   fewer rather than padding with weaker angles.
 
@@ -69,9 +74,13 @@ are true:
    for themselves.
 4. The claim is confirmed in the announcement itself, not in a summary of it.
 
-The announcement is never the idea and never the opening line. The idea is what Ziv did,
-changed or decided because of it. One of these a week, or two when the story is big enough to
-earn the second. Zero is a normal week.
+For Ziv's owner workspace, the announcement should remain visible alongside the practical
+point: what changed, who can use it, what he would test or do, and why. There is no one-story
+weekly topic ceiling. His point of view can be an honest proposed test; it does not require
+an invented personal story or a claim that he already used the release. Keep verified facts,
+his interpretation and predictions separate. If there is no qualified timely story, show
+the shortfall and the missing evidence instead of padding the mix. This owner preference
+does not change a client workspace's separate editorial policy.
 
 ## CLAIMS DISCIPLINE
 

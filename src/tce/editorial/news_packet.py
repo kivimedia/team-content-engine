@@ -23,6 +23,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
+
+class NewsTerms(list[str]):
+    """Terms plus the workspace's opening policy, retained through revisions."""
+
+    def __init__(self, values: list[str], *, allow_announcement: bool = False):
+        super().__init__(values)
+        self.allow_announcement = allow_announcement
+
 # Matched on a casefolded, whitespace-normalised copy of each text.
 _URGENCY = re.compile(
     r"\b(breaking|just (announced|released|dropped|launched)|everyone is talking about"
@@ -78,6 +86,8 @@ def urgency_hit(texts: list[str]) -> str | None:
 def news_errors(
     packet: dict[str, Any],
     forbidden_terms: list[str],
+    *,
+    allow_announcement: bool = False,
 ) -> list[str]:
     """All three rules, as validation errors in the packet validator's own voice.
 
@@ -86,17 +96,21 @@ def news_errors(
     """
     errors: list[str] = []
     terms = [t for t in dict.fromkeys(forbidden_terms or []) if str(t).strip()]
+    # Owner policy permits a sourced product fact in the opening. Other
+    # workspaces retain their existing script style. Urgency is still checked.
+    if allow_announcement:
+        terms = []
     phrases: list[str] = packet.get("script_phrases") or []
 
     # 1. The opening, on every hook and on the first spoken phrase.
-    for option in packet.get("hook_options") or []:
+    for option in ([] if allow_announcement else packet.get("hook_options") or []):
         found = opening_problems(option.get("text", ""), terms)
         if found:
             errors.append(
                 f"news opening {option.get('id')} {', '.join(found)}; open with the "
                 "owner's situation, not the announcement"
             )
-    if phrases:
+    if phrases and not allow_announcement:
         found = opening_problems(phrases[0], terms)
         if found and not any("news opening" in e for e in errors):
             errors.append(f"the first spoken phrase {', '.join(found)}")

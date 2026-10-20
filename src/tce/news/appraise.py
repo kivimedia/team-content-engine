@@ -35,6 +35,7 @@ from tce.models.news import (
 # commentator", "reject is expected most of the time", "if anyone with the link
 # could write it, reject") and returned 1 publish in 47 model calls.
 PROMPT_VERSION = "news_appraisal.v2"
+OWNER_PROMPT_VERSION = "news_appraisal.owner.v3"
 JOB_TYPE = "news_appraisal"
 AGENT_NAME = "news_appraiser"
 
@@ -141,6 +142,25 @@ systems could say it; 1 means anyone could.
 
 Return JSON only."""
 
+OWNER_ADDITION = """
+
+OWNER EDITORIAL POLICY (20-Oct): about 25% of Ziv's published original videos over
+the rolling 42 days should start from a useful AI change. Count each original once
+across platforms; the last 12 originals are secondary context. This is a mix goal,
+never permission to invent
+facts, pad weak ideas, or reject a second good story. Keep the actual change
+visible: name what changed, who can use it, and what an owner can try now.
+Ziv's point of view may be an informed proposed test or interpretation. Do not
+invent a client anecdote, a past conversation, a test he ran, or a measured result.
+If his evidence is only a standing fact, say what he would test, not what he did.
+Return news_category: ai for a concrete AI capability, access, safety or workflow
+change; software for an ordinary software update; other for everything else.
+Naming an AI company alone does not make an announcement an AI story.
+For watch/reject also return recovery_state: needs_angle, waiting_for_evidence,
+or hard_reject. Use hard_reject for irrelevant or unsupported claims. A fixable
+angle is not irrelevant; state what evidence or narrower angle is missing.
+"""
+
 OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": [
@@ -160,6 +180,11 @@ OUTPUT_SCHEMA: dict[str, Any] = {
         "scores",
     ],
     "properties": {
+        "news_category": {"type": "string", "enum": ["ai", "software", "other"]},
+        "recovery_state": {
+            "type": "string",
+            "enum": ["needs_angle", "waiting_for_evidence", "hard_reject"],
+        },
         "verdict": {"type": "string", "enum": list(VERDICTS)},
         "verdict_reason": {"type": "string"},
         "what_happened": {"type": "string"},
@@ -219,6 +244,7 @@ class AppraisalInput:
     document: str
     anchors: list[dict[str, Any]]
     recent_evidence: list[dict[str, Any]]
+    editorial_notes: list[str] | None = None
 
 
 def build_prompt(data: AppraisalInput) -> str:
@@ -238,6 +264,10 @@ def build_prompt(data: AppraisalInput) -> str:
             term = anchor.get("term", "?")
             where = anchor.get("origin_ref") or anchor.get("origin_kind") or ""
             lines.append(f"  - [{kind}] {term}" + (f"  (from {where})" if where else ""))
+            if anchor.get("lesson_summary"):
+                lines.append(f"    Recorded fact: {str(anchor['lesson_summary'])[:MAX_ANCHOR_EXCERPT]}")
+            if anchor.get("relationship"):
+                lines.append(f"    Relevance: {anchor['relationship']}")
     else:  # pragma: no cover - the matcher does not pass unmatched items here
         lines.append("  (none, which should not happen; reject)")
 
@@ -258,6 +288,14 @@ def build_prompt(data: AppraisalInput) -> str:
             "",
             "FROM HIS RECENT CALLS AND COMMITS: nothing in the window.",
             "He has not touched this recently, so 'i_tested_it' is not available.",
+        ]
+
+    if data.editorial_notes:
+        lines += [
+            "",
+            "EDITOR SUGGESTIONS (directions, not verified evidence; evaluate against",
+            "the announcement and cited business facts, never invent a result):",
+            *[f"  - {str(note)[:2000]}" for note in data.editorial_notes[:5]],
         ]
 
     document = data.document or ""
@@ -334,6 +372,15 @@ def validate_appraisal(
         "do_differently": _clean_list(data.get("do_differently")),
         "ziv_interpretation": _clean_list(data.get("ziv_interpretation")),
         "predictions": _clean_list(data.get("predictions")),
+        "news_category": (
+            data.get("news_category") if data.get("news_category") in ("ai", "software", "other")
+            else "other"
+        ),
+        "recovery_state": (
+            data.get("recovery_state")
+            if data.get("recovery_state") in ("needs_angle", "waiting_for_evidence", "hard_reject")
+            else "hard_reject" if verdict == "reject" else "waiting_for_evidence"
+        ),
     }
 
     if verdict != "publish":
@@ -461,21 +508,27 @@ def build_request(
     workspace_id: uuid.UUID,
     news_item_id: uuid.UUID,
     run_id: uuid.UUID | None = None,
+    retry_fingerprint: str | None = None,
 ) -> Any:
     """One subscription job. Never a metered client: `tce.llm` enforces that."""
     from tce.llm import LLMRequest
+    from tce.editorial.news_rules import owner_policy
+
+    owner = owner_policy(workspace_id)
+    version = OWNER_PROMPT_VERSION if owner else PROMPT_VERSION
+    retry = f":{retry_fingerprint}" if owner and retry_fingerprint else ""
 
     return LLMRequest(
         job_type=JOB_TYPE,
         agent_name=AGENT_NAME,
-        system=SYSTEM_PROMPT,
+        system=SYSTEM_PROMPT + (OWNER_ADDITION if owner else ""),
         messages=[{"role": "user", "content": build_prompt(data)}],
         output_schema=OUTPUT_SCHEMA,
         max_tokens=4096,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=version,
         workspace_id=workspace_id,
         run_id=run_id,
-        idempotency_key=f"news_appraisal:{workspace_id}:{news_item_id}:{PROMPT_VERSION}",
+        idempotency_key=f"news_appraisal:{workspace_id}:{news_item_id}:{version}{retry}",
     )
 
 

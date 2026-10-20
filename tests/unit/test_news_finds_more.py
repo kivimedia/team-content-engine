@@ -386,6 +386,9 @@ async def test_the_daily_run_turns_published_news_into_topics(
     """Reproduction: the daily run's last stage is extracting. Only Monday's run
     selects, so news judged on a Tuesday expired before anything could pick it."""
     monkeypatch.setattr(settings, "news_lane", True)
+    # The fixture announcement expires on Oct 19. Pin the discovery clock to
+    # its Oct 14 scenario so this integration test cannot age out in real time.
+    monkeypatch.setattr(discovery, "_now", lambda: NOW)
     async with editorial_sessionmaker() as session:
         src, _ = await _published_news(session)
         await session.commit()

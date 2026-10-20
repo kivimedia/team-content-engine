@@ -27,7 +27,9 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 from xml.etree import ElementTree
 
 import httpx
@@ -127,13 +129,17 @@ def _parse_date(value: str | None) -> datetime | None:
     except (TypeError, ValueError, IndexError):
         pass
     try:
-        return (
-            datetime.fromisoformat(text.replace("Z", "+00:00"))
-            .astimezone(UTC)
-            .replace(tzinfo=None)
-        )
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC).replace(tzinfo=None)
     except ValueError:
-        return None
+        for fmt in ("%b %d, %Y", "%B %d, %Y"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+    return None
 
 
 def parse_atom_or_rss(body: str) -> list[ParsedItem]:
@@ -157,8 +163,8 @@ def parse_atom_or_rss(body: str) -> list[ParsedItem]:
             summary = entry.findtext("atom:content", default="", namespaces=_NS) or ""
         entry_id = (entry.findtext("atom:id", default="", namespaces=_NS) or link).strip()
         when = _parse_date(
-            entry.findtext("atom:updated", namespaces=_NS)
-            or entry.findtext("atom:published", namespaces=_NS)
+            entry.findtext("atom:published", namespaces=_NS)
+            or entry.findtext("atom:updated", namespaces=_NS)
         )
         if title or link:
             items.append(
@@ -232,9 +238,76 @@ def parse_json_feed(body: str) -> list[ParsedItem]:
     return items
 
 
-def parse_feed(kind: str, body: str) -> list[ParsedItem]:
+class _AnthropicNewsParser(HTMLParser):
+    """Read the publisher's visible announcement cards, without a browser."""
+
+    def __init__(self, source_url: str):
+        super().__init__(convert_charrefs=True)
+        self.source_url = source_url
+        self.items: dict[str, ParsedItem] = {}
+        self.current: dict | None = None
+        self.capture: str | None = None
+        self.capture_tag: str | None = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "a":
+            url = urljoin(self.source_url, attrs.get("href", ""))
+            parsed = urlsplit(url)
+            allowed_path = (
+                parsed.path.startswith("/news/") and len(parsed.path) > 6
+                or parsed.path.startswith("/claude-")
+            )
+            if (parsed.hostname or "").lower() in ("anthropic.com", "www.anthropic.com") and allowed_path:
+                self.current = {"url": url.split("?", 1)[0].split("#", 1)[0],
+                                "title": [], "summary": [], "date": []}
+        if self.current is not None:
+            if tag == "time":
+                self.current["datetime"] = attrs.get("datetime")
+                self.capture, self.capture_tag = "date", tag
+            elif re.fullmatch(r"h[1-6]", tag) or "title" in attrs.get("class", "").lower():
+                self.capture, self.capture_tag = "title", tag
+            elif tag == "p":
+                self.capture, self.capture_tag = "summary", tag
+
+    def handle_data(self, text):
+        if self.current is not None and self.capture:
+            self.current[self.capture].append(text)
+
+    def handle_endtag(self, tag):
+        if tag == self.capture_tag:
+            self.capture = self.capture_tag = None
+        if tag == "a" and self.current is not None:
+            item = self.current
+            title = _WS_RE.sub(" ", " ".join(item["title"])).strip()
+            if title:
+                previous = self.items.get(item["url"])
+                self.items[item["url"]] = ParsedItem(
+                    external_id=item["url"], title=title, url=item["url"],
+                    summary=(_WS_RE.sub(" ", " ".join(item["summary"])).strip()
+                             or (previous.summary if previous else None)),
+                    published_at=(_parse_date(item.get("datetime") or " ".join(item["date"]))
+                                  or (previous.published_at if previous else None)),
+                )
+            self.current = None
+            self.capture = self.capture_tag = None
+
+
+def parse_anthropic_html(body: str, source_url: str) -> list[ParsedItem]:
+    parser = _AnthropicNewsParser(source_url)
+    parser.feed(body)
+    if not parser.items:
+        raise ValueError("no Anthropic announcement cards found; source markup may have changed")
+    return sorted(parser.items.values(), key=lambda item: item.published_at or datetime.min, reverse=True)
+
+
+def parse_feed(kind: str, body: str, *, source_url: str = "") -> list[ParsedItem]:
     if kind == "json":
         return parse_json_feed(body)
+    if kind == "html":
+        if host_of(source_url) != "anthropic.com":
+            raise ValueError("no HTML announcement parser configured for this source")
+        return parse_anthropic_html(body, source_url)
     return parse_atom_or_rss(body)
 
 
@@ -296,7 +369,7 @@ async def fetch_feed(
         )
 
     try:
-        items = parse_feed(feed.kind, response.text)
+        items = parse_feed(feed.kind, response.text, source_url=feed.url)
     except ValueError as exc:
         feed.consecutive_failures = (feed.consecutive_failures or 0) + 1
         feed.last_status = "unparseable"

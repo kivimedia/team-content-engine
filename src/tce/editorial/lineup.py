@@ -145,7 +145,8 @@ def source_tags(candidate: TopicCandidate) -> list[str]:
         if isinstance(c, dict)
     }
     return [
-        label
+        ("Software news" if kind == "news_item"
+         and (candidate.gates or {}).get("_news_category") in {"software", "other"} else label)
         for kind, label in SOURCE_TAGS
         if kind in kinds and (kind != "github_commit_group" or is_code_topic(candidate))
     ]
@@ -171,6 +172,8 @@ def lane_for(candidate: TopicCandidate) -> str:
                 return lane.key
         return "other"
     if candidate.freshness_role == "news":
+        if (candidate.gates or {}).get("_news_category") in {"software", "other"}:
+            return "other"
         return "ai_news"
     # 15-Oct: a topic he added anyway carries the lane he named ("Build" for Auth
     # Buddy); his own words cite no commit, so the evidence alone said coaching.

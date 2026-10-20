@@ -67,12 +67,10 @@ FEEDS: list[tuple[str, str, str, str, str | None]] = [
     ("GitHub changelog", "https://github.blog/changelog/feed/", "rss", "1a", "github"),
 
     # --- 1b: frontier ------------------------------------------------------
-    # Anthropic publishes NO feed. Checked 22-Sep-2026: /rss.xml, /news/rss.xml,
-    # /news/feed.xml, /engineering/rss.xml and the docs release notes are all 404.
-    # Their announcements still reach the lane, through the Claude Code and SDK
-    # release feeds above (tier 1a, and closer to what actually changes for a
-    # running system) and through the tier-2 discovery feed. A dead URL is worse
-    # than an absent one: it looks exactly like a quiet day.
+    # Anthropic has no RSS feed. Its public HTML news cards are a direct primary
+    # source, including root-level /claude-* release links and their real dates.
+    ("Anthropic announcements", "https://www.anthropic.com/news",
+     "html", "1b", "anthropic"),
     # A 1b feed with a vendor counts as news about that vendor even when the
     # headline never names it (tce.news.discovery.ANNOUNCEMENT_TIERS).
     ("OpenAI blog", "https://openai.com/blog/rss.xml", "rss", "1b", "openai"),
@@ -113,7 +111,7 @@ async def check_all() -> int:
             try:
                 from tce.news.feeds import parse_feed
 
-                items = parse_feed(kind, response.text)
+                items = parse_feed(kind, response.text, source_url=url)
             except ValueError as exc:
                 print(f"  PARSE [{tier}] {name}: {exc}")
                 bad += 1
