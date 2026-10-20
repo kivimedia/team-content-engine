@@ -133,6 +133,12 @@ async def workflow_status(db: Any, ws: uuid.UUID, *, now: datetime | None = None
         select(TopicCandidate).where(TopicCandidate.workspace_id == ws)
     )).scalars())
     by_id = {c.id: c for c in candidates}
+    # An owner can have thousands of historical topics and feed items. Group
+    # once instead of scanning the full history for every announcement.
+    candidates_by_news: dict[uuid.UUID, list[TopicCandidate]] = {}
+    for candidate in candidates:
+        if candidate.news_item_id:
+            candidates_by_news.setdefault(candidate.news_item_id, []).append(candidate)
     items = list((await db.execute(select(NewsItem).options(load_only(
         NewsItem.id, NewsItem.title, NewsItem.url, NewsItem.primary_url,
         NewsItem.published_at, NewsItem.created_at, NewsItem.editorial_meta,
@@ -182,7 +188,7 @@ async def workflow_status(db: Any, ws: uuid.UUID, *, now: datetime | None = None
         by_appraisal.setdefault(appraisal.news_item_id, appraisal)
     queue = []
     for item in items:
-        choices = [c for c in candidates if c.news_item_id == item.id]
+        choices = candidates_by_news.get(item.id, [])
         cand = choose_news_candidate(choices, by_packet, uploads)
         packet = by_packet.get(cand.id) if cand else None
         appraisal = by_appraisal.get(item.id)

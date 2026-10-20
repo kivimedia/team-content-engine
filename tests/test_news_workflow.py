@@ -13,6 +13,55 @@ def test_operational_metadata_is_separate_from_source_text():
     assert "editorial_meta" in NewsItem.__table__.columns
 
 
+@pytest.mark.asyncio
+async def test_workflow_does_not_rescan_every_candidate_for_every_feed_item(monkeypatch):
+    """A busy owner history must not block the API while reading a news queue."""
+    from types import SimpleNamespace
+    from tce.editorial import news_rules
+    from tce.editorial.news_workflow import workflow_status
+    monkeypatch.setattr(news_rules, "owner_policy", lambda ws: True)
+    reads = 0
+
+    class Candidate(SimpleNamespace):
+        @property
+        def news_item_id(self):
+            nonlocal reads
+            reads += 1
+            return self.link
+
+    now = datetime(2026, 10, 20)
+    items = [SimpleNamespace(
+        id=uuid.uuid4(), title="Announcement", primary_url=None,
+        url="https://example.com/story", published_at=now,
+        editorial_meta={}, prefilter_reason="not_relevant",
+    ) for _ in range(100)]
+    candidates = [Candidate(
+        id=uuid.uuid4(), link=items[0].id if i == 0 else None,
+        status="proposed", expires_at=None, created_at=now,
+        gates={}, title="Useful story",
+    ) for i in range(200)]
+
+    class Result:
+        def __init__(self, rows):
+            self.rows = rows
+        def scalars(self):
+            return self.rows
+        def all(self):
+            return self.rows
+
+    responses = iter([candidates, items, [], [], [], []])
+    class ReadSession:
+        async def execute(self, statement):
+            return Result(next(responses))
+
+    data = await workflow_status(ReadSession(), uuid.uuid4(), now=now)
+    assert len(data["queue"]) == 1
+    assert data["queue"][0]["candidate_id"] == str(candidates[0].id)
+    assert reads < len(candidates) * 4, (
+        f"{reads} candidate lookups for {len(items)} items; queue work must scale linearly"
+    )
+
+
 def test_owner_can_open_with_a_sourced_product_fact():
     packet = {
         "script_phrases": ["Google now lets a Gemini app become a private Sites draft."],
