@@ -89,8 +89,11 @@ class _PageMetadata(HTMLParser):
         self.times: list[str] = []
         self.links: list[str] = []
         self.jsonld: list[str] = []
+        self.blogger_dates: list[str] = []
         self._json: list[str] | None = None
         self._time: list[str] | None = None
+        self._blogger_date: list[str] | None = None
+        self._blogger_date_tag: str | None = None
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -106,12 +109,19 @@ class _PageMetadata(HTMLParser):
             if attrs.get("datetime"):
                 self.times.append(attrs["datetime"])
             self._time = []
+        classes = (attrs.get("class") or "").split()
+        if ((tag == "p" and "blog-post-full__date" in classes)
+                or (tag == "h2" and "date-header" in classes)):
+            self._blogger_date = []
+            self._blogger_date_tag = tag
 
     def handle_data(self, data):
         if self._json is not None:
             self._json.append(data)
         if self._time is not None:
             self._time.append(data)
+        if self._blogger_date is not None:
+            self._blogger_date.append(data)
 
     def handle_endtag(self, tag):
         if tag == "script" and self._json is not None:
@@ -120,6 +130,10 @@ class _PageMetadata(HTMLParser):
         if tag == "time" and self._time is not None:
             self.times.append("".join(self._time).strip())
             self._time = None
+        if tag == self._blogger_date_tag and self._blogger_date is not None:
+            self.blogger_dates.append(" ".join("".join(self._blogger_date).split()))
+            self._blogger_date = None
+            self._blogger_date_tag = None
 
 
 def _publication_value(value: Any) -> datetime | None:
@@ -132,7 +146,7 @@ def _publication_value(value: Any) -> datetime | None:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC).replace(tzinfo=None)
     except ValueError:
-        for fmt in ("%b %d, %Y", "%B %d, %Y"):
+        for fmt in ("%b %d, %Y", "%B %d, %Y", "%A, %B %d, %Y"):
             try:
                 return datetime.strptime(value, fmt)
             except ValueError:
@@ -140,7 +154,9 @@ def _publication_value(value: Any) -> datetime | None:
     return None
 
 
-def extract_publication_date(raw_html: str) -> datetime | None:
+def extract_publication_date(
+    raw_html: str, *, source_url: str | None = None,
+) -> datetime | None:
     """Read publication metadata, never dateModified or the time we fetched it."""
     parser = _PageMetadata()
     parser.feed(raw_html)
@@ -166,6 +182,21 @@ def extract_publication_date(raw_html: str) -> datetime | None:
         found.discard(None)
         if len(found) == 1:
             return next(iter(found))
+    # Google Workspace's current article template publishes a visible date
+    # instead of machine-readable metadata. Accept only its explicit article
+    # fields on individual posts, never archive/navigation text or fetch time.
+    try:
+        source = urlsplit(source_url or "")
+        google_article = (
+            source.hostname == "workspaceupdates.googleblog.com"
+            and re.fullmatch(r"/\d{4}/\d{2}/[^/]+\.html", source.path)
+        )
+    except ValueError:
+        google_article = False
+    if google_article and parser.blogger_dates:
+        found = {_publication_value(v) for v in parser.blogger_dates}
+        found.discard(None)
+        return next(iter(found)) if len(found) == 1 else None
     found = {_publication_value(v) for v in parser.times}
     found.discard(None)
     return next(iter(found)) if len(found) == 1 else None
@@ -370,7 +401,7 @@ async def fetch_url_text(
             result["body_text"] = body
             result["primary_url"] = _public_url(final_url)
             result["source_verified"] = is_primary_announcement(final_url)
-            result["published_at"] = extract_publication_date(resp.text)
+            result["published_at"] = extract_publication_date(resp.text, source_url=final_url)
             result["outbound_links"] = _outbound_links(resp.text, final_url)
             if not body and not title:
                 result["status"] = "empty"

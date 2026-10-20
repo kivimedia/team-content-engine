@@ -115,6 +115,59 @@ def test_publication_jsonld_date_and_ambiguous_times():
     ) is None
 
 
+GOOGLE_ARTICLE = (
+    "https://workspaceupdates.googleblog.com/2026/10/"
+    "publish-interactive-apps-from-gemini-app-to-Google-Sites.html"
+)
+
+
+@pytest.mark.parametrize("date_html", [
+    # Exact date-field markup read from the approved Google announcement.
+    "<section class='blog-post-full__left-column'>"
+    "<p class='blog-post-full__date'>\nOctober 19, 2026\n</p></section>",
+    "<h2 class='date-header'><span>Monday, October 19, 2026</span></h2>",
+])
+def test_google_article_visible_publication_date_is_read(date_html):
+    assert url_fetcher.extract_publication_date(
+        date_html, source_url=GOOGLE_ARTICLE,
+    ) == datetime(2026, 10, 19)
+
+
+def test_google_visible_date_does_not_guess_navigation_or_other_pages():
+    assert url_fetcher.extract_publication_date(
+        "<nav>October 19, 2026</nav><footer>October 20, 2026</footer>",
+        source_url=GOOGLE_ARTICLE,
+    ) is None
+    explicit = "<p class='blog-post-full__date'>October 19, 2026</p>"
+    for url in (
+        "https://workspaceupdates.googleblog.com/",
+        "https://other.example/2026/10/story.html",
+    ):
+        assert url_fetcher.extract_publication_date(explicit, source_url=url) is None
+    assert url_fetcher.extract_publication_date(
+        explicit + "<p class='blog-post-full__date'>October 20, 2026</p>",
+        source_url=GOOGLE_ARTICLE,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_google_fetch_returns_the_visible_announcement_date(monkeypatch):
+    client_type = httpx.AsyncClient
+    markup = (
+        "<html><title>Publish interactive apps</title><main>"
+        "<p class='blog-post-full__date'>October 19, 2026</p>"
+        "<p>A new Google Sites capability.</p></main></html>"
+    )
+    monkeypatch.setattr(url_fetcher.httpx, "AsyncClient", lambda **kw: client_type(
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, text=markup, headers={"content-type": "text/html"},
+        )),
+    ))
+    result = await url_fetcher.fetch_url_text(GOOGLE_ARTICLE)
+    assert result["source_verified"] is True
+    assert result["published_at"] == datetime(2026, 10, 19)
+
+
 def test_primary_source_allowlist_rejects_lookalikes_credentials_and_homepages():
     for url in ("https://openai.com.evil.test/index/story",
                 "https://secret@openai.com/index/story", "https://openai.com/",
