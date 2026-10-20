@@ -23,8 +23,8 @@ from tce.editorial.news_workflow import record_submission
 from tce.editorial.packets import save_reviewed_news_packet
 from tce.editorial.selector import PoolMoment, save_reviewed_news_candidate
 from tce.models.editorial import EvidenceMoment, EvidenceSource, RecordingPacket, TopicCandidate
-from tce.models.editorial_workspace import WeeklyLineup, WeeklyLineupItem
-from tce.models.news import NewsItem
+from tce.models.editorial_workspace import TopicDecision, WeeklyLineup, WeeklyLineupItem
+from tce.models.news import NewsFeed, NewsItem
 from tce.news.appraise import validate_appraisal
 from tce.news.record import record_appraisal
 from tce.services.url_fetcher import fetch_url_text
@@ -122,6 +122,14 @@ async def run(args):
             created_item = item is None
             verified_primary = brief["source_url"]
             if created_item:
+                if brief["slug"] != "haiku-roles":
+                    raise ValueError("A previously reviewed Google source is missing; recheck it.")
+                feed = (await db.execute(select(NewsFeed).where(
+                    NewsFeed.workspace_id == ws,
+                    NewsFeed.url == "https://www.anthropic.com/news",
+                ))).scalar_one_or_none()
+                if feed is None:
+                    raise ValueError("Register the Anthropic primary feed before this recovery.")
                 page = await fetch_url_text(brief["source_url"], public_only=True)
                 if page.get("status") != "ok" or not page.get("source_verified"):
                     raise ValueError("The primary announcement could not be verified.")
@@ -141,7 +149,9 @@ async def run(args):
                 digest = hashlib.sha256(document.encode()).hexdigest()
                 item = NewsItem(
                     id=uuid.uuid5(ws, "review-source:" + brief["source_url"]), workspace_id=ws,
-                    external_id="review:" + brief["slug"], url=brief["source_url"],
+                    # The direct collector uses the article URL as external ID.
+                    # Seeding this identity avoids a second story on its next run.
+                    feed_id=feed.id, external_id=brief["source_url"], url=brief["source_url"],
                     primary_url=verified_primary, canonical_url=brief["source_url"],
                     title=page.get("title") or brief["title"], publisher="Anthropic",
                     published_at=expected_date,
@@ -243,9 +253,29 @@ async def run(args):
                 RecordingPacket.workspace_id == ws,
                 RecordingPacket.candidate_id.in_([c.id for c in human_candidates]),
             ))).scalars())
+            human_ids = set((await db.execute(select(WeeklyLineupItem.candidate_id).where(
+                WeeklyLineupItem.workspace_id == ws,
+                WeeklyLineupItem.candidate_id.in_([c.id for c in human_candidates]),
+            ))).scalars())
+            human_ids.update((await db.execute(select(TopicDecision.candidate_id).where(
+                TopicDecision.workspace_id == ws,
+                TopicDecision.candidate_id.in_([c.id for c in human_candidates]),
+            ))).scalars())
+            before[-1]["replaced_candidates"] = []
+            for previous in human_candidates:
+                if (previous.id != candidate.id and previous.status == "proposed"
+                        and previous.origin == "selector"
+                        and previous.id not in scripted_ids | human_ids):
+                    before[-1]["replaced_candidates"].append(snapshot(previous))
+                    previous.status = "withdrawn"
+                    previous.editor_notes = (
+                        (previous.editor_notes or "") + "\nReplaced by the source-checked "
+                        f"editorial review {review_ref}; candidate {candidate.id}."
+                    ).strip()
             protected_moments = {
                 str(mid) for c in human_candidates
-                if c.status in {"selected", "recorded", "published"} or c.id in scripted_ids
+                if c.status in {"selected", "recorded", "published"}
+                or c.id in scripted_ids | human_ids
                 for mid in (c.moment_ids or [])
             }
             for previous in old_moments:
