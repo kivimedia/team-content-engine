@@ -66,3 +66,29 @@ async def test_reviewed_packet_refuses_unselected_evidence_and_expiry(editorial_
             editorial_session, owner, candidate.id, data, review_ref="packet-review",
         )
     assert not (await editorial_session.execute(select(RecordingPacket))).scalars().all()
+
+
+@pytest.mark.asyncio
+async def test_public_news_publisher_is_not_a_private_call_participant(editorial_session, owner):
+    candidate, data = await prepared(editorial_session, owner)
+    cites = deepcopy(candidate.citations_private)
+    for cite in cites:
+        if cite["source_kind"] == "news_item":
+            cite["speaker"] = "Google Workspace release notes"
+    candidate.citations_private = cites
+    data["script_phrases"][0] = "Google now lets an interactive app become a private site draft."
+    data["hook_options"][0]["text"] = data["script_phrases"][0]
+    packet = await packets.save_reviewed_news_packet(
+        editorial_session, owner, candidate.id, data, review_ref="public-publisher",
+    )
+    assert packet.status == "ready", packet.public_safety
+    # A genuine participant from private evidence must still be blocked.
+    candidate.citations_private = cites + [{
+        "source_kind": "fathom_meeting", "speaker": "Amelia Confidential",
+    }]
+    fields = {"script_phrases": ["Amelia Confidential tried this in her business."]}
+    verdict = await packets.scan_packet_safety(
+        editorial_session, owner, fields, candidate_id=candidate.id,
+    )
+    assert verdict["status"] == "issues"
+    assert any(i["kind"] == "participant_name" for i in verdict["issues"])

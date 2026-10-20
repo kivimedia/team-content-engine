@@ -471,7 +471,9 @@ async def _participants(
     names: list[str] = []
     source_ids = set()
     for cit in citations:
-        if cit.get("speaker"):
+        # News citations put the public publisher in the speaker field.
+        # It is provenance, not a person from a private call.
+        if cit.get("speaker") and cit.get("source_kind") != "news_item":
             names.append(cit["speaker"])
         if cit.get("source_id"):
             try:
