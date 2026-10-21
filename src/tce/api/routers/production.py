@@ -3345,11 +3345,16 @@ async def _apply_request(
     words: list[dict[str, Any]],
     change: tuple[list[dict[str, Any]], list[Any], list[Any], list[Any], list[Any], str | None, str | None],
     settle,
+    result: dict[str, Any] | None = None,
 ) -> RecordingUpload | str:
     """Write what the request changes and render once, under the render lock. Returns
     the video as it ended, or "joined" (he is giving notes: it joined them), "gate" (a
     sitting's notes started being made: wait for them), "changed" (the words moved
-    while it read: read them again)."""
+    while it read: read them again).
+
+    `result` (21-Oct): what the request will say when done, kept on it as "applied" the
+    moment the change is written, so a restart during the render resumes the render
+    instead of reading the note again (resume_applied_request)."""
     fixed, cut, restore, hold, trim, denoise, top = change
     fp = library_service.transcript_fingerprint
     async with _render_lock(upload_id):
@@ -3369,7 +3374,35 @@ async def _apply_request(
             )
             row.edit_plan = plan
             await s.commit()
-        await settle("in_progress", {"status": "Applying your changes and re-rendering"})
+        await settle(
+            "in_progress",
+            {"status": "Applying your changes and re-rendering", **({"applied": result} if result else {})},
+        )
+        return await _plan_and_render_locked(upload_id, ws)
+
+
+# A request whose change was written but whose render a restart cut short (21-Oct).
+RESUME_WAIT_S = LEASE_TTL_S + 60  # the dead render's lease runs out within LEASE_TTL_S
+RESUME_POLL_S = 10.0
+
+
+async def _render_applied(upload_id: uuid.UUID, ws: uuid.UUID) -> RecordingUpload:
+    """Render the saved plan again once the dead render has let go of the video.
+
+    At startup the killed render still holds a fresh lease, so the video reads
+    "rendering" until the lease runs out and the sweep marks it interrupted; wait for
+    that (checking ourselves), then plan and render under the render lock."""
+    waited = 0.0
+    while True:
+        async with session_factory()() as s:
+            await reconcile_interrupted_uploads(s, ws)
+            row = await _load(s, upload_id, ws)
+            busy = row.status in BUSY_STATUSES
+        if not busy or waited >= RESUME_WAIT_S:
+            break
+        await asyncio.sleep(RESUME_POLL_S)
+        waited += RESUME_POLL_S
+    async with _render_lock(upload_id):
         return await _plan_and_render_locked(upload_id, ws)
 
 
@@ -3407,6 +3440,16 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             if req is None or req.state not in ("open", "in_progress"):
                 return
             upload_id = req.upload_id
+            applied = (req.result or {}).get("applied") if req.state == "in_progress" else None
+        if isinstance(applied, dict):
+            # 21-Oct: the change was written and a restart cut its render short. Reading
+            # the note again would find the change already there and call it done with
+            # no new video; render it, and answer with what it said the first time.
+            _request_running(upload_id, request_id, "Re-rendering your change after a restart")
+            await settle("in_progress", {"status": "Re-rendering your change after a restart", "applied": applied})
+            row = await _render_applied(upload_id, ws)
+            await _finish_request(request_id, ws, upload_id, row, applied, settle)
+            return
         _request_running(upload_id, request_id, "Reading your request on the subscription")
         moved = 0
         while True:
@@ -3466,8 +3509,21 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
                     },
                 )
                 return
+            result = {
+                "reply": str(out.get("reply") or "Done."),
+                "corrections": [{"heard": c["heard"], "replacement": c["replacement"]} for c in applied],
+                "cut": cut,
+                "restore": restore,
+                "hold": hold,
+                "trim": trim,
+                "denoise": denoise,
+                "top_caption": top,
+                "file": f"/api/v1/production/uploads/{upload_id}/edited",
+                "model": answer.model,
+            }
             row = await _apply_request(
-                request_id, ws, upload_id, words, (fixed, cut, restore, hold, trim, denoise, top), settle
+                request_id, ws, upload_id, words, (fixed, cut, restore, hold, trim, denoise, top), settle,
+                result,
             )
             if row == "joined":
                 return
@@ -3480,30 +3536,34 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
                     return
                 continue
             break
-        result = {
-            "reply": str(out.get("reply") or "Done."),
-            "corrections": [{"heard": c["heard"], "replacement": c["replacement"]} for c in applied],
-            "cut": cut,
-            "restore": restore,
-            "hold": hold,
-            "trim": trim,
-            "denoise": denoise,
-            "top_caption": top,
-            "file": f"/api/v1/production/uploads/{upload_id}/edited",
-            "model": answer.model,
-        }
-        held = library_service.qc_hold(row)
-        if row.status == "edited" or held:
-            # 3-Oct: his change was made. When Jennifer is holding the new file, her line
-            # goes with the reply; it is her finding, not a failed request.
-            await settle("done", {**result, "held": held} if held else result)
-            start_rule_learning(ws, upload_id, [request_id])
-        else:
-            await settle("needs_you", {**result, "question": f"The re-render stopped: {row.status_detail}"})
+        await _finish_request(request_id, ws, upload_id, row, result, settle)
     except Exception as exc:  # noqa: BLE001 - lands on the request
-        await settle("in_progress", {"status": f"Stopped with an error; it retries on restart: {str(exc)[:300]}"})
+        # A change already written stays marked, so the retry renders it (21-Oct).
+        async with session_factory()() as s:
+            req = await _load_request(s, request_id, ws)
+            kept = (req.result or {}).get("applied") if req is not None else None
+        await settle(
+            "in_progress",
+            {"status": f"Stopped with an error; it retries on restart: {str(exc)[:300]}",
+             **({"applied": kept} if isinstance(kept, dict) else {})},
+        )
     finally:
         _request_stopped(request_id)
+
+
+async def _finish_request(
+    request_id: uuid.UUID, ws: uuid.UUID, upload_id: uuid.UUID, row: RecordingUpload,
+    result: dict[str, Any], settle,
+) -> None:
+    """Done when the video is edited (or Jennifer holds it); otherwise it asks him."""
+    held = library_service.qc_hold(row)
+    if row.status == "edited" or held:
+        # 3-Oct: his change was made. When Jennifer is holding the new file, her line
+        # goes with the reply; it is her finding, not a failed request.
+        await settle("done", {**result, "held": held} if held else result)
+        start_rule_learning(ws, upload_id, [request_id])
+    else:
+        await settle("needs_you", {**result, "question": f"The re-render stopped: {row.status_detail}"})
 
 
 def start_edit_request(request_id: uuid.UUID, ws: uuid.UUID, upload_id: uuid.UUID | None = None) -> None:
