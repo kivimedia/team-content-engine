@@ -120,3 +120,35 @@ def test_the_page_wires_the_taps_and_the_header_call():
     js = (Path(library.__file__).parents[1] / "api" / "workspace.js").read_text(encoding="utf-8")
     assert 'data-settle-hold="' in js and '"settle-hold"' in js and "/meaning-hold" in js
     assert 'route.name === "talk" && route.id' in js and '"video:" + route.id' in js
+
+
+async def _answer_on_an_edited_video(wired, client, tmp_path, choice, expect):
+    # 22-Oct: the card now offers the two answers on a video already edited. Answering
+    # must re-render from the plan he has (cuts from his notes included), not start over.
+    ws, uid = await held(wired, tmp_path)
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        row.status = "edited"
+        row.edited_path = str(tmp_path / "old-edit.mp4")
+        await s.commit()
+    async with wired["sm"]() as s:
+        keys = [a["key"] for a in (await library.list_library(s, ws))["items"][0]["actions"]]
+    assert keys.count("keep_mine") == 1 and "talk_edit" in keys
+    wired["renders"].clear()
+    r = await client.post(f"/api/v1/production/uploads/{uid}/meaning-hold", headers=auth(ws), json={"choice": choice})
+    assert r.status_code == 202, r.text
+    await settle()
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+    assert row.edited_path and wired["renders"][0] == expect
+    assert row.edit_plan["meaning_check"]["settled"]["choice"] == choice
+
+
+@needs_ffmpeg
+async def test_keep_mine_on_an_edited_video_keeps_the_edit_he_has(wired, client, tmp_path):
+    await _answer_on_an_edited_video(wired, client, tmp_path, "keep_mine", [[0.9, 4.5]])
+
+
+@needs_ffmpeg
+async def test_use_script_on_an_edited_video_keeps_the_edit_he_has(wired, client, tmp_path):
+    await _answer_on_an_edited_video(wired, client, tmp_path, "use_script", [[0.9, 1.9]])
