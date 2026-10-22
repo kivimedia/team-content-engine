@@ -1158,7 +1158,8 @@ async def save_reviewed_news_candidate(
         pm.id in anchor_ids and pm.source.source_kind == news_rules.STANDING_KIND
         and pm.moment.extraction_job_id is None
         and (pm.moment.news_ref or {}).get("standing") is True
-        and (pm.moment.news_ref or {}).get("anchor_kind") in {"problem_pattern", "client_solution", "vendor"}
+        and (pm.moment.news_ref or {}).get("anchor_kind")
+        in {"problem_pattern", "client_solution", "vendor"}
         for pm in cited
     ):
         raise ValueError("Reviewed news requires its actual human standing proof.")
@@ -1264,10 +1265,12 @@ def rank_system_for(profile: Any = None) -> str:
             ),
             ("passed all four gates", "passed all of its gates"),
             (
-                "Choose like an editor who wants the strongest, most useful week for coaches first and "
+                "Choose like an editor who wants the strongest, most useful week for coaches first "
+                "and "
                 "event-industry small business owners second:",
                 "Choose like an editor who wants the strongest week for people who book or attend "
-                "Israeli events and people curious about mentalism, from every lane that has strong "
+                "Israeli events and people curious about mentalism, from every lane that has "
+                "strong "
                 "ideas:",
             ),
             (
@@ -1275,9 +1278,11 @@ def rank_system_for(profile: Any = None) -> str:
                 "- Pick the finalists most worth him saying on camera, best first.",
             ),
             (
-                "- A coaching lesson that does not mention AI is as valuable as an AI one. Do not prefer an "
+                "- A coaching lesson that does not mention AI is as valuable as an AI one. "
+                "Do not prefer an "
                 "idea because it is recent; freshness is only a tie-breaker.",
-                "- Do not prefer an idea because it is recent; freshness is only a tie-breaker. Never "
+                "- Do not prefer an idea because it is recent; freshness is only a tie-breaker. "
+                "Never "
                 "pick an idea that explains how an effect is done or tells a story as his.",
             ),
         ),
@@ -2458,8 +2463,8 @@ async def select_candidates(
             retained_news = news_rules.owner_policy(ws) and bool(cited_news)
             news = _news_fields(cited_news) if retained_news else None
             if retained_news:
-                from tce.news.discovery import selection_fingerprint
                 from tce.models.news import NewsItem
+                from tce.news.discovery import selection_fingerprint
 
                 citations = [
                     _citation(pool_by_id[value]) for value in rej["moment_ids"]

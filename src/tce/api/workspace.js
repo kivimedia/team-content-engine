@@ -27,6 +27,7 @@
     today: null,
     topics: null,
     topicFilter: "best",
+    topicLimit: 30,
     catFilter: "all",
     week: null,
     room: null,
@@ -57,18 +58,54 @@
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
-  /* 14-Oct: "tce must be able to tell which idea is related to code or related
-     to ai news or related to fathom". One tag, every source it cites. */
+  /* Client workspaces retain the older evidence tags. Owner ideas have one
+     initiating source, separate from their subject and supporting citations. */
   function sourceTag(tags) {
     if (!tags || !tags.length) return "";
     return '<span class="tag is-src">From ' + esc(tags.join(" + ")) + "</span>";
   }
 
-  /* 18-Oct (T-13812): the same three one-tap categories on Today and This week
-     that Topics has, read off the tags the server already sends on every item. */
-  var CATS = [["all", "All"], ["calls", "Calls"], ["code", "Code"], ["news", "AI news"]];
+  var CLIENT_CATS = [["all", "All"], ["calls", "Calls"], ["code", "Code"], ["news", "AI news"]];
+  var OWNER_CATS = [["all", "All ideas"], ["calls", "From my calls"],
+                    ["builds", "From my builds"], ["news", "From the news"]];
+
+  function ownerSource(item) {
+    return !!item && Object.prototype.hasOwnProperty.call(item, "source_category");
+  }
+
+  function sourceIdentity(item) {
+    if (!ownerSource(item)) {
+      return sourceTag(item.source_tags)
+           + (item.lane_label ? '<span class="tag is-lane">' + esc(item.lane_label) + "</span>" : "");
+    }
+    var fallback = "Source to review";
+    var tags = item.source_tags || [];
+    if (tags.length === 1 && tags[0] === "Your idea") fallback = "Your idea";
+    else if (tags.length === 1 && tags[0] === "Clip") fallback = "From a clip";
+    else if (tags.length === 1 && tags[0] === "Story") fallback = "From a story";
+    var html = '<span class="tag is-src">' + esc(item.source_category_label || fallback) + "</span>";
+    if (item.news_kind === "ai") html += '<span class="tag is-news-kind">AI news</span>';
+    else if (item.news_kind === "software") html += '<span class="tag is-news-kind">Software news</span>';
+    else if (item.news_kind === "other") html += '<span class="tag is-news-kind">Tool news</span>';
+    else if (item.news_kind === "unknown") html += '<span class="tag is-news-kind">News to classify</span>';
+    return html;
+  }
+
+  function solutionIdentity(item) {
+    if (!ownerSource(item) || !item.solution_label) return "";
+    return '<p class="solution-line"><strong>Solution: </strong>' + esc(item.solution_label) + "</p>";
+  }
+
+  function suggestedTitle(item) {
+    if (!ownerSource(item) || !item.suggested_title || item.suggested_title === item.title) return "";
+    return '<p class="title-suggestion"><strong>Suggested title: </strong>' + esc(item.suggested_title) + "</p>";
+  }
 
   function catMatch(item, key) {
+    if (ownerSource(item)) {
+      if (key === "all") return true;
+      return item.source_category === (key === "code" ? "builds" : key);
+    }
     var tags = item.source_tags || [];
     if (key === "calls") return tags.indexOf("Fathom call") !== -1;
     if (key === "code") return tags.indexOf("Code") !== -1;
@@ -79,9 +116,11 @@
   function catChips(items) {
     if (!items || !items.length) return "";
     var html = '<div class="chips" role="group" aria-label="Filter by kind of idea">';
-    CATS.forEach(function (c) {
+    var cats = items.some(ownerSource) ? OWNER_CATS : CLIENT_CATS;
+    cats.forEach(function (c) {
+      var pressed = c[0] === state.catFilter || (c[0] === "builds" && state.catFilter === "code");
       html += '<button class="chip" type="button" data-catfilter="' + c[0] + '" aria-pressed="'
-           + (c[0] === state.catFilter ? "true" : "false") + '">' + c[1] + "</button>";
+           + (pressed ? "true" : "false") + '">' + c[1] + "</button>";
     });
     return html + "</div>";
   }
@@ -436,11 +475,29 @@
 
   // ----------------------------------------------------------------- Topics
 
+  async function topicPages() {
+    var loaded = 0;
+    var first = null;
+    var rows = [];
+    while (loaded < state.topicLimit) {
+      var size = Math.min(200, state.topicLimit - loaded);
+      var page = await api("/editorial/topics?filter=" + encodeURIComponent(state.topicFilter)
+        + "&limit=" + size + "&offset=" + loaded);
+      if (!first) first = page;
+      rows = rows.concat(page.topics || []);
+      loaded = rows.length;
+      if (!page.has_more || !(page.topics || []).length) break;
+    }
+    first.topics = rows;
+    first.has_more = loaded < first.total;
+    return first;
+  }
+
   async function renderTopics() {
     var view = $("view");
     view.innerHTML = '<div class="page">' + working("Reading the ideas waiting for you") + "</div>";
     var results = await Promise.all([
-      api("/editorial/topics?filter=" + encodeURIComponent(state.topicFilter) + "&limit=30"),
+      topicPages(),
       // His own ideas the checks turned down. A failure here never costs him the list.
       state.topicFilter === "best"
         ? api("/editorial/turned-down").catch(function () { return { ideas: [] }; })
@@ -454,12 +511,27 @@
     html += '<div class="page-head"><p class="kicker">Editorial workspace</p><h1>Topics</h1>';
     html += '<p class="lede">Decide what is worth your time. Nothing here asks the engine for anything.</p></div>';
 
-    html += '<div class="chips" role="group" aria-label="Filter topics">';
-    (data.filters || []).forEach(function (f) {
-      html += '<button class="chip" type="button" data-filter="' + esc(f.key) + '" aria-pressed="'
-           + (f.key === data.filter ? "true" : "false") + '">' + esc(f.label) + "</button>";
-    });
-    html += "</div>";
+    var filters = data.filters || [];
+    var ownerFilters = filters.some(function (f) { return f.key === "builds"; });
+    var activeFilter = data.filter === "code" && ownerFilters ? "builds" : data.filter;
+    function chip(f) {
+      return '<button class="chip" type="button" data-filter="' + esc(f.key) + '" aria-pressed="'
+           + (f.key === activeFilter ? "true" : "false") + '">' + esc(f.label) + "</button>";
+    }
+    if (ownerFilters) {
+      var origins = { all: true, calls: true, builds: true, news: true };
+      html += '<div class="filter-group"><p class="filter-group-label">Where it came from</p>';
+      html += '<div class="chips" role="group" aria-label="Where ideas came from">';
+      filters.filter(function (f) { return origins[f.key]; }).forEach(function (f) { html += chip(f); });
+      html += '</div></div><div class="filter-group"><p class="filter-group-label">Other views</p>';
+      html += '<div class="chips" role="group" aria-label="Other topic views">';
+      filters.filter(function (f) { return !origins[f.key]; }).forEach(function (f) { html += chip(f); });
+      html += "</div></div>";
+    } else {
+      html += '<div class="chips" role="group" aria-label="Filter topics">';
+      filters.forEach(function (f) { html += chip(f); });
+      html += "</div>";
+    }
 
     var topics = data.topics || [];
     if (!topics.length) {
@@ -478,6 +550,9 @@
       html += '<div class="card-list">';
       topics.forEach(function (topic) { html += topicCard(topic); });
       html += "</div>";
+      if (data.has_more) {
+        html += '<div class="actions"><button class="btn" type="button" data-topic-more="1">Show more ideas</button></div>';
+      }
     }
     if (turnedDown.length) {
       html += "<h2>Your ideas that did not pass</h2>";
@@ -495,6 +570,8 @@
   function topicCard(topic) {
     var html = '<article class="card' + (topic.decision === "away" ? " is-dim" : "") + '">';
     html += "<h3>" + esc(topic.title) + "</h3>";
+    html += suggestedTitle(topic);
+    html += solutionIdentity(topic);
     html += '<p class="big-idea">' + esc(topic.big_idea) + "</p>";
     if (topic.why_this_is_yours) {
       html += '<p class="why">' + esc(topic.why_this_is_yours) + "</p>";
@@ -502,9 +579,8 @@
     if (topic.provenance) {
       html += '<span class="source">' + esc(topic.provenance) + "</span>";
     }
-    html += sourceTag(topic.source_tags);
+    html += sourceIdentity(topic);
     if (topic.timely) html += '<span class="tag is-timely">' + esc(topic.freshness_note) + "</span>";
-    if (topic.lane_label) html += '<span class="tag is-lane">' + esc(topic.lane_label) + "</span>";
     if (topic.has_script) html += '<span class="tag is-ready">Script written</span>';
     if (topic.added_anyway) html += '<span class="tag">Added anyway: your call</span>';
 
@@ -646,9 +722,10 @@
     var html = '<article class="card">';
     html += '<div class="card-title-row"><span class="rank">' + (item.rank || index + 1) + "</span>";
     html += "<h3>" + esc(item.title) + "</h3></div>";
+    html += suggestedTitle(item);
+    html += solutionIdentity(item);
     if (item.reason) html += '<p class="why">' + esc(item.reason) + "</p>";
-    html += sourceTag(item.source_tags);
-    if (item.lane_label) html += '<span class="tag is-lane">' + esc(item.lane_label) + "</span>";
+    html += sourceIdentity(item);
     /* 28-Sep: a script asked for while his Claude limit was used up waited two
        days, and the card said "No script yet" with "Prepare the script" all
        along. A script on its way says when it comes, and is not offered again. */
@@ -732,15 +809,19 @@
     var html = '<div class="page">';
     html += '<div class="page-head"><p class="kicker">Topic</p>';
     html += "<h1>" + esc(data.title) + "</h1>";
+    html += suggestedTitle(data);
+    html += solutionIdentity(data);
     if (data.provenance) html += '<p class="lede">' + esc(data.provenance) + "</p>";
     html += "</div>";
+    if (data.suggested_title && data.suggested_title !== data.title) {
+      html += '<div class="actions"><button class="btn" type="button" data-title-review="1">Review suggested title</button></div>';
+    }
 
     html += pairTabs("topic", data.candidate_id, data.script ? data.script.packet_id : null);
     html += voicePanel(voiceItems);
 
-    html += sourceTag(data.source_tags);
+    html += sourceIdentity(data);
     if (data.timely) html += '<span class="tag is-timely">Timely</span>';
-    if (data.lane_label) html += '<span class="tag is-lane">' + esc(data.lane_label) + "</span>";
     html += '<span class="tag">Version ' + (brief.version || 1) + "</span>";
 
     if (data.decision) {
@@ -1082,6 +1163,43 @@
       + "</div>";
     $("acceptChange").addEventListener("click", acceptPending);
     $("rejectChange").addEventListener("click", rejectPending);
+    sheet.hidden = false;
+  }
+
+  function reviewSuggestedTitle() {
+    var room = state.room;
+    if (!room || !room.suggested_title || room.suggested_title === room.title) return;
+    var sheet = $("talkSheet");
+    $("talkTitle").textContent = "Suggested title";
+    $("talkContext").textContent = "Review the wording before changing this idea.";
+    $("talkBody").innerHTML = '<div class="diff">'
+      + '<div class="diff-half diff-before"><h5>Current title</h5><p>' + esc(room.title) + '</p></div>'
+      + '<div class="diff-half diff-after"><h5>Suggested title</h5><p>' + esc(room.suggested_title) + '</p></div>'
+      + '</div><p class="section-hint">Your script, decisions and recording order stay as they are.</p>';
+    sheet.querySelector(".sheet-foot").innerHTML = '<div class="btn-row">'
+      + '<button class="btn primary" type="button" id="acceptSuggestedTitle">Use this title</button>'
+      + '<button class="btn quiet" type="button" id="keepSuggestedTitle">Keep current title</button></div>';
+    $("keepSuggestedTitle").addEventListener("click", closeSheet);
+    $("acceptSuggestedTitle").addEventListener("click", async function () {
+      var button = $("acceptSuggestedTitle");
+      button.disabled = true;
+      button.textContent = "Saving the title";
+      try {
+        await api("/editorial/topics/" + encodeURIComponent(room.candidate_id)
+          + "/suggested-title/accept", {
+          method: "POST",
+          body: { expected_title: room.title, suggested_title: room.suggested_title }
+        });
+        closeSheet();
+        toast("Title saved.");
+        await render();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "Use this title";
+        toast(error.message, true);
+        if (error.status === 409) { closeSheet(); await render(); }
+      }
+    });
     sheet.hidden = false;
   }
 
@@ -3124,7 +3242,7 @@
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise", "pub-copy",
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
     "check-again", "release-hold", "settle-hold", "rule-delete",
-    "rename", "rename-save", "add-anyway", "pubtab", "libcount"
+    "rename", "rename-save", "add-anyway", "pubtab", "libcount", "topic-more", "title-review"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -3160,7 +3278,9 @@
     if (d.settleHold !== undefined) { settleHold(d.settleHold, d.choice); return; }
     if (d.ruleDelete !== undefined) { deleteRule(d.ruleDelete); return; }
     if (d.catfilter !== undefined) { state.catFilter = d.catfilter; render(); return; }
-    if (d.filter !== undefined) { state.topicFilter = d.filter; render(); return; }
+    if (d.filter !== undefined) { state.topicFilter = d.filter; state.topicLimit = 30; render(); return; }
+    if (d.topicMore !== undefined) { state.topicLimit += 30; render(); return; }
+    if (d.titleReview !== undefined) { reviewSuggestedTitle(); return; }
     if (d.libfilter !== undefined) { state.libraryFilter = d.libfilter; state.libraryCount = null; render(); return; }
     if (d.libcount !== undefined) {
       // 18-Oct (T-13905): tap a count to see just those videos; tap again to clear.

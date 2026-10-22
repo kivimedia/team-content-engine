@@ -119,13 +119,15 @@ def source_category(candidate: TopicCandidate) -> str | None:
 
     if not news_rules.owner_policy(getattr(candidate, "workspace_id", None)):
         return None
-    if candidate.freshness_role == "news" or candidate.news_item_id is not None:
+    if candidate.news_item_id is not None:
         return "news"
     kinds = {
         str(c.get("source_kind"))
         for c in (candidate.citations_private or [])
         if isinstance(c, dict) and c.get("source_kind") in _SOURCE_CATEGORIES
     }
+    if "news_item" in kinds:
+        return "news"
     gates = candidate.gates if isinstance(candidate.gates, dict) else {}
     primary = gates.get("_primary_source_kind")
     if primary in kinds:
@@ -281,15 +283,12 @@ def lane_for(candidate: TopicCandidate) -> str:
         return "ai_news"
     # 15-Oct: a topic he added anyway carries the lane he named ("Build" for Auth
     # Buddy); his own words cite no commit, so the evidence alone said coaching.
-    override = (candidate.gates or {}).get("_override") if isinstance(candidate.gates, dict) else None
+    override = (
+        (candidate.gates or {}).get("_override") if isinstance(candidate.gates, dict) else None
+    )
     chosen = override.get("lane") if isinstance(override, dict) else None
     if chosen in OWNER_LANES:
         return chosen
-    kinds = {
-        c.get("source_kind")
-        for c in (candidate.citations_private or [])
-        if isinstance(c, dict)
-    }
     if is_code_topic(candidate):
         return "build"
     if candidate.audience in ("coaches", "both"):

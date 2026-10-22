@@ -8,10 +8,10 @@ from tce.editorial import news_rules, solution_names
 from tce.editorial.inbox import _matches, _row_to_json
 from tce.editorial.lineup import (
     _item_to_json,
+    news_kind,
     source_category,
     source_category_label,
     source_tags,
-    news_kind,
 )
 from tests.unit.test_topic_source_tags import CALL, COMMIT, NEWS, SPOKEN, cand
 
@@ -44,6 +44,15 @@ def test_news_with_a_commit_anchor_counts_once_as_news(monkeypatch):
     assert source_tags(idea)[0] == "News to classify"
     assert _matches("news", idea, None)
     assert not _matches("builds", idea, None)
+
+
+def test_news_freshness_without_news_evidence_does_not_change_origin(monkeypatch):
+    owner(monkeypatch)
+    idea = cand([CALL], role="news")
+    assert source_category(idea) == "calls"
+    assert news_kind(idea) is None
+    assert _matches("calls", idea, None)
+    assert not _matches("news", idea, None)
 
 
 def test_ordinary_software_news_is_news_but_not_ai(monkeypatch):

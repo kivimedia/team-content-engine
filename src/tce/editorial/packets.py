@@ -2025,7 +2025,9 @@ async def choose_hook(
                 )
             )
         ).scalar_one_or_none()
-        problems = lane_packets.lane_errors(clean, lineup.lane_for(cand)) if cand is not None else []
+        problems = (
+            lane_packets.lane_errors(clean, lineup.lane_for(cand)) if cand is not None else []
+        )
         if problems:
             raise PacketValidationError("; ".join(problems))
     maximum = (
