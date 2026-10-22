@@ -374,6 +374,43 @@ async def test_a_blocked_meaning_check_keeps_the_edit_he_has_and_the_review(wire
     assert sitting.result["status"].startswith("The re-render stopped:")
 
 
+async def test_a_meaning_issue_the_edit_already_had_does_not_stop_his_notes(wired, tmp_path):
+    # 22-Oct: the edit he has already carries a meaning-check issue. A note that adds a
+    # new one still stops; a note that only re-finds the known one must render.
+    sm = wired["sm"]
+    ws, uid = await seed(sm, tmp_path)
+    async with sm() as s:
+        row = await prod._load(s, uid, ws)
+        plan = dict(row.edit_plan)
+        known = {"kind": "negation_dropped", "detail": "known issue"}
+        plan["meaning_check"] = {"status": "blocked", "issues": [known]}
+        row.edit_plan = plan
+        await s.commit()
+    real = prod._compute_plan
+
+    async def compute(s, ws_, row):
+        await real(s, ws_, row)
+        p = dict(row.edit_plan)
+        p["meaning_check"] = {"status": "blocked", "issues": [dict(known)]}
+        row.edit_plan = p
+        row.status, row.status_detail = "needs_review", "Needs review: known issue"
+
+    prod._compute_plan = compute
+    try:
+        sid, (n1,) = await sit(sm, ws, uid, [(6.6, "cut the end", None)])
+        wired["answers"].append({
+            "summary": "Cut the end.",
+            "notes": [note(1, reply="Cut it.", cut=[{"first": 12, "last": 13}])],
+        })
+        await prod.run_talk_session(sid, ws)
+    finally:
+        prod._compute_plan = real
+    row, sitting, notes = await state_of(sm, ws, uid, sid)
+    assert len(wired["renders"]) == 1
+    assert notes[n1].state == "done" and not kept(row, 12)
+    assert row.edit_plan["meaning_check"]["carried"] == [known]
+
+
 async def test_words_changed_while_it_read_ask_once_more_with_a_new_key(wired, tmp_path):
     sm = wired["sm"]
     ws, uid = await seed(sm, tmp_path)

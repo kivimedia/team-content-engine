@@ -210,6 +210,10 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
         actions.append({"key": "keep_mine", "label": "Keep what I said"})
         if (meaning_hold(upload) or {}).get("can_use_script"):
             actions.append({"key": "use_script", "label": "Use the script line"})
+    if upload.edited_path and meaning_hold(upload) is not None:
+        actions.append({"key": "keep_mine", "label": "Keep what I said"})
+        if (meaning_hold(upload) or {}).get("can_use_script"):
+            actions.append({"key": "use_script", "label": "Use the script line"})
     actions.append({"key": "request_edit", "label": "Request an editing change"})
     if upload.edited_path and upload.transcript and upload.status not in _LIVE_STATUSES:
         # 28-Sep: the tight cut and the word-box captions, for an edit made before them.
@@ -437,9 +441,9 @@ def meaning_hold(upload: Any) -> dict[str, Any] | None:
     Not Jennifer's own hold on a finished render (qc_hold is that one), and not a cut
     already rendered once: his two answers are keep what he said, or use the script
     line (cut his take). Both settle it from the card or by voice (T-13809)."""
-    if getattr(upload, "status", None) != "needs_review" or qc_hold(upload) is not None:
-        return None
-    if getattr(upload, "edited_path", None):
+    # 22-Oct: also on a video already edited. The card said the question there with no
+    # way to answer it, and every note he gave stopped on it.
+    if getattr(upload, "status", None) not in ("needs_review", "edited") or qc_hold(upload) is not None:
         return None
     check = (getattr(upload, "edit_plan", None) or {}).get("meaning_check") or {}
     if check.get("status") != "blocked":

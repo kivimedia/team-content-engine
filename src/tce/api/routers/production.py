@@ -2482,6 +2482,38 @@ _BLOCKED_SAYS = {
 }
 
 
+def _meaning_issue_key(issue: Any) -> tuple[str, str] | None:
+    if not isinstance(issue, dict):
+        return None
+    return (str(issue.get("kind") or ""), str(issue.get("detail") or ""))
+
+
+def _carry_known_meaning_issues(row: RecordingUpload, before_plan: dict[str, Any]) -> None:
+    """22-Oct: his notes re-plan the whole video, and the meaning check finds again what
+    it found in the edit he already has (or what he already answered). Those are not his
+    notes' doing: they must not stop every note he types. Only an issue the notes made
+    new blocks the re-render; known ones ride along, as they do in the edit he has."""
+    plan = dict(row.edit_plan or {})
+    check = dict(plan.get("meaning_check") or {})
+    if check.get("status") != "blocked":
+        return
+    before = dict(before_plan.get("meaning_check") or {})
+    known = {
+        k
+        for i in list(before.get("issues") or []) + list((before.get("settled") or {}).get("issues") or [])
+        if (k := _meaning_issue_key(i)) is not None
+    }
+    issues = [i for i in check.get("issues") or [] if isinstance(i, dict)]
+    if not issues or any(_meaning_issue_key(i) not in known for i in issues):
+        return
+    plan["meaning_check"] = {**check, "status": "ok", "issues": [], "carried": issues}
+    if before.get("settled"):
+        plan["meaning_check"]["settled"] = before["settled"]
+    row.edit_plan = plan
+    row.status = "planned"
+    row.status_detail = "Plan ready: your notes applied; the meaning check found nothing new."
+
+
 async def _plan_and_render_locked(
     upload_id: uuid.UUID,
     ws: uuid.UUID,
@@ -2498,6 +2530,13 @@ async def _plan_and_render_locked(
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
         await _compute_plan(s, ws, row)
+        if (
+            restore_if_blocked is not None
+            and blocked_by in ("notes", "undo")
+            and row.status == "needs_review"
+            and row.edited_path
+        ):
+            _carry_known_meaning_issues(row, restore_if_blocked[1])
         if restore_if_blocked is not None and row.status != "planned" and row.edited_path:
             reason = row.status_detail or "the cut would change what you said"
             transcript, plan, status, detail = restore_if_blocked
