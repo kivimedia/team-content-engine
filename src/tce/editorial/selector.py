@@ -34,7 +34,7 @@ from sqlalchemy import or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
-from tce.editorial import lane_profile, lineup, news_rules
+from tce.editorial import lane_profile, lineup, news_rules, solution_names
 from tce.editorial.common import (
     ORIGIN_AGENT_TALK,
     ORIGIN_OWNER_OVERRIDE,
@@ -132,6 +132,17 @@ claim_type "measured".
 in public_safety_notes.
 - Keep credentials, client and customer identities, customer words, sensitive personal \
 stories and money figures out of title, lesson and public_angle.
+- A VERIFIED PUBLIC SOLUTION shown with a moment is safe to name when that actual \
+solution is central to the story. Otherwise lead with the lesson and leave the \
+solution as supporting context. Never turn a repo slug, a client name, or a guessed \
+product name into a public claim.
+- Set primary_moment_id to the cited moment that initiated the idea. A call \
+remains call-led if a commit only supports it. A commit remains build-led if a \
+call only supports it. For news-led ideas choose the news moment. Leave it empty \
+when mixed evidence does not establish the initiator.
+- Set solution_central true only when explaining the named solution's actual \
+behavior is essential to the story. A general coaching lesson drawn from a build \
+remains lesson-first. Leave this false or absent when unsure.
 - Do NOT fill a quota. Return fewer candidates, or none, when evidence is weak.
 - Every moment you considered and did not use for a candidate goes in rejections with the \
 gate it failed and a reason, so the editor can review what was left out.
@@ -157,6 +168,8 @@ OUTPUT_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "properties": {
                     "moment_ids": {"type": "array", "items": {"type": "string"}},
+                    "primary_moment_id": {"type": "string"},
+                    "solution_central": {"type": "boolean"},
                     "title": {"type": "string"},
                     "lesson": {"type": "string"},
                     "audience": {"type": "string", "enum": ["coaches", "event_owners", "both"]},
@@ -603,6 +616,26 @@ async def load_context(
     return out
 
 
+def _verified_solution_for_pool_moment(pm: PoolMoment) -> str | None:
+    """Only supply the selector with a name established outside model text."""
+    m, s = pm.moment, pm.source
+    if not news_rules.owner_policy(s.workspace_id):
+        return None
+    if s.source_kind == "github_commit_group":
+        repo = (s.payload_private or {}).get("repo")
+        refs = m.code_refs or []
+        if not refs or any(not isinstance(r, dict) or r.get("repo") != repo for r in refs):
+            return None
+        approved = solution_names.verified_solution_for_repo(repo)
+        return approved[0] if approved else None
+    if s.source_kind == news_rules.NEWS_KIND:
+        url = (m.news_ref or {}).get("primary_url") or s.url_private
+        canonical = solution_names.PUBLIC_ARTICLE_SOURCE_ALIASES.get(url, url)
+        approved = solution_names.PUBLIC_NEWS_ARTICLES.get(canonical)
+        return approved[0] if approved else None
+    return None
+
+
 def _pool_prompt_item(pm: PoolMoment) -> dict[str, Any]:
     m, s = pm.moment, pm.source
     out = {
@@ -621,6 +654,8 @@ def _pool_prompt_item(pm: PoolMoment) -> dict[str, Any]:
     }
     if pm.editorial_notes:
         out["editor_suggestions_not_evidence"] = pm.editorial_notes
+    if verified_name := _verified_solution_for_pool_moment(pm):
+        out["verified_public_solution"] = verified_name
     return out
 
 
@@ -731,7 +766,7 @@ def build_selection_prompt(
 def _context_prompt_item(pm: PoolMoment) -> dict[str, Any]:
     """An anchor, shown for citation only. Keyed so resume never counts it."""
     m, s = pm.moment, pm.source
-    return {
+    out = {
         "context_moment_id": pm.id,
         "source_kind": s.source_kind,
         "occurred_at": s.occurred_at.isoformat() if s.occurred_at else None,
@@ -739,6 +774,9 @@ def _context_prompt_item(pm: PoolMoment) -> dict[str, Any]:
         "claim_type": m.claim_type,
         "excerpt_private": (m.excerpt_private or "")[:EXCERPT_CHARS],
     }
+    if verified_name := _verified_solution_for_pool_moment(pm):
+        out["verified_public_solution"] = verified_name
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -809,6 +847,27 @@ def _citation(pm: PoolMoment) -> dict[str, Any]:
         "sensitivity_flags": list(m.sensitivity_flags or []),
         "excerpt_private": m.excerpt_private,
     }
+
+
+def _primary_source_kind(
+    raw: dict[str, Any], cited: list[PoolMoment]
+) -> tuple[str | None, str | None]:
+    """A news trigger wins; mixed evergreen proof needs an explicit cited starter."""
+    news = next((pm for pm in cited if pm.source.source_kind == news_rules.NEWS_KIND), None)
+    if news is not None:
+        return news_rules.NEWS_KIND, news.id
+    eligible = [pm for pm in cited if pm.source.source_kind in {
+        "fathom_meeting", "github_commit_group"
+    }]
+    wanted = str(raw.get("primary_moment_id") or "")
+    if wanted:
+        first = next((pm for pm in eligible if pm.id == wanted), None)
+        if first is not None:
+            return first.source.source_kind, first.id
+    kinds = {pm.source.source_kind for pm in eligible}
+    if len(kinds) == 1:
+        return next(iter(kinds)), eligible[0].id if len(eligible) == 1 else None
+    return None, None
 
 
 def enforce_candidates(
@@ -1015,6 +1074,7 @@ def enforce_candidates(
                 notes.append(f"News score: {parts.explain()}")
 
         audience = raw.get("audience")
+        primary_kind, primary_id = _primary_source_kind(raw, cited)
         out = {
                 "news": news,
                 "moment_ids": ids,
@@ -1031,6 +1091,17 @@ def enforce_candidates(
                 "rank_score": round(rank_score, 4),
                 "citations_private": [_citation(pm) for pm in cited],
             }
+        if cited and news_rules.owner_policy(cited[0].source.workspace_id) and primary_kind:
+            out["gates"]["_primary_source_kind"] = primary_kind
+            if primary_id:
+                out["gates"]["_primary_moment_id"] = primary_id
+            if primary_kind == "github_commit_group" and raw.get("solution_central") is True:
+                names = {
+                    _verified_solution_for_pool_moment(pm)
+                    for pm in cited if pm.source.source_kind == "github_commit_group"
+                }
+                if len(names) == 1 and None not in names:
+                    out["gates"]["_solution_central"] = True
         if lane_key is not None:
             out["lane"] = lane_key
         accepted.append(out)

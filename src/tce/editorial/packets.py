@@ -20,7 +20,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
-from tce.editorial import lineup, script_check, voice_retrieval
+from tce.editorial import lineup, script_check, solution_names, voice_retrieval
 from tce.editorial.common import (
     SessionSource,
     coerce_uuid,
@@ -80,6 +80,10 @@ idea, reading one short phrase, looking up, saying it.
 Write for coaches first and event-industry small business owners second. One lesson only. \
 Tell it from Ziv's own first-person experience. Beats are flexible around the lesson; no \
 fixed number of parts. No forced company names, statistics, news hooks or crisis hooks.
+
+Only a verified public solution supplied with the selected idea may be named. Use
+its exact name when its concrete behavior is central; keep a general lesson
+focused on the lesson. A repo slug, client name or guessed vendor is never public proof.
 
 Hard rules:
 - bullets: 5 to 7 short walking bullets he can talk from.
@@ -613,6 +617,20 @@ def build_packet_prompt(
         if not item["moment_id"]:
             item["moment_id"] = fallback
     parts = ["STRATEGY:\n" + (strategy_text or "(none)")]
+    if verified_solution := solution_names.solution_label_for_candidate(cand):
+        center = (cand.gates or {}).get("_solution_central") is True
+        parts.append(
+            f"VERIFIED PUBLIC SOLUTION: {verified_solution['name']}. "
+            f"Supported by cited moment {verified_solution['evidence']['moment_id']}. "
+            + (
+                "Its actual behavior is central to this build idea, so use the name when useful."
+                if center or verified_solution['evidence']['source_kind'] == "news_item"
+                else (
+                    "This build idea is lesson-first; the name is background context, "
+                    "not a required hook."
+                )
+            )
+        )
     if cand.news_item_id:
         from tce.editorial.news_rules import owner_policy
 

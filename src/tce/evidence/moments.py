@@ -21,6 +21,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import tce.llm as llm
+from tce.editorial.news_rules import owner_policy
+from tce.editorial.solution_names import verified_solution_for_repo
 from tce.evidence.collect import FATHOM_KIND, GITHUB_KIND, RunLedger
 from tce.evidence.common import stable_hash, to_db
 from tce.models.editorial import CLAIM_TYPES, EvidenceMoment, EvidenceSource
@@ -54,8 +56,10 @@ Rules:
 - Spans: use the exact start and end seconds of the numbered turns you were given. Never
   invent times. The speaker must be the exact speaker label shown on those turns.
 - excerpt_private: the exact words from the turns (private, editor-only).
-- lesson_summary: the lesson in public-safe words. No client or company names, no customer
-  words, no health details, no money figures, no credentials, no identifying detail.
+- lesson_summary: the lesson in public-safe words. No private client or customer
+  company names, customer words, health details, money figures, credentials or
+  identifying detail. Only a supplied verified public solution name may be kept;
+  a repository slug or a name in a transcript is not proof it may be published.
 - claim_type: quoted | paraphrased | inferred | demonstrated | measured.
   A proposal, plan or intention is never "demonstrated" or "measured".
   Merged code is at most "demonstrated"; code never proves a business outcome.
@@ -437,8 +441,18 @@ def _jobs_for_source(source: EvidenceSource) -> list[tuple[str, dict[str, Any]]]
             jobs.append((header + "\n".join(render_turn(t) for t in chunk), MEETING_SCHEMA))
         return jobs
     if source.source_kind == GITHUB_KIND:
+        approved = (
+            verified_solution_for_repo(payload.get("repo"))
+            if owner_policy(source.workspace_id) else None
+        )
+        public_context = (
+            f"VERIFIED PUBLIC SOLUTION: {approved[0]}. Use this exact name only when "
+            "the solution is central to the lesson; otherwise lead with the lesson.\n\n"
+            if approved else ""
+        )
         return [(
             "Group of related commits. Each file path is exact at the given SHA.\n\n"
+            + public_context
             + render_commit_group(payload),
             COMMIT_SCHEMA,
         )]
