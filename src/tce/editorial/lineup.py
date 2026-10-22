@@ -24,6 +24,7 @@ import re
 import uuid
 from datetime import UTC, date, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -94,6 +95,93 @@ SOURCE_TAGS = (
     ("story_seed", "Story"),
 )
 
+SOURCE_CATEGORY_LABELS = {
+    "calls": "From my calls",
+    "builds": "From my builds",
+    "news": "From the news",
+}
+
+_SOURCE_CATEGORIES = {
+    "fathom_meeting": "calls",
+    "github_commit_group": "builds",
+    "news_item": "news",
+}
+
+
+def source_category(candidate: TopicCandidate) -> str | None:
+    """One owner idea origin, inferred only from initiating evidence.
+
+    A news announcement can cite a commit as context. It still began in news.
+    A call and a commit together are ambiguous unless selection saved which
+    one initiated the idea. Other workspaces retain their existing lanes.
+    """
+    from tce.editorial import news_rules
+
+    if not news_rules.owner_policy(getattr(candidate, "workspace_id", None)):
+        return None
+    if candidate.freshness_role == "news" or candidate.news_item_id is not None:
+        return "news"
+    kinds = {
+        str(c.get("source_kind"))
+        for c in (candidate.citations_private or [])
+        if isinstance(c, dict) and c.get("source_kind") in _SOURCE_CATEGORIES
+    }
+    gates = candidate.gates if isinstance(candidate.gates, dict) else {}
+    primary = gates.get("_primary_source_kind")
+    if primary in kinds:
+        return _SOURCE_CATEGORIES[primary]
+    origins = {_SOURCE_CATEGORIES[kind] for kind in kinds}
+    return next(iter(origins)) if len(origins) == 1 else None
+
+
+def source_category_label(candidate: TopicCandidate) -> str | None:
+    return SOURCE_CATEGORY_LABELS.get(source_category(candidate))
+
+
+def news_kind(candidate: TopicCandidate) -> str | None:
+    """AI and ordinary software are distinct inside the owner's news category."""
+    if source_category(candidate) != "news":
+        return None
+    gates = candidate.gates if isinstance(candidate.gates, dict) else {}
+    kind = gates.get("_news_category")
+    if kind in {"ai", "software", "other"}:
+        return kind
+    # This older Dubsado changelog predates stored news categories. The exact
+    # public article was checked as ordinary software news; neither its title
+    # nor the publisher's whole domain is a safe general classification rule.
+    for cite in candidate.citations_private or []:
+        if not isinstance(cite, dict) or cite.get("source_kind") != "news_item":
+            continue
+        parts = urlsplit(str(cite.get("url_private") or ""))
+        if (parts.scheme, parts.hostname, parts.path) == (
+            "https", "updates.dubsado.com", "/159130-changelog-october-5-2026"
+        ):
+            return "software"
+    return "unknown"
+
+
+def owner_source_fields(candidate: TopicCandidate | None) -> dict[str, Any]:
+    """New response fields exist only for owner workspaces."""
+    if candidate is None:
+        return {}
+    from tce.editorial import news_rules
+
+    if not news_rules.owner_policy(getattr(candidate, "workspace_id", None)):
+        return {}
+    from tce.editorial import solution_names
+
+    solution = solution_names.solution_label_for_candidate(candidate)
+    suggested = solution_names.proposed_solution_title(candidate)
+    return {
+        "source_category": source_category(candidate),
+        "source_category_label": source_category_label(candidate),
+        "news_kind": news_kind(candidate),
+        "solution_label": solution["name"] if solution else None,
+        "solution_url": solution["public_url"] if solution else None,
+        "suggested_title": suggested["title"] if suggested else None,
+        "solution_evidence": solution["evidence"] if solution else None,
+    }
+
 
 # Words that make an idea about software. Deliberately not "build" or "built":
 # a coaching lesson builds trust and builds a list just as often as it builds an app.
@@ -144,11 +232,27 @@ def source_tags(candidate: TopicCandidate) -> list[str]:
         for c in (candidate.citations_private or [])
         if isinstance(c, dict)
     }
+    from tce.editorial import news_rules
+
+    owner = news_rules.owner_policy(getattr(candidate, "workspace_id", None))
+    if owner:
+        news_label = {
+            "ai": "AI news",
+            "software": "Software news",
+            "other": "Tool news",
+            "unknown": "News to classify",
+        }.get(news_kind(candidate), "News to classify")
+    else:
+        news_label = (
+            "Software news" if (candidate.gates or {}).get("_news_category")
+            in {"software", "other"} else "AI news"
+        )
     return [
-        ("Software news" if kind == "news_item"
-         and (candidate.gates or {}).get("_news_category") in {"software", "other"} else label)
+        (news_label if kind == "news_item" else label)
         for kind, label in SOURCE_TAGS
-        if kind in kinds and (kind != "github_commit_group" or is_code_topic(candidate))
+        if kind in kinds and (
+            kind != "github_commit_group" or owner or is_code_topic(candidate)
+        )
     ]
 
 
@@ -1084,6 +1188,7 @@ def _item_to_json(
         "lane": item.lane,
         "lane_label": LANE_LABELS.get(item.lane, item.lane),
         "source_tags": source_tags(candidate) if candidate else [],
+        **owner_source_fields(candidate),
         "reason": item.reason,
         "status": item.status,
         # The one thing the week has to be honest about: is there a script yet.
@@ -1143,6 +1248,24 @@ async def lineup_to_json(
         f"{count} {LANE_LABELS.get(lane, lane).lower()}" for lane, count in sorted(counts.items())
     )
 
+    from tce.editorial import news_rules
+
+    owner = news_rules.owner_policy(ws)
+    source_counts = {"calls": 0, "builds": 0, "news": 0, "other": 0}
+    if owner:
+        for row in primary:
+            category = row.get("source_category") or "other"
+            source_counts[category] += 1
+        mix = " · ".join(
+            f"{source_counts[key]} {SOURCE_CATEGORY_LABELS[key].lower()}"
+            for key in ("calls", "builds", "news")
+            if source_counts[key]
+        )
+        if source_counts["other"]:
+            extra = f"{source_counts['other']} other idea"
+            ending = "s" if source_counts["other"] != 1 else ""
+            mix = " · ".join(filter(None, (mix, extra + ending)))
+
     return {
         "lineup_id": str(lineup.id),
         "week_start": lineup.week_start.date().isoformat(),
@@ -1155,6 +1278,7 @@ async def lineup_to_json(
         "reserve": reserve,
         # Information, not a rule. An unbalanced week is visible and allowed.
         "mix": mix,
+        **({"source_counts": source_counts} if owner else {}),
         # Scripts waiting to be filmed: a filmed topic's script is used (28-Sep).
         "ready_count": sum(
             1 for r in primary if r["script_state"] == "ready" and not r["filmed"]

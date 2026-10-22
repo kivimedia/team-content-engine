@@ -42,6 +42,8 @@ from tce.editorial.lineup import (
     filmed_candidate_ids,
     is_code_topic,
     lane_for,
+    owner_source_fields,
+    source_category,
     source_tags,
     taken_candidate_ids,
 )
@@ -50,15 +52,13 @@ from tce.models.editorial_workspace import TOPIC_DECISIONS, TopicDecision
 
 # Filter keys the inbox offers, in the order the chips are shown.
 #
-# `timely` from the plan is not a separate filter: `freshness_role` is the only
-# timeliness signal TCE has, and it is the same field that makes a topic AI news.
-# Two chips that select identical rows would be a lie about how the engine works.
+# `timely` is not a separate filter. The owner news category includes both AI
+# and ordinary software updates; `news_kind` keeps their publication mix apart.
 FILTERS = ("best", "calls", "code", "news", "evergreen", "later", "away")
+OWNER_FILTERS = ("all", "best", "calls", "builds", "news", "evergreen", "later", "away")
 
-# Short on purpose. These wrap onto two rows at 390px; "From my calls" and
-# "Saved for later" pushed it to three and shoved the first real card off the
-# screen, which costs him a scroll before he has decided anything.
-# The category chips: they follow what the idea is about and include the week.
+# Legacy client labels and source filtering remain unchanged. Owner labels
+# describe where an idea began, while its decision remains a separate field.
 CATEGORY_FILTERS = ("calls", "code", "news")
 
 FILTER_LABELS = {
@@ -69,6 +69,14 @@ FILTER_LABELS = {
     "evergreen": "Evergreen",
     "later": "Later",
     "away": "Put away",
+}
+OWNER_FILTER_LABELS = {
+    **FILTER_LABELS,
+    "all": "All ideas",
+    "calls": "From my calls",
+    "builds": "From my builds",
+    "code": "From my builds",  # alias for saved links
+    "news": "From the news",
 }
 
 # Origins that are engine bookkeeping, never topics for a human to decide on. A filmed
@@ -209,7 +217,25 @@ def _matches(
     candidate: TopicCandidate,
     decision: TopicDecision | None,
 ) -> bool:
+    from tce.editorial import news_rules
+
     decided = effective_decision(candidate, decision)
+
+    if news_rules.owner_policy(getattr(candidate, "workspace_id", None)):
+        if filter_key == "all":
+            return True
+        if filter_key == "later":
+            return decided == "later"
+        if filter_key == "away":
+            return decided == "away"
+        if filter_key in ("calls", "builds", "code", "news"):
+            wanted = "builds" if filter_key == "code" else filter_key
+            return source_category(candidate) == wanted
+        if decided in ("away", "later", "this_week"):
+            return False
+        if filter_key == "evergreen":
+            return source_category(candidate) != "news"
+        return True
 
     if filter_key == "later":
         return decided == "later"
@@ -281,6 +307,7 @@ def _row_to_json(
         "lane": lane,
         "lane_label": LANE_LABELS.get(lane, lane),
         "source_tags": source_tags(candidate),
+        **owner_source_fields(candidate),
         "timely": candidate.freshness_role == "news",
         "freshness_note": freshness_note_for(candidate),
         "decision": effective_decision(candidate, decision),
@@ -305,7 +332,10 @@ async def list_topics(
     offset: int = 0,
 ) -> dict[str, Any]:
     """The inbox. Read-only: no brief row is written by looking at the list."""
-    if filter_key not in FILTERS:
+    from tce.editorial import news_rules
+
+    owner = news_rules.owner_policy(ws)
+    if filter_key not in (OWNER_FILTERS + ("code",) if owner else FILTERS):
         raise InboxError("bad_filter", f"unknown filter {filter_key}", status=400)
 
     result = await db.execute(
@@ -345,8 +375,13 @@ async def list_topics(
         # about, is not waiting for him: not in Best matches, not in any
         # undecided view, not in Today's count, and not among the ideas held
         # back either. A topic chosen, saved or put away keeps its place in that
-        # decision's list, take or not.
-        if set_aside_by_a_take(effective_decision(candidate, decision), candidate.id in taken):
+        # decision's list, take or not. Owner origin views include these ideas:
+        # where an idea began is independent of whether a take is resting.
+        taken_undecided = set_aside_by_a_take(
+            effective_decision(candidate, decision), candidate.id in taken
+        )
+        owner_origin_view = owner and filter_key in ("all", "calls", "builds", "code", "news")
+        if taken_undecided and not owner_origin_view:
             continue
         # A stored brief wins: he may have written the connection himself.
         brief = stored.get(candidate.id) or briefs.seed_brief(candidate)
@@ -363,8 +398,11 @@ async def list_topics(
     page = rows[offset : offset + limit]
     return {
         "filter": filter_key,
-        "filter_label": FILTER_LABELS[filter_key],
-        "filters": [{"key": k, "label": FILTER_LABELS[k]} for k in FILTERS],
+        "filter_label": (OWNER_FILTER_LABELS if owner else FILTER_LABELS)[filter_key],
+        "filters": [
+            {"key": k, "label": (OWNER_FILTER_LABELS if owner else FILTER_LABELS)[k]}
+            for k in (OWNER_FILTERS if owner else FILTERS)
+        ],
         "topics": page,
         "total": total,
         "offset": offset,
@@ -507,6 +545,7 @@ async def topic_room(
         "lane": lane,
         "lane_label": LANE_LABELS.get(lane, lane),
         "source_tags": source_tags(candidate),
+        **owner_source_fields(candidate),
         "timely": candidate.freshness_role == "news",
         "freshness_note": freshness_note_for(candidate),
         "provenance": _provenance(candidate),
