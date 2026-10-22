@@ -436,11 +436,13 @@ def _issues(upload: RecordingUpload) -> list[str]:
 
 def meaning_hold(upload: Any) -> dict[str, Any] | None:
     """The video is waiting for him because the cut the editor planned would change the
-    meaning of what he said (status needs_review, a blocked plan), else None.
+    meaning of what he said (status needs_review, or edited when the edit he has carries
+    a blocked plan), else None.
 
-    Not Jennifer's own hold on a finished render (qc_hold is that one), and not a cut
-    already rendered once: his two answers are keep what he said, or use the script
-    line (cut his take). Both settle it from the card or by voice (T-13809)."""
+    Not Jennifer's own hold on a finished render (qc_hold is that one). His two answers
+    are keep what he said (the same plan renders again, the edit he has is kept), or use
+    the script line (cut his take and render). Both settle it from the card or by voice
+    (T-13809)."""
     # 22-Oct: also on a video already edited. The card said the question there with no
     # way to answer it, and every note he gave stopped on it.
     if getattr(upload, "status", None) not in ("needs_review", "edited") or qc_hold(upload) is not None:
