@@ -22,12 +22,13 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from tce.api.private_access import require_private_workspace
 from tce.api.routers.editorial import get_editorial_sessionmaker
 from tce.editorial import briefs as brief_service
 from tce.editorial import changes as change_service
-from tce.editorial import conversation, notify, voice_agent
+from tce.editorial import conversation, notify, title_acceptance, voice_agent
 from tce.editorial import inbox as inbox_service
 from tce.editorial import library as library_service
 from tce.editorial import lineup as lineup_service
@@ -49,6 +50,7 @@ ServiceError = (
     lineup_service.LineupError,
     inbox_service.InboxError,
     library_service.LibraryError,
+    title_acceptance.TitleAcceptanceError,
 )
 
 
@@ -80,6 +82,11 @@ class DecideRequest(BaseModel):
     note: str | None = None
     # "voice" when the voice agent decided it, so the workspace can say so.
     by: str = "ziv"
+
+
+class AcceptSuggestedTitleRequest(BaseModel):
+    expected_title: str = Field(min_length=1, max_length=300)
+    suggested_title: str = Field(min_length=1, max_length=300)
 
 
 class AddToWeekRequest(BaseModel):
@@ -216,6 +223,42 @@ async def get_topic_room(
             return payload
         except ServiceError as error:
             raise _http(error) from error
+
+
+@router.post("/topics/{candidate_id}/suggested-title/accept")
+async def accept_suggested_title(
+    candidate_id: str,
+    body: AcceptSuggestedTitleRequest,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """Accept the exact verified title shown to the owner, after a fresh check."""
+    cid = _uuid(candidate_id, "topic")
+    async with open_session(sm) as db:
+        try:
+            result = await title_acceptance.accept_suggested_title(
+                db,
+                ws,
+                cid,
+                expected_title=body.expected_title,
+                suggested_title=body.suggested_title,
+            )
+            await db.commit()
+            return result
+        except ServiceError as error:
+            await db.rollback()
+            raise _http(error) from error
+        except IntegrityError as error:
+            # A brief edited by another tab can claim the next immutable version
+            # after our read. The unique version key then refuses our stale copy.
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "brief_conflict",
+                    "message": "The topic brief changed in another tab. Nothing was changed.",
+                },
+            ) from error
 
 
 @router.post("/topics/{candidate_id}/decide")
