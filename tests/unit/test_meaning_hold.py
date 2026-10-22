@@ -105,6 +105,13 @@ async def test_the_talk_lookup_carries_the_hold_and_a_video_with_no_hold_is_refu
         row = await prod._load(s, uid, ws)
         row.status = "edited"
         await s.commit()
+    # 22-Oct: an edited video whose plan is still blocked still carries the hold, so the
+    # card can offer the two answers; once the check is clear there is no hold to settle.
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        assert library.meaning_hold(row) is not None
+        row.edit_plan = {**row.edit_plan, "meaning_check": {"status": "ok", "issues": []}}
+        await s.commit()
     r = await client.post(f"/api/v1/production/uploads/{uid}/meaning-hold", headers=auth(ws), json={"choice": "keep_mine"})
     assert r.status_code == 409
 
