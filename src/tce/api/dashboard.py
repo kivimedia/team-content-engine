@@ -77,10 +77,26 @@ SCOPED_HEAD = (
 )
 
 
+def _lane_tabs_head(ws) -> str:
+    """23-Oct: a workspace whose Topics tabs are its lanes (Connie) gets the same lanes
+    as the week's filter chips: [[key, label], ...]. Nothing for any other workspace."""
+    import json
+
+    from tce.editorial.inbox import lane_tab_profile
+    from tce.editorial.lineup import LANE_LABELS
+
+    profile = lane_tab_profile(ws)
+    if profile is None:
+        return ""
+    tabs = [[lane.key, LANE_LABELS.get(lane.key, lane.label)] for lane in profile.lanes]
+    return "<script>window.TCE_LANE_TABS = " + json.dumps(tabs) + ";</script>"
+
+
 def _localize(html: str, request: Request) -> str:
-    if _scoped_workspace(request) is None:
+    ws = _scoped_workspace(request)
+    if ws is None:
         return html
-    html = html.replace("</head>", SCOPED_HEAD, 1)
+    html = html.replace("</head>", _lane_tabs_head(ws) + SCOPED_HEAD, 1)
     if _page_language(request) != "he":
         return html
     html = html.replace('<html lang="en">', '<html lang="he" dir="rtl">', 1)

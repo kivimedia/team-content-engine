@@ -154,6 +154,43 @@ def test_anchors_file_never_takes_a_bare_negotiation_as_strong():
     assert terms and not terms & {"negotiation", "negotiations", "talks", "deal", "deals"}
 
 
+def _topic(ws, kind):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        workspace_id=ws, status="candidate", citations_private=[{"source_kind": kind}],
+        freshness_role="news" if kind == "news_item" else "evergreen", gates={},
+    )
+
+
+def test_connie_topics_tabs_are_her_lanes_matan_keeps_his(lanes):
+    from tce.editorial import inbox
+
+    keys, labels = inbox.filters_for(CONNIE, owner=False)
+    assert keys == ("best", "from_teaching", "practice_room", "in_the_wild", "later", "away")
+    assert [labels[k] for k in keys[1:4]] == [
+        "From your teaching", "From the practice room", "Negotiation in the wild",
+    ]
+    assert inbox.filters_for(MATAN, owner=False) == (inbox.FILTERS, inbox.FILTER_LABELS)
+
+
+def test_a_lane_tab_shows_that_lane_only(lanes):
+    from tce.editorial import inbox
+
+    seed = _topic(CONNIE, "story_seed")
+    assert inbox._matches("practice_room", seed, None)
+    assert not inbox._matches("from_teaching", seed, None)
+    assert inbox._matches("in_the_wild", _topic(CONNIE, "news_item"), None)
+
+
+def test_only_her_pages_carry_her_lane_tabs(lanes):
+    from tce.api import dashboard
+
+    head = dashboard._lane_tabs_head(CONNIE)
+    assert head.startswith("<script>window.TCE_LANE_TABS = ") and "Negotiation in the wild" in head
+    assert dashboard._lane_tabs_head(MATAN) == ""
+
+
 def test_connie_seed_validates():
     spec = importlib.util.spec_from_file_location("seed_connie_lanes", ROOT / "scripts" / "seed_connie_lanes.py")
     seed = importlib.util.module_from_spec(spec)

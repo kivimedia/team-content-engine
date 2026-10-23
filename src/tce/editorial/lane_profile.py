@@ -93,6 +93,10 @@ class LaneProfile:
     # The script writer's prompt for this profile: "{name}" and "{lane_rule}" are filled
     # in, the voice block and the JSON line are added after. None = the performer's.
     writer_prompt: str | None = None
+    # The Topics tabs are her lanes (Best matches, each lane, Later, Put away) instead
+    # of the client source tabs (Calls, Code, AI news, Evergreen), which name the
+    # owner's sources. Off for the performer: his screens stay as he knows them.
+    lane_tabs: bool = False
 
     @property
     def weekly_target(self) -> int:
@@ -399,6 +403,7 @@ SALES_COACH = LaneProfile(
     story_slot="[your story here]",
     possessive="her",
     writer_prompt=SALES_COACH_WRITER_PROMPT,
+    lane_tabs=True,
 )
 
 PROFILES: dict[str, LaneProfile] = {p.name: p for p in (PERFORMER, SALES_COACH)}

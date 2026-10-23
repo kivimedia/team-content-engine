@@ -79,6 +79,28 @@ OWNER_FILTER_LABELS = {
     "news": "From the news",
 }
 
+
+
+def lane_tab_profile(ws: uuid.UUID | None) -> Any:
+    """The lane profile whose Topics tabs are its lanes (23-Oct, Connie), else None."""
+    from tce.editorial import lane_profile
+
+    profile = lane_profile.profile_for(ws)
+    return profile if profile is not None and profile.lane_tabs else None
+
+
+def filters_for(ws: uuid.UUID | None, owner: bool) -> tuple[tuple[str, ...], dict[str, str]]:
+    """The Topics tabs of this workspace, in order, and their labels."""
+    if owner:
+        return OWNER_FILTERS, OWNER_FILTER_LABELS
+    profile = lane_tab_profile(ws)
+    if profile is None:
+        return FILTERS, FILTER_LABELS
+    keys = ("best", *profile.lane_keys, "later", "away")
+    labels = {**FILTER_LABELS, **{lane.key: LANE_LABELS.get(lane.key, lane.label) for lane in profile.lanes}}
+    return keys, labels
+
+
 # Origins that are engine bookkeeping, never topics for a human to decide on. A filmed
 # talk with an agent (3-Oct) names a library video; it is not an idea to decide on.
 HIDDEN_ORIGINS = (ORIGIN_SELECTOR_REJECTED, ORIGIN_TECHNICAL_VALIDATION, ORIGIN_AGENT_TALK)
@@ -242,6 +264,16 @@ def _matches(
     if filter_key == "away":
         return decided == "away"
 
+    # A lane tab (lane_tab_profile) is a category like Calls: it also shows what is
+    # already in the week, so a lane never hides the topics chosen from it.
+    profile = lane_tab_profile(getattr(candidate, "workspace_id", None))
+    if profile is not None and filter_key in profile.lane_keys:
+        if decided in ("away", "later"):
+            return False
+        from tce.editorial import lineup
+
+        return lineup.lane_for(candidate) == filter_key
+
     # Best, Evergreen are views of what is still undecided. The category chips
     # (Calls, Code, AI news) also show what he already put in his week, marked
     # as such on the card, so a category is never missing the topics he chose.
@@ -335,7 +367,8 @@ async def list_topics(
     from tce.editorial import news_rules
 
     owner = news_rules.owner_policy(ws)
-    if filter_key not in (OWNER_FILTERS + ("code",) if owner else FILTERS):
+    tab_keys, tab_labels = filters_for(ws, owner)
+    if filter_key not in (tab_keys + ("code",) if owner else tab_keys):
         raise InboxError("bad_filter", f"unknown filter {filter_key}", status=400)
 
     result = await db.execute(
@@ -398,11 +431,8 @@ async def list_topics(
     page = rows[offset : offset + limit]
     return {
         "filter": filter_key,
-        "filter_label": (OWNER_FILTER_LABELS if owner else FILTER_LABELS)[filter_key],
-        "filters": [
-            {"key": k, "label": (OWNER_FILTER_LABELS if owner else FILTER_LABELS)[k]}
-            for k in (OWNER_FILTERS if owner else FILTERS)
-        ],
+        "filter_label": tab_labels[filter_key],
+        "filters": [{"key": k, "label": tab_labels[k]} for k in tab_keys],
         "topics": page,
         "total": total,
         "offset": offset,

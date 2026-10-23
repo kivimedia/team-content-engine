@@ -106,6 +106,8 @@
       if (key === "all") return true;
       return item.source_category === (key === "code" ? "builds" : key);
     }
+    // 23-Oct: a lane-tab workspace (Connie) filters its week by her lanes.
+    if (window.TCE_LANE_TABS && key !== "all") return item.lane === key;
     var tags = item.source_tags || [];
     if (key === "calls") return tags.indexOf("Fathom call") !== -1;
     if (key === "code") return tags.indexOf("Code") !== -1;
@@ -116,7 +118,8 @@
   function catChips(items) {
     if (!items || !items.length) return "";
     var html = '<div class="chips" role="group" aria-label="Filter by kind of idea">';
-    var cats = items.some(ownerSource) ? OWNER_CATS : CLIENT_CATS;
+    var cats = items.some(ownerSource) ? OWNER_CATS
+             : (window.TCE_LANE_TABS ? [["all", "All"]].concat(window.TCE_LANE_TABS) : CLIENT_CATS);
     cats.forEach(function (c) {
       var pressed = c[0] === state.catFilter || (c[0] === "builds" && state.catFilter === "code");
       html += '<button class="chip" type="button" data-catfilter="' + c[0] + '" aria-pressed="'
