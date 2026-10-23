@@ -758,6 +758,10 @@
     [/^From your note: ([\s\S]*)$/, "מההערה שלך: $1"],
     [/^From the video: ([\s\S]*)$/, "מהסרטון: $1"],
     [/^From (.+), (.+) and (\d+) more$/, "מתוך $1, $2 ועוד $3"],
+    // 23-Oct: one or two sources (every clip and story card once his lane ideas
+    // reached Topics showed "From David Blaine - ..." in English).
+    [/^From (.+) and (.+)$/, "מתוך $1 ו$2"],
+    [/^From (.+)$/, "מתוך $1"],
     [/^Here because ([\s\S]*)$/, "כאן כי $1"],
     [/^Record first because ([\s\S]*)$/, "להקליט ראשון כי $1"],
     [/^(\d+) videos this week, (\d+) more than your usual (\d+)\. A good week\.(?: ([\s\S]*))?$/,
