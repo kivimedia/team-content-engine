@@ -55,6 +55,10 @@ class Lane:
     source_kind: str  # the evidence an idea of this lane must cite
     target: int  # ideas per week in the mix
     guidance: str  # what the selector is told about the lane
+    # 23-Oct: the words an idea's brief uses for this lane's evidence in "It came out
+    # of ..." (briefs.why_this_is_yours). Empty = the evidence is not counted, and an
+    # idea that rests on it alone stays out of Topics (the performer's lanes, as before).
+    why_yours: str = ""
 
 
 @dataclass(frozen=True)
@@ -354,6 +358,7 @@ SALES_COACH = LaneProfile(
                 "one idea from her own published teaching (a page or post of hers), said "
                 "simply; stay true to the page and never add a claim it does not make"
             ),
+            why_yours="your own teaching",
         ),
         Lane(
             key="practice_room",
@@ -365,6 +370,7 @@ SALES_COACH = LaneProfile(
                 "she answers from her own real memory; never written as an event that "
                 "happened"
             ),
+            why_yours="a question about your own practice room",
         ),
         Lane(
             key="in_the_wild",

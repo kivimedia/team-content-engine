@@ -191,6 +191,26 @@ def test_only_her_pages_carry_her_lane_tabs(lanes):
     assert dashboard._lane_tabs_head(MATAN) == ""
 
 
+def test_her_lane_ideas_reach_topics_matans_stay_as_they_were(lanes):
+    from types import SimpleNamespace
+
+    from tce.editorial import briefs
+
+    def idea(ws, kind):
+        return SimpleNamespace(
+            workspace_id=ws, title="t", audience="coaches", lesson="l", public_angle="a",
+            freshness_role="evergreen", citations_private=[{"source_kind": kind}],
+            reasons_to_care=[], public_safety_notes="",
+        )
+
+    teaching = briefs.seed_brief(idea(CONNIE, "curated_clip"))
+    assert teaching["why_this_is_yours"] == "It came out of your own teaching."
+    assert briefs.is_inbox_eligible(teaching)
+    practice = briefs.seed_brief(idea(CONNIE, "story_seed"))
+    assert practice["why_this_is_yours"] == "It came out of a question about your own practice room."
+    assert not briefs.is_inbox_eligible(briefs.seed_brief(idea(MATAN, "curated_clip")))
+
+
 def test_connie_seed_validates():
     spec = importlib.util.spec_from_file_location("seed_connie_lanes", ROOT / "scripts" / "seed_connie_lanes.py")
     seed = importlib.util.module_from_spec(spec)

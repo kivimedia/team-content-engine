@@ -139,6 +139,15 @@ def _why_this_is_yours(candidate: TopicCandidate) -> str:
         )
     if spoken:
         parts.append("an idea you said yourself" if spoken == 1 else "ideas you said yourself")
+    # 23-Oct: a lane workspace's own evidence (Connie's teaching pages and practice
+    # prompts) counts when its lane names it; without this every idea from those
+    # lanes came back with an empty sentence and stayed out of Topics.
+    from tce.editorial import lane_profile
+
+    profile = lane_profile.profile_for(getattr(candidate, "workspace_id", None))
+    for lane in profile.lanes if profile is not None else ():
+        if lane.why_yours and lane.source_kind in kinds and lane.why_yours not in parts:
+            parts.append(lane.why_yours)
     if not parts:
         return ""
 
