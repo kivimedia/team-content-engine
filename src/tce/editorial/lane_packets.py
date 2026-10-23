@@ -53,6 +53,32 @@ _LANE_RULES = {
         "invented audiences, no invented numbers. interviewer_prompt is the one memory question "
         "he answers on camera."
     ),
+    # 23-Oct: the sales_coach profile (Connie). Her slot and her checks come from the
+    # profile (lane_profile.SALES_COACH): price and discount talk is her subject.
+    "from_teaching": (
+        "THIS IDEA'S LANE: from_teaching. One idea from her own published teaching (the page "
+        "in the evidence). Say it simply, the way she would explain it to a friend, with one "
+        "plain example of what a rep says or does on a call. Stay true to the page: never add "
+        "a claim, a number or a study it does not make."
+    ),
+    "practice_room": (
+        "THIS IDEA'S LANE: practice_room. A moment from practice (her coaching sessions or the "
+        "Dojo) that SHE will tell from her OWN memory. You do not know what happened, so you "
+        "never write it. Write the frame around her story instead: a line that opens the "
+        "moment, short prompts that help her remember (who was practicing, what they said, "
+        "what she noticed, what changed), one line that is exactly [your story here] where her "
+        "real story goes, and a closing lesson for any rep phrased as a general truth, never as "
+        "an event. Never a first-person past tense sentence (no 'I once', 'I remember'), no "
+        "invented reps, quotes or numbers. interviewer_prompt is the one memory question she "
+        "answers on camera."
+    ),
+    "in_the_wild": (
+        "THIS IDEA'S LANE: in_the_wild. A real negotiation in the news and what it teaches a "
+        "rep on a sales call. Say what happened in one plain line, using only what the news "
+        "item says, then the lesson: what a pleaser would do, what a leader does, the words a "
+        "rep can use this week. Opinions and lessons only. Never a story about a client or a "
+        "call she had: you do not know her memories."
+    ),
 }
 
 _HOOK_RULE = (
@@ -67,8 +93,21 @@ _HOOK_RULE = (
 
 
 def system_prompt(lane: str, persona: Any) -> str:
-    name = getattr(persona, "name", "") or "the performer"
+    from tce.editorial.lane_profile import profile_for_lane
+
+    profile = profile_for_lane(lane)
     voice = persona.voice_block() if persona is not None else ""
+    if profile is not None and profile.writer_prompt is not None:
+        name = getattr(persona, "name", "") or "the creator"
+        return (
+            profile.writer_prompt.replace("{name}", name).replace("{lane_rule}", _LANE_RULES[lane])
+            + "\n- beats: one beat for each bullet. Use stable phrase IDs p001, p002 and so on and "
+            "map every beat to an ordered inclusive phrase range.\n"
+            "- self_check: report honestly whether each rule holds.\n\n"
+            + (voice + "\n\n" if voice else "")
+            + "Return only JSON matching the schema."
+        )
+    name = getattr(persona, "name", "") or "the performer"
     return (
         f"You write walk-and-talk video scripts for {name}. He films himself walking, phone in "
         "hand, and says ONE sentence at a time: he reads a line, looks up, says it.\n\n"
@@ -256,8 +295,12 @@ def method_hit(text: str) -> re.Match[str] | None:
 
 def lane_errors(clean: dict[str, Any], lane: str) -> list[str]:
     """What breaks a lane rule in code. Empty = the packet may be saved."""
-    from tce.editorial.lane_profile import _INVENTED_MEMORY
+    from tce.editorial.lane_profile import _INVENTED_MEMORY, PERFORMER, SEED_KIND, profile_for_lane
 
+    profile = profile_for_lane(lane) or PERFORMER
+    checks = profile.code_checks
+    slot = profile.story_slot
+    lane_def = profile.lane(lane)
     errors: list[str] = []
     phrases = list(clean.get("script_phrases") or [])
     public = [
@@ -268,24 +311,28 @@ def lane_errors(clean: dict[str, Any], lane: str) -> list[str]:
         *[str(o.get("text") or "") for o in clean.get("hook_options") or []],
     ]
     for i, line in enumerate(phrases, 1):
-        if SLOT in line:
+        if slot in line:
             continue
         if re.search(r"[.!?…]\s+\S", line.strip()):
             errors.append(f"script line {i} holds more than one sentence: one sentence a line")
         if len(line.split()) > MAX_WORDS_PER_LINE:
             errors.append(f"script line {i} is too long to say in one breath ({len(line.split())} words)")
-    for text in public:
+    for text in public if "method_reveal" in checks else []:
         hit = method_hit(text)
         if hit:
             errors.append(f"talks about how an effect is done ('{hit.group(0)}'); never reveal a method")
             break
+    who = "he" if profile.possessive == "his" else "she"
     for text in public:
-        bare = text.replace(SLOT, " ")
+        bare = text.replace(slot, " ")
         hit = _INVENTED_EVENT.search(bare) or _EVENT_HE.search(bare)
         if hit:
-            errors.append(f"narrates an event as his ('{hit.group(0)}'); only he knows what happened")
+            errors.append(
+                f"narrates an event as {profile.possessive} ('{hit.group(0)}'); only {who} knows "
+                "what happened"
+            )
             break
-    for text in public:
+    for text in public if "money" in checks else []:
         hit = _MONEY.search(text)
         if hit:
             errors.append(f"mentions money ('{hit.group(0)}'); never money or prices")
@@ -295,23 +342,24 @@ def lane_errors(clean: dict[str, Any], lane: str) -> list[str]:
         if hit:
             errors.append(f"no call to action is allowed: '{hit.group(0)}'")
             break
-    if lane == "behind_scenes":
-        slots = [i for i, p in enumerate(phrases) if SLOT in p]
+    if lane_def is not None and lane_def.source_kind == SEED_KIND:
+        own = profile.possessive
+        slots = [i for i, p in enumerate(phrases) if slot in p]
         if len(slots) != 1:
-            errors.append(f"a behind_scenes script has exactly one line {SLOT} where his own story goes")
+            errors.append(f"a {lane} script has exactly one line {slot} where {own} own story goes")
         for text in public:
-            bare = text.replace(SLOT, " ")
+            bare = text.replace(slot, " ")
             hit = _INVENTED_MEMORY.search(bare) or _MEMORY_HE.search(bare)
             if hit:
                 errors.append(
-                    f"narrates an event as his ('{hit.group(0)}'); a story seed stays questions "
-                    "around his own memory"
+                    f"narrates an event as {own} ('{hit.group(0)}'); a story seed stays questions "
+                    f"around {own} own memory"
                 )
                 break
         if sum(1 for p in phrases if "?" in p) < 2:
-            errors.append("a behind_scenes script is built from questions: at least two lines ask")
+            errors.append(f"a {lane} script is built from questions: at least two lines ask")
         if "?" not in str(clean.get("interviewer_prompt") or ""):
-            errors.append("interviewer_prompt must be the memory question he answers")
+            errors.append(f"interviewer_prompt must be the memory question {who} answers")
     # One error per rule is enough to refuse; keep the list short and readable.
     return list(dict.fromkeys(errors))
 

@@ -41,15 +41,24 @@ SEED_DAYS = 21
 OWNER_KINDS = ("any", "news", "coaching", "build")
 # 5-Oct: a lane workspace (Matan) asks by lane. Trend reactions are found on the
 # web like news; clips and seeds are his curated, evergreen evidence.
-LANE_KINDS = ("trend_reaction", "magic_clip", "behind_scenes")
+# 23-Oct: the sales_coach workspace (Connie) asks by her lanes the same way: news on
+# the web, her published teaching pages and her practice-room prompts as evergreen.
+LANE_KINDS = ("trend_reaction", "magic_clip", "behind_scenes",
+              "in_the_wild", "from_teaching", "practice_room")
 KINDS = OWNER_KINDS + LANE_KINDS
 KIND_LABEL = {"any": "", "news": "news", "coaching": "coaching", "build": "build",
-              "trend_reaction": "trend", "magic_clip": "clip", "behind_scenes": "story"}
+              "trend_reaction": "trend", "magic_clip": "clip", "behind_scenes": "story",
+              "in_the_wild": "negotiation", "from_teaching": "teaching",
+              "practice_room": "practice"}
 KIND_SOURCES = {"coaching": ("fathom_meeting",), "build": ("github_commit_group",),
-                "magic_clip": ("curated_clip",), "behind_scenes": ("story_seed",)}
+                "magic_clip": ("curated_clip",), "behind_scenes": ("story_seed",),
+                "from_teaching": ("curated_clip",), "practice_room": ("story_seed",)}
 KIND_WHERE = {"coaching": "calls", "build": "commits", "magic_clip": "clips",
-              "behind_scenes": "story seeds"}
-EVERGREEN_KINDS = ("magic_clip", "behind_scenes")
+              "behind_scenes": "story seeds", "from_teaching": "teaching pages",
+              "practice_room": "practice prompts"}
+EVERGREEN_KINDS = ("magic_clip", "behind_scenes", "from_teaching", "practice_room")
+# A lane workspace's "news" is its news lane.
+NEWS_LANES = ("trend_reaction", "in_the_wild")
 
 
 def kinds_for(ws: uuid.UUID | str | None) -> tuple[str, ...]:
@@ -63,9 +72,11 @@ def kinds_for(ws: uuid.UUID | str | None) -> tuple[str, ...]:
 
 
 def resolve_kind(ws: uuid.UUID | str | None, kind: str) -> str:
-    """A lane workspace's \"news\" is its trend lane; owners' kinds pass through."""
-    if kind == "news" and "trend_reaction" in kinds_for(ws):
-        return "trend_reaction"
+    """A lane workspace's \"news\" is its news lane; owners' kinds pass through."""
+    if kind == "news":
+        lane = next((k for k in NEWS_LANES if k in kinds_for(ws)), None)
+        if lane is not None:
+            return lane
     return kind
 
 

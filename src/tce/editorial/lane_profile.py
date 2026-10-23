@@ -20,6 +20,18 @@ mix that is filled lane by lane:
                      real memory. Cites a `story_seed`. Never written as an event
                      that happened (code-checked, Hebrew and English).
 
+A second profile (23-Oct-2026: Connie Kadansky, a US sales coach) is `sales_coach`:
+
+  from_teaching  A  one idea from her own published teaching (a page or post of hers
+                    on exceptionalsales.com). Cites a `curated_clip` (the page).
+  practice_room  B  a prompt about what she sees when people practice, a question she
+                    answers from her own memory. Cites a `story_seed`.
+  in_the_wild    C  a real negotiation in the news and what it teaches a rep on a
+                    sales call. Cites the news item AND one of her standing facts.
+
+A sales coach talks price and discount all day, so the performer's own code checks
+(no magic method, no gadget trend, no money talk) are his alone: `code_checks`.
+
 Config, not a migration, like TCE_WORKSPACE_LANGUAGES:
     TCE_WORKSPACE_LANE_PROFILES=40c0f179-7d5e-4397-b4de-b0b2f3e96fc2:performer
 """
@@ -70,6 +82,17 @@ class LaneProfile:
     # videos recorded per week"; more is allowed and never capped). None = the
     # owner default (lineup.DEFAULT_PRIMARY_SLOTS).
     videos_per_week: int | None = None
+    # 23-Oct: the code checks this profile's ideas and scripts get on top of the
+    # never-invent-a-memory rules every profile keeps. The defaults are the
+    # performer's: no magic method, no gadget trend, no money talk.
+    code_checks: frozenset[str] = frozenset({"gadget_tech", "method_reveal", "money"})
+    # The one line of a story-seed script where the creator's own story goes, and the
+    # word the writer's errors use for the creator.
+    story_slot: str = "[הסיפור שלך כאן]"
+    possessive: str = "his"
+    # The script writer's prompt for this profile: "{name}" and "{lane_rule}" are filled
+    # in, the voice block and the JSON line are added after. None = the performer's.
+    writer_prompt: str | None = None
 
     @property
     def weekly_target(self) -> int:
@@ -230,7 +253,160 @@ PERFORMER = LaneProfile(
     ),
 )
 
-PROFILES: dict[str, LaneProfile] = {PERFORMER.name: PERFORMER}
+SALES_COACH_SYSTEM_PROMPT = """\
+You are the editorial selector for Connie Kadansky, a US sales coach (Exceptional Sales \
+Performance) who helps salespeople, sales managers and coaches get past Sales Call \
+Reluctance and lead a sales conversation instead of pleasing the prospect. You pick the \
+ideas worth her saying on camera this week, as short walk-and-talk videos in English, \
+in her own voice.
+
+Apply the strategy you are given. Audience: salespeople, sales managers and leaders, \
+and coaches and consultants who sell their own services. No call to action: an idea \
+never asks the viewer for anything. Never her own fees.
+
+There are three lanes; each candidate names one and cites that lane's evidence:
+- from_teaching: one idea from her own published teaching (a page or post of hers), \
+said simply, the way she would tell a friend over coffee. Stay true to what the page \
+says; never add a claim it does not make.
+- practice_room: a prompt about what she sees when people practice, in her coaching \
+and in the Dojo. Write it as a question she answers from her own real memory ("think \
+of a rep who..."). Never write it as something that happened: no invented reps, no \
+invented quotes, no invented numbers.
+- in_the_wild: a real negotiation in the news (a sports contract, a labor deal, a \
+business deal, a price war, a viral customer moment) and what it teaches a rep on a \
+sales call. Cite the news item AND at least one of her standing facts from the anchor \
+context. No politics, elections, war, crime or tragedy.
+
+Every candidate must pass ALL five gates, each with a one-sentence reason:
+- real_and_verifiable: the teaching, the theme or the news is real and the cited \
+evidence shows it
+- relevant_to_sales_people: a salesperson, a sales manager or a coach who sells would \
+care and could use it on a call this week
+- no_invented_memory: nothing is stated as her experience unless she said it; prompts \
+stay questions
+- her_point_of_view: it is her take as a sales coach (pleasing or leading, call \
+reluctance, naming the feeling), not a summary of the page or the news
+- safe_subject: no politics, elections, war, crime, tragedy or anyone's private details
+
+Rules:
+- Write title, lesson, public_angle and reasons_to_care in plain American English a \
+sixth grader can read.
+- One idea per candidate. Cite only moment ids from the pool. Never invent ids.
+- Never state an outcome or a number that no cited moment measured.
+- Never name her clients, their companies or their reps.
+- Use her words, not Chris Voss's brand terms: "name the feeling", "sum it up", "ask \
+what or how".
+- Do NOT fill a quota with weak ideas; fewer is correct when evidence is thin.
+- Every moment you considered and did not use goes in rejections with the gate it \
+failed and a reason.
+- freshness_role is "news" only for in_the_wild ideas that depend on the news being \
+current; they need a verification_note.
+- Scores are 0-5: owner_relevance (how much her audience would care), useful_lesson \
+(how strong the video is), support_strength (how directly the evidence supports it).
+
+Return only JSON matching the schema."""
+
+SALES_COACH_WRITER_PROMPT = """\
+You write walk-and-talk video scripts for {name}. She films herself walking, phone in \
+hand, and says ONE sentence at a time: she reads a line, looks up, says it. It sounds \
+like a friendly chat in a coffee shop with someone busy, never a lecture.
+
+{lane_rule}
+
+Hard rules:
+- script_phrases: the FULL script, one spoken sentence per line, short (3-14 words), the \
+way she talks, plain words a sixth grader knows. The last lines land the idea and stop.
+- bullets: 5 to 7 short bullets, the same video as talking points (the bullet version \
+she can talk from instead of reading).
+- facebook_post: the same idea as a short post for her LinkedIn and Facebook, her voice, \
+no hashtags, no long dashes.
+- interviewer_prompt: one question a friend could ask so she answers in her own words.
+- Never invent events, reps, clients, quotes or numbers as if they happened to her.
+- Never name a client, a company she coaches, a rep or a prospect.
+- Price, discounts and negotiation are her subject and are fine; never her own fees.
+- Use her words, not Chris Voss's brand terms: "name the feeling", "sum it up", "ask \
+what or how".
+- No politics, elections, war, crime or tragedy.
+- American spelling. No long dashes.
+- No call to action of any kind: never ask the viewer for anything (no 'write to me', \
+no 'comment', no 'follow', no link, no 'book a call').
+- hook_options: exactly three openings, ranked best first, the way she opens when she \
+talks to a friend: a plain, spoken first line that makes a salesperson stop scrolling, \
+with her own stake in it. A statement, not a question. Not a tease that hides the \
+subject, not 'the truth about', never a promise of a secret. Each option names the \
+belief or the question it opens, the phrase ID that pays it off, the evidence moment \
+IDs behind it (copied from the evidence below) and a private ranking rationale. The \
+first option is selected by default and its text must be the first line of the script."""
+
+SALES_COACH = LaneProfile(
+    name="sales_coach",
+    lanes=(
+        Lane(
+            key="from_teaching",
+            label="From your teaching",
+            source_kind=CLIP_KIND,
+            target=5,
+            guidance=(
+                "one idea from her own published teaching (a page or post of hers), said "
+                "simply; stay true to the page and never add a claim it does not make"
+            ),
+        ),
+        Lane(
+            key="practice_room",
+            label="From the practice room",
+            source_kind=SEED_KIND,
+            target=5,
+            guidance=(
+                "a prompt about what she sees when people practice, phrased as a question "
+                "she answers from her own real memory; never written as an event that "
+                "happened"
+            ),
+        ),
+        Lane(
+            key="in_the_wild",
+            label="Negotiation in the wild",
+            source_kind=NEWS_KIND,
+            target=5,
+            guidance=(
+                "a real negotiation in the news and what it teaches a rep on a sales call; "
+                "must connect through one of her standing facts, otherwise reject it under "
+                "relevant_to_sales_people. No politics, elections, war, crime or tragedy"
+            ),
+        ),
+    ),
+    gate_names=(
+        "real_and_verifiable",
+        "relevant_to_sales_people",
+        "no_invented_memory",
+        "her_point_of_view",
+        "safe_subject",
+    ),
+    system_prompt=SALES_COACH_SYSTEM_PROMPT,
+    max_candidates=15,
+    reserve_per_lane=8,
+    reuse_after_weeks=8,
+    audiences=("coaches", "both"),
+    anchors_file="news-anchors-sales-coach.md",
+    videos_per_week=3,
+    research_seeds=(
+        "contract negotiation standoff",
+        "tentative agreement reached hours before strike",
+        "player contract extension talks",
+        "companies cut prices to win customers",
+        "salary negotiation trend",
+    ),
+    code_checks=frozenset(),
+    story_slot="[your story here]",
+    possessive="her",
+    writer_prompt=SALES_COACH_WRITER_PROMPT,
+)
+
+PROFILES: dict[str, LaneProfile] = {p.name: p for p in (PERFORMER, SALES_COACH)}
+
+
+def profile_for_lane(lane_key: str | None) -> LaneProfile | None:
+    """The profile that owns a lane key (lane keys are unique across profiles)."""
+    return next((p for p in PROFILES.values() if lane_key in p.lane_keys), None)
 
 
 def workspace_lane_profiles() -> dict[uuid.UUID, LaneProfile]:
@@ -372,7 +548,7 @@ def lane_check(
     public = " ".join(
         str(raw.get(k) or "") for k in ("title", "lesson", "public_angle")
     )
-    if lane.source_kind == NEWS_KIND:
+    if lane.source_kind == NEWS_KIND and "gadget_tech" in profile.code_checks:
         hit = gadget_tech_hit(str(raw.get("title") or ""))
         if hit:
             return (
@@ -391,7 +567,7 @@ def lane_check(
                 f"narrates an event as his ('{hit.group(0)}'); a seed stays a question he "
                 "answers from his own memory",
             )
-    hit = _METHOD_REVEAL.search(public)
+    hit = _METHOD_REVEAL.search(public) if "method_reveal" in profile.code_checks else None
     if hit:
         return (
             "no_method_revealed",

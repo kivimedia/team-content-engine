@@ -64,6 +64,10 @@ LANE_LABELS = {
     "trend_reaction": "טרנד מהעולם",
     "magic_clip": "קליפ של קוסם",
     "behind_scenes": "מאחורי הקלעים",
+    # The sales_coach profile's lanes (Connie, 23-Oct), her pillar names.
+    "from_teaching": "From your teaching",
+    "practice_room": "From the practice room",
+    "in_the_wild": "Negotiation in the wild",
 }
 
 
