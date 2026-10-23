@@ -230,6 +230,23 @@ def test_every_strong_anchor_is_citable_and_kinds_agree():
     assert not missing
 
 
+def test_her_news_is_judged_by_her_editor_his_and_the_owners_unchanged(lanes):
+    from tce.news import appraise
+    from tce.news.appraise import AppraisalInput
+
+    data = AppraisalInput(
+        title="Union reaches tentative agreement hours before strike", publisher="Example",
+        published_at=None, primary_url="https://example.com/a", document="text",
+        anchors=[{"kind": "client_solution", "term": "tentative agreement"}], recent_evidence=[],
+    )
+    item = uuid.uuid4()
+    hers = appraise.build_request(data, workspace_id=CONNIE, news_item_id=item)
+    assert hers.system.startswith("You are Connie Kadansky's editor")
+    assert hers.prompt_version == f"{appraise.PROMPT_VERSION}.sales_coach"
+    his = appraise.build_request(data, workspace_id=MATAN, news_item_id=item)
+    assert his.system == appraise.SYSTEM_PROMPT and his.prompt_version == appraise.PROMPT_VERSION
+
+
 def test_connie_seed_validates():
     spec = importlib.util.spec_from_file_location("seed_connie_lanes", ROOT / "scripts" / "seed_connie_lanes.py")
     seed = importlib.util.module_from_spec(spec)

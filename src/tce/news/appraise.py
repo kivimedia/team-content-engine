@@ -514,14 +514,25 @@ def build_request(
     from tce.llm import LLMRequest
     from tce.editorial.news_rules import owner_policy
 
+    from tce.editorial.lane_profile import profile_for
+
     owner = owner_policy(workspace_id)
-    version = OWNER_PROMPT_VERSION if owner else PROMPT_VERSION
+    # 23-Oct: a lane workspace may judge news by its own editor's rules (Connie's
+    # "Negotiation in the wild"); the shared prompt is written as Ziv's editor.
+    profile = None if owner else profile_for(workspace_id)
+    lane_prompt = profile.appraisal_prompt if profile is not None else None
+    if owner:
+        version, system = OWNER_PROMPT_VERSION, SYSTEM_PROMPT + OWNER_ADDITION
+    elif lane_prompt:
+        version, system = f"{PROMPT_VERSION}.{profile.name}", lane_prompt
+    else:
+        version, system = PROMPT_VERSION, SYSTEM_PROMPT
     retry = f":{retry_fingerprint}" if owner and retry_fingerprint else ""
 
     return LLMRequest(
         job_type=JOB_TYPE,
         agent_name=AGENT_NAME,
-        system=SYSTEM_PROMPT + (OWNER_ADDITION if owner else ""),
+        system=system,
         messages=[{"role": "user", "content": build_prompt(data)}],
         output_schema=OUTPUT_SCHEMA,
         max_tokens=4096,
