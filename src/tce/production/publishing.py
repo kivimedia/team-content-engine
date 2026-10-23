@@ -13,6 +13,7 @@ platform and reading the result back. The router owns the background work.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -410,3 +411,36 @@ def social_encode_args(src: Path, out: Path) -> list[str]:
         "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-map", "0:v:0", "-map", "0:a:0",
         "-movflags", "+faststart", str(out),
     ]
+
+
+_LI_BAD = {"failed", "rolled_back", "canceled", "cancelled"}
+LI_STALE_MINUTES = 30
+
+
+def read_linkedin_state(stdout: str) -> dict[str, Any] | None:
+    """What `status <row id>` of the LinkedIn skill says about the row kmboards holds:
+    {state: posted|failed|waiting, linkedin_post_id, url, reason}. None when unreadable."""
+    text = stdout or ""
+    start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        row = json.loads(text[start : text.rindex("}") + 1])
+    except ValueError:
+        return None
+    if not isinstance(row, dict):
+        return None
+    status = str(row.get("status") or "").lower()
+    post_id = row.get("linkedin_post_id")
+    if status == "published" or (post_id and status not in _LI_BAD):
+        return {
+            "state": "posted", "linkedin_post_id": post_id, "reason": None,
+            "url": f"https://www.linkedin.com/feed/update/{post_id}/" if post_id else None,
+        }
+    if status in _LI_BAD:
+        reason = next(
+            (str(row[k])[:300] for k in ("failure_reason", "error", "last_error", "error_message") if row.get(k)),
+            None,
+        )
+        return {"state": "failed", "linkedin_post_id": None, "url": None, "reason": reason}
+    return {"state": "waiting", "linkedin_post_id": None, "url": None, "reason": None}

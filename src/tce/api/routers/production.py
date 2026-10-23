@@ -4885,6 +4885,41 @@ class ReviseBody(BaseModel):
     request: str = Field(min_length=2, max_length=2000)
 
 
+async def reconcile_linkedin(ws: uuid.UUID, upload_id: uuid.UUID) -> None:
+    """A LinkedIn post kmboards was handed stays 'scheduled' here until kmboards says
+    otherwise (23-Oct: five videos sat unposted for two weeks under 'Queued'). Ask the
+    row it holds and show Posted, Failed, or how long it has been waiting."""
+    async with session_factory()() as s:
+        pub = (await _publications(s, ws, upload_id)).get("linkedin")
+        if pub is None or pub.status != "scheduled" or not pub.external_id:
+            return
+        row_id, since = pub.external_id, pub.scheduled_for
+    try:
+        code, out = await asyncio.wait_for(run_platform("linkedin", ["node", "dist/cli.js", "status", row_id]), 25)
+    except (TimeoutError, OSError):
+        return
+    state = publishing.read_linkedin_state(out) if code == 0 else None
+    if state is None:
+        return
+    if state["state"] == "posted":
+        fields: dict[str, Any] = dict(status="posted", url=state["url"], posted_at=_utcnow(), detail=None)
+    elif state["state"] == "failed":
+        why = state["reason"] or "kmboards could not post it, and did not say why"
+        fields = dict(status="failed", detail=f"Did not go out on LinkedIn: {why}")
+    elif since and since <= _utcnow() and _utcnow() - since > timedelta(minutes=publishing.LI_STALE_MINUTES):
+        mins = int((_utcnow() - since).total_seconds() // 60)
+        fields = dict(detail=f"Not posted yet: kmboards has held it for {mins} minutes and has not picked it up")
+    else:
+        return
+    async with session_factory()() as s:
+        pub = (await _publications(s, ws, upload_id))["linkedin"]
+        if pub.status != "scheduled":
+            return
+        for k, v in fields.items():
+            setattr(pub, k, v)
+        await s.commit()
+
+
 @router.get("/uploads/{upload_id}/publishing")
 async def get_publishing(
     upload_id: uuid.UUID,
@@ -4892,6 +4927,8 @@ async def get_publishing(
     db: AsyncSession = Depends(get_db),
 ):
     await _upload(db, ws, upload_id)
+    await reconcile_linkedin(ws, upload_id)
+    await db.rollback()  # the reconcile wrote in its own session; read the rows fresh
     pubs = await _publications(db, ws, upload_id)
     persona = await _persona(ws, db)
     out: dict[str, Any] = {

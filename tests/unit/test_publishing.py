@@ -282,3 +282,66 @@ async def test_a_restart_finishes_posts_that_never_left_and_never_reposts_blind(
     assert pubs["facebook"].status == "failed" and "may already be live" in pubs["facebook"].detail
     assert pubs["instagram"].status == "posting"
     assert len(spawned) == 1, "the post that never left is finished; the other waits for him"
+
+
+# ----------------------------------------------- LinkedIn: queued is not posted (T-15016)
+
+
+def test_the_kmboards_row_reads_as_posted_failed_or_waiting():
+    ok = publishing.read_linkedin_state('{"id":"r","status":"published","linkedin_post_id":"urn:li:share:7"}')
+    assert ok["state"] == "posted" and ok["url"] == "https://www.linkedin.com/feed/update/urn:li:share:7/"
+    bad = publishing.read_linkedin_state('{"status":"failed","error":"logged_out"}')
+    assert bad == {"state": "failed", "linkedin_post_id": None, "url": None, "reason": "logged_out"}
+    assert publishing.read_linkedin_state('{"status":"rolled_back"}')["state"] == "failed"
+    assert publishing.read_linkedin_state('{"status":"scheduled","linkedin_post_id":null}')["state"] == "waiting"
+    assert publishing.read_linkedin_state("Error: kmboards GET failed (500)") is None
+
+
+async def _queued_linkedin(sm, minutes_ago: int):
+    ws, uid = await seed(sm)
+    async with sm() as s:
+        s.add(VideoPublication(
+            workspace_id=ws, upload_id=uid, platform="linkedin", status="scheduled",
+            scheduled_for=prod._utcnow() - __import__("datetime").timedelta(minutes=minutes_ago),
+            external_id="9f0e1d2c-aaaa", copy={"message": "m"},
+            detail="Queued on LinkedIn: kmboards posts it within about 5 minutes",
+        ))
+        await s.commit()
+    return ws, uid
+
+
+async def _linkedin_row(client, ws, uid):
+    body = (await client.get(f"/api/v1/production/uploads/{uid}/publishing", headers=h(ws))).json()
+    return next(p for p in body["platforms"] if p["platform"] == "linkedin")
+
+
+@pytest.mark.parametrize("reply,minutes,status,needle", [
+    ('{"status":"published","linkedin_post_id":"urn:li:share:7"}', 2, "posted", "urn:li:share:7"),
+    ('{"status":"failed","error":"logged_out"}', 2, "failed", "logged_out"),
+    ('{"status":"scheduled"}', 45, "scheduled", "not picked it up"),
+    ('{"status":"scheduled"}', 2, "scheduled", "Queued on LinkedIn"),
+])
+async def test_a_queued_linkedin_post_shows_what_kmboards_did(app_client, monkeypatch, reply, minutes, status, needle):
+    client, sm, ran, _a = app_client
+    ws, uid = await _queued_linkedin(sm, minutes)
+
+    async def fake_status(platform, argv):
+        assert platform == "linkedin" and argv[-2:] == ["status", "9f0e1d2c-aaaa"]
+        return 0, reply
+
+    monkeypatch.setattr(prod, "run_platform", fake_status)
+    row = await _linkedin_row(client, ws, uid)
+    assert row["status"] == status
+    assert needle in ((row["url"] or "") + (row["detail"] or ""))
+
+
+async def test_an_unreadable_kmboards_answer_leaves_the_post_queued(app_client, monkeypatch):
+    client, sm, _r, _a = app_client
+    ws, uid = await _queued_linkedin(sm, 90)
+
+    async def broken(platform, argv):
+        return 1, "Error: kmboards GET failed (500)"
+
+    monkeypatch.setattr(prod, "run_platform", broken)
+    row = await _linkedin_row(client, ws, uid)
+    assert row["status"] == "scheduled" and "Queued on LinkedIn" in row["detail"]
