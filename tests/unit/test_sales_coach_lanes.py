@@ -28,6 +28,7 @@ def lanes(monkeypatch):
     monkeypatch.setattr(
         settings, "workspace_lane_profiles", f"{MATAN}:performer,{CONNIE}:sales_coach", raising=False
     )
+    monkeypatch.setattr(settings, "workspace_languages", f"{MATAN}:he", raising=False)
 
 
 def _clean(phrases: list[str], interviewer: str = "What would you say next?") -> dict:
@@ -163,7 +164,7 @@ def _topic(ws, kind):
     )
 
 
-def test_connie_topics_tabs_are_her_lanes_matan_keeps_his(lanes):
+def test_topics_tabs_are_each_workspaces_own_lanes(lanes):
     from tce.editorial import inbox
 
     keys, labels = inbox.filters_for(CONNIE, owner=False)
@@ -171,7 +172,10 @@ def test_connie_topics_tabs_are_her_lanes_matan_keeps_his(lanes):
     assert [labels[k] for k in keys[1:4]] == [
         "From your teaching", "From the practice room", "Negotiation in the wild",
     ]
-    assert inbox.filters_for(MATAN, owner=False) == (inbox.FILTERS, inbox.FILTER_LABELS)
+    keys, labels = inbox.filters_for(MATAN, owner=False)
+    assert keys == ("best", "trend_reaction", "magic_clip", "behind_scenes", "later", "away")
+    assert labels["magic_clip"] == "קליפ של קוסם"
+    assert inbox.filters_for(uuid.uuid4(), owner=False) == (inbox.FILTERS, inbox.FILTER_LABELS)
 
 
 def test_a_lane_tab_shows_that_lane_only(lanes):
@@ -183,15 +187,16 @@ def test_a_lane_tab_shows_that_lane_only(lanes):
     assert inbox._matches("in_the_wild", _topic(CONNIE, "news_item"), None)
 
 
-def test_only_her_pages_carry_her_lane_tabs(lanes):
+def test_lane_workspace_pages_carry_their_lane_tabs(lanes):
     from tce.api import dashboard
 
     head = dashboard._lane_tabs_head(CONNIE)
     assert head.startswith("<script>window.TCE_LANE_TABS = ") and "Negotiation in the wild" in head
-    assert dashboard._lane_tabs_head(MATAN) == ""
+    assert "trend_reaction" in dashboard._lane_tabs_head(MATAN)
+    assert dashboard._lane_tabs_head(uuid.uuid4()) == ""
 
 
-def test_her_lane_ideas_reach_topics_matans_stay_as_they_were(lanes):
+def test_lane_ideas_reach_topics_in_the_workspaces_language(lanes):
     from types import SimpleNamespace
 
     from tce.editorial import briefs
@@ -208,7 +213,12 @@ def test_her_lane_ideas_reach_topics_matans_stay_as_they_were(lanes):
     assert briefs.is_inbox_eligible(teaching)
     practice = briefs.seed_brief(idea(CONNIE, "story_seed"))
     assert practice["why_this_is_yours"] == "It came out of a question about your own practice room."
-    assert not briefs.is_inbox_eligible(briefs.seed_brief(idea(MATAN, "curated_clip")))
+    clip = briefs.seed_brief(idea(MATAN, "curated_clip"))
+    assert clip["why_this_is_yours"] == "הקשר אליך: קליפ שנבחר בשבילך."
+    assert briefs.is_inbox_eligible(clip)
+    trend = idea(MATAN, "standing_fact")
+    trend.citations_private.append({"source_kind": "news_item", "source_title": "Wedding trend"})
+    assert briefs.seed_brief(trend)["why_this_is_yours"] == "הקשר אליך: העבודה שלך."
 
 
 def test_every_strong_anchor_is_citable_and_kinds_agree():
@@ -230,7 +240,7 @@ def test_every_strong_anchor_is_citable_and_kinds_agree():
     assert not missing
 
 
-def test_her_news_is_judged_by_her_editor_his_and_the_owners_unchanged(lanes):
+def test_each_lane_workspace_has_its_own_news_editor(lanes):
     from tce.news import appraise
     from tce.news.appraise import AppraisalInput
 
@@ -244,7 +254,10 @@ def test_her_news_is_judged_by_her_editor_his_and_the_owners_unchanged(lanes):
     assert hers.system.startswith("You are Connie Kadansky's editor")
     assert hers.prompt_version == f"{appraise.PROMPT_VERSION}.sales_coach"
     his = appraise.build_request(data, workspace_id=MATAN, news_item_id=item)
-    assert his.system == appraise.SYSTEM_PROMPT and his.prompt_version == appraise.PROMPT_VERSION
+    assert his.system.startswith("You are Matan's editor")
+    assert his.prompt_version == f"{appraise.PROMPT_VERSION}.performer"
+    plain = appraise.build_request(data, workspace_id=uuid.uuid4(), news_item_id=item)
+    assert plain.system == appraise.SYSTEM_PROMPT and plain.prompt_version == appraise.PROMPT_VERSION
 
 
 def test_connie_seed_validates():

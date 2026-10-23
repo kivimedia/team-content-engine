@@ -272,6 +272,12 @@
     "need a decision": "מחכים להחלטה",
     "changes to review": "שינויים לבדיקה",
     "being edited": "בעריכה",
+    // 23-Oct: the leaks his every-screen test listed, and the lane chips' "All".
+    "unedited": "לא נערכו",
+    "unreviewed": "לא נבדקו",
+    "What is waiting": "מה מחכה",
+    "All": "הכל",
+    "Filter by kind of idea": "סינון לפי סוג רעיון",
     "This week's recording list": "רשימת ההקלטות של השבוע",
     "Notifications are blocked in your browser settings.": "ההתראות חסומות בהגדרות הדפדפן.",
     "Type": "הקלדה",

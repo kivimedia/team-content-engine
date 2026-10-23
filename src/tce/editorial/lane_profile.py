@@ -56,8 +56,8 @@ class Lane:
     target: int  # ideas per week in the mix
     guidance: str  # what the selector is told about the lane
     # 23-Oct: the words an idea's brief uses for this lane's evidence in "It came out
-    # of ..." (briefs.why_this_is_yours). Empty = the evidence is not counted, and an
-    # idea that rests on it alone stays out of Topics (the performer's lanes, as before).
+    # of ..." (briefs.why_this_is_yours), in the workspace's language. Empty = the
+    # evidence is not counted, and an idea that rests on it alone stays out of Topics.
     why_yours: str = ""
 
 
@@ -97,9 +97,9 @@ class LaneProfile:
     # The script writer's prompt for this profile: "{name}" and "{lane_rule}" are filled
     # in, the voice block and the JSON line are added after. None = the performer's.
     writer_prompt: str | None = None
-    # The Topics tabs are her lanes (Best matches, each lane, Later, Put away) instead
+    # The Topics tabs are the lanes (Best matches, each lane, Later, Put away) instead
     # of the client source tabs (Calls, Code, AI news, Evergreen), which name the
-    # owner's sources. Off for the performer: his screens stay as he knows them.
+    # owner's sources. Off = the client source tabs.
     lane_tabs: bool = False
     # The news appraisal's system prompt for this workspace (same output schema as
     # tce.news.appraise). None = the shared one, which is written as Ziv's editor.
@@ -200,6 +200,60 @@ being current; they need a verification_note.
 Return only JSON matching the schema."""
 
 
+PERFORMER_APPRAISAL_PROMPT = """You are Matan's editor, deciding whether a story from the world \
+event industry is worth him reacting to in a short video.
+
+Matan is an Israeli mentalist and event performer (weddings, bar and bat mitzvahs, company \
+events, holiday parties, English-speaking tourist groups). His news lane is "a trend from the \
+world": a real trend or attraction from the event industry anywhere in the world, and his \
+reaction to it as an Israeli event performer.
+
+SOMETHING ALREADY MATCHED. You are shown the anchors that matched: his standing facts, what \
+he performs and where. That part is settled. Your decision is whether there is a real trend \
+he can react to that an Israeli event audience or a mentalism fan would care about.
+
+WHAT PUBLISHES: a real, current event-industry trend or attraction: audience participation, \
+small and intimate events, new wedding or bar mitzvah entertainment, company event formats, \
+live performers.
+
+WHY HE REJECTS A STORY - the only grounds for "reject":
+ - no link to Israeli events or to mentalism ("Japanese people throw potato balls - how is \
+that related to me?");
+ - a gadget or AI-tech trend that is not about a live performer (a robot that draws the \
+guests, an app, a drone show, VR);
+ - politics, war, crime or tragedy;
+ - click-bait without facts.
+"Watch" is for a trend still forming with too few facts yet.
+
+THE RULES
+1. The story is never the idea on its own. The idea is his reaction: would it work at an \
+Israeli wedding, bar or bat mitzvah or company event, what he would take from it, what he \
+would never do.
+2. Confirmed facts must be QUOTED from the document you are given. Put his reading in \
+ziv_interpretation (the field name is fixed; write HIS reading there) and what may happen \
+next in predictions. Never mix them.
+3. Never reveal, hint at or guess how a magic or mentalism effect is done.
+4. No prices, no money, no call to action. Never invent an outcome or a number.
+5. Never name his clients or guests.
+
+FIELDS
+news_category: always "other".
+format: "three_things_id_test" (three things he would take from it) is the default; \
+"coaches_will_misread_this" when event hosts would take the wrong lesson from it; \
+"impressive_but_not_the_problem" when it looks exciting and does not help a real event. \
+Never the product, testing or agent formats.
+audience_consequence: what an Israeli event host or guest should take from it.
+do_differently: what he, or an event host, would do differently.
+distinct_claim: his own take as a performer.
+perishability, story_weight and weight_reason as the schema says; most stories are small.
+
+SCORING, 0 to 5
+owner_relevance: would an Israeli event host or a mentalism fan care this month?
+consequence_specificity: how concrete is his reaction?
+distinctiveness: how much does it need HIS eye as a performer?
+
+Return JSON only."""
+
 PERFORMER = LaneProfile(
     name="performer",
     lanes=(
@@ -228,6 +282,7 @@ PERFORMER = LaneProfile(
                 "change for an Israeli crowd. Never a big psychological-manipulation "
                 "stunt (Derren Brown's heist)"
             ),
+            why_yours="קליפ שנבחר בשבילך",
         ),
         Lane(
             key="behind_scenes",
@@ -239,6 +294,7 @@ PERFORMER = LaneProfile(
                 "from his own real memory; never written as an event that happened. "
                 "behind_scenes is his strongest lane"
             ),
+            why_yours="שאלה על החיים שלך על הבמה",
         ),
     ),
     gate_names=(
@@ -262,6 +318,10 @@ PERFORMER = LaneProfile(
         "mentalist corporate event",
         "immersive interactive entertainment events",
     ),
+    # 23-Oct (Ziv, "fix" Matan too): his lanes are his Topics tabs, his clip and story
+    # ideas reach Topics (why_yours above), and his news has its own editor.
+    lane_tabs=True,
+    appraisal_prompt=PERFORMER_APPRAISAL_PROMPT,
 )
 
 SALES_COACH_SYSTEM_PROMPT = """\
@@ -326,7 +386,9 @@ like a friendly chat in a coffee shop with someone busy, never a lecture.
 
 Hard rules:
 - script_phrases: the FULL script, one spoken sentence per line, short (3-14 words), the \
-way she talks, plain words a sixth grader knows. The last lines land the idea and stop.
+way she talks, plain words a sixth grader knows. The last lines land the idea and stop. ONE \
+sentence means one, however short: "It's not laziness. It's psychology." is two lines, and \
+"Nice. Friendly. And no ask." is three. Her teleprompter shows one line at a time.
 - bullets: 5 to 7 short bullets, the same video as talking points (the bullet version \
 she can talk from instead of reading).
 - facebook_post: the same idea as a short post for her LinkedIn and Facebook, her voice, \

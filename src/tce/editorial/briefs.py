@@ -126,19 +126,36 @@ def _why_this_is_yours(candidate: TopicCandidate) -> str:
         None,
     )
 
+    # 23-Oct: a Hebrew workspace (Matan) reads the whole line in Hebrew; before this
+    # his cards carried an English sentence beside his Hebrew reason.
+    from tce.db.workspace_filter import workspace_language
+
+    he = workspace_language(getattr(candidate, "workspace_id", None)) == "he"
     parts: list[str] = []
     if calls:
-        parts.append(f"{calls} of your own conversations" if calls > 1 else "one of your calls")
+        if he:
+            parts.append(f"{calls} מהשיחות שלך" if calls > 1 else "שיחה שלך")
+        else:
+            parts.append(f"{calls} of your own conversations" if calls > 1 else "one of your calls")
     if commits:
-        parts.append(
-            f"{commits} pieces of your code" if commits > 1 else "something you built"
-        )
+        if he:
+            parts.append(f"{commits} דברים שבנית" if commits > 1 else "משהו שבנית")
+        else:
+            parts.append(
+                f"{commits} pieces of your code" if commits > 1 else "something you built"
+            )
     if standing:
-        parts.append(
-            "the work you run for clients" if standing == 1 else "work you run for clients"
-        )
+        if he:
+            parts.append("העבודה שלך")
+        else:
+            parts.append(
+                "the work you run for clients" if standing == 1 else "work you run for clients"
+            )
     if spoken:
-        parts.append("an idea you said yourself" if spoken == 1 else "ideas you said yourself")
+        if he:
+            parts.append("רעיון שאמרת בעצמך" if spoken == 1 else "רעיונות שאמרת בעצמך")
+        else:
+            parts.append("an idea you said yourself" if spoken == 1 else "ideas you said yourself")
     # 23-Oct: a lane workspace's own evidence (Connie's teaching pages and practice
     # prompts) counts when its lane names it; without this every idea from those
     # lanes came back with an empty sentence and stayed out of Topics.
@@ -151,13 +168,19 @@ def _why_this_is_yours(candidate: TopicCandidate) -> str:
     if not parts:
         return ""
 
+    reasons = [r for r in (candidate.reasons_to_care or []) if isinstance(r, str) and r.strip()]
+    if he:
+        # The news title is English trade press: it stays on the card's source line,
+        # never inside a Hebrew sentence.
+        tail = f" {reasons[0].strip()}" if reasons and news is None else ""
+        return f"הקשר אליך: {', '.join(parts)}.{tail}".strip()
+
     if news is not None:
         # The news is the trigger, never the reason: the sentence still leads with
         # his work, and the announcement is named as what changed.
         what = str(news.get("source_title") or "an announcement").strip()
         return f"{what} touches {' and '.join(parts)}.".strip()
 
-    reasons = [r for r in (candidate.reasons_to_care or []) if isinstance(r, str) and r.strip()]
     tail = f" {reasons[0].strip()}" if reasons else ""
     return f"It came out of {' and '.join(parts)}.{tail}".strip()
 
