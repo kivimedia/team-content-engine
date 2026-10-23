@@ -343,6 +343,8 @@ main { width: min(100%, 860px); margin: 0 auto; }
   display: flex; gap: 0;
   border-top: 2px solid var(--ink);
   box-shadow: 0 -4px 14px rgba(16, 33, 59, .18);
+  /* 23-Oct: opaque, so a card scrolled under the bar never shows through it. */
+  background: var(--white);
 }
 .bar-btn {
   flex: 1 1 0; min-width: 0;
@@ -362,6 +364,9 @@ main { width: min(100%, 860px); margin: 0 auto; }
   border-left: 2px solid var(--ink); cursor: pointer;
 }
 .bar-btn.is-type:active { background: #ece5d3; }
+/* 23-Oct: a client's own login has no call button, so Type stands alone: it takes
+   the whole bar instead of a 76px stub beside an empty, see-through strip. */
+.bar-btn.is-type:only-child { flex: 1 1 0; border-left: 0; }
 
 /* Changes by voice. Each row: what changed, in words, and its one button. */
 .voice-panel { margin: 18px 0 8px; }
