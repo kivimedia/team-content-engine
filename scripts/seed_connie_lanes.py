@@ -108,18 +108,33 @@ def retire_feeds(existing: dict) -> list[str]:
 
 
 # The anchors for lane C, in categories, never client names. (anchor_kind, anchor_term,
-# lesson). The full matching list is docs/news-anchors-sales-coach.md.
+# lesson). The full matching list is docs/news-anchors-sales-coach.md. A news item is
+# only citable through a standing fact, so every strong term of the anchors file has
+# one here, and a term listed in both places has the SAME kind in both (23-Oct: a
+# kind mismatch left "negotiation" and "counteroffer" matches with nothing to cite).
 STANDING_FACTS: list[tuple[str, str, str]] = [
     ("client_solution", "sales call reluctance", "Connie coaches salespeople past Sales Call Reluctance, the emotional hesitation to prospect and self-promote."),
-    ("client_solution", "negotiation", "Connie teaches salespeople to negotiate on a sales call: name the feeling, sum it up, ask what or how."),
     ("client_solution", "sales coaching", "Connie coaches salespeople, sales managers and coaches, one on one and in groups."),
     ("client_solution", "prospecting", "Connie helps salespeople prospect every week without fear of rejection."),
+    ("client_solution", "salespeople", "Connie coaches salespeople who know what to say on a call but hesitate to say it."),
+    ("client_solution", "sales calls", "Connie coaches what happens on a sales call: pleasing the buyer or leading the buyer."),
     ("client_solution", "contract talks", "Real contract talks show reps how a leader handles tension instead of pleasing the other side."),
+    ("client_solution", "contract negotiations", "Real contract negotiations show reps how a leader handles tension instead of pleasing the other side."),
+    ("client_solution", "extension talks", "Contract extension talks show how both sides use time, patience and a counteroffer."),
+    ("client_solution", "tentative agreement", "A deal reached right at a deadline shows reps why a real deadline moves a decision."),
+    ("client_solution", "holdout", "A holdout shows a rep what being willing to walk away does to a negotiation."),
+    ("client_solution", "bargaining table", "What happens at a bargaining table is the skill a rep needs on a sales call: name the feeling, then ask what or how."),
+    ("client_solution", "negotiation skills", "Connie teaches negotiation skills for sales calls in plain words."),
+    ("client_solution", "negotiation tactics", "Connie shows reps which negotiation moves please the buyer and which lead the buyer."),
+    ("client_solution", "counteroffer", "A counteroffer is a moment to get curious, not to give in."),
+    ("client_solution", "price war", "A price war is the pleaser's discount at company scale."),
+    ("client_solution", "price cuts", "Price cuts that bring no buyers show that a discount does not create a buyer."),
+    ("client_solution", "carriage dispute", "A carriage dispute is a negotiation with a public deadline both sides feel."),
+    ("problem_pattern", "negotiation", "Connie teaches salespeople to negotiate on a sales call: name the feeling, sum it up, ask what or how."),
     ("problem_pattern", "discount", "Pleasers discount to keep the buyer comfortable instead of getting curious about what is underneath."),
     ("problem_pattern", "price", "Buyers push back on price; a leader asks what they are comparing it with."),
     ("problem_pattern", "deadline", "A decision with no real deadline drifts."),
     ("problem_pattern", "walk away", "A rep who can walk away negotiates differently from one who needs the deal."),
-    ("problem_pattern", "counteroffer", "A counteroffer is a moment to get curious, not to give in."),
     ("problem_pattern", "on hold", "When a buyer puts a deal on hold, it is a move in the negotiation, not the end."),
     ("problem_pattern", "customer service", "A calm reply to an upset customer shows naming the feeling under pressure."),
 ]

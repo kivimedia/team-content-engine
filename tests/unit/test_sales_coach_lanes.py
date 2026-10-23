@@ -211,6 +211,25 @@ def test_her_lane_ideas_reach_topics_matans_stay_as_they_were(lanes):
     assert not briefs.is_inbox_eligible(briefs.seed_brief(idea(MATAN, "curated_clip")))
 
 
+def test_every_strong_anchor_is_citable_and_kinds_agree():
+    spec = importlib.util.spec_from_file_location("seed_connie_lanes", ROOT / "scripts" / "seed_connie_lanes.py")
+    seed = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(seed)
+    text = (ROOT / "docs" / "news-anchors-sales-coach.md").read_text(encoding="utf-8")
+    kinds: dict[str, str] = {}
+    kind = None
+    for line in text.splitlines():
+        if line.startswith("## "):
+            kind = line[3:].strip()
+        elif line.startswith("- ") and kind:
+            kinds[line[2:].strip()] = kind
+    facts = {term: k for k, term, _lesson in seed.STANDING_FACTS}
+    assert all(kinds.get(term, k) == k for term, k in facts.items())
+    missing = {"contract negotiations", "tentative agreement", "holdout", "bargaining table",
+               "price cuts", "carriage dispute", "counteroffer"} - set(facts)
+    assert not missing
+
+
 def test_connie_seed_validates():
     spec = importlib.util.spec_from_file_location("seed_connie_lanes", ROOT / "scripts" / "seed_connie_lanes.py")
     seed = importlib.util.module_from_spec(spec)
