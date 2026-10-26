@@ -153,6 +153,8 @@ function rebindIdeas(ideas, next) {
     // Clips that were stopped and are still sending their last pieces. Finish
     // waits for every one of them before it builds the video.
     finalizing: new Set(), cameraSource: null, unfinished: [],
+    // Pieces the phone would not keep (a private tab), held here until the server has them.
+    memoryPieces: new Map(), warnedNoPhoneCopy: false,
   };
   const supportedMime = [
     "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
@@ -194,8 +196,22 @@ function rebindIdeas(ideas, next) {
     return data;
   }
 
+  /* 26-Oct (Angel's QA of Connie's app, iPhone Safari in a private tab): the phone
+     refused to store a recorded piece, and a piece was only sent once it was stored,
+     so not one reached the server, and Stop died waiting on the refused store: Record
+     stayed greyed, Pause and Stop did nothing. The copy on the phone is a safety net,
+     never a gate: a store that refuses, or does not answer in time, fails fast, and
+     the piece is sent from memory (keepPiece). */
+  const STORE_WAIT_MS = 5000;
+
+  function storeAnswer(promise) {
+    return Promise.race([promise, new Promise((resolve, reject) => {
+      setTimeout(() => reject(new Error("The phone's storage did not answer")), STORE_WAIT_MS);
+    })]);
+  }
+
   function openDb() {
-    return new Promise((resolve, reject) => {
+    return storeAnswer(new Promise((resolve, reject) => {
       const request = indexedDB.open("tce-recording-v1", 1);
       request.onupgradeneeded = () => {
         const db = request.result;
@@ -204,16 +220,39 @@ function rebindIdeas(ideas, next) {
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
-    });
+    }));
   }
 
   async function idbPut(record) {
     const db = await openDb();
-    return new Promise((resolve, reject) => {
+    return storeAnswer(new Promise((resolve, reject) => {
       const tx = db.transaction("chunks", "readwrite");
-      tx.objectStore("chunks").put(record);
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error("The phone's storage refused the piece"));
+      tx.objectStore("chunks").put(record);
+    }));
+  }
+
+  /* Never throws. A piece the phone will not keep stays in memory until the server
+     has it, and he is told once that this page has to stay open until it is sent. */
+  async function keepPiece(record) {
+    try {
+      await idbPut(record);
+      state.memoryPieces.delete(record.key);
+    } catch (_) {
+      if (record.uploaded) state.memoryPieces.delete(record.key);
+      else state.memoryPieces.set(record.key, record);
+      if (!state.warnedNoPhoneCopy) {
+        state.warnedNoPhoneCopy = true;
+        showNotice("This browser is not keeping a copy on the phone (a private tab does this), so the video goes straight to the server. Keep this page open until the take is saved.", 9000);
+      }
+    }
+  }
+
+  function dropMemoryPieces(clipId) {
+    [...state.memoryPieces.keys()].forEach((key) => {
+      if (state.memoryPieces.get(key).clipId === clipId) state.memoryPieces.delete(key);
     });
   }
 
@@ -260,11 +299,11 @@ function rebindIdeas(ideas, next) {
           method: "PUT", body: record.blob, headers: { "Content-Type": record.blob.type || "application/octet-stream", "X-Chunk-Sha256": record.sha256 },
         });
         record.uploaded = true;
-        await idbPut(record);
+        await keepPiece(record);
         return true;
       } catch (error) {
         record.uploaded = false;
-        await idbPut(record);
+        await keepPiece(record);
         return false;
       } finally {
         state.pendingSync.delete(token);
@@ -283,8 +322,11 @@ function rebindIdeas(ideas, next) {
     const clips = clipId ? [clipId] : [...new Set([...sessionClips, ...activeClip])];
     const jobs = [];
     for (const id of clips) {
-      const rows = await idbForClip(id);
-      rows.filter((row) => !row.uploaded).forEach((row) => jobs.push(syncChunk(row)));
+      // The phone's copy and the pieces held in memory because the phone would not keep them.
+      const rows = await idbForClip(id).catch(() => []);
+      const held = [...state.memoryPieces.values()].filter((row) => row.clipId === id);
+      const byKey = new Map([...rows, ...held].map((row) => [row.key, row]));
+      [...byKey.values()].filter((row) => !row.uploaded).forEach((row) => jobs.push(syncChunk(row)));
     }
     const result = await Promise.all(jobs);
     return result.every(Boolean);
@@ -1173,7 +1215,7 @@ function rebindIdeas(ideas, next) {
         const task = (async () => {
           const digest = await sha256(event.data);
           const record = { key: `${state.clip.id}:${sequence}`, clipId: state.clip.id, sequence, blob: event.data, sha256: digest, uploaded: false };
-          await idbPut(record);
+          await keepPiece(record);
           updateSyncLabel();
           syncChunk(record);
         })();
@@ -1285,7 +1327,9 @@ function rebindIdeas(ideas, next) {
     const response = await api(`/recording-clips/${clip.id}/finish`, {
       method: "POST", body: JSON.stringify({ active_duration_s: activeSeconds, take_markers: takeMarkers }),
     });
-    await idbDeleteClip(clip.id);
+    // The server has the clip: clearing the phone's copy is tidying, never a reason to fail.
+    await idbDeleteClip(clip.id).catch(() => {});
+    dropMemoryPieces(clip.id);
     window.TCEResume.forgetClip(clip.id);
     session.clips = [...(session.clips || []).filter((item) => item.id !== response.clip.id), response.clip].sort((a, b) => a.position - b.position);
     state.unfinished = (state.unfinished || []).filter((item) => item.clip.id !== clip.id);
@@ -1319,18 +1363,22 @@ function rebindIdeas(ideas, next) {
     setRecordingChrome(false);
     const activeSeconds = Number((state.activeMs / 1000).toFixed(3));
     window.TCEResume.rememberClip({ ...owed, activeSeconds });
-    await Promise.all(state.pendingWrites);
+    // Settled, not all-or-nothing: one piece the phone refused must never strand Stop (26-Oct).
+    await Promise.allSettled(state.pendingWrites);
     // Pieces of video the recorder actually handed over. A quick Record-then-Stop
     // can hand over none; the server would refuse it as "missing chunk sequences".
     const pieces = state.sequence;
     clearInterval(state.timerId);
     $("recordingFlag").hidden = true;
     $("pauseButton").disabled = true;
+    // A take stopped while paused left the greyed button reading "Resume".
+    $("pauseButton").textContent = "Pause";
     $("finishClipButton").disabled = true;
     const entry = { clip, session, activeSeconds, takeMarkers };
     const finalize = (async () => {
       if (!pieces) {
-        await idbDeleteClip(clip.id);
+        await idbDeleteClip(clip.id).catch(() => {});
+        dropMemoryPieces(clip.id);
         window.TCEResume.forgetClip(clip.id);
         freeStudio(clip);
         const error = new Error("That take was too short to keep. Press Record again.");

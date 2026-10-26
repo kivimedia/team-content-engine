@@ -216,13 +216,19 @@ dialog h2 { font-family: Georgia, serif; margin-top: 0; }
 .dialog-actions { display: grid; grid-template-columns: 1fr 1.4fr; gap: 10px; }
 .dialog-actions button { min-height: 50px; border: 2px solid var(--ink); border-radius: 10px; background: #fff; font-weight: 800; }
 .dialog-actions .primary { background: var(--moss); color: #fff; }
+/* COMPUTER: camera on the left, words on the right, the buttons under the words.
+   26-Oct (Angel's QA): "no recording buttons" in a desktop browser. Since the
+   studio became one screen (20-Sep) the camera kept a full-window minimum
+   height, which pushed Record / Pause / Stop / Finish below the bottom of the
+   window, and the page cannot scroll there. Every row now fits the screen. */
 @media (min-width: 760px) {
-  .studio-view { display: grid; grid-template-columns: minmax(300px, 42%) 1fr; align-items: start; }
-  .camera-stage { position: sticky; top: 68px; grid-row: 1 / span 3; min-height: calc(100vh - 68px); aspect-ratio: auto; }
-  .reader-shell { min-height: calc(100vh - 240px); }
-  .reader { height: calc(100vh - 320px); }
-  .controls { left: 42%; }
+  .studio-view { grid-template-columns: minmax(300px, 42%) 1fr; grid-template-rows: auto minmax(0, 1fr) auto auto; }
+  .camera-stage { grid-row: 1 / -1; min-height: 0; aspect-ratio: auto; }
+  .controls { grid-column: 2; }
   .session-strip { grid-column: 2; }
+  /* Words over the video: the video is the whole width, so the bar is too. */
+  body.overlay-mode .studio-view > .controls,
+  body.overlay-mode .studio-view > .session-strip { grid-column: 1 / -1; }
 }
 @media (max-width: 420px) { .produce-panel { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .reader { scroll-behavior: auto; } }
@@ -306,7 +312,7 @@ body.rec-live .topbar { display: none; }
 }
 @media (min-width: 760px) {
   /* Wide screens keep the camera as the left column: the buttons go on its foot. */
-  .studio-view.is-recording .controls { top: auto; bottom: 12px; right: 58%; }
+  .studio-view.is-recording .controls { grid-column: auto; top: auto; bottom: 12px; right: 58%; }
 }
 
 
