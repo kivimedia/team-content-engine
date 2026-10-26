@@ -2182,6 +2182,37 @@
     }
   }
 
+  /* 26-Oct: his reply to one note that needs him. It goes the way every note goes: a
+     sitting on the edit, a note pinned at the same moment, her read-back, then his yes. */
+  async function replyToNote(button) {
+    var d = button.dataset;
+    var box = document.querySelector('[data-note-reply-text="' + d.noteReply + '"]');
+    var text = box ? box.value.trim() : "";
+    if (!text) { toast("Write your reply to Jennifer first.", true); return; }
+    button.disabled = true;
+    button.textContent = "Sending to Jennifer";
+    try {
+      var sitting = await api("/production/recordings/" + encodeURIComponent(d.upload) + "/talk", { method: "POST" });
+      var sid = sitting.session_id;
+      var pinned = await api("/production/talk/" + sid + "/notes", {
+        method: "POST", body: { edit_s: parseFloat(d.at) || 0, render_ref: sitting.render_ref || null }
+      });
+      var said = String(d.said || "").trim();
+      await api("/production/talk/" + sid + "/notes/" + pinned.note_id, {
+        method: "PATCH",
+        body: { heard: (said ? 'About my earlier note "' + said + '": ' : "") + text }
+      });
+      var preview = await api("/production/talk/" + sid + "/submit");
+      await api("/production/talk/" + sid + "/submit", { method: "POST", body: { check: preview.check } });
+      toast("Sent. Jennifer is on it.");
+      await refreshLibrary();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Send to Jennifer";
+      toast(error.message || "That reply could not be sent. Your words are still in the box.", true);
+    }
+  }
+
   async function releaseHold(uploadId) {
     if (!window.confirm("Let this video through as it is? Jennifer's finding stays on its record.")) return;
     try {
@@ -2528,6 +2559,14 @@
         : null;
       html += '<li><span class="source">' + esc(n.where) + "</span>&#8220;" + esc(said) + "&#8221;";
       if (outcome) html += "<br><strong>" + outcome[0] + ":</strong> " + esc(outcome[1]);
+      // 26-Oct: a note that needs him gets his answer right here, to Jennifer, at its moment.
+      if (n.state === "needs_you" && !n.undone && n.id && item && item.upload_id) {
+        html += '<div class="note-reply"><textarea rows="2" style="width:100%;margin-top:6px" data-note-reply-text="' + esc(n.id)
+             + '" placeholder="Reply to Jennifer about this note"></textarea>'
+             + '<button class="btn" type="button" data-note-reply="' + esc(n.id)
+             + '" data-upload="' + esc(item.upload_id) + '" data-at="' + esc(String(n.edit_s || 0))
+             + '" data-said="' + esc(said) + '">Send to Jennifer</button></div>';
+      }
       // 3-Oct: what Jennifer took from this note for the next videos.
       if (n.learned && n.learned.line && !n.undone) {
         html += '<br><span class="source">' + esc(n.learned.line) + "</span>";
@@ -3244,7 +3283,7 @@
     "watch", "watch-close", "voice-undo", "voice-restore",
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise", "pub-copy",
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
-    "check-again", "release-hold", "settle-hold", "rule-delete",
+    "check-again", "release-hold", "settle-hold", "note-reply", "rule-delete",
     "rename", "rename-save", "add-anyway", "pubtab", "libcount", "topic-more", "title-review"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
@@ -3278,6 +3317,7 @@
     if (d.rename !== undefined) { renameOpen(target); return; }
     if (d.checkAgain !== undefined) { checkAgain(d.checkAgain); return; }
     if (d.releaseHold !== undefined) { releaseHold(d.releaseHold); return; }
+    if (d.noteReply !== undefined) { replyToNote(target); return; }
     if (d.settleHold !== undefined) { settleHold(d.settleHold, d.choice); return; }
     if (d.ruleDelete !== undefined) { deleteRule(d.ruleDelete); return; }
     if (d.catfilter !== undefined) { state.catFilter = d.catfilter; render(); return; }

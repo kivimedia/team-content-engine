@@ -1053,3 +1053,14 @@ async def test_two_undo_tasks_put_the_version_back_once_and_say_so(wired, tmp_pa
     assert len(wired["renders"]) == 2  # the batch's, and one for going back
     assert sitting.result["undo"]["state"] == "done"
     assert library.undo_refusal(sitting, row)[0] == "undone"
+
+
+def test_a_known_meaning_issue_is_known_when_its_time_moves():
+    # 26-Oct: a cut before it moved "0:33" to "0:32"; it is the same issue.
+    a = {"kind": "negation_differs_from_script", "kept_index": 9,
+         "detail": 'Kept take at 0:33 ("A few clicks came in, no leads.") and script phrase 5 '
+                   '("A few clicks came in.") differ on negation'}
+    b = {**a, "kept_index": 8, "detail": a["detail"].replace("0:33", "0:32")}
+    c = {**a, "detail": a["detail"].replace("no leads", "two leads")}
+    assert prod._meaning_issue_key(a) == prod._meaning_issue_key(b)
+    assert prod._meaning_issue_key(a) != prod._meaning_issue_key(c)

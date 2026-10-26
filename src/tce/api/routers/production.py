@@ -22,6 +22,7 @@ receipt returns 201 with `"duplicate": false`.
 from __future__ import annotations
 
 import asyncio
+import re as _re
 import hashlib
 import json
 import os
@@ -2483,9 +2484,15 @@ _BLOCKED_SAYS = {
 
 
 def _meaning_issue_key(issue: Any) -> tuple[str, str] | None:
+    """The same issue across re-plans: its kind and its quoted words. Not its times (a
+    cut before it moves "0:33" to "0:32") and not its unit numbers (a corrected word
+    renumbers them), or a known issue reads as new and stops every note (26-Oct)."""
     if not isinstance(issue, dict):
         return None
-    return (str(issue.get("kind") or ""), str(issue.get("detail") or ""))
+    words = " ".join(_re.findall(r'"([^"]*)"', str(issue.get("detail") or ""))).lower()
+    if not words:
+        words = _re.sub(r"\d+:\d{2}(?:\.\d+)?", "", str(issue.get("detail") or "")).strip().lower()
+    return (str(issue.get("kind") or ""), words)
 
 
 def _carry_known_meaning_issues(row: RecordingUpload, before_plan: dict[str, Any]) -> None:
@@ -2857,6 +2864,9 @@ async def _qc_fix(upload_id: uuid.UUID, ws: uuid.UUID, fixes: dict[str, list[Any
         )
         row.edit_plan = plan
         await _compute_plan(s, ws, row)
+        if row.status == "needs_review" and row.edited_path:
+            # 26-Oct: an issue already in the edit he has is not her cut's doing.
+            _carry_known_meaning_issues(row, plan_before)
         if row.status != "planned":
             # The meaning check wants his eyes on her cut: the edit he has stays.
             reason = (row.status_detail or "the cut would change what you said").rstrip(". ")

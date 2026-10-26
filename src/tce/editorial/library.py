@@ -445,7 +445,11 @@ def meaning_hold(upload: Any) -> dict[str, Any] | None:
     (T-13809)."""
     # 22-Oct: also on a video already edited. The card said the question there with no
     # way to answer it, and every note he gave stopped on it.
-    if getattr(upload, "status", None) not in ("needs_review", "edited") or qc_hold(upload) is not None:
+    # 26-Oct: and while Jennifer holds an edited video for a cut that needs his eyes,
+    # the two answers are how he settles it.
+    if getattr(upload, "status", None) not in ("needs_review", "edited"):
+        return None
+    if qc_hold(upload) is not None and not getattr(upload, "edited_path", None):
         return None
     check = (getattr(upload, "edit_plan", None) or {}).get("meaning_check") or {}
     if check.get("status") != "blocked":
@@ -1371,6 +1375,8 @@ def _notes_made_json(sitting: EditSession, notes: list[EditingRequest]) -> dict[
                 "id": str(n.id),
                 "where": edit_request_to_json(n)["where"],
                 "said": n.request,
+                # 26-Oct: where a reply to this note is pinned.
+                "edit_s": n.start_s,
                 "understood": n.understood,
                 "state": n.state,
                 "reply": str(res.get("reply") or "") or None,
