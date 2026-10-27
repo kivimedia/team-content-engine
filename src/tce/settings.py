@@ -91,8 +91,15 @@ class Settings(BaseSettings):
     video_default_codec: str = "h264"
     video_max_render_seconds: int = 120
 
-    # Audio / Narration (Whisper alignment)
+    # Audio / Narration (word timings for alignment)
     openai_api_key: str = ""
+    # Who times the words of a recorded narration: "openai" (whisper-1, which OpenAI
+    # retires on 26-Feb-2027) or "deepgram". "openai" keeps every narration exactly as
+    # before; TCE_WORD_TIMINGS_PROVIDER=deepgram switches once the comparison passed
+    # (POST /api/v1/narration/word-timings/compare times one clip with both).
+    word_timings_provider: str = "openai"
+    deepgram_api_key: SecretStr = SecretStr("")
+    deepgram_model: str = "nova-3"
 
     # OpenAI images through the ChatGPT-plan proxy (codex-image-proxy, 18-Oct-26).
     # Set TCE_IMAGE_SUB_URL=http://127.0.0.1:8962 + TCE_IMAGE_SUB_KEY to bill the plan;

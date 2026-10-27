@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -162,11 +164,14 @@ async def serve_audio(filename: str):
     return FileResponse(str(audio_path), media_type="audio/mpeg")
 
 
-def _get_alignment_service():
+def _get_alignment_service(provider: str | None = None):
     from tce.services.audio_alignment import AudioAlignmentService
     return AudioAlignmentService(
         openai_api_key=settings.openai_api_key,
         audio_dir=settings.audio_upload_dir,
+        provider=provider or settings.word_timings_provider,
+        deepgram_api_key=settings.deepgram_api_key.get_secret_value(),
+        deepgram_model=settings.deepgram_model,
     )
 
 
@@ -657,7 +662,7 @@ async def align_script(
 
     ns.segments = aligned_segments
     ns.whisper_transcript = whisper_result
-    ns.alignment_method = "whisper_auto"
+    ns.alignment_method = "deepgram_auto" if svc.provider == "deepgram" else "whisper_auto"
     ns.status = "aligned"
 
     # Update audio duration from Whisper if not set
@@ -673,6 +678,69 @@ async def align_script(
         "whisper_word_count": len(whisper_result.get("words", [])),
         "audio_cleaned": cleanup_applied,
     }
+
+
+# --- Word timings: both engines on one clip, nothing saved ---
+
+
+@router.post("/word-timings/compare")
+async def compare_word_timings(
+    file: UploadFile = File(...),
+    script_text: str = Form(""),
+) -> dict[str, Any]:
+    """Time one clip with whisper-1 and with Deepgram and say how far apart they are.
+
+    The proof before TCE_WORD_TIMINGS_PROVIDER moves to deepgram. One paid call to
+    each engine; the clip is deleted before the answer goes back. script_text, one
+    segment per line, also compares the segment timings a narration would keep.
+    """
+    ext = Path(file.filename or "audio.wav").suffix.lower()
+    if ext not in (".wav", ".mp3", ".m4a", ".ogg"):
+        raise HTTPException(status_code=400, detail=f"Unsupported audio format: {ext}")
+
+    missing = [
+        name
+        for name, value in (
+            ("TCE_OPENAI_API_KEY", settings.openai_api_key),
+            ("TCE_DEEPGRAM_API_KEY", settings.deepgram_api_key.get_secret_value()),
+        )
+        if not value
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail="Comparing needs both engines' keys; not set: " + ", ".join(missing),
+        )
+
+    openai_svc = _get_alignment_service(provider="openai")
+    deepgram_svc = _get_alignment_service(provider="deepgram")
+    with tempfile.TemporaryDirectory(prefix="tce-word-timings-") as tmp:
+        clip = Path(tmp) / f"clip{ext}"
+        with open(clip, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        try:
+            openai_result, deepgram_result = await asyncio.gather(
+                openai_svc.transcribe_with_timestamps(str(clip)),
+                deepgram_svc.transcribe_with_timestamps(str(clip)),
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"{type(exc).__name__}: {str(exc)[:300]}"
+            ) from exc
+
+    segments = [
+        {"narratorText": line.strip()} for line in script_text.splitlines() if line.strip()
+    ]
+    report: dict[str, Any] = openai_svc.compare_timings(
+        openai_result, deepgram_result, segments
+    )
+    logger.info(
+        "narration.word_timings.compared",
+        matched_share=report["matched_share"],
+        start_ms=report["start_ms"],
+        end_ms=report["end_ms"],
+    )
+    return report
 
 
 # --- Manual Timestamp Adjustment ---
