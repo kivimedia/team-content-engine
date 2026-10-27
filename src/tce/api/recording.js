@@ -186,14 +186,27 @@ function rebindIdeas(ideas, next) {
   }
 
   async function api(path, options = {}) {
-    const response = await fetch(`${apiV1}/production${path}`, {
+    return answer(await fetch(`${apiV1}/production${path}`, {
       credentials: "same-origin",
       ...options,
       headers: { ...(options.body instanceof Blob ? {} : { "Content-Type": "application/json" }), ...(options.headers || {}) },
-    });
+    }));
+  }
+
+  async function answer(response) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
     return data;
+  }
+
+  /* The page itself asked for the script list before this file arrived
+     (recording.html). Its answer is used once, for the same list; anything that
+     went wrong with it is simply asked again. */
+  function earlyOrAsk(path) {
+    const early = window.TCE_EARLY_QUEUE;
+    window.TCE_EARLY_QUEUE = null;
+    if (!early || early.path !== path) return api(path);
+    return early.response.then(answer).catch(() => api(path));
   }
 
   /* 26-Oct (Angel's QA of Connie's app, iPhone Safari in a private tab): the phone
@@ -362,7 +375,7 @@ function rebindIdeas(ideas, next) {
       // it again", "Start recording" in the topic room) is asked for by name, so
       // the server adds it even when he filmed it already (28-Sep review).
       const named = new URLSearchParams(window.location.search).get("candidate");
-      const data = await api("/recording-queue" + (named ? `?candidate=${encodeURIComponent(named)}` : ""));
+      const data = await earlyOrAsk("/recording-queue" + (named ? `?candidate=${encodeURIComponent(named)}` : ""));
       state.ideas = data.ideas || [];
       renderQueue();
       $("syncState").textContent = `${state.ideas.length} ready script${state.ideas.length === 1 ? "" : "s"}`;

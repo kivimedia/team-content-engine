@@ -6,6 +6,26 @@
   <meta name="theme-color" content="#10213b">
   <link rel="icon" href="data:,">
   <title>TCE Recording Studio</title>
+  <script>
+    /* The script list is asked for now, while recording.js is still on its way,
+       not after it arrives: from a phone far from the server that wait was a
+       third of the load (27-Oct, Angel's QA: "the record page loads a bit slow").
+       Before the stylesheet, which would hold this script until it loaded.
+       recording.js takes this answer when it asks for the same list. */
+    (function () {
+      var prefix = location.pathname.indexOf("/tce/") === 0 ? "/tce" : "";
+      var named = new URLSearchParams(location.search).get("candidate");
+      var path = "/recording-queue" + (named ? "?candidate=" + encodeURIComponent(named) : "");
+      window.TCE_EARLY_QUEUE = {
+        path: path,
+        response: fetch(prefix + "/api/v1/production" + path, {
+          credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        }),
+      };
+      // A failed early ask is not an error on its own: recording.js asks again.
+      window.TCE_EARLY_QUEUE.response.catch(function () {});
+    })();
+  </script>
   <link rel="stylesheet" href="recording.css">
 </head>
 <body>

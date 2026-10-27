@@ -3,6 +3,12 @@
 # placeholders on the server; never commit real values.
 server {
     server_name tce.example.sslip.io;
+    # Scripts, styles and API answers go compressed too; nginx.conf compresses HTML only
+    # (27-Oct: recording.js 83 KB raw, 25 KB here). gzip_proxied: phone carriers add Via.
+    gzip_types text/css application/javascript application/json;
+    gzip_proxied any;
+    gzip_vary on;
+    gzip_comp_level 5;
 
     auth_basic "TCE editor";
     auth_basic_user_file /etc/nginx/tce.htpasswd;
