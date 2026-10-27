@@ -394,3 +394,164 @@ async def test_a_bigger_number_reads_more_pages(editorial_sessionmaker):
     await idea_lane.run_idea_research(editorial_sessionmaker, ws, run_id, topic="pricing",
                                       count=8, kind="news", search=search, fetch_text=fetch_text)
     assert len(fetched) == idea_lane.pages_for(8) > idea_lane.pages_for(3)
+
+
+# ---------------------------------------------------------------------------
+# 27-Oct (T-fa0f): the nightly voice test call says an idea and asks for a hunt
+# the way he does. The real paths keep evidence, ask the model, save topics,
+# start scripts and buzz his phone, and a hunt finishes after the call hung up,
+# so a test call could never tidy up. A rehearsal reads and keeps nothing.
+
+
+def _no_buzz(monkeypatch) -> list:
+    from tce.editorial import notify
+
+    buzzed: list = []
+
+    async def record_event(*a, **kw):
+        buzzed.append(kw or a)
+        raise AssertionError("a rehearsal never reaches his phone")
+
+    monkeypatch.setattr(notify, "record_event", record_event)
+    return buzzed
+
+
+async def _nothing_kept(sm, ws) -> None:
+    async with sm() as s:
+        for model in (EvidenceSource, EvidenceMoment, TopicCandidate, NewsItem):
+            rows = (await s.execute(select(model).where(model.workspace_id == ws))).scalars().all()
+            assert rows == [], f"a rehearsal kept a {model.__name__}"
+
+
+async def test_a_rehearsed_spoken_idea_is_heard_and_nothing_is_kept_or_checked(
+    client, editorial_sessionmaker, spoken_llm, monkeypatch
+):
+    ws = uuid.uuid4()
+    buzzed = _no_buzz(monkeypatch)
+    started: list = []
+
+    async def fake_run_packet(sm, w, cid, resume_job_id=None, **kw):
+        started.append(cid)
+
+    monkeypatch.setattr(editorial_router, "_run_packet", fake_run_packet)
+    r = await client.post(
+        "/api/v1/editorial/spoken-idea",
+        json={"said": "I want a video about pricing the outcome", "idea": "Price the outcome",
+              "write_script": True, "rehearsal": True},
+        headers=headers(ws),
+    )
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["rehearsal"] is True and body["state"] == "done"
+    run = await wait_done(client, ws, body["run_id"])
+    assert run["state"] == "done"
+    assert run["result"] == {"saved": False, "rehearsal": True}
+    assert run["said"].startswith('was heard as "Price the outcome". This was a rehearsal')
+    await asyncio.sleep(0.05)
+    assert spoken_llm["calls"] == 0, "a rehearsal asks no model"
+    assert started == [] and buzzed == []
+    await _nothing_kept(editorial_sessionmaker, ws)
+
+
+async def test_a_rehearsed_hunt_reads_where_it_would_start_and_searches_nothing(
+    client, editorial_sessionmaker, monkeypatch
+):
+    from tce.services import web_search
+
+    ws = uuid.uuid4()
+    buzzed = _no_buzz(monkeypatch)
+    async with editorial_sessionmaker() as s:
+        await _his_recent_call(s, ws, "Follow up within a day", excerpt="we moved it into 17hats")
+        s.add_all([_vendor(ws, "17hats"), _vendor(ws, "stripe"), _vendor(ws, "twilio")])
+        await s.commit()
+        expected = await idea_lane.seed_queries(s, ws)
+
+    def no_search(*a, **kw):
+        raise AssertionError("a rehearsal never searches the web")
+
+    async def no_llm(*a, **kw):
+        raise AssertionError("a rehearsal asks no model")
+
+    monkeypatch.setattr(web_search, "WebSearchService", no_search)
+    monkeypatch.setattr(tce.llm, "complete", no_llm)
+    r = await client.post(
+        "/api/v1/editorial/idea-research", json={"count": 3, "rehearsal": True},
+        headers=headers(ws),
+    )
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["rehearsal"] is True and body["state"] == "done"
+    assert body["would"]["queries"] == expected and expected[0] == "17hats new feature"
+    run = await wait_done(client, ws, body["run_id"])
+    assert run["state"] == "done"
+    assert run["result"]["rehearsal"] is True and run["result"]["ideas"] == []
+    assert run["said"].startswith('would search the web for "17hats new feature"')
+    assert run["said"].endswith(idea_lane.REHEARSAL_SAID)
+    assert "nothing was kept, searched or sent to your phone" in run["said"]
+    assert buzzed == []
+    async with editorial_sessionmaker() as s:
+        for model in (TopicCandidate, NewsItem):
+            rows = (await s.execute(select(model).where(model.workspace_id == ws))).scalars().all()
+            assert rows == [], f"a rehearsal kept a {model.__name__}"
+
+
+async def test_a_rehearsed_coaching_hunt_counts_his_calls_and_picks_nothing(
+    client, editorial_sessionmaker, monkeypatch
+):
+    from tce.editorial import selector
+
+    ws = uuid.uuid4()
+    buzzed = _no_buzz(monkeypatch)
+    async with editorial_sessionmaker() as s:
+        await _source(s, ws, "fathom_meeting", "c1")
+        await _source(s, ws, "fathom_meeting", "c2")
+        await _source(s, ws, "github_commit_group", "g1")
+        await s.commit()
+
+    async def no_select(*a, **kw):
+        raise AssertionError("a rehearsal never runs the four checks")
+
+    monkeypatch.setattr(selector, "select_candidates", no_select)
+    r = await client.post(
+        "/api/v1/editorial/idea-research",
+        json={"count": 2, "type": "coaching", "days": 14, "rehearsal": True},
+        headers=headers(ws),
+    )
+    assert r.status_code == 202, r.text
+    assert r.json()["would"] == {"sources": 2}
+    run = await wait_done(client, ws, r.json()["run_id"])
+    assert run["said"].startswith("would read 2 of your calls from the last 14 days.")
+    assert buzzed == []
+    async with editorial_sessionmaker() as s:
+        assert (
+            await s.execute(select(TopicCandidate).where(TopicCandidate.workspace_id == ws))
+        ).scalars().all() == []
+
+
+async def test_the_test_call_can_ask_whether_rehearsal_is_honoured(client):
+    r = await client.get("/api/v1/editorial/rehearsal", headers=headers(uuid.uuid4()))
+    assert r.status_code == 200, r.text
+    assert r.json()["rehearsal"] is True
+    assert set(r.json()["tools"]) == {"tce_new_idea", "tce_find_ideas"}
+    assert (await client.get("/api/v1/editorial/rehearsal")).status_code in (401, 403)
+
+
+def test_the_live_call_seat_never_rehearses():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    for name in ("tce.json", "tce-brief.md"):
+        assert "REHEARSAL" not in (root / "deploy" / "voice-seat" / name).read_text().upper()
+
+
+async def test_a_rehearsed_empty_idea_is_refused_like_a_real_one(client, editorial_sessionmaker):
+    ws = uuid.uuid4()
+    for rehearsal in (True, False):
+        r = await client.post(
+            "/api/v1/editorial/spoken-idea",
+            json={"said": "    ", "idea": "Price the outcome", "rehearsal": rehearsal},
+            headers=headers(ws),
+        )
+        assert r.status_code == 422, (rehearsal, r.text)
+        assert "an idea needs his words" in r.text
+    await _nothing_kept(editorial_sessionmaker, ws)

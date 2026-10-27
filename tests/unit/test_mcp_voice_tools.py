@@ -93,7 +93,8 @@ def run(scenario, env=None):
     base_env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("TCE_VOICE_CALL_ID", "KMBOT_VOICE_SESSION", "TCE_VOICE_STATE_DIR")
+        if k not in ("TCE_VOICE_CALL_ID", "KMBOT_VOICE_SESSION", "TCE_VOICE_STATE_DIR",
+                     "TCE_REHEARSAL")
     }
     try:
         proc = subprocess.run(
@@ -1759,7 +1760,8 @@ async def live(editorial_sessionmaker, monkeypatch):
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("TCE_VOICE_CALL_ID", "KMBOT_VOICE_SESSION", "TCE_VOICE_STATE_DIR")
+        if k not in ("TCE_VOICE_CALL_ID", "KMBOT_VOICE_SESSION", "TCE_VOICE_STATE_DIR",
+                     "TCE_REHEARSAL")
     }
     proc = await asyncio.create_subprocess_exec(
         "node",
@@ -2238,6 +2240,42 @@ def test_an_idea_run_lost_to_a_restart_says_so():
         },
     })
     assert "stopped when the server restarted" in out["texts"][1]
+
+
+# 27-Oct (T-fa0f): the voice test call's own service sets TCE_REHEARSAL=1 and the
+# call inherits it. Its idea is heard but never kept, and its hunt reads where it
+# would start and stops. A real call never has the variable, so it never asks.
+IDEA_STEPS = [
+    step("tce_new_idea", said="a video about selling outcomes not hours",
+         idea="Coaches should price the outcome, not the hours", confirmed=True),
+    step("tce_find_ideas", count=2, type="coaching", days=14),
+]
+IDEA_RESPONSES = {
+    "POST /editorial/spoken-idea": {"ok": True, "status": 202, "data": {"run_id": RUN}},
+    "POST /editorial/idea-research": {"ok": True, "status": 202, "data": {"run_id": RUN}},
+}
+
+
+def test_a_test_call_rehearses_its_idea_and_its_hunt():
+    out = run({"steps": IDEA_STEPS, "responses": IDEA_RESPONSES}, env={"TCE_REHEARSAL": "1"})
+    posts = {s["key"]: s["body"] for s in out["sent"] if s["key"].startswith("POST ")}
+    assert posts["POST /editorial/spoken-idea"]["rehearsal"] is True
+    assert posts["POST /editorial/idea-research"]["rehearsal"] is True
+    # What the brain is told carries it too, so the call's record shows a rehearsal.
+    assert all('"rehearsal":true' in seen for seen in out["seen"])
+    # And it says the same words a real call hears.
+    assert out["texts"][0].startswith('Checking "Coaches should price the outcome, not the hours"')
+    assert "2 new coaching topics" in out["texts"][1]
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "yes", "true"])
+def test_a_real_call_never_asks_for_a_rehearsal(value):
+    env = {} if value is None else {"TCE_REHEARSAL": value}
+    out = run({"steps": IDEA_STEPS, "responses": IDEA_RESPONSES}, env=env)
+    posts = [s["body"] for s in out["sent"] if s["key"].startswith("POST ")]
+    assert len(posts) == 2
+    assert all("rehearsal" not in body for body in posts)
+    assert not any("rehearsal" in seen for seen in out["seen"])
 
 
 def test_the_call_seat_allows_exactly_the_tools_the_voice_family_registers():
@@ -3505,7 +3543,8 @@ async def video_call(editorial_sessionmaker, monkeypatch, tmp_path):
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("TCE_VOICE_CALL_ID", "KMBOT_VOICE_SESSION", "TCE_VOICE_STATE_DIR")
+        if k not in ("TCE_VOICE_CALL_ID", "KMBOT_VOICE_SESSION", "TCE_VOICE_STATE_DIR",
+                     "TCE_REHEARSAL")
     }
     proc = await asyncio.create_subprocess_exec(
         "node",

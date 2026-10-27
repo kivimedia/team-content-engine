@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from tce.db.workspace_filter import workspace_language
 from tce.editorial import status as job_status
@@ -680,3 +680,95 @@ async def _run_idea_research(
         rejected=result.rejected,
     )
     await _tell_his_phone(sm, ws, run_id, ideas, kind)
+
+
+# ---------------------------------------------------------------------------
+# A rehearsal: how the voice test call says an idea or starts a hunt
+# ---------------------------------------------------------------------------
+
+# 27-Oct (T-fa0f): the nightly voice test call has to say an idea and ask for a
+# hunt the way he does, or nothing proves the two tools still work on a call.
+# The real paths keep his words as evidence the moment they arrive, ask the
+# model, save topics, start scripts and buzz his phone, and a hunt finishes
+# minutes after the call has hung up, so a test call could not tidy up after
+# itself. A rehearsal goes as far as the first write and stops: the request is
+# checked, his recent work is READ, and nothing is kept, searched, sent to a
+# model or sent to his phone. Only the call tools ask for one, and only when
+# the voice test call's own service set TCE_REHEARSAL=1.
+REHEARSAL_SAID = "This was a rehearsal: nothing was kept, searched or sent to your phone."
+
+
+def rehearse_spoken_idea(
+    ws: uuid.UUID, run_id: uuid.UUID, *, idea: str, write_script: bool
+) -> None:
+    """A test call's spoken idea: heard and answered, never kept or checked."""
+    key = str(run_id)
+    line = _clean(idea, 2000)
+    job_status.start(ws, KIND_SPOKEN, key, "Rehearsal: the idea was heard",
+                     idea=line, write_script=write_script, rehearsal=True)
+    job_status.update(
+        ws, KIND_SPOKEN, key, state="done", finished_at=_now().isoformat(),
+        result={"saved": False, "rehearsal": True},
+        said=f'was heard as "{_clean(line, 200)}". {REHEARSAL_SAID}',
+    )
+
+
+async def rehearse_idea_research(
+    sm: Any, ws: uuid.UUID, run_id: uuid.UUID, *, topic: str | None, count: int, kind: str,
+    days: int = SEED_DAYS,
+) -> dict[str, Any]:
+    """A test call's hunt: reads where a real one would start, then stops. Never raises.
+
+    Read only: the searches a real hunt would make, or how many of his calls or
+    commits it would read. Never a web search, a model call, a topic or a buzz.
+    """
+    key = str(run_id)
+    count = max(1, min(MAX_IDEAS_ASKED, int(count or MAX_RESEARCH_IDEAS)))
+    days = max(1, min(60, int(days or SEED_DAYS)))
+    job_status.start(ws, KIND_RESEARCH, key, "Rehearsal: reading where a hunt would start",
+                     topic=topic, count=count, type=kind, rehearsal=True)
+    result: dict[str, Any] = {"ideas": [], "kind": kind, "rehearsal": True}
+    try:
+        if kind in KIND_SOURCES:
+            where = KIND_WHERE[kind]
+            evergreen = kind in EVERGREEN_KINDS
+            async with open_session(sm) as db:
+                q = select(func.count(EvidenceSource.id)).where(
+                    EvidenceSource.workspace_id == ws,
+                    EvidenceSource.source_kind.in_(KIND_SOURCES[kind]),
+                )
+                if not evergreen:
+                    q = q.where(EvidenceSource.created_at >= _now() - timedelta(days=days))
+                if topic:
+                    q = q.where(EvidenceSource.title.ilike(f"%{_clean(topic, 80)}%"))
+                n = int((await db.execute(q)).scalar_one() or 0)
+            result["sources"] = n
+            would = f"would read {n} of your {where}" + (
+                "" if evergreen else f" from the last {days} days")
+        else:
+            if topic:
+                queries = [_clean(topic, 200)]
+            else:
+                async with open_session(sm) as db:
+                    queries = await seed_queries(db, ws)
+                if not queries:
+                    from tce.editorial.lane_profile import profile_for
+
+                    profile = profile_for(ws)
+                    queries = list(profile.research_seeds) if profile is not None else []
+            result["queries"] = queries
+            would = ("would search the web for " + "; ".join(f'"{q}"' for q in queries)
+                     if queries else "would find nothing to start from")
+    except Exception as exc:
+        logger.exception("idea_lane.rehearsal_failed", run_id=key)
+        job_status.update(
+            ws, KIND_RESEARCH, key, state="failed", finished_at=_now().isoformat(),
+            detail=type(exc).__name__, result=result,
+            said=f"stopped with an error ({type(exc).__name__}). {REHEARSAL_SAID}",
+        )
+        return result
+    job_status.update(
+        ws, KIND_RESEARCH, key, state="done", finished_at=_now().isoformat(),
+        said=f"{would}. {REHEARSAL_SAID}", result=result,
+    )
+    return result

@@ -1041,6 +1041,12 @@ export function register(server, call, { reply, failure, shortId }) {
 
   // ------------------------------------------------------------ new ideas
 
+  /* 27-Oct (T-fa0f): the voice test call sets TCE_REHEARSAL=1 in its own voice
+     service, and a call inherits it; a real call never has it. Then an idea is
+     heard and answered but never kept, a hunt reads where it would start and
+     stops, and nothing reaches his Topics page or his phone. */
+  const rehearsing = () => String(process.env.TCE_REHEARSAL || '').trim() === '1';
+
   server.tool(
     'tce_new_idea',
     'Save a NEW video idea he says on the call, then (by default) start its script. Use it when he '
@@ -1077,16 +1083,17 @@ export function register(server, call, { reply, failure, shortId }) {
         );
       }
       const callId = String(process.env.TCE_VOICE_CALL_ID || process.env.KMBOT_VOICE_SESSION || '').trim() || null;
+      const rehearsal = rehearsing();
       const result = await call('POST', '/editorial/spoken-idea', {
         said: words, idea: line, angle: angle ? String(angle).trim() : null,
-        call_id: callId, write_script: scriptToo, by: 'voice',
+        call_id: callId, write_script: scriptToo, by: 'voice', ...(rehearsal ? { rehearsal: true } : {}),
       });
       if (!result.ok) return spokenError(result, 'save the idea');
       track({ kind: 'idea', title: line, run_id: result.data.run_id, write_script: scriptToo });
       return reply(
         `Checking "${line}" against the four checks now${scriptToo ? '; if it passes its script starts by itself' : ''}. `
           + 'I will say how it went.',
-        { started: true, run_id: result.data.run_id },
+        { started: true, run_id: result.data.run_id, ...(rehearsal ? { rehearsal: true } : {}) },
       );
     },
   );
@@ -1120,8 +1127,10 @@ export function register(server, call, { reply, failure, shortId }) {
         .includes(type) ? type : 'any';
       const LANE_WORD = { trend_reaction: 'trend', magic_clip: 'clip', behind_scenes: 'behind-the-scenes' };
       const back = Number.isInteger(days) ? Math.max(1, Math.min(60, days)) : 21;
+      const rehearsal = rehearsing();
       const result = await call('POST', '/editorial/idea-research', {
         topic: about || null, by: 'voice', count: n, type: kind, days: back,
+        ...(rehearsal ? { rehearsal: true } : {}),
       });
       if (!result.ok) return spokenError(result, 'start the research');
       const title = about || 'what you have been working on';
@@ -1136,7 +1145,7 @@ export function register(server, call, { reply, failure, shortId }) {
       return reply(
         `Started looking for ${what}${where}. It takes a few minutes; I will say what it found. `
           + 'If you hang up, they will be on your Topics page and your phone gets a notification.',
-        { started: true, run_id: result.data.run_id },
+        { started: true, run_id: result.data.run_id, ...(rehearsal ? { rehearsal: true } : {}) },
       );
     },
   );

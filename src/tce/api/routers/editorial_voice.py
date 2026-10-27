@@ -352,6 +352,9 @@ class SpokenIdeaRequest(BaseModel):
     call_id: str | None = Field(default=None, max_length=200)
     write_script: bool = True
     by: str = "voice"
+    # 27-Oct (T-fa0f): the voice test call's rehearsal. Heard and answered, never
+    # kept or checked; only the call tools send it, when TCE_REHEARSAL=1.
+    rehearsal: bool = False
 
 
 class IdeaResearchRequest(BaseModel):
@@ -363,6 +366,21 @@ class IdeaResearchRequest(BaseModel):
     type: str = "any"
     # How far back to look in his calls or commits ("the last two weeks" = 14).
     days: int = Field(default=21, ge=1, le=60)
+    # 27-Oct (T-fa0f): the voice test call's rehearsal. Reads where a hunt would
+    # start and stops: no search, no model call, no topic, no buzz.
+    rehearsal: bool = False
+
+
+@router.get("/rehearsal")
+async def rehearsal_supported(
+    ws: uuid.UUID = Depends(require_private_workspace),
+) -> dict[str, Any]:
+    """Whether this TCE honours the voice test call's rehearsal.
+
+    The test call asks before it says an idea: an older TCE ignores the field
+    and would keep the idea, start its script and buzz his phone.
+    """
+    return {"rehearsal": True, "tools": ["tce_new_idea", "tce_find_ideas"]}
 
 
 @router.post("/spoken-idea", status_code=202)
@@ -381,6 +399,19 @@ async def start_spoken_idea(
     from tce.editorial import status as job_status
 
     run_id = uuid.uuid4()
+    if body.rehearsal:
+        # Refused exactly where the real path refuses it, so the test hears the same answer.
+        if not body.said.strip() or not " ".join(body.idea.split()):
+            raise HTTPException(
+                status_code=422, detail="an idea needs his words and a one-line summary"
+            )
+        idea_lane.rehearse_spoken_idea(ws, run_id, idea=body.idea, write_script=body.write_script)
+        return {
+            "run_id": str(run_id),
+            "state": "done",
+            "rehearsal": True,
+            "status_url": f"/api/v1/editorial/idea-runs/{run_id}",
+        }
     async with open_session(sm) as db:
         try:
             source, _moment = await idea_lane.record_spoken_idea(
@@ -428,13 +459,28 @@ async def start_idea_research(
     if kind not in allowed:
         raise HTTPException(status_code=400, detail=f"type must be one of {', '.join(allowed)}")
     run_id = uuid.uuid4()
+    days = body.days if body else idea_lane.SEED_DAYS
+    if body is not None and body.rehearsal:
+        result = await idea_lane.rehearse_idea_research(
+            sm, ws, run_id, topic=topic or None, count=count, kind=kind, days=days,
+        )
+        return {
+            "run_id": str(run_id),
+            "state": "done",
+            "rehearsal": True,
+            "topic": topic or None,
+            "count": count,
+            "type": kind,
+            "would": {k: result[k] for k in ("queries", "sources") if k in result},
+            "status_url": f"/api/v1/editorial/idea-runs/{run_id}",
+        }
     job_status.start(
         ws, idea_lane.KIND_RESEARCH, str(run_id), "Starting the search",
         topic=topic or None, count=count, type=kind,
     )
     background.add_task(
         idea_lane.run_idea_research, sm, ws, run_id, topic=topic or None, count=count, kind=kind,
-        days=body.days if body else idea_lane.SEED_DAYS,
+        days=days,
     )
     return {
         "run_id": str(run_id),
