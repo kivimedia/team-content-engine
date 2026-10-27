@@ -683,6 +683,23 @@ async def align_script(
 # --- Word timings: both engines on one clip, nothing saved ---
 
 
+@router.get("/word-timings")
+async def word_timings_engine() -> dict[str, Any]:
+    """Which engine times the words of a recorded narration, as the settings say now.
+
+    Free: it asks neither engine anything, and the keys show only as present or not.
+    """
+    provider = (settings.word_timings_provider or "openai").strip().lower()
+    return {
+        "provider": provider,
+        "model": {"deepgram": settings.deepgram_model, "openai": "whisper-1"}.get(provider),
+        "keys_present": {
+            "openai": bool(settings.openai_api_key),
+            "deepgram": bool(settings.deepgram_api_key.get_secret_value()),
+        },
+    }
+
+
 @router.post("/word-timings/compare")
 async def compare_word_timings(
     file: UploadFile = File(...),
@@ -690,7 +707,7 @@ async def compare_word_timings(
 ) -> dict[str, Any]:
     """Time one clip with whisper-1 and with Deepgram and say how far apart they are.
 
-    The proof before TCE_WORD_TIMINGS_PROVIDER moves to deepgram. One paid call to
+    The proof behind TCE_WORD_TIMINGS_PROVIDER=deepgram, the default. One paid call to
     each engine; the clip is deleted before the answer goes back. script_text, one
     segment per line, also compares the segment timings a narration would keep.
     """

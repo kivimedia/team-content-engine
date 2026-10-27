@@ -93,11 +93,12 @@ class Settings(BaseSettings):
 
     # Audio / Narration (word timings for alignment)
     openai_api_key: str = ""
-    # Who times the words of a recorded narration: "openai" (whisper-1, which OpenAI
-    # retires on 26-Feb-2027) or "deepgram". "openai" keeps every narration exactly as
-    # before; TCE_WORD_TIMINGS_PROVIDER=deepgram switches once the comparison passed
-    # (POST /api/v1/narration/word-timings/compare times one clip with both).
-    word_timings_provider: str = "openai"
+    # Who times the words of a recorded narration: "deepgram" or "openai" (whisper-1,
+    # which OpenAI retires on 26-Feb-2027). Deepgram since 27-Oct-2026: on a reading
+    # timed with both (POST /api/v1/narration/word-timings/compare) whisper-1 ended two
+    # sentences up to a second before the speaker did. TCE_WORD_TIMINGS_PROVIDER=openai
+    # puts the old engine back.
+    word_timings_provider: str = "deepgram"
     deepgram_api_key: SecretStr = SecretStr("")
     deepgram_model: str = "nova-3"
 

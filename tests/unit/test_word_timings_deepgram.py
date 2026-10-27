@@ -1,10 +1,11 @@
 """Narration word timings can come from Deepgram instead of whisper-1 (T-13374).
 
 OpenAI retires whisper-1 on 26-Feb-2027 and its replacement gives no word timings,
-so narration alignment needs another engine. TCE_WORD_TIMINGS_PROVIDER picks it and
-stays "openai" until a comparison on this server's own keys has passed. Deepgram's
-answer is turned into Whisper's shape, so the alignment, the filler cuts and the
-saved transcript read it unchanged. Every call here is answered by a fake.
+so narration alignment needs another engine. TCE_WORD_TIMINGS_PROVIDER picks it, and
+since 27-Oct-2026 it is "deepgram" unless set: a reading timed with both on this
+server's own keys showed whisper-1 ending sentences early. Deepgram's answer is turned
+into Whisper's shape, so the alignment, the filler cuts and the saved transcript read
+it unchanged. Every call here is answered by a fake.
 """
 
 from __future__ import annotations
@@ -113,9 +114,15 @@ def _svc(tmp_path, **kw) -> AudioAlignmentService:
     return AudioAlignmentService(openai_api_key="sk-test", audio_dir=str(tmp_path / "a"), **kw)
 
 
-def test_the_switch_ships_off():
-    assert Settings(_env_file=None).word_timings_provider == "openai"
+def test_deepgram_times_the_words_unless_told_otherwise(monkeypatch):
+    monkeypatch.delenv("TCE_WORD_TIMINGS_PROVIDER", raising=False)
+    assert Settings(_env_file=None).word_timings_provider == "deepgram"
     assert Settings(_env_file=None).deepgram_model == "nova-3"
+
+
+def test_one_setting_puts_whisper_1_back(monkeypatch):
+    monkeypatch.setenv("TCE_WORD_TIMINGS_PROVIDER", "openai")
+    assert Settings(_env_file=None).word_timings_provider == "openai"
 
 
 @pytest.mark.asyncio
@@ -357,3 +364,34 @@ def test_compare_route_says_which_engine_failed(monkeypatch, tmp_path, web):
     response = _post_clip(_client())
     assert response.status_code == 502
     assert "Deepgram API error (402)" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [("deepgram", "nova-3"), ("openai", "whisper-1"), (" Deepgram ", "nova-3"), ("deepgrm", None)],
+)
+def test_word_timings_route_names_the_engine_and_never_a_key(monkeypatch, web, provider, model):
+    calls, _ = web
+    monkeypatch.setattr(settings, "word_timings_provider", provider)
+    monkeypatch.setattr(settings, "deepgram_model", "nova-3")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-secret-openai")
+    monkeypatch.setattr(settings, "deepgram_api_key", SecretStr("dg-secret-deepgram"))
+
+    response = _client().get("/api/v1/narration/word-timings")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "provider": provider.strip().lower(),
+        "model": model,
+        "keys_present": {"openai": True, "deepgram": True},
+    }
+    assert "secret" not in response.text
+    assert calls == []
+
+
+def test_word_timings_route_says_a_key_is_missing(monkeypatch):
+    monkeypatch.setattr(settings, "word_timings_provider", "deepgram")
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "deepgram_api_key", SecretStr(""))
+    keys = _client().get("/api/v1/narration/word-timings").json()["keys_present"]
+    assert keys == {"openai": False, "deepgram": False}
