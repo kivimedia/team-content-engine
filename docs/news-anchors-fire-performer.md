@@ -26,6 +26,13 @@ in scripts/seed_brant_lanes.py (a test enforces it).
 - guinness world records
 - world record holder
 - world record attempt
+- breaks world record
+- breaks the world record
+- broke the world record
+- sets world record
+- sets a world record
+- set a world record
+- new world record
 - fire breather
 - fire breathing
 - fire eater
@@ -53,6 +60,7 @@ in scripts/seed_brant_lanes.py (a test enforces it).
 - base jumper
 - base jumping
 - free solo
+- free soloist
 - human cannonball
 - sword swallower
 - escape artist

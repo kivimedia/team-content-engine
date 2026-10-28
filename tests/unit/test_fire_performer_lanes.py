@@ -205,6 +205,43 @@ def test_no_bare_fire_or_record_anchor():
     assert not set(_anchor_kinds()) & {"fire", "fires", "flame", "record", "records", "talks"}
 
 
+def _anchors() -> list:
+    from types import SimpleNamespace
+
+    return [SimpleNamespace(kind=kind, term=term, id=None, weight=1.0) for term, kind in _anchor_kinds().items()]
+
+
+@pytest.mark.parametrize("headline", [
+    # 28-Oct, his first week: each of these was parked "no_anchor".
+    "Watch: Florida woman breaks world record with 639-pound hip thrust",
+    "Cork man breaks world record in charity marathon run in memory of his father",
+    "A Free Soloist Got Stuck 500 Feet up a Cliff. New Hampshire Doesn't Plan to Bill Him.",
+])
+def test_a_person_setting_a_record_or_mastering_danger_is_his_news(headline):
+    from tce.news import matcher
+
+    assert matcher.match_item(title=headline, anchors=_anchors()).matched
+
+
+@pytest.mark.parametrize("headline", [
+    "Record heat breaks records across Texas",
+    "S.C.'s Palmetto Cash 5 lottery drawing reaches record jackpot",
+    "Wildfire forces evacuations as flames spread",
+])
+def test_weather_lottery_and_wildfire_stay_out(headline):
+    from tce.news import matcher
+
+    assert not matcher.match_item(title=headline, anchors=_anchors()).matched
+
+
+def test_his_bing_feeds_are_date_ordered_and_the_ranked_ones_are_retired():
+    seed = _seed()
+    live = {url for _name, url, *_rest in seed.FEEDS}
+    bing = [url for url in live if "bing.com" in url]
+    assert bing and all("sortbydate" in url for url in bing)
+    assert seed.RETIRED_FEEDS and not set(seed.RETIRED_FEEDS) & live
+
+
 def test_brant_seed_validates():
     seed = _seed()
     seed.validate_all()

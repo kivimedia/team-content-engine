@@ -85,27 +85,38 @@ the record is a fact, so say it once, plainly. Keep it simple.
 # (name, url, kind, tier, vendor). Each answered and parsed on 28-Oct-2026
 # (scripts/seed_brant_lanes.py --check). Tier 1b: citable news. The Bing News feeds
 # link through a click tracker; feeds.unwrap_click_tracker turns each link into the
-# article itself.
+# article itself. Bing ranks by relevance unless asked for date order (`qft=
+# sortbydate="1"`): ranked, 1 of 35 items was inside the 48-hour news window on
+# 28-Oct; date-ordered, 20.
+_BING_BY_DATE = "&format=rss&qft=sortbydate%3d%221%22"
 FEEDS: list[tuple[str, str, str, str, str | None]] = [
     ("UPI Odd News (records and feats)", "https://rss.upi.com/news/odd_news.rss", "rss", "1b", "upi"),
-    ("Bing News: Guinness World Records",
-     "https://www.bing.com/news/search?q=%22Guinness+World+Records%22&format=rss", "rss", "1b",
+    # The quoted "Guinness World Records" stayed weeks old even date-ordered; this one did not.
+    ("Bing News: Guinness record breaks",
+     f"https://www.bing.com/news/search?q=guinness+record+breaks{_BING_BY_DATE}", "rss", "1b",
      "bing news"),
     ("Bing News: daredevil stunts",
-     "https://www.bing.com/news/search?q=daredevil+stunt&format=rss", "rss", "1b", "bing news"),
+     f"https://www.bing.com/news/search?q=daredevil+stunt{_BING_BY_DATE}", "rss", "1b", "bing news"),
     # 28-Oct: the quoted phrase "world record attempt" answered 0 items; unquoted, 7.
     ("Bing News: world record attempts",
-     "https://www.bing.com/news/search?q=world+record+attempt&format=rss", "rss", "1b",
+     f"https://www.bing.com/news/search?q=world+record+attempt{_BING_BY_DATE}", "rss", "1b",
      "bing news"),
     ("Bing News: world record stunts",
-     "https://www.bing.com/news/search?q=%22world+record%22+stunt&format=rss", "rss", "1b",
+     f"https://www.bing.com/news/search?q=%22world+record%22+stunt{_BING_BY_DATE}", "rss", "1b",
      "bing news"),
     ("Bing News: high-wire walks",
-     "https://www.bing.com/news/search?q=highwire+walk&format=rss", "rss", "1b", "bing news"),
+     f"https://www.bing.com/news/search?q=highwire+walk{_BING_BY_DATE}", "rss", "1b", "bing news"),
     ("Outside Online (adventure feats)", "https://www.outsideonline.com/feed/", "rss", "1b", "outside"),
 ]
 
-RETIRED_FEEDS: dict[str, str] = {}
+_RANKED = "relevance-ranked: weeks-old items, replaced by the date-ordered feed (28-Oct)"
+RETIRED_FEEDS: dict[str, str] = {
+    "https://www.bing.com/news/search?q=%22Guinness+World+Records%22&format=rss": _RANKED,
+    "https://www.bing.com/news/search?q=daredevil+stunt&format=rss": _RANKED,
+    "https://www.bing.com/news/search?q=world+record+attempt&format=rss": _RANKED,
+    "https://www.bing.com/news/search?q=%22world+record%22+stunt&format=rss": _RANKED,
+    "https://www.bing.com/news/search?q=highwire+walk&format=rss": _RANKED,
+}
 
 
 def retire_feeds(existing: dict) -> list[str]:
@@ -131,6 +142,11 @@ _CIRCUS = "Brant comes from the same live-danger tradition as circus acts: he ha
 _GROUPS: list[tuple[str, tuple[str, ...], str]] = [
     ("client_solution", ("guinness world record", "guinness world records", "world record holder",
                          "world record attempt"), _RECORD),
+    # A plain "X breaks world record" headline hits only the weak "world record"; these
+    # phrases say a person set one ("record heat" and "record jackpot" never say them).
+    ("client_solution", ("breaks world record", "breaks the world record", "broke the world record",
+                         "sets world record", "sets a world record", "set a world record",
+                         "new world record"), _RECORD),
     ("client_solution", ("fire breather", "fire breathing", "fire eater", "fire eating"), _FIRE_30),
     ("client_solution", ("fire performer", "fire performers", "fire dancer", "fire show"), _FIRE_30),
     ("client_solution", ("fire juggler", "fire juggling"), _ONEWHEEL),
@@ -138,7 +154,7 @@ _GROUPS: list[tuple[str, tuple[str, ...], str]] = [
                          "stunt performers"), _SAFE),
     ("client_solution", ("stunt rider", "motorcycle jump", "wall of death"), _ONEWHEEL),
     ("client_solution", ("tightrope walker", "tightrope walk", "high wire", "highwire", "wingsuit",
-                         "base jumper", "base jumping", "free solo"), _OTHERS),
+                         "base jumper", "base jumping", "free solo", "free soloist"), _OTHERS),
     ("client_solution", ("human cannonball", "sword swallower", "escape artist", "circus performer"),
      _CIRCUS),
     ("problem_pattern", ("world record",), _RECORD),
