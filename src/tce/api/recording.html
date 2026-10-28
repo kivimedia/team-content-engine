@@ -142,6 +142,15 @@
           <!-- The background behind the words: darker makes white letters pop. -->
           <button id="shadeDarker" class="shade-button" type="button" aria-label="Darker background" title="Darker background">&#9790;</button>
           <button id="shadeLighter" class="shade-button" type="button" aria-label="Lighter background" title="Lighter background">&#9728;</button>
+          <!-- Auto-scroll (27-Oct): the words move by themselves while recording,
+               at a speed in words per minute, not the old slider's pixels. -->
+          <button id="scrollToggle" class="scroll-toggle" type="button" aria-pressed="false" aria-label="Scroll the words by themselves" title="Scroll the words by themselves">&#8650;</button>
+          <div id="scrollSpeed" class="scroll-speed" hidden>
+            <span class="speed-caption">Speed</span>
+            <button id="scrollFaster" type="button" aria-label="Faster scrolling" title="Faster scrolling">+</button>
+            <span id="scrollSpeedValue" class="size-value" aria-live="polite" title="Words a minute">130</span>
+            <button id="scrollSlower" type="button" aria-label="Slower scrolling" title="Slower scrolling">&#8722;</button>
+          </div>
         </nav>
       </div>
 

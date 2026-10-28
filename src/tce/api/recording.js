@@ -147,7 +147,7 @@ function rebindIdeas(ideas, next) {
     ideas: [], idea: null, session: null, stream: null, recorder: null, clip: null,
     mode: "points", sequence: 0, startedAt: 0, activeStartedAt: 0, activeMs: 0,
     timerId: null, pendingWrites: [], pendingSync: new Map(), takeMarkers: [],
-    wakeLock: null, pendingIdea: null, textSize: 1,
+    wakeLock: null, pendingIdea: null, textSize: 1, wpm: 130,
     sessionPending: null, sessionPendingFor: null,
     rawStream: null, cameraReport: null,
     // Clips that were stopped and are still sending their last pieces. Finish
@@ -438,6 +438,9 @@ function rebindIdeas(ideas, next) {
     tail.className = "reader-tail";
     tail.setAttribute("aria-hidden", "true");
     reader.appendChild(tail);
+    // New words: auto-scroll measures them again and carries on from where they land.
+    scroller.measure = null;
+    scroller.pos = null;
     const saved = Number(localStorage.getItem(`tce-reader-${idea.packet_id}-${state.mode}`) || 0);
     requestAnimationFrame(() => { reader.scrollTop = saved; syncScrollRail(); });
   }
@@ -547,14 +550,25 @@ function rebindIdeas(ideas, next) {
     if (page.down) rail.appendChild(arrowButton("\u2193", 1));
   }
 
-  function jumpToBeat(beat, index) {
+  // The line a point starts on, in whichever tab is open.
+  function beatLine(beat) {
+    const target = state.mode === "points" ? beat.bullet_index : Math.max(0, Number(beat.start_phrase_id?.slice(1)) - 1);
+    return $(`${state.mode}-${target}`);
+  }
+
+  function markCurrentBeat(index) {
     state.currentBeat = index;
     [...$("beatRail").querySelectorAll("[data-beat]")].forEach((button) => {
       button.classList.toggle("is-current", Number(button.dataset.beat) === index);
     });
-    const target = state.mode === "points" ? beat.bullet_index : Math.max(0, Number(beat.start_phrase_id?.slice(1)) - 1);
-    const line = $(`${state.mode}-${target}`);
+  }
+
+  function jumpToBeat(beat, index) {
+    markCurrentBeat(index);
+    const line = beatLine(beat);
     if (line) {
+      // Auto-scroll lets the jump land, then carries on from the new place.
+      holdAutoScroll(800);
       line.scrollIntoView({ block: "start", behavior: "smooth" });
       line.classList.add("is-focus");
       setTimeout(() => line.classList.remove("is-focus"), 1200);
@@ -568,6 +582,9 @@ function rebindIdeas(ideas, next) {
     $("pointsTab").setAttribute("aria-selected", String(mode === "points"));
     $("scriptTab").setAttribute("aria-selected", String(mode === "script"));
     renderReader();
+    // Each tab has its own auto-scroll switch.
+    paintAutoScroll();
+    kickAutoScroll();
   }
 
   // Several things want the take set open at once (the hook step handing over, the
@@ -1251,6 +1268,7 @@ function rebindIdeas(ideas, next) {
       $("finishSessionButton").disabled = false;
       $("pauseButton").textContent = "Pause";
       setRecordingChrome(true);
+      kickAutoScroll();
       // No "Recording started" toast: it sat over the red flag and the timer for
       // four seconds, and the red flag already says it.
     } catch (error) {
@@ -1292,6 +1310,7 @@ function rebindIdeas(ideas, next) {
       state.recorder.resume();
       $("pauseButton").textContent = "Pause";
       $("recordingFlag").hidden = false;
+      kickAutoScroll();
     }
   }
 
@@ -1667,6 +1686,9 @@ function rebindIdeas(ideas, next) {
 
   function syncScrollRail() {
     // The slider this used to drive is gone; where he was reading is still kept.
+    // While the words scroll by themselves this fires every frame: once a second is plenty.
+    if (scroller.frame && performance.now() - scroller.savedAt < 1000) return;
+    scroller.savedAt = performance.now();
     const reader = $("reader");
     if (state.idea) localStorage.setItem(`tce-reader-${state.idea.packet_id}-${state.mode}`, String(reader.scrollTop));
   }
@@ -1681,6 +1703,8 @@ function rebindIdeas(ideas, next) {
     $("textSizeValue").textContent = `${Math.round(state.textSize * 100)}%`;
     $("textSmaller").disabled = state.textSize <= TEXT_MIN + 1e-9;
     $("textBigger").disabled = state.textSize >= TEXT_MAX - 1e-9;
+    // Bigger words take more pixels each, so auto-scroll measures them again.
+    scroller.measure = null;
   }
   function changeTextSize(step) {
     const next = Math.round((state.textSize + step) * 10) / 10;
@@ -1693,6 +1717,171 @@ function rebindIdeas(ideas, next) {
     try { saved = Number(localStorage.getItem("tce-reader-size")); } catch { /* private mode */ }
     if (saved >= TEXT_MIN && saved <= TEXT_MAX) state.textSize = saved;
     applyTextSize();
+  }
+
+  /* AUTO-SCROLL (27-Oct). Angel, testing Connie's app: "I thought the script would
+     automatically scroll if I continued reading it." While the camera records, the
+     words move at a speed in words per minute: Pause holds them, Resume carries on,
+     Stop ends it and the end of the text is the end. A finger or a wheel on the
+     words holds them until three seconds after it lifts; a point number moves them
+     and they carry on from there, and the number lit on the rail follows the words.
+     The switch is per tab (Full script is read word for word, Points are glanced
+     at) and, with the speed, remembered on this phone. */
+  const AUTO_SCROLL_DEFAULT = { points: false, script: true };
+  const WPM_DEFAULT = 130;
+  const WPM_MIN = 60;
+  const WPM_MAX = 250;
+  // A breath and the first line after Record before the words move. Started at
+  // once, the line being read rode the top edge, half cut; this way it sits about
+  // where a point number puts its line, with room for a slower reader.
+  const SCROLL_LEAD_MS = 3000;
+  const SCROLL_HOLD_MS = 3000; // after the finger lifts
+  const READING_LINE = 90; // where a point number puts its line (scroll-margin-top 80px)
+  const scroller = {
+    frame: 0, last: 0, pos: null, heldUntil: 0, finger: false,
+    measure: null, measuredAt: 0, savedAt: 0,
+    // This visit's own choice, so the switch works in a private tab that keeps nothing.
+    choice: { points: null, script: null },
+  };
+  function readSetting(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+  function writeSetting(key, value) {
+    try { localStorage.setItem(key, value); } catch { /* private mode: this visit only */ }
+  }
+  function autoScrollOn() {
+    if (typeof scroller.choice[state.mode] === "boolean") return scroller.choice[state.mode];
+    const saved = readSetting(`tce-autoscroll-${state.mode}`);
+    return saved === null ? Boolean(AUTO_SCROLL_DEFAULT[state.mode]) : saved === "1";
+  }
+  function recordingLive() {
+    return state.recorder?.state === "recording";
+  }
+  function paintAutoScroll() {
+    const on = autoScrollOn();
+    $("scrollToggle").setAttribute("aria-pressed", String(on));
+    $("scrollSpeed").hidden = !on;
+    $("scrollSpeedValue").textContent = String(state.wpm);
+    $("scrollFaster").disabled = state.wpm >= WPM_MAX;
+    $("scrollSlower").disabled = state.wpm <= WPM_MIN;
+  }
+  function toggleAutoScroll() {
+    const on = !autoScrollOn();
+    scroller.choice[state.mode] = on;
+    writeSetting(`tce-autoscroll-${state.mode}`, on ? "1" : "0");
+    paintAutoScroll();
+    // While recording the lit button says it; a toast would sit over the camera.
+    if (!recordingLive()) {
+      showNotice(on
+        ? "Auto-scroll on: the words move by themselves once you press Record."
+        : "Auto-scroll off: the words move only when you scroll them.");
+    }
+    kickAutoScroll();
+  }
+  function changeSpeed(step) {
+    state.wpm = Math.min(WPM_MAX, Math.max(WPM_MIN, state.wpm + step));
+    writeSetting("tce-autoscroll-wpm", String(state.wpm));
+    paintAutoScroll();
+  }
+  function restoreSpeed() {
+    const saved = Number(readSetting("tce-autoscroll-wpm"));
+    state.wpm = saved >= WPM_MIN && saved <= WPM_MAX ? saved : WPM_DEFAULT;
+    paintAutoScroll();
+  }
+  function holdAutoScroll(ms) {
+    scroller.heldUntil = Math.max(scroller.heldUntil, performance.now() + ms);
+  }
+
+  /* Pixels per word for THIS text at THIS size and width: the height of the words
+     over how many there are. Measured again when the text, its size or the box
+     changes, and every two seconds anyway (a font arriving late reflows it). */
+  function measureScroll() {
+    const reader = $("reader");
+    const lines = [...reader.querySelectorAll(".reader-line")];
+    if (!lines.length) return null;
+    let words = 0;
+    lines.forEach((line) => line.childNodes.forEach((node) => {
+      if (node.nodeType === 1 && (node.classList.contains("reader-index") || node.tagName === "BUTTON")) return;
+      words += (node.textContent.match(/\S+/g) || []).length;
+    }));
+    const origin = reader.getBoundingClientRect().top - reader.scrollTop;
+    const top = lines[0].getBoundingClientRect().top - origin;
+    const height = lines[lines.length - 1].getBoundingClientRect().bottom - origin - top;
+    if (!words || height <= 0) return null;
+    const beats = (state.idea?.beats || []).map((beat, index) => {
+      const line = beatLine(beat);
+      return line ? { index, top: line.getBoundingClientRect().top - origin } : null;
+    }).filter(Boolean);
+    return { pxPerWord: height / words, beats };
+  }
+
+  // The number on the rail follows the words: the last point whose line reached the reading line.
+  function followBeat(pos) {
+    let current = null;
+    (scroller.measure?.beats || []).forEach((beat) => {
+      if (beat.top <= pos + READING_LINE) current = beat.index;
+    });
+    if (current === null || current === state.currentBeat) return;
+    const rail = $("beatRail");
+    if (rail.querySelector(`[data-beat="${current}"]`)) {
+      markCurrentBeat(current);
+      return;
+    }
+    // Its number is on another page of the rail: turn to that page.
+    state.currentBeat = current;
+    const pages = beatPages(state.idea.beats.length, beatSlots(rail));
+    const page = pages.findIndex((item) => current >= item.start && current < item.end);
+    if (page >= 0) state.beatPage = page;
+    renderBeats();
+  }
+
+  function kickAutoScroll() {
+    if (scroller.frame || !autoScrollOn() || !recordingLive()) return;
+    // CSS smooth scrolling turns a per-frame scroll into a lagging chase.
+    $("reader").style.scrollBehavior = "auto";
+    scroller.pos = null;
+    scroller.last = performance.now();
+    holdAutoScroll(SCROLL_LEAD_MS);
+    scroller.frame = requestAnimationFrame(stepAutoScroll);
+  }
+  function stopAutoScroll() {
+    cancelAnimationFrame(scroller.frame);
+    scroller.frame = 0;
+    $("reader").style.scrollBehavior = "";
+    scroller.savedAt = 0;
+    syncScrollRail();
+  }
+  function stepAutoScroll(now) {
+    scroller.frame = 0;
+    if (!autoScrollOn() || !recordingLive()) {
+      stopAutoScroll();
+      return;
+    }
+    const reader = $("reader");
+    // A frame the phone skipped (a call, a busy moment) is not a leap down the page.
+    const seconds = Math.min(now - scroller.last, 100) / 1000;
+    scroller.last = now;
+    scroller.frame = requestAnimationFrame(stepAutoScroll);
+    if (scroller.finger || now < scroller.heldUntil) {
+      scroller.pos = reader.scrollTop;
+      return;
+    }
+    // Moved by something else (a drag on the scrollbar, the page restoring a
+    // place): let it land, then carry on from there.
+    if (scroller.pos === null || Math.abs(reader.scrollTop - scroller.pos) > 3) {
+      if (scroller.pos !== null) holdAutoScroll(600);
+      scroller.pos = reader.scrollTop;
+      return;
+    }
+    if (!scroller.measure || now - scroller.measuredAt > 2000) {
+      scroller.measure = measureScroll();
+      scroller.measuredAt = now;
+    }
+    const end = reader.scrollHeight - reader.clientHeight;
+    if (!scroller.measure || scroller.pos >= end) return;
+    scroller.pos = Math.min(end, scroller.pos + (state.wpm / 60) * scroller.measure.pxPerWord * seconds);
+    reader.scrollTop = scroller.pos;
+    followBeat(scroller.pos);
   }
 
   /* The house means home, and home is Today - except inside the studio, where
@@ -1777,6 +1966,29 @@ function rebindIdeas(ideas, next) {
   $("textBigger").addEventListener("click", () => changeTextSize(.1));
   $("textSmaller").addEventListener("click", () => changeTextSize(-.1));
   restoreTextSize();
+  $("scrollToggle").addEventListener("click", toggleAutoScroll);
+  $("scrollFaster").addEventListener("click", () => changeSpeed(10));
+  $("scrollSlower").addEventListener("click", () => changeSpeed(-10));
+  restoreSpeed();
+  // A hand on the words holds auto-scroll: a finger until three seconds after it
+  // lifts, a mouse on the scrollbar the same, a wheel turn or a key three seconds.
+  $("reader").addEventListener("touchstart", () => { scroller.finger = true; }, { passive: true });
+  ["touchend", "touchcancel"].forEach((type) => $("reader").addEventListener(type, (event) => {
+    if (event.touches.length) return;
+    scroller.finger = false;
+    holdAutoScroll(SCROLL_HOLD_MS);
+  }, { passive: true }));
+  $("reader").addEventListener("pointerdown", (event) => {
+    if (event.pointerType !== "touch") scroller.finger = true;
+  });
+  window.addEventListener("pointerup", (event) => {
+    if (event.pointerType === "touch" || !scroller.finger) return;
+    scroller.finger = false;
+    holdAutoScroll(SCROLL_HOLD_MS);
+  });
+  ["wheel", "keydown"].forEach((type) => $("reader").addEventListener(type, () => holdAutoScroll(SCROLL_HOLD_MS), { passive: true }));
+  // Swapping, words over the video, turning the phone: the words take new room.
+  if (window.ResizeObserver) new ResizeObserver(() => { scroller.measure = null; }).observe($("reader"));
   $("pointsTab").addEventListener("click", () => setMode("points"));
   $("scriptTab").addEventListener("click", () => setMode("script"));
   $("recordButton").addEventListener("click", startRecording);

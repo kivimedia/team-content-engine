@@ -70,6 +70,15 @@
     "Smaller text": "טקסט קטן יותר",
     "Darker background": "רקע כהה יותר",
     "Lighter background": "רקע בהיר יותר",
+    "Scroll the words by themselves": "גלילה אוטומטית של הטקסט",
+    "Speed": "מהירות",
+    "Faster scrolling": "גלילה מהירה יותר",
+    "Slower scrolling": "גלילה איטית יותר",
+    "Words a minute": "מילים בדקה",
+    "Auto-scroll on: the words move by themselves once you press Record.":
+      "גלילה אוטומטית פועלת: הטקסט יזוז לבד כשלוחצים הקלטה.",
+    "Auto-scroll off: the words move only when you scroll them.":
+      "גלילה אוטומטית כבויה: הטקסט זז רק כשגוללים אותו.",
     "Opening": "פתיחה",
     "Change": "להחליף",
     "Recording controls": "כפתורי הקלטה",
