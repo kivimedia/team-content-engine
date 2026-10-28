@@ -152,6 +152,9 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .reader.points { font-family: "Trebuchet MS", sans-serif; font-weight: 700; }
 .reader.script { font-family: Georgia, serif; }
 .reader-line { margin: 0 0 1.25em; scroll-margin-top: 80px; }
+/* Mid-take a finger on the words holds them; on an iPhone a held finger also
+   picked a word, with handles and a magnifier (28-Oct). */
+body.rec-live .reader { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 .reader-line.is-focus { background: #fff0b8; box-shadow: 0 0 0 7px #fff0b8; }
 .reader-index { display: block; color: var(--lake); font: 800 .72rem "Trebuchet MS", sans-serif; margin-bottom: 5px; }
 .size-rail { border-left: 1px solid #9baaba; padding: 8px 4px; gap: 10px; justify-content: flex-start; }

@@ -153,6 +153,35 @@ def test_a_finger_on_the_words_holds_them_until_three_seconds_after_it_lifts(lon
         browser.close()
 
 
+# The rule Safari reads for the words mid-take, prefixed names included.
+REC_LIVE_READER_CSS_JS = """
+async () => {
+  const css = await fetch('recording.css', { cache: 'no-store' }).then((r) => r.text());
+  return [...css.matchAll(/body\\.rec-live \\.reader\\s*\\{([^}]*)\\}/g)].map((m) => m[1]).join(' ');
+}
+"""
+
+
+def test_a_finger_resting_on_the_words_mid_take_selects_nothing(long_script, studio):  # noqa: F811
+    """28-Oct, a real iPhone 14 (iOS 26, Safari): a finger held on the words to stop them
+    picked a word mid-take, with blue handles and the magnifier. While recording the words
+    are for reading; before Record they can still be selected."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser, context, page = _studio_page(pw, studio["base"], LANDSCAPE_CAMERA)
+        _full_script(page)
+        select_js = "() => getComputedStyle(document.getElementById('reader')).userSelect"
+        assert page.evaluate(select_js) != "none", "the words cannot be selected before Record"
+        _record(page, LEAD_S + 0.6)
+        assert page.evaluate(select_js) == "none", "the words can be selected mid-take"
+        # Chromium has no long-press menu; Safari needs these by name.
+        rule = page.evaluate(REC_LIVE_READER_CSS_JS)
+        assert "-webkit-user-select: none" in rule and "-webkit-touch-callout: none" in rule, rule
+        context.close()
+        browser.close()
+
+
 def test_speed_plus_is_faster_and_the_end_of_the_text_stops_it(long_script, studio):  # noqa: F811
     from playwright.sync_api import sync_playwright
 
