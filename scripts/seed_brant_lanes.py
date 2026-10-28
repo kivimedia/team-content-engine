@@ -93,9 +93,15 @@ FEEDS: list[tuple[str, str, str, str, str | None]] = [
      "bing news"),
     ("Bing News: daredevil stunts",
      "https://www.bing.com/news/search?q=daredevil+stunt&format=rss", "rss", "1b", "bing news"),
+    # 28-Oct: the quoted phrase "world record attempt" answered 0 items; unquoted, 7.
     ("Bing News: world record attempts",
-     "https://www.bing.com/news/search?q=%22world+record+attempt%22&format=rss", "rss", "1b",
+     "https://www.bing.com/news/search?q=world+record+attempt&format=rss", "rss", "1b",
      "bing news"),
+    ("Bing News: world record stunts",
+     "https://www.bing.com/news/search?q=%22world+record%22+stunt&format=rss", "rss", "1b",
+     "bing news"),
+    ("Bing News: high-wire walks",
+     "https://www.bing.com/news/search?q=highwire+walk&format=rss", "rss", "1b", "bing news"),
     ("Outside Online (adventure feats)", "https://www.outsideonline.com/feed/", "rss", "1b", "outside"),
 ]
 
