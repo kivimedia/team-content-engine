@@ -1,10 +1,11 @@
 """The reader scrolls by itself while recording, like a teleprompter. Synthetic data.
 
 26-Oct, Angel's QA of Connie's app: "Something that confused me: I thought the
-script would automatically scroll if I continued reading it." The words now move
-at a speed in words per minute (130 to start, steps of 10) from the moment Record
-starts: Pause holds them, Resume carries on, Stop ends it, a finger on the words
-holds them until three seconds after it lifts, and the end of the text is the end.
+script would automatically scroll if I continued reading it." Switched on (it starts
+off, Ziv 28-Oct, one switch per tab), the words move at a speed in words per minute
+(130 to start, steps of 10) once Record starts: Pause holds them, Resume carries on,
+Stop ends it, a finger on the words holds them until three seconds after it lifts,
+and the end of the text is the end.
 
 Drives headless Chromium at phone width with a fake camera, on a script long
 enough to scroll for minutes. Nothing here calls a paid service or a real database.
@@ -75,9 +76,12 @@ def _rate(page, seconds):
 
 
 def _full_script(page):
+    """Full script open at its first line, with auto-scroll switched on (it starts off)."""
     page.click("#scriptTab")
     page.wait_for_function("() => document.getElementById('reader').classList.contains('script')")
     page.evaluate("() => { document.getElementById('reader').scrollTop = 0; }")
+    if page.get_attribute("#scrollToggle", "aria-pressed") != "true":
+        page.click("#scrollToggle")
 
 
 def test_full_script_scrolls_by_itself_at_the_speed_shown(long_script, studio):  # noqa: F811
@@ -88,8 +92,8 @@ def test_full_script_scrolls_by_itself_at_the_speed_shown(long_script, studio): 
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         _full_script(page)
+        assert page.get_attribute("#scrollToggle", "aria-pressed") == "true"
         assert page.locator("#scrollSpeedValue").inner_text().strip() == "130"
-        assert page.get_attribute("#scrollToggle", "aria-pressed") == "true", "Full script starts with auto-scroll on"
         # Nothing moves before Record: he reads the opening to himself first.
         assert _rate(page, 1.0) == 0
         _record(page, LEAD_S + 0.6)
@@ -177,28 +181,31 @@ def test_speed_plus_is_faster_and_the_end_of_the_text_stops_it(long_script, stud
     assert not errors, errors
 
 
-def test_points_start_with_auto_scroll_off_and_each_tab_keeps_its_own_switch(long_script, studio):  # noqa: F811
-    """Points are glanced at, and Ziv jumps by number there; Full script is read word for word."""
+def test_auto_scroll_starts_off_in_both_tabs_and_each_tab_keeps_its_own_switch(long_script, studio):  # noqa: F811
+    """Off until he turns it on (Ziv, 28-Oct). Turned on for one tab, the other stays as it was:
+    Points are glanced at and jumped by number, Full script is read word for word."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pw:
         browser, context, page = _studio_page(pw, studio["base"], LANDSCAPE_CAMERA)
         assert page.get_attribute("#scrollToggle", "aria-pressed") == "false", "Points start with auto-scroll off"
         assert page.locator("#scrollSpeed").is_hidden(), "the speed shows only while auto-scroll is on"
+        page.click("#scriptTab")
+        assert page.get_attribute("#scrollToggle", "aria-pressed") == "false", "Full script starts with auto-scroll off"
+        page.click("#pointsTab")
         _record(page, LEAD_S + 0.6)
-        assert _rate(page, 1.0) == 0, "Points moved by themselves"
-        # Switched on in Points: it moves, and Full script keeps its own (on) switch.
+        assert _rate(page, 1.0) == 0, "the words moved by themselves with auto-scroll off"
+        # Switched on in Points mid-take: they move, and Full script keeps its own (off) switch.
         page.click("#scrollToggle")
         page.wait_for_timeout(int((LEAD_S + 0.4) * 1000))
         assert _rate(page, 1.0) > 2, "switched on mid-take, the points did not move"
         page.click("#scriptTab")
-        assert page.get_attribute("#scrollToggle", "aria-pressed") == "true"
-        page.click("#scrollToggle")
+        assert page.get_attribute("#scrollToggle", "aria-pressed") == "false", "Full script took the Points switch"
         page.click("#pointsTab")
         assert page.get_attribute("#scrollToggle", "aria-pressed") == "true", "Points forgot its own switch"
         assert page.evaluate(
             "() => [localStorage.getItem('tce-autoscroll-points'), localStorage.getItem('tce-autoscroll-script')]"
-        ) == ["1", "0"]
+        ) == ["1", None]
         context.close()
         browser.close()
 
@@ -275,15 +282,16 @@ def test_the_auto_scroll_controls_speak_hebrew_on_a_hebrew_page(server):  # noqa
         page.wait_for_selector("#studioView:not([hidden])")
         page.click("#scriptTab")
         page.wait_for_selector("#scrollToggle")
-        rail = page.evaluate(RAIL_JS)
         latin = re.compile(r"[A-Za-z]{3,}")
-        for name in ("toggle", "toggleTitle", "faster", "slower"):
-            assert rail[name] and not latin.search(rail[name]), rail
-        assert not [text for text in rail["visible"] if latin.search(text)], rail
-        # Switching it says what it did, in Hebrew.
+        # Switching it on says what it did, in Hebrew, and shows the speed under it.
         page.click("#scrollToggle")
         page.wait_for_selector("#notice:not([hidden])")
         notice = page.locator("#notice").inner_text()
         assert notice and not latin.search(notice), notice
+        page.wait_for_selector("#scrollSpeed:not([hidden])")
+        rail = page.evaluate(RAIL_JS)
+        for name in ("toggle", "toggleTitle", "faster", "slower"):
+            assert rail[name] and not latin.search(rail[name]), rail
+        assert rail["visible"] and not [text for text in rail["visible"] if latin.search(text)], rail
         context.close()
         browser.close()

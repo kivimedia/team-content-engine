@@ -1725,9 +1725,10 @@ function rebindIdeas(ideas, next) {
      Stop ends it and the end of the text is the end. A finger or a wheel on the
      words holds them until three seconds after it lifts; a point number moves them
      and they carry on from there, and the number lit on the rail follows the words.
-     The switch is per tab (Full script is read word for word, Points are glanced
-     at) and, with the speed, remembered on this phone. */
-  const AUTO_SCROLL_DEFAULT = { points: false, script: true };
+     Off until he turns it on (Ziv, 28-Oct). One switch per tab, so turning it on
+     for the Full script he reads word for word leaves the Points he jumps between
+     by number still; switch and speed are remembered on this phone. */
+  const AUTO_SCROLL_DEFAULT = { points: false, script: false };
   const WPM_DEFAULT = 130;
   const WPM_MIN = 60;
   const WPM_MAX = 250;
