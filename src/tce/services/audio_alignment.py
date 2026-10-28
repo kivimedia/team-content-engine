@@ -78,6 +78,21 @@ def _token(word: str) -> str:
     return (word or "").lower().strip(_EDGE_PUNCTUATION + " ")
 
 
+# Symbols a reader says out loud ("salt & pepper"). Any other token with no
+# letter or digit is a mark nobody says, like the " - " house style puts
+# between words, and no engine writes it as a word.
+_SPOKEN_SYMBOLS = frozenset("&+=@#%$×")
+
+
+def spoken_words(text: str) -> list[str]:
+    """The words a reader says for a script line, lowercased, in order."""
+    return [
+        token
+        for token in (text or "").lower().split()
+        if any(ch.isalnum() or ch in _SPOKEN_SYMBOLS for ch in token)
+    ]
+
+
 def estimate_duration(text: str) -> float:
     """Estimate speaking duration in seconds from word count."""
     words = len(text.split())
@@ -239,7 +254,8 @@ class AudioAlignmentService:
         total_words = len(whisper_words)
 
         for seg in segments:
-            narrator_words = seg.get("narratorText", "").lower().split()
+            # Count only what is said, or a dash ends the line one word late.
+            narrator_words = spoken_words(seg.get("narratorText", ""))
             if not narrator_words:
                 # Empty segment - assign a short window
                 if word_idx < total_words:

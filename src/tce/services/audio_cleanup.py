@@ -13,10 +13,20 @@ from typing import Any
 
 import structlog
 
+from tce.services.audio_alignment import spoken_words
+
 logger = structlog.get_logger()
 
-# Common filler words to detect and remove
+# Common filler words to detect and remove. Where the script itself says one
+# ("tools like Claude") it is part of the line and stays.
 FILLER_WORDS = {"um", "uh", "umm", "uhh", "hmm", "hm", "ah", "er", "erm", "like"}
+
+# Edge punctuation the script and the engines write differently.
+_EDGE_PUNCTUATION = ".,!?;:\"'()[]“”‘’…"
+
+
+def _word_key(word: str) -> str:
+    return (word or "").strip().lower().replace("’", "'").strip(_EDGE_PUNCTUATION)
 
 # Silence threshold in seconds - gaps longer than this get tightened
 SILENCE_MAX_SEC = 0.5
@@ -50,7 +60,7 @@ class AudioCleanupService:
             return audio_path, segments
 
         # Step 1: Find filler word intervals
-        filler_intervals = self._find_filler_intervals(words)
+        filler_intervals = self._find_filler_intervals(words, segments)
         logger.info("audio_cleanup.fillers_found", count=len(filler_intervals))
 
         # Step 2: Find best takes if duplicates exist
@@ -83,18 +93,53 @@ class AudioCleanupService:
 
         return str(output_path), segments
 
-    def _find_filler_intervals(self, words: list[dict]) -> list[tuple[float, float]]:
-        """Find time intervals of filler words (um, uh, etc.)."""
+    def _find_filler_intervals(
+        self, words: list[dict], segments: list[dict[str, Any]] | None = None
+    ) -> list[tuple[float, float]]:
+        """Find time intervals of filler words (um, uh, etc.).
+
+        With the script's segments, a filler word the script itself says next
+        to the same word belongs to the line and is kept; only the ones the
+        reader added are cut.
+        """
+        scripted = self._script_word_pairs(segments or [])
+        keys = [_word_key(w.get("word") or w.get("text", "")) for w in words]
         intervals = []
-        for w in words:
+        for i, w in enumerate(words):
             text = (w.get("word") or w.get("text", "")).strip().lower().rstrip(".,!?")
             if text in FILLER_WORDS:
+                if scripted and self._said_by_script(keys, i, scripted):
+                    continue
                 start = w.get("start", 0)
                 end = w.get("end", start)
                 if end > start:
                     # Add small padding to avoid click artifacts
                     intervals.append((max(0, start - 0.02), end + 0.02))
         return intervals
+
+    @staticmethod
+    def _script_word_pairs(segments: list[dict[str, Any]]) -> set[tuple[str, str]]:
+        """Every two words the script says one after the other, across lines too."""
+        keys = [
+            key
+            for seg in segments
+            for key in map(_word_key, spoken_words(seg.get("narratorText", "")))
+            if key
+        ]
+        return set(zip(keys, keys[1:]))
+
+    @staticmethod
+    def _said_by_script(
+        keys: list[str], i: int, scripted: set[tuple[str, str]]
+    ) -> bool:
+        """Whether the script says word i right after the word the reader said
+        before it, or right before the one after it. Other fillers in between
+        are passed over, so "tools um like Claude" still finds "tools like"."""
+        before = next(
+            (k for k in reversed(keys[:i]) if k and k not in FILLER_WORDS), None
+        )
+        after = next((k for k in keys[i + 1 :] if k and k not in FILLER_WORDS), None)
+        return (before, keys[i]) in scripted or (keys[i], after) in scripted
 
     def _find_bad_takes(
         self, words: list[dict], segments: list[dict[str, Any]]
