@@ -79,6 +79,36 @@ _LANE_RULES = {
         "rep can use this week. Opinions and lessons only. Never a story about a client or a "
         "call she had: you do not know her memories."
     ),
+    # 28-Oct: the fire_performer profile (Brant). His slot and his checks come from the
+    # profile (lane_profile.FIRE_PERFORMER).
+    "sacred_flame": (
+        "THIS IDEA'S LANE: sacred_flame. A real myth, ritual or moment in the history of fire "
+        "(the page in the evidence). Tell it simply, the way he would tell it to a crowd before "
+        "he lights up, using only what the page says, then his take as a fire performer of 30 "
+        "years: what that story means to someone who works with fire every week. Never add a "
+        "date, a number or a detail the page does not give. Respect every culture and faith in "
+        "it: never mock a ritual."
+    ),
+    "keeper_of_flame": (
+        "THIS IDEA'S LANE: keeper_of_flame. A moment from his 30 years as a fire performer that "
+        "HE will tell from his OWN memory. You do not know what happened, so you never write it. "
+        "Write the frame around his story instead: a line that opens the moment, short prompts "
+        "that help him remember (where he was, what the fire did, what the crowd did, what he "
+        "learned), one line that is exactly [your story here] where his real story goes, and a "
+        "closing thought phrased as a general truth about fire or performing, never as an event. "
+        "Never a first-person past tense sentence (no 'I once', 'I remember'), no invented "
+        "shows, crowds or numbers. interviewer_prompt is the one memory question he answers on "
+        "camera."
+    ),
+    "taming_fire": (
+        "THIS IDEA'S LANE: taming_fire. A real record, stunt or feat of danger mastery in the "
+        "news and his take on it as a Guinness World Record holder (101 torches extinguished by "
+        "fire eating in one minute). Say what happened in one plain line, using only what the "
+        "news item says, then his take: the control, the preparation and the respect for danger "
+        "behind it. Where his own record day would compare, put one line that is exactly "
+        "[your story here]; never write what that day was like for him. Never a story about a "
+        "show he did: you do not know his memories."
+    ),
 }
 
 _HOOK_RULE = (

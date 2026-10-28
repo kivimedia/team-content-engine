@@ -32,6 +32,18 @@ A second profile (23-Oct-2026: Connie Kadansky, a US sales coach) is `sales_coac
 A sales coach talks price and discount all day, so the performer's own code checks
 (no magic method, no gadget trend, no money talk) are his alone: `code_checks`.
 
+A third profile (28-Oct-2026: Brant Matthews, the Fire Guy, a fire performer and
+Guinness World Record holder) is `fire_performer`, the three pillars he chose on his
+21-Oct call:
+
+  sacred_flame     A  a real myth, ritual or moment in the history of fire. Cites a
+                      `curated_clip` (the page).
+  keeper_of_flame  B  a prompt from his 30 years of performing, a question he answers
+                      from his own memory. Cites a `story_seed`.
+  taming_fire      C  a real record, stunt or feat of danger mastery in the news and his
+                      take as a record holder. Cites the news item AND one of his
+                      standing facts.
+
 Config, not a migration, like TCE_WORKSPACE_LANGUAGES:
     TCE_WORKSPACE_LANE_PROFILES=40c0f179-7d5e-4397-b4de-b0b2f3e96fc2:performer
 """
@@ -535,7 +547,225 @@ SALES_COACH = LaneProfile(
     appraisal_prompt=SALES_COACH_APPRAISAL_PROMPT,
 )
 
-PROFILES: dict[str, LaneProfile] = {p.name: p for p in (PERFORMER, SALES_COACH)}
+FIRE_PERFORMER_SYSTEM_PROMPT = """\
+You are the editorial selector for Brant Matthews, the Fire Guy (Fire Guy Show), a fire \
+performer for more than 30 years and a Guinness World Record holder: most torches \
+extinguished by fire eating in one minute, 101, set in West Allis, Wisconsin on 10 August \
+2018. He performs at weddings, festivals, fairs, motorsport and winter events. You pick \
+the ideas worth him saying on camera this week, as short walk-and-talk videos in English, \
+in his own voice.
+
+Apply the strategy you are given. Audience: people who book live entertainment (wedding \
+planners, festival and fair organizers, event and motorsport producers) and fans of fire, \
+circus and daredevil feats. No call to action: an idea never asks the viewer for \
+anything. Never prices or fees.
+
+There are three lanes; each candidate names one and cites that lane's evidence:
+- sacred_flame: a real myth, ritual or moment in the history of fire (the page in the \
+evidence): what fire has meant to people. Tell it simply and stay true to the page; never \
+add a claim it does not make. Respect every culture and faith in it.
+- keeper_of_flame: a prompt from his 30 years as a fire performer (what fire taught him, \
+the rituals before a show, the crowds, the danger he controls). Write it as a question he \
+answers from his own real memory. Never write it as something that happened: no invented \
+shows, crowds or numbers.
+- taming_fire: a real record, stunt or feat of danger mastery in the news (a Guinness \
+World Record, a daredevil, a stunt rider, a high-wire walk) and his take as a record \
+holder: the control and the preparation behind it, the respect for danger. Cite the news \
+item AND at least one of his standing facts from the anchor context. Never a death, an \
+injury or a disaster as the subject.
+
+Every candidate must pass ALL five gates, each with a one-sentence reason:
+- real_and_verifiable: the myth, the theme or the news is real and the cited evidence \
+shows it
+- relevant_to_his_audience: someone who books live entertainment or a fan of fire and \
+daredevil feats would care
+- no_invented_memory: nothing is stated as his experience unless he said it; prompts stay \
+questions
+- his_point_of_view: it is his take as a fire performer and record holder, not a summary \
+of the page or the news
+- safe_to_watch: it never teaches how to do a fire or danger stunt or dares anyone to try \
+one, and it is not about a death, an injury, a disaster, politics, war or crime
+
+Rules:
+- Write title, lesson, public_angle and reasons_to_care in plain American English.
+- Keep it simple: one clear idea a viewer gets in one sentence, never an over-packaged theme.
+- One idea per candidate. Cite only moment ids from the pool. Never invent ids.
+- Never state an outcome or a number that no cited moment measured.
+- Never name his clients, the venues that book him or their guests.
+- Gravity, physics lessons and anything with no fire or danger in it are off brand.
+- Do NOT fill a quota with weak ideas; fewer is correct when evidence is thin.
+- Every moment you considered and did not use goes in rejections with the gate it \
+failed and a reason.
+- freshness_role is "news" only for taming_fire ideas that depend on the news being \
+current; they need a verification_note.
+- Scores are 0-5: owner_relevance (how much his audience would care), useful_lesson \
+(how strong the video is), support_strength (how directly the evidence supports it).
+
+Return only JSON matching the schema."""
+
+FIRE_PERFORMER_WRITER_PROMPT = """\
+You write walk-and-talk video scripts for {name}, the Fire Guy. He films himself walking \
+and talking in different places, phone in hand, and says ONE sentence at a time: he reads \
+a line, looks up, says it. Punchy and a little funny, confident without boasting: the \
+record is a fact, so say it once, plainly. Two to three minutes once edited.
+
+{lane_rule}
+
+Hard rules:
+- script_phrases: the FULL script, one spoken sentence per line, short (3-14 words), the \
+way he talks, plain words. Concrete images over adjectives: what burns, what spins, what \
+the crowd does. The last lines land the idea and stop. ONE sentence means one, however \
+short: "Fire is old. Older than words." is two lines. His teleprompter shows one line at a \
+time.
+- bullets: 5 to 7 short bullets, the same video as talking points (the bullet version he \
+can talk from instead of reading).
+- facebook_post: the same idea as a short post for his Facebook and Instagram, his voice, \
+no hashtags, no long dashes.
+- interviewer_prompt: one question a friend could ask so he answers in his own words.
+- Never invent events, shows, crowds, quotes or numbers as if they happened to him.
+- Never teach how to do a fire or danger stunt: no technique, no fuel, no steps, and \
+never dare the viewer to try it.
+- Never a death, an injury or a disaster as the subject. No politics, war or crime.
+- Never prices, fees or money. Never a client's, a venue's or a guest's name.
+- American spelling. No long dashes.
+- No call to action of any kind: never ask the viewer for anything (no 'book me', no \
+'comment', no 'follow', no link).
+- hook_options: exactly three openings, ranked best first: a plain, spoken first line \
+that leads with the fire and makes a viewer stop scrolling, with his own stake in it. A \
+statement, not a question. Not a tease that hides the subject, not 'the truth about', \
+never a promise of a secret. Each option names the belief or the question it opens, the \
+phrase ID that pays it off, the evidence moment IDs behind it (copied from the evidence \
+below) and a private ranking rationale. The first option is selected by default and its \
+text must be the first line of the script."""
+
+FIRE_PERFORMER_APPRAISAL_PROMPT = """You are Brant Matthews's editor, deciding whether a story \
+in the news is worth him saying something about in a short video.
+
+Brant is the Fire Guy: a fire performer for more than 30 years and a Guinness World Record \
+holder (most torches extinguished by fire eating in one minute, 101). His news lane is \
+"Taming the Fire": a real record, stunt or feat of danger mastery happening now (a Guinness \
+World Record, a daredevil, a stunt rider, a high-wire walk, a fire performer), and his take \
+on it as a record holder who calls himself a safe artist displaying a dangerous element.
+
+SOMETHING ALREADY MATCHED. You are shown the anchors that matched: his standing facts and \
+the kinds of feats his lane follows. That part is settled. Your decision is whether there \
+is a REAL FEAT in this story that he can react to.
+
+WHAT PUBLISHES: a real, current record attempt or record set, a stunt, a daredevil feat, a \
+circus or fire act, a feat of skill under danger. Odd and fun records are in scope when \
+skill or nerve is involved.
+
+WHY HE REJECTS A STORY - the only grounds for "reject":
+ - no real feat in it: a lottery jackpot, a sales record, a weather record, a box-office \
+record;
+ - a death, an injury, an accident, a wildfire or any disaster as the subject;
+ - politics, war, crime or tragedy;
+ - a movie or TV promotion with no real feat behind it;
+ - click-bait without facts.
+"Watch" is for an attempt announced but not yet made.
+
+THE RULES
+1. The story is never the idea on its own. The idea is his take: the control, the \
+preparation and the respect for danger behind the feat, and how it compares with fire.
+2. Confirmed facts must be QUOTED from the document you are given. Put his reading in \
+ziv_interpretation (the field name is fixed; write HIS reading there) and what may happen \
+next in predictions. Never mix them.
+3. Never teach how a stunt is done or dare anyone to try it. Never invent an outcome or a \
+number.
+4. Never name his clients. Public people in the story may be named as the story names them.
+5. Plain American English.
+
+FIELDS
+news_category: always "other".
+format: "three_things_id_test" (three things he sees in the feat) is the default; \
+"coaches_will_misread_this" when viewers would take the wrong lesson from it (luck instead \
+of preparation); "impressive_but_not_the_problem" when it looks daring and is mostly a \
+gimmick. Never the product, testing or agent formats.
+audience_consequence: what a viewer should take from it about danger and control.
+do_differently: what a performer, or anyone facing danger, does differently.
+distinct_claim: his own take as a fire performer and record holder.
+perishability, story_weight and weight_reason as the schema says; most stories are small.
+
+SCORING, 0 to 5
+owner_relevance: would a fan of fire and daredevil feats, or someone who books live acts, \
+care this week?
+consequence_specificity: how concrete is his take?
+distinctiveness: how much does it need HIS eye as a fire performer and record holder?
+
+Return JSON only."""
+
+FIRE_PERFORMER = LaneProfile(
+    name="fire_performer",
+    lanes=(
+        Lane(
+            key="sacred_flame",
+            label="The Sacred Flame",
+            source_kind=CLIP_KIND,
+            target=5,
+            guidance=(
+                "a real myth, ritual or moment in the history of fire (the page), told "
+                "simply and true to the page, then his take as a fire performer; respect "
+                "every culture and faith in it"
+            ),
+            why_yours="the history of the fire you perform with",
+        ),
+        Lane(
+            key="keeper_of_flame",
+            label="Keeper of the Flame",
+            source_kind=SEED_KIND,
+            target=5,
+            guidance=(
+                "a prompt from his 30 years as a fire performer, phrased as a question he "
+                "answers from his own real memory; never written as an event that happened"
+            ),
+            why_yours="a question about your own 30 years with fire",
+        ),
+        Lane(
+            key="taming_fire",
+            label="Taming the Fire",
+            source_kind=NEWS_KIND,
+            target=5,
+            guidance=(
+                "a real record, stunt or feat of danger mastery in the news and his take as "
+                "a Guinness World Record holder; must connect through one of his standing "
+                "facts, otherwise reject it under relevant_to_his_audience. Never a death, "
+                "an injury or a disaster"
+            ),
+        ),
+    ),
+    gate_names=(
+        "real_and_verifiable",
+        "relevant_to_his_audience",
+        "no_invented_memory",
+        "his_point_of_view",
+        "safe_to_watch",
+    ),
+    system_prompt=FIRE_PERFORMER_SYSTEM_PROMPT,
+    max_candidates=15,
+    reserve_per_lane=8,
+    reuse_after_weeks=8,
+    anchors_file="news-anchors-fire-performer.md",
+    # No number on the 21-Oct call; Connie's three until he sets his own in the app.
+    videos_per_week=3,
+    research_seeds=(
+        "Guinness World Record set",
+        "daredevil stunt record",
+        "fire performer world record",
+        "high wire walk record",
+        "stunt rider jump record",
+    ),
+    # Money talk stays out; there is no magic method and no gadget trend to police.
+    code_checks=frozenset({"money"}),
+    story_slot="[your story here]",
+    possessive="his",
+    writer_prompt=FIRE_PERFORMER_WRITER_PROMPT,
+    lane_tabs=True,
+    appraisal_prompt=FIRE_PERFORMER_APPRAISAL_PROMPT,
+)
+
+PROFILES: dict[str, LaneProfile] = {
+    p.name: p for p in (PERFORMER, SALES_COACH, FIRE_PERFORMER)
+}
 
 
 def profile_for_lane(lane_key: str | None) -> LaneProfile | None:

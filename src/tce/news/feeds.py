@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 from xml.etree import ElementTree
 
 import httpx
@@ -142,6 +142,25 @@ def _parse_date(value: str | None) -> datetime | None:
     return None
 
 
+def unwrap_click_tracker(link: str) -> str:
+    """The article behind a news-search feed's click tracker, else the link as it is.
+
+    28-Oct (Brant's record lane): a Bing News RSS item links through
+    bing.com/news/apiclick.aspx, a page that answers 200 itself and carries a new
+    tracking id on every fetch. The article is its `url` parameter, so that is what
+    gets verified, cited and deduplicated.
+    """
+    parts = urlsplit(link)
+    host = (parts.hostname or "").lower()
+    if (host == "bing.com" or host.endswith(".bing.com")) and parts.path.lower().endswith(
+        "/apiclick.aspx"
+    ):
+        target = (parse_qs(parts.query).get("url") or [""])[0]
+        if target.startswith(("https://", "http://")):
+            return target
+    return link
+
+
 def parse_atom_or_rss(body: str) -> list[ParsedItem]:
     """One parser for both, because the difference is only tag names."""
     try:
@@ -179,8 +198,8 @@ def parse_atom_or_rss(body: str) -> list[ParsedItem]:
 
     for entry in root.findall(".//item"):
         title = (entry.findtext("title") or "").strip()
-        link = (entry.findtext("link") or "").strip()
-        guid = (entry.findtext("guid") or link or title).strip()
+        link = unwrap_click_tracker((entry.findtext("link") or "").strip())
+        guid = (unwrap_click_tracker((entry.findtext("guid") or "").strip()) or link or title).strip()
         summary = entry.findtext("description") or ""
         when = _parse_date(entry.findtext("pubDate"))
         if title or link:

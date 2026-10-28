@@ -43,22 +43,29 @@ OWNER_KINDS = ("any", "news", "coaching", "build")
 # web like news; clips and seeds are his curated, evergreen evidence.
 # 23-Oct: the sales_coach workspace (Connie) asks by her lanes the same way: news on
 # the web, her published teaching pages and her practice-room prompts as evergreen.
+# 28-Oct: the fire_performer workspace (Brant) the same way: records and stunts in the
+# news, fire history pages and his own story prompts as evergreen.
 LANE_KINDS = ("trend_reaction", "magic_clip", "behind_scenes",
-              "in_the_wild", "from_teaching", "practice_room")
+              "in_the_wild", "from_teaching", "practice_room",
+              "taming_fire", "sacred_flame", "keeper_of_flame")
 KINDS = OWNER_KINDS + LANE_KINDS
 KIND_LABEL = {"any": "", "news": "news", "coaching": "coaching", "build": "build",
               "trend_reaction": "trend", "magic_clip": "clip", "behind_scenes": "story",
               "in_the_wild": "negotiation", "from_teaching": "teaching",
-              "practice_room": "practice"}
+              "practice_room": "practice", "taming_fire": "record",
+              "sacred_flame": "fire history", "keeper_of_flame": "story"}
 KIND_SOURCES = {"coaching": ("fathom_meeting",), "build": ("github_commit_group",),
                 "magic_clip": ("curated_clip",), "behind_scenes": ("story_seed",),
-                "from_teaching": ("curated_clip",), "practice_room": ("story_seed",)}
+                "from_teaching": ("curated_clip",), "practice_room": ("story_seed",),
+                "sacred_flame": ("curated_clip",), "keeper_of_flame": ("story_seed",)}
 KIND_WHERE = {"coaching": "calls", "build": "commits", "magic_clip": "clips",
               "behind_scenes": "story seeds", "from_teaching": "teaching pages",
-              "practice_room": "practice prompts"}
-EVERGREEN_KINDS = ("magic_clip", "behind_scenes", "from_teaching", "practice_room")
+              "practice_room": "practice prompts", "sacred_flame": "fire history pages",
+              "keeper_of_flame": "story prompts"}
+EVERGREEN_KINDS = ("magic_clip", "behind_scenes", "from_teaching", "practice_room",
+                   "sacred_flame", "keeper_of_flame")
 # A lane workspace's "news" is its news lane.
-NEWS_LANES = ("trend_reaction", "in_the_wild")
+NEWS_LANES = ("trend_reaction", "in_the_wild", "taming_fire")
 
 
 def kinds_for(ws: uuid.UUID | str | None) -> tuple[str, ...]:

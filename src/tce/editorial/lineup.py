@@ -68,6 +68,10 @@ LANE_LABELS = {
     "from_teaching": "From your teaching",
     "practice_room": "From the practice room",
     "in_the_wild": "Negotiation in the wild",
+    # The fire_performer profile's lanes (Brant, 28-Oct), the pillar names he chose.
+    "sacred_flame": "The Sacred Flame",
+    "keeper_of_flame": "Keeper of the Flame",
+    "taming_fire": "Taming the Fire",
 }
 
 
