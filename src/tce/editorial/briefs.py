@@ -131,6 +131,9 @@ def _why_this_is_yours(candidate: TopicCandidate) -> str:
     from tce.db.workspace_filter import workspace_language
 
     he = workspace_language(getattr(candidate, "workspace_id", None)) == "he"
+    from tce.editorial import lane_profile
+
+    profile = lane_profile.profile_for(getattr(candidate, "workspace_id", None))
     parts: list[str] = []
     if calls:
         if he:
@@ -147,6 +150,9 @@ def _why_this_is_yours(candidate: TopicCandidate) -> str:
     if standing:
         if he:
             parts.append("העבודה שלך")
+        elif profile is not None and profile.standing_why:
+            # 28-Oct: Brant's record news read "touches the work you run for clients".
+            parts.append(profile.standing_why)
         else:
             parts.append(
                 "the work you run for clients" if standing == 1 else "work you run for clients"
@@ -159,9 +165,6 @@ def _why_this_is_yours(candidate: TopicCandidate) -> str:
     # 23-Oct: a lane workspace's own evidence (Connie's teaching pages and practice
     # prompts) counts when its lane names it; without this every idea from those
     # lanes came back with an empty sentence and stayed out of Topics.
-    from tce.editorial import lane_profile
-
-    profile = lane_profile.profile_for(getattr(candidate, "workspace_id", None))
     for lane in profile.lanes if profile is not None else ():
         if lane.why_yours and lane.source_kind in kinds and lane.why_yours not in parts:
             parts.append(lane.why_yours)

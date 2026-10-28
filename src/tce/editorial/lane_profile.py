@@ -116,6 +116,9 @@ class LaneProfile:
     # The news appraisal's system prompt for this workspace (same output schema as
     # tce.news.appraise). None = the shared one, which is written as Ziv's editor.
     appraisal_prompt: str | None = None
+    # How a Topics card names a standing fact in "why this is yours". None = the
+    # owner's "the work you run for clients", which read as an agency on a performer's card.
+    standing_why: str | None = None
 
     @property
     def weekly_target(self) -> int:
@@ -761,6 +764,7 @@ FIRE_PERFORMER = LaneProfile(
     writer_prompt=FIRE_PERFORMER_WRITER_PROMPT,
     lane_tabs=True,
     appraisal_prompt=FIRE_PERFORMER_APPRAISAL_PROMPT,
+    standing_why="your own work with fire",
 )
 
 PROFILES: dict[str, LaneProfile] = {

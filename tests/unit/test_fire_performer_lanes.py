@@ -167,6 +167,27 @@ def test_his_lane_ideas_reach_topics(lanes):
     assert keeper["why_this_is_yours"] == "It came out of a question about your own 30 years with fire."
 
 
+def test_his_news_card_names_his_fire_not_client_work(lanes):
+    from types import SimpleNamespace
+
+    from tce.editorial import briefs
+
+    def news_idea(ws):
+        return SimpleNamespace(
+            workspace_id=ws, title="t", audience="both", lesson="l", public_angle="a",
+            freshness_role="news", reasons_to_care=[], public_safety_notes="",
+            citations_private=[
+                {"source_kind": "news_item", "source_title": "Rider sets world record on water"},
+                {"source_kind": "standing_fact"},
+            ],
+        )
+
+    his = briefs.seed_brief(news_idea(BRANT))["why_this_is_yours"]
+    assert his == "Rider sets world record on water touches your own work with fire."
+    connie = briefs.seed_brief(news_idea(CONNIE))["why_this_is_yours"]
+    assert connie == "Rider sets world record on water touches the work you run for clients."
+
+
 def test_his_news_has_his_own_editor(lanes):
     from tce.news import appraise
     from tce.news.appraise import AppraisalInput
