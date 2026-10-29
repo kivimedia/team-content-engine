@@ -66,6 +66,7 @@ from tce.production import (
     tightcut,
     wordbox,
 )
+from tce.production import laughs as laugh_rules
 from tce.production import rules as rule_text
 from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
@@ -858,6 +859,7 @@ async def plan_edit_route(
         raise HTTPException(
             status_code=409, detail="No transcript yet. Transcribe the recording first."
         )
+    await laugh_rules.find_laughs(row.storage_path, media.ffmpeg_path(), row.duration_s)
     await _compute_plan(db, ws, row, pause_threshold_s=body.pause_threshold_s)
     await db.commit()
     await db.refresh(row)
@@ -938,6 +940,35 @@ async def _speech_activity(path: str | Path | None) -> tightcut.Activity | None:
     return tightcut.find_activity(levels) if levels else None
 
 
+async def _find_laughs(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
+    """Read the recording's laughs once (29-Oct, Connie), outside any database session:
+    on a long walk the detector takes about as long as the walk. The plan then reads the
+    answer from beside the recording (_compute_plan). Never stops an edit."""
+    if not laugh_rules.configured():
+        return
+    try:
+        async with session_factory()() as s:
+            row = await _load(s, upload_id, ws)
+            path, duration = row.storage_path, row.duration_s
+        await laugh_rules.find_laughs(path, media.ffmpeg_path(), duration)
+    except Exception:  # noqa: BLE001 - the cut goes on without laughs
+        import structlog
+
+        structlog.get_logger().warning("production.laughs_unavailable", upload=str(upload_id), exc_info=True)
+
+
+# Laugh reads started ahead of the plan (auto_edit), held so they are not collected mid-run.
+_laugh_reads: set[asyncio.Task[None]] = set()
+
+
+def _start_laughs(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
+    if not laugh_rules.configured():
+        return
+    task = asyncio.create_task(_find_laughs(upload_id, ws))
+    _laugh_reads.add(task)
+    task.add_done_callback(_laugh_reads.discard)
+
+
 async def talk_voices(
     row: RecordingUpload, words: list[dict[str, Any]] | None = None
 ) -> agent_talks.Voices | None:
@@ -983,6 +1014,8 @@ async def _compute_plan(
     voices = await talk_voices(row)
     # 5-Oct: a client workspace's own asides, never the owner's dogs.
     names = aside_names(await _persona(ws, db))
+    # 29-Oct: laughs the detector found (read ahead by _find_laughs); none = the cut as before.
+    laughs = laugh_rules.cached(row.storage_path) if word_level and laugh_rules.configured() else None
     # A long walk takes a second or more to plan: off the event loop.
     plan = await asyncio.to_thread(
         plan_edit,
@@ -996,6 +1029,7 @@ async def _compute_plan(
         aside_names=names,
         protected=voices.agent_words if voices is not None else (),
         language=workspace_language(ws),
+        laughs=laughs,
     )
     if voices is not None:
         plan["voices"] = {
@@ -2534,6 +2568,7 @@ async def _plan_and_render_locked(
     back, so the card, the subtitles and the posts keep describing the video that
     exists. Only a blocked review is kept as "blocked" on the plan: marking the review
     blocked for someone else's change would stop its cuts from being used (30-Sep)."""
+    await _find_laughs(upload_id, ws)  # instant once read (auto_edit starts it early)
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
         await _compute_plan(s, ws, row)
@@ -3237,6 +3272,9 @@ async def auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             )
             if row.status != "transcribed":
                 return  # failed / unavailable: the row already says why
+        # 29-Oct: the laugh detector reads the recording while the second listen and the
+        # review run, so the plan finds the answer waiting.
+        _start_laughs(upload_id, ws)
         await _second_listen(upload_id, ws)
         review_state = await _review(upload_id, ws, wait_timeout_s=REVIEW_FIRST_WAIT_S)
         row = await _plan_and_render(upload_id, ws)
@@ -3367,6 +3405,7 @@ async def _request_inputs(request_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any
             "words": list(row.transcript or []),
             "keep": [list(r) for r in (row.edit_plan or {}).get("keep") or []],
             "kept": list((row.edit_plan or {}).get("words") or []),
+            "laughs": laugh_rules.spans(row.edit_plan),
             "denoise": ((row.edit_plan or {}).get("overrides") or {}).get("denoise"),
             "top_caption": ((row.edit_plan or {}).get("overrides") or {}).get("top_caption"),
             "context": await _script_context(s, ws, row),
@@ -3517,7 +3556,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
                 words, keep, got["context"], got["text"], scope=got["scope"], start_s=got["start_s"],
                 end_s=got["end_s"], kept=got["kept"], marks=marks, history=got["history"],
                 speakers=got.get("speakers"), denoise_now=got.get("denoise"),
-                top_caption_now=got.get("top_caption"),
+                top_caption_now=got.get("top_caption"), laughs=got.get("laughs"),
             )
             system = autoedit.edit_request_system(await _persona(ws))
             try:
@@ -3763,6 +3802,7 @@ async def _talk_inputs(session_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any] |
             "words": list(row.transcript or []),
             "keep": keep,
             "kept": kept or [],
+            "laughs": laugh_rules.spans(plan),
             "denoise": (plan.get("overrides") or {}).get("denoise"),
             "top_caption": (plan.get("overrides") or {}).get("top_caption"),
             "plan_moved": bool(watched) and bool(plan_keep) and kept is None,
@@ -4057,7 +4097,7 @@ async def run_talk_session(session_id: uuid.UUID, ws: uuid.UUID) -> None:
                 got["words"], got["keep"], got["context"], got["notes"],
                 kept=got["kept"], marks=marks, history=got["history"], plan_moved=got["plan_moved"],
                 speakers=got.get("speakers"), denoise_now=got.get("denoise"),
-                top_caption_now=got.get("top_caption"),
+                top_caption_now=got.get("top_caption"), laughs=got.get("laughs"),
             )
             system = autoedit.edit_batch_system(await _persona(ws))
             key = talk_key(session_id, prompt, system, got["attempt"])

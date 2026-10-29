@@ -114,6 +114,7 @@ def numbered_transcript(
     span: tuple[int, int] | None = None,
     pins: dict[int, list[int]] | None = None,
     speakers: dict[int, str] | None = None,
+    laughs: list[list[float]] | None = None,
 ) -> str:
     """One sentence a line, every word tagged with its index.
 
@@ -138,9 +139,11 @@ def numbered_transcript(
 
     Quiet the viewer still hears between two kept words, a second or more, is written
     `/quiet 4.9s/` after the first (19-Oct): the editor could not see the pauses he asked
-    it to take out.
+    it to take out. Where that stretch plays one of `laughs` (29-Oct, [start, end] on the
+    recording) it is written `/laughs 4.9s/`: kept on purpose, not dead air to trim.
     """
     quiet = _quiet_after(words, keep, kept) if keep is not None else {}
+    laughing = _laughs_after(words, keep, kept, laughs) if keep is not None and laughs else set()
     timed = {int(w["index"]): float(w["start"]) for w in kept or [] if "index" in w}
     lines: list[str] = []
     cur: list[str] = []
@@ -185,7 +188,7 @@ def numbered_transcript(
             if i in pins:
                 token = token + " " + " ".join(f"<note {n}>" for n in pins[i])
         if i in quiet:
-            token = f"{token} /quiet {quiet[i]:.1f}s/"
+            token = f"{token} /{'laughs' if i in laughing else 'quiet'} {quiet[i]:.1f}s/"
         cur.append(token)
         if str(w["text"])[-1:] in ".?!" or len(cur) >= 24:
             lines.append(stamp + " ".join(cur))
@@ -232,6 +235,28 @@ def _quiet_after(
         gap = _played(min(end, start + WORD_OWNS_S), spans[j][0], keep)
         if gap >= QUIET_SHOWN_S:
             out[i] = round(gap, 1)
+    return out
+
+
+LAUGH_SHOWN_S = 0.2  # a laugh playing this long in the stretch after a word names it
+
+
+def _laughs_after(
+    words: list[dict[str, Any]],
+    keep: list[list[float]],
+    kept: list[dict[str, Any]] | None,
+    laughs: list[list[float]],
+) -> set[int]:
+    """Kept word indexes whose stretch before the next kept word plays a laugh."""
+    spans = _word_spans(words, keep, kept)
+    out: set[int] = set()
+    for i, (start, end, inside) in enumerate(spans):
+        j = _next_kept(spans, i) if inside else None
+        if j is None:
+            continue
+        a, b = min(end, start + WORD_OWNS_S), spans[j][0]
+        if any(_played(max(a, float(s)), min(b, float(e)), keep) >= LAUGH_SHOWN_S for s, e in laughs):
+            out.add(i)
     return out
 
 
@@ -933,6 +958,7 @@ def edit_request_prompt(
     speakers: dict[int, str] | None = None,
     denoise_now: str | None = None,
     top_caption_now: str | None = None,
+    laughs: list[list[float]] | None = None,
 ) -> str:
     where = ""
     if scope == "timestamp" and start_s is not None and end_s is not None:
@@ -941,8 +967,9 @@ def edit_request_prompt(
         f"{context}\n\n{noise_line(denoise_now)}\n{top_caption_line(top_caption_now)}\n\n"
         f"{_earlier_block(history)}His request now:\n{request.strip()}{where}\n\n"
         f"Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
-        f"/quiet Ns/ is a pause still in the edit):\n"
-        f"{numbered_transcript(words, keep, kept, marks, speakers=speakers)}"
+        f"/quiet Ns/ is a pause still in the edit; /laughs Ns/ is a laugh kept on purpose, "
+        f"cut only when a note asks for that laugh):\n"
+        f"{numbered_transcript(words, keep, kept, marks, speakers=speakers, laughs=laughs)}"
     )
 
 
@@ -1059,6 +1086,7 @@ def edit_batch_prompt(
     speakers: dict[int, str] | None = None,
     denoise_now: str | None = None,
     top_caption_now: str | None = None,
+    laughs: list[list[float]] | None = None,
 ) -> str:
     """Every note of the sitting, numbered in the order he gave them.
 
@@ -1090,8 +1118,9 @@ def edit_batch_prompt(
         f"His notes from this sitting, in the order he gave them:\n" + "\n".join(blocks) + "\n\n"
         + (PLAN_MOVED_LINE + "\n\n" if plan_moved else "")
         + "Transcript (index:word; ~~cut~~ words are not in the edit; /cut Ns/ is a join; "
-        "/quiet Ns/ is a pause still in the edit; <note N> is where the video was when he paused for note N):\n"
-        f"{numbered_transcript(words, keep, kept, marks, pins=pins, speakers=speakers)}"
+        "/quiet Ns/ is a pause still in the edit; /laughs Ns/ is a laugh kept on purpose, cut only "
+        "when a note asks for that laugh; <note N> is where the video was when he paused for note N):\n"
+        f"{numbered_transcript(words, keep, kept, marks, pins=pins, speakers=speakers, laughs=laughs)}"
     )
 
 

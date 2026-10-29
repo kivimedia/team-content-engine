@@ -207,6 +207,11 @@ class Settings(BaseSettings):
     # Empty = transcription shows as unavailable. No paid transcription fallback.
     production_transcribe_ws_url: str = ""
     production_transcribe_language: str = ""  # empty = auto-detect
+    # 29-Oct (Connie: "dont cut out her laughs!"): the laugh detector's own Python and its
+    # model checkout, both built by scripts/setup-laughs.sh. Empty = no laugh check, and
+    # pauses are cut exactly as before.
+    production_laugh_python: str = ""
+    production_laugh_dir: str = ""
     production_pause_threshold_s: float = 1.2
     # 25-Sep: a finished session edits itself and editing requests run themselves,
     # on the subscription worker. Off = the old click-each-step flow.

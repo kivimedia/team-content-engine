@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
+from tce.production import laughs as laugh_rules
 from tce.production.tightcut import (
     Activity,
     apply_holds,
@@ -359,16 +360,19 @@ def plan_edit(
     aside_names: Sequence[str] = (),
     protected: Collection[int] = (),
     language: str = "en",
+    laughs: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     """`protected` (an agent talk, 3-Oct): transcript indices of the agent's words. No
     rule and no review removes them; only his own editing request can. The rules look
     for retakes and asides inside one of his turns at a time, never across the agent's
-    lines. `language` (4-Oct): the workspace's; "en" plans exactly as before."""
+    lines. `language` (4-Oct): the workspace's; "en" plans exactly as before. `laughs`
+    (29-Oct): [start, end, peak] from the laugh detector; one beside kept words stays in
+    the edit (see laughs.keep_laughs). None plans exactly as before."""
     with language_scope(language):
         return _plan_edit(
             timings, script_phrases, pause_threshold_s=pause_threshold_s, pad_s=pad_s,
             duration_s=duration_s, precision=precision, activity=activity, removals=removals,
-            overrides=overrides, aside_names=aside_names, protected=protected,
+            overrides=overrides, aside_names=aside_names, protected=protected, laughs=laughs,
         )
 
 
@@ -385,6 +389,7 @@ def _plan_edit(
     overrides: dict[str, Any] | None,
     aside_names: Sequence[str],
     protected: Collection[int],
+    laughs: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     precision = precision or timing_precision(timings)
     if is_word_level(timings, precision):
@@ -400,6 +405,7 @@ def _plan_edit(
             overrides=overrides,
             aside_names=aside_names,
             protected=frozenset(protected),
+            laughs=laughs,
         )
     coarse = precision == PRECISION_WHOLE_SECOND
     phrases = [sim_tokens(p) for p in (script_phrases or [])]
@@ -930,6 +936,7 @@ def _plan_words(
     overrides: dict[str, Any] | None,
     aside_names: Sequence[str],
     protected: frozenset[int] = frozenset(),
+    laughs: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     rows: list[tuple[int, float, float, str]] = []
     for i, t in enumerate(timings or []):
@@ -1055,6 +1062,19 @@ def _plan_words(
             previous_kept = True
         keep = [[round(s, 3), round(e, 3)] for s, e in keep]
         timed = retime(words_sorted, kept_flags, keep, [])
+    laugh_lines: list[dict[str, Any]] | None = None
+    if laughs is not None:
+        # 29-Oct (Connie): the cut keeps words, and a laugh has none. One beside kept words
+        # goes back in; one over words taken out on purpose, or a cut he asked for, stays
+        # out with them. Holds and trims come after, so "take that out" still wins.
+        removed_spans = [
+            [ws, we]
+            for (i, ws, we, _t), k in zip(rows, kept_flags, strict=True)
+            if not k and reason[i] in laugh_rules.BLOCKING
+        ] + [[float(a), float(b)] for a, b in (overrides or {}).get("cut") or []]
+        keep, laugh_lines = laugh_rules.keep_laughs(keep, laughs, removed_spans, end_bound)
+        if any(x["kept"] and x["why"] != "already in the edit" for x in laugh_lines):
+            timed = retime(words_sorted, kept_flags, keep, activity.regions if activity is not None else [])
     holds = (overrides or {}).get("hold") or []
     if holds:
         keep = apply_holds(keep, holds, end_bound)  # his "give that word more room"
@@ -1066,6 +1086,9 @@ def _plan_words(
         # A kept word whose middle sat in the trimmed air goes with the nearest piece
         # that is left, so it keeps its caption.
         timed = retime(words_sorted, kept_flags, keep, activity.regions if activity is not None else [])
+        for x in laugh_lines or []:
+            if x["kept"] and laugh_rules.played(x["start"], x["end"], keep) < (x["end"] - x["start"]) / 2:
+                x.update(kept=False, why="taken out on request")
     for w in timed:
         w["index"] = rows[w["index"]][0]  # position in `rows` -> index in the transcript
 
@@ -1164,6 +1187,7 @@ def _plan_words(
         "units": units_out,
         "stats": stats,
         "kept_text": kept_text,
+        **({"laughs": laugh_lines} if laugh_lines is not None else {}),
     }
 
 

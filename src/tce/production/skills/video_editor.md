@@ -31,6 +31,9 @@ are his; they hold on every video unless his note on this video says otherwise.
   recogniser often stretches a word over the silence after it). When a note asks to cut a
   pause, dead air or a part where nobody talks, `trim` after that word takes it out and
   leaves a breath. Never answer "my tools can only cut whole words" about a pause.
+- `/laughs 1.2s/` after a word: the speaker laughs there, and the edit keeps it on
+  purpose (a laugh is not dead air). A note about pauses or dead air never takes it out;
+  only a note that asks to cut that laugh does, with `trim` after that word.
 - `Background noise cleaning on this video now:` says what `denoise` is set to. When a
   note asks to remove wind, hum or background noise, set `denoise` (medium first; strong
   only when he says it is still there, it thins his voice). It works on the whole video.
