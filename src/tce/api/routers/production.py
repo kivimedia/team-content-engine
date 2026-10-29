@@ -2799,7 +2799,8 @@ async def _qc_measure(
         qc.skipped("nothing was cut from this one, so its pauses are his own")
         if uncut
         else qc.check_gaps(
-            levels, caption_words, max_gap_s=settings.production_pause_threshold_s, keep=keep, heard=heard
+            levels, caption_words, max_gap_s=settings.production_pause_threshold_s, keep=keep, heard=heard,
+            laughs=qc.laughs_on_edit(laugh_rules.spans(plan), keep),
         )
     )
 

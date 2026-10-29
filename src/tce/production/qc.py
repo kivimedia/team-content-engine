@@ -201,6 +201,37 @@ def _minus_words(
     return pieces
 
 
+def _minus_spans(
+    pieces: list[tuple[float, float]], spans: list[tuple[float, float]] | None
+) -> list[tuple[float, float]]:
+    """The parts of `pieces` outside every span."""
+    for a, b in spans or []:
+        nxt: list[tuple[float, float]] = []
+        for s, e in pieces:
+            if b <= s or a >= e:
+                nxt.append((s, e))
+                continue
+            if s < a:
+                nxt.append((s, a))
+            if b < e:
+                nxt.append((b, e))
+        pieces = nxt
+    return pieces
+
+
+def laughs_on_edit(laughs: list[list[float]], keep: list[list[float]]) -> list[tuple[float, float]]:
+    """The parts of each laugh (recording clock) the edit plays, on the edit clock."""
+    out: list[tuple[float, float]] = []
+    at = 0.0
+    for s, e in keep:
+        for a, b in laughs:
+            lo, hi = max(float(a), float(s)), min(float(b), float(e))
+            if hi > lo:
+                out.append((round(at + lo - s, 3), round(at + hi - s, 3)))
+        at += float(e) - float(s)
+    return out
+
+
 def check_gaps(
     levels: list[float] | None,
     words: list[dict[str, Any]],
@@ -209,6 +240,7 @@ def check_gaps(
     keep: list[list[float]] | None = None,
     heard: list[dict[str, Any]] | None = None,
     hop: float = tightcut.HOP_S,
+    laughs: list[tuple[float, float]] | None = None,
 ) -> dict[str, Any]:
     """The longest gap and the dead-air share of the rendered audio.
 
@@ -222,6 +254,10 @@ def check_gaps(
     level reading cannot: a stretch that is not quiet (wind, a car, a bark) where nobody
     says anything. It counts only when both witnesses agree: no kept word there, and
     the recogniser heard no word there either. Without `heard`, only quiet counts.
+
+    `laughs` (edit clock, laughs_on_edit) are laughs the cut kept on purpose (29-Oct,
+    Connie: "dont cut out her laughs!"). Neither witness hears a word in one, so it read
+    as dead air and the fix trimmed it straight back out; a laugh is never a gap.
     """
     if not levels:
         return skipped("the rendered audio could not be read")
@@ -233,7 +269,7 @@ def check_gaps(
     problems: list[dict[str, Any]] = []
     longest = 0.0
     for run in runs:
-        for s, e in _minus_words(run, words):
+        for s, e in _minus_spans(_minus_words(run, words), laughs):
             longest = max(longest, e - s)
             if e - s <= max_gap_s:
                 continue
@@ -252,7 +288,9 @@ def check_gaps(
                     seconds=round(e - s, 2),
                 )
             )
-    for s, e in _wordless(words, heard, total, max_gap_s):
+    for s, e in _minus_spans(_wordless(words, heard, total, max_gap_s), laughs):
+        if e - s <= max_gap_s:
+            continue  # what is left beside a laugh is a breath
         if any(p["edit_start"] < e and p["edit_end"] > s for p in problems):
             continue  # the level reading found this one already
         longest = max(longest, e - s)

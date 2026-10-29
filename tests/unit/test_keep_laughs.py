@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tce.production import autoedit, laughs
+from tce.production import autoedit, laughs, qc
 from tce.production.retakes import plan_edit
 
 # "... feel humiliated. Well, guess what? [laughs] In sales, we humiliate ourselves often,"
@@ -129,6 +129,25 @@ def test_the_cache_answers_only_for_the_same_recording(tmp_path):
 def test_no_detector_configured_means_no_laughs(monkeypatch):
     monkeypatch.setattr(laughs.settings, "production_laugh_python", "")
     assert laughs.configured() is False
+
+
+def test_jennifers_check_does_not_trim_a_kept_laugh_as_dead_air():
+    # 29-Oct, the first re-edit of 6584bd50: the cut kept the laugh, then the check heard
+    # "nobody says anything for 1.6 seconds at 0:25 (only background sound)" and its fix
+    # trimmed [38.71, 40.167] straight back out. Edit clock: "what?" ends 25.3, "In" 26.95.
+    words = [{"text": "what?", "start": 24.9, "end": 25.3}, {"text": "In", "start": 26.95, "end": 27.5}]
+    heard = [dict(w) for w in words]
+    # Loud throughout but for single quiet frames (a noise floor for the level reading),
+    # so only the re-listen can find the gap, as on the real video (a laugh is loud).
+    levels = [-60.0 if i % 8 == 0 else -3.0 for i in range(int(30 / qc.tightcut.HOP_S))]
+    without = qc.check_gaps(levels, words, keep=[[0.0, 30.0]], heard=heard)
+    assert without["gaps"] == 1 and "nobody says anything" in without["problems"][0]["detail"]
+    laughs_edit = qc.laughs_on_edit([[25.35, 26.56]], [[0.0, 30.0]])
+    assert laughs_edit == [(25.35, 26.56)]
+    kept = qc.check_gaps(levels, words, keep=[[0.0, 30.0]], heard=heard, laughs=laughs_edit)
+    assert kept["gaps"] == 0 and kept["problems"] == []
+    # A laugh the edit does not play leaves nothing on the edit clock.
+    assert qc.laughs_on_edit([[38.874, 40.083]], KEEP) == []
 
 
 def _worker():
