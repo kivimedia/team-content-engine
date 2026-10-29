@@ -332,6 +332,23 @@ def reason_for(candidate: TopicCandidate, *, rank: int, slot: str) -> str:
     return f"{lead} {body}."
 
 
+def lane_mix(ws: uuid.UUID | None, counts: dict[str, int]) -> str:
+    """This week's mix line, "1 from your teaching · 2 from the practice room".
+
+    29-Oct: Brant's pillars are names, and lowercased they read "1 the sacred flame";
+    a profile with proper_lane_names keeps them as written.
+    """
+    from tce.editorial import lane_profile
+
+    profile = lane_profile.profile_for(ws)
+    proper = bool(profile is not None and profile.proper_lane_names)
+    return " · ".join(
+        f"{count} {label if proper else label.lower()}"
+        for lane, count in sorted(counts.items())
+        for label in (LANE_LABELS.get(lane, lane),)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
@@ -1251,9 +1268,7 @@ async def lineup_to_json(
     counts: dict[str, int] = {}
     for row in primary:
         counts[row["lane"]] = counts.get(row["lane"], 0) + 1
-    mix = " · ".join(
-        f"{count} {LANE_LABELS.get(lane, lane).lower()}" for lane, count in sorted(counts.items())
-    )
+    mix = lane_mix(ws, counts)
 
     from tce.editorial import news_rules
 

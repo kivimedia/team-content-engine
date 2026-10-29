@@ -188,6 +188,12 @@ def test_his_news_card_names_his_fire_not_client_work(lanes):
     assert connie == "Rider sets world record on water touches the work you run for clients."
 
 
+def test_his_week_line_keeps_his_pillar_names(lanes):
+    counts = {"keeper_of_flame": 1, "sacred_flame": 1}
+    assert lineup.lane_mix(BRANT, counts) == "1 Keeper of the Flame · 1 The Sacred Flame"
+    assert lineup.lane_mix(CONNIE, {"from_teaching": 1}) == "1 from your teaching"
+
+
 def test_his_news_has_his_own_editor(lanes):
     from tce.news import appraise
     from tce.news.appraise import AppraisalInput

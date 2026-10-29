@@ -119,6 +119,9 @@ class LaneProfile:
     # How a Topics card names a standing fact in "why this is yours". None = the
     # owner's "the work you run for clients", which read as an agency on a performer's card.
     standing_why: str | None = None
+    # The lane labels are names ("The Sacred Flame"), so This week's mix line keeps
+    # their capitals. Off = lowercased into the sentence ("1 from your teaching").
+    proper_lane_names: bool = False
 
     @property
     def weekly_target(self) -> int:
@@ -765,6 +768,7 @@ FIRE_PERFORMER = LaneProfile(
     lane_tabs=True,
     appraisal_prompt=FIRE_PERFORMER_APPRAISAL_PROMPT,
     standing_why="your own work with fire",
+    proper_lane_names=True,
 )
 
 PROFILES: dict[str, LaneProfile] = {
