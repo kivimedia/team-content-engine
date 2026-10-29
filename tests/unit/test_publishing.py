@@ -284,6 +284,38 @@ async def test_a_restart_finishes_posts_that_never_left_and_never_reposts_blind(
     assert len(spawned) == 1, "the post that never left is finished; the other waits for him"
 
 
+async def test_a_restart_keeps_the_time_he_scheduled(app_client, monkeypatch):
+    """30-Oct: he scheduled "If the leads are cheap..." for 10 AM the next day; a deploy
+    restarted TCE while the upload copy was being made, and the resume posted all four
+    at once because it resumed with no time."""
+    client, sm, _ran, _a = app_client
+    ws, uid = await seed(sm)
+    await prod.draft_posts(uid, ws)
+    calls = []
+
+    async def fake_publish(upload_id, ws_id, platforms, at):
+        calls.append((sorted(platforms), at))
+
+    monkeypatch.setattr(prod, "publish_video", fake_publish)
+    monkeypatch.setattr(prod, "_spawn", lambda coro: (calls.append("tap"), coro.close()))
+    r = await client.post(f"/api/v1/production/uploads/{uid}/publishing/publish",
+                          json={"platforms": ["instagram", "linkedin"], "at": "2099-10-30T02:00:00Z"},
+                          headers=h(ws))
+    assert r.status_code == 202, r.text
+    calls.clear()  # the process stops before the post's task ran
+
+    spawned = []
+    monkeypatch.setattr(prod, "_spawn", lambda coro: spawned.append(coro))
+    monkeypatch.setattr(prod.settings, "production_auto_edit", True)
+    await prod.resume_auto_work()
+    for coro in spawned:
+        if coro.__name__ == "fake_publish":
+            await coro
+        else:
+            coro.close()
+    assert calls == [(["instagram", "linkedin"], datetime(2099, 10, 30, 2, 0))]
+
+
 # ----------------------------------------------- LinkedIn: queued is not posted (T-15016)
 
 

@@ -4548,7 +4548,9 @@ async def resume_auto_work() -> None:
             stuck = (
                 await s.execute(select(VideoPublication).where(VideoPublication.status == "posting"))
             ).scalars().all()
-            resume: dict[tuple[uuid.UUID, uuid.UUID], list[str]] = {}
+            # 30-Oct: a scheduled tap resumes with its own time. Resuming with none posted
+            # "If the leads are cheap..." on all four at once, a day before he chose.
+            resume: dict[tuple[uuid.UUID, uuid.UUID, datetime | None], list[str]] = {}
             for pub in stuck:
                 if (pub.detail or "").endswith(" now"):
                     pub.status = "failed"
@@ -4557,10 +4559,14 @@ async def resume_auto_work() -> None:
                         "posting again; it may already be live."
                     )
                 else:
-                    resume.setdefault((pub.upload_id, pub.workspace_id), []).append(pub.platform)
+                    # A time already (nearly) here is too close to book; it goes out now.
+                    at = pub.scheduled_for
+                    if at is not None and at < _utcnow() + timedelta(minutes=15):
+                        at = None
+                    resume.setdefault((pub.upload_id, pub.workspace_id, at), []).append(pub.platform)
             await s.commit()
-        for (upload_id, ws), platforms in resume.items():
-            _spawn(publish_video(upload_id, ws, platforms, None))
+        for (upload_id, ws, at), platforms in resume.items():
+            _spawn(publish_video(upload_id, ws, platforms, at))
             log.info("production.publish_resumed", upload=str(upload_id), platforms=platforms)
         if marked or pending or late:
             log.info("production.auto_resumed", uploads=len(marked), requests=len(pending), reviews=len(late))
@@ -5110,7 +5116,8 @@ async def publish_route(
         reason = publishing.missing(platform, pub.copy or {})
         if reason:
             raise HTTPException(status_code=409, detail=reason)
-        pub.status, pub.detail = "posting", "Queued"
+        # 30-Oct: the time is kept from the tap, so a restart mid-way still schedules it.
+        pub.status, pub.detail, pub.scheduled_for = "posting", "Queued", at
     await db.commit()
     _spawn(publish_video(upload_id, ws, list(body.platforms), at))
     return {"status": "posting", "platforms": body.platforms}
