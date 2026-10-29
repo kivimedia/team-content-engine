@@ -3508,6 +3508,23 @@ def test_connies_seat_has_every_tool_the_owners_has_in_her_words():
     assert "laugh" in brief  # her laughs stay in (29-Oct)
 
 
+CLIENT_SEATS = {"tce-connie": "Connie", "tce-matan": "Matan", "tce-brant": "Brant"}
+
+
+@pytest.mark.parametrize(("seat_id", "person"), sorted(CLIENT_SEATS.items()))
+def test_every_client_seat_has_the_owners_tools_and_its_own_brief(seat_id, person):
+    """Ziv, 29-Oct: "everyone that got TCE from me need the talk to feature". Each client
+    login's seat holds every tool the owner's does, and its brief is about that person."""
+    owner = json.loads(SEAT_FILE.read_text(encoding="utf-8"))
+    seat = json.loads(SEAT_FILE.with_name(f"{seat_id}.json").read_text(encoding="utf-8"))
+    assert seat["allowedTools"] == owner["allowedTools"]
+    assert set(seat["contexts"]) == set(owner["contexts"])
+    assert all(len(text) <= 2000 for text in seat["contexts"].values())
+    brief = SEAT_FILE.with_name(f"{seat_id}-brief.md").read_text(encoding="utf-8")
+    assert person in brief and "Ziv" not in brief and "laughs stay in" in brief
+    assert "never say where TCE runs or who else uses it" in brief
+
+
 def test_the_installer_refuses_a_seat_file_with_no_tce_seat(tmp_path):
     box = _box_seats()
     box["seats"] = box["seats"][:1]
