@@ -22,11 +22,15 @@
 # would be unmuted, greet over the video and hear everything. So "video" goes in
 # only when /opt/kmbot/web/voice-client.js on this box has them; until then the
 # box's contexts are kept and the reason is printed. (The sheet checks too.)
+#
+# 29-Oct (Connie): a client's own seat, deploy/voice-seat/tce-<client>.json with its
+# brief beside it, is synced the same way after the tce seat. Its entry on the box
+# (its MCP signs in to TCE as the client) is set up once by hand; until it is there,
+# the client seat is skipped and named, never created by a deploy.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SEATS=/etc/kmbot/voice-seats.json
-BRIEF=/etc/kmbot/seats/tce-brief.md
 KMBOT_SEATS_JS=/opt/kmbot/bin/kmbot-voice-seats.mjs
 VOICE_CLIENT_JS=/opt/kmbot/web/voice-client.js
 
@@ -36,13 +40,18 @@ if [ ! -f "$SEATS" ]; then
 fi
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-cand="$SEATS.candidate-$stamp"
+
+# sync_seat <seat id> <repo seat json> <repo brief> <box brief>
+sync_seat() {
+local id="$1" repo_json="$2" brief_src="$3" BRIEF="$4"
+local cand="$SEATS.candidate-$stamp-$id"
 
 # Exit 0: a new seat file is written to the candidate path. 3: already current,
-# nothing written. 2: refused, nothing written. tests/unit/test_mcp_voice_tools.py
+# nothing written. 2: refused, nothing written. 4: a client seat not on this box yet,
+# skipped. tests/unit/test_mcp_voice_tools.py
 # runs this exact block against copies of the live file.
 set +e
-sudo python3 - "$SEATS" "$REPO/deploy/voice-seat/tce.json" "$cand" "$VOICE_CLIENT_JS" <<'PY'
+sudo python3 - "$SEATS" "$repo_json" "$cand" "$VOICE_CLIENT_JS" "$id" <<'PY'
 import json
 import os
 import re
@@ -96,13 +105,18 @@ def voice_client_has_k1(path):
 
 seats_path, repo_path, out_path = sys.argv[1:4]
 voice_client = sys.argv[4] if len(sys.argv) > 4 else None
+seat_id = sys.argv[5] if len(sys.argv) > 5 else "tce"
+TAG = "[voice-seat]" if seat_id == "tce" else f"[voice-seat {seat_id}]"
 with open(seats_path) as f:
     seats = json.load(f)
 with open(repo_path) as f:
     repo = json.load(f)
 listed = seats if isinstance(seats, list) else (seats or {}).get("seats") or []
-entry = next((s for s in listed if isinstance(s, dict) and s.get("id") == "tce"), None)
+entry = next((s for s in listed if isinstance(s, dict) and s.get("id") == seat_id), None)
 if entry is None:
+    if seat_id != "tce":
+        print(f"{TAG} not on this box yet (its entry and login are set up once by hand); skipped")
+        sys.exit(4)
     print("[voice-seat] REFUSED, nothing written: the seat file has no tce seat")
     sys.exit(2)
 want_tools = repo.get("allowedTools")
@@ -117,7 +131,7 @@ if voice_client is not None and "video" in want_ctx and not voice_client_has_k1(
 bad = problems(entry, want_tools, want_ctx)
 if bad:
     for why in bad:
-        print(f"[voice-seat] REFUSED, nothing written: {why}")
+        print(f"{TAG} REFUSED, nothing written: {why}")
     sys.exit(2)
 
 before_tools = entry.get("allowedTools") or []
@@ -125,7 +139,7 @@ before_ctx = entry.get("contexts") or {}
 merged = dict(before_ctx)
 merged.update(want_ctx)
 if before_tools == want_tools and merged == before_ctx:
-    print(f"[voice-seat] tools ({len(want_tools)}) and contexts ({', '.join(merged)}) already current")
+    print(f"{TAG} tools ({len(want_tools)}) and contexts ({', '.join(merged)}) already current")
     sys.exit(3)
 
 entry["allowedTools"] = want_tools
@@ -135,15 +149,15 @@ with open(out_path, "w") as f:
 os.chmod(out_path, 0o644)
 
 if before_tools == want_tools:
-    print(f"[voice-seat] tools already current ({len(want_tools)})")
+    print(f"{TAG} tools already current ({len(want_tools)})")
 else:
     added = sorted(set(want_tools) - set(before_tools))
     removed = sorted(set(before_tools) - set(want_tools))
-    print(f"[voice-seat] tools {len(before_tools)} -> {len(want_tools)}; added {added}; removed {removed}")
+    print(f"{TAG} tools {len(before_tools)} -> {len(want_tools)}; added {added}; removed {removed}")
 new = sorted(set(want_ctx) - set(before_ctx))
 changed = sorted(k for k in want_ctx if k in before_ctx and before_ctx[k] != want_ctx[k])
 kept = sorted(set(before_ctx) - set(want_ctx))
-print(f"[voice-seat] contexts: added {new}; changed {changed}; kept as they are on this box {kept}")
+print(f"{TAG} contexts: added {new}; changed {changed}; kept as they are on this box {kept}")
 sys.exit(0)
 PY
 rc=$?
@@ -154,30 +168,32 @@ set -e
 NODE_CHECK='
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
-const [, mod, file] = process.argv;
+const [, mod, file, id = "tce"] = process.argv;
 let seats;
 try { seats = await import(pathToFileURL(mod).href); }
 catch (e) { console.log(`could not load it: ${e.message}`); process.exit(4); }
 const loaded = seats.loadSeats(file);
-const seat = loaded.seats.get("tce");
-if (!seat) { console.log(`it would leave out the tce seat: ${loaded.errors.join("; ") || "no reason given"}`); process.exit(2); }
+const seat = loaded.seats.get(id);
+if (!seat) { console.log(`it would leave out the ${id} seat: ${loaded.errors.join("; ") || "no reason given"}`); process.exit(2); }
 const doc = JSON.parse(fs.readFileSync(file, "utf8"));
-const raw = (Array.isArray(doc) ? doc : doc.seats).find((s) => s && s.id === "tce");
+const raw = (Array.isArray(doc) ? doc : doc.seats).find((s) => s && s.id === id);
 const missing = Object.keys(raw.contexts || {}).filter((k) => !Object.hasOwn(seat.contexts, k));
 if (missing.length) { console.log(`it would leave out the contexts ${missing.join(", ")}`); process.exit(2); }
-console.log(`it loads the tce seat with ${seat.allowedTools.length} tools and the contexts ${Object.keys(seat.contexts).join(", ")}`);
+console.log(`it loads the ${id} seat with ${seat.allowedTools.length} tools and the contexts ${Object.keys(seat.contexts).join(", ")}`);
 '
 
-if [ "$rc" -eq 3 ]; then
+if [ "$rc" -eq 4 ]; then
+  return 0
+elif [ "$rc" -eq 3 ]; then
   :
 elif [ "$rc" -ne 0 ]; then
   sudo rm -f "$cand"
   echo "[voice-seat] the seat was NOT changed; the live one is untouched"
-  exit 1
+  return 1
 else
   if [ -f "$KMBOT_SEATS_JS" ] && command -v node >/dev/null 2>&1; then
     set +e
-    verdict=$(node --input-type=module -e "$NODE_CHECK" "$KMBOT_SEATS_JS" "$cand" 2>&1)
+    verdict=$(node --input-type=module -e "$NODE_CHECK" "$KMBOT_SEATS_JS" "$cand" "$id" 2>&1)
     vrc=$?
     set -e
     if [ "$vrc" -eq 0 ]; then
@@ -186,7 +202,7 @@ else
       sudo rm -f "$cand"
       echo "[voice-seat] REFUSED by the voice service's own check, nothing written: $verdict"
       echo "[voice-seat] the seat was NOT changed; the live one is untouched"
-      exit 1
+      return 1
     else
       echo "[voice-seat] the voice service's own check could not run ($verdict); the repo's checks passed"
     fi
@@ -198,11 +214,19 @@ else
   echo "[voice-seat] installed; the previous seat file is $SEATS.bak-$stamp"
 fi
 
-if ! sudo cmp -s "$REPO/deploy/voice-seat/tce-brief.md" "$BRIEF"; then
-  sudo cp -p "$BRIEF" "$BRIEF.bak-$stamp"
-  sudo install -m 644 -o ziv -g ziv "$REPO/deploy/voice-seat/tce-brief.md" "$BRIEF"
-  echo "[voice-seat] brief updated"
+if ! sudo cmp -s "$brief_src" "$BRIEF"; then
+  if [ -f "$BRIEF" ]; then sudo cp -p "$BRIEF" "$BRIEF.bak-$stamp"; fi
+  sudo install -m 644 -o ziv -g ziv "$brief_src" "$BRIEF"
+  echo "[voice-seat] $id brief updated"
 else
-  echo "[voice-seat] brief already current"
+  echo "[voice-seat] $id brief already current"
 fi
+}
+
+sync_seat tce "$REPO/deploy/voice-seat/tce.json" "$REPO/deploy/voice-seat/tce-brief.md" /etc/kmbot/seats/tce-brief.md
+for client_json in "$REPO"/deploy/voice-seat/tce-*.json; do
+  [ -f "$client_json" ] || continue
+  client_id=$(basename "$client_json" .json)
+  sync_seat "$client_id" "$client_json" "${client_json%.json}-brief.md" "/etc/kmbot/seats/$client_id-brief.md"
+done
 # The voice service re-reads the seats on every call: no restart needed.

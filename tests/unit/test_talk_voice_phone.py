@@ -81,7 +81,8 @@ def test_the_hold_bar_is_served_and_linked_and_the_voice_client_is_not():
     assert 'src="/voice-client.js"' not in html and 'src="voice-client.js"' not in html
     source = js.text
     assert 'VOICE_SCRIPT = "/voice-client.js"' in source
-    for option in ('seat: "tce"', 'api: "live"', "greet: false", "startMuted: !listening()"):
+    # 29-Oct: the seat is the page's (tce, or a client's own: test_client_voice_seat.py).
+    for option in ("seat: seat,", 'api: "live"', "greet: false", "startMuted: !listening()"):
         assert option in source, option
 
 
@@ -1491,7 +1492,9 @@ def test_a_client_login_stays_typed_only_even_with_the_hold_button_asked_for(hos
 
 def test_the_workspace_opens_the_notes_sheet_typed_only_for_a_client_login():
     js = (API_DIR / "workspace.js").read_text(encoding="utf-8")
-    assert "typedOnly: Boolean(window.TCE_SCOPED)" in js
+    # 29-Oct: typed only unless the login has its own call seat (Connie).
+    assert "typedOnly: !talkOn()," in js
+    assert "function talkOn() { return !window.TCE_SCOPED || Boolean(window.TCE_VOICE_SEAT); }" in js
     he = (API_DIR / "i18n-he.js").read_text(encoding="utf-8")
     assert '"Pause where something is wrong, then tap Type to write a note."' in he
 

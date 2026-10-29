@@ -3439,7 +3439,73 @@ def test_the_installer_holds_the_video_context_until_km_bots_voice_client_can_mu
         assert "video" in json.loads(out4.read_text(encoding="utf-8"))["seats"][1]["contexts"], mine.stdout
     text = INSTALLER.read_text(encoding="utf-8")
     assert 'VOICE_CLIENT_JS=/opt/kmbot/web/voice-client.js' in text
-    assert '"$cand" "$VOICE_CLIENT_JS" <<\'PY\'' in text
+    assert '"$cand" "$VOICE_CLIENT_JS" "$id" <<\'PY\'' in text
+
+
+CLIENT_SEAT_FILE = SEAT_FILE.with_name("tce-connie.json")
+CLIENT_BRIEF = SEAT_FILE.with_name("tce-connie-brief.md")
+
+
+def _install_client(tmp_path, box, name="client.json"):
+    """The installer block for Connie's seat, as sync_seat runs it (seat id last)."""
+    seats = tmp_path / "voice-seats.json"
+    seats.write_text(json.dumps(box, indent=2), encoding="utf-8")
+    script = tmp_path / "seat_sync.py"
+    script.write_text(_installer_block(), encoding="utf-8")
+    out = tmp_path / name
+    client = _client_file(tmp_path, K1_CLIENT)
+    proc = subprocess.run(
+        [sys.executable, str(script), str(seats), str(CLIENT_SEAT_FILE), str(out), str(client), "tce-connie"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return proc, out
+
+
+def test_a_client_seat_not_on_the_box_is_skipped_never_created(tmp_path):
+    """29-Oct: Connie's seat signs in to TCE as her; that entry is set up once by hand."""
+    proc, out = _install_client(tmp_path, _box_seats())
+    assert proc.returncode == 4, proc.stdout + proc.stderr
+    assert "[voice-seat tce-connie] not on this box yet" in proc.stdout and not out.exists()
+
+
+def test_a_client_seat_on_the_box_gets_its_tools_and_contexts_and_keeps_its_login(tmp_path):
+    box = _box_seats()
+    connie = {
+        **box["seats"][1],
+        "id": "tce-connie",
+        "brief": "/etc/kmbot/seats/tce-connie-brief.md",
+        "mcpServers": {"tce": {"command": "node", "env": {
+            "TCE_API_BASE": "https://connie.example", "TCE_BASIC_USER": {"file": "/x", "key": "U"}}}},
+        "allowedTools": ["mcp__tce__tce_week"],
+        "contexts": {"default": "old"},
+    }
+    box["seats"].append(connie)
+    proc, out = _install_client(tmp_path, box)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    after = json.loads(out.read_text(encoding="utf-8"))["seats"]
+    mine = next(s for s in after if s["id"] == "tce-connie")
+    want = json.loads(CLIENT_SEAT_FILE.read_text(encoding="utf-8"))
+    assert mine["allowedTools"] == want["allowedTools"] and mine["contexts"] == want["contexts"]
+    assert mine["mcpServers"] == connie["mcpServers"], "her login is never touched by a deploy"
+    assert after[:2] == box["seats"][:2], "the owner's tce seat and other seats are untouched"
+    assert "[voice-seat tce-connie] tools 1 -> " in proc.stdout
+
+
+def test_connies_seat_has_every_tool_the_owners_has_in_her_words():
+    """Every Talk feature works for her (Ziv, 29-Oct): the same tools as the tce seat, and
+    nothing in her seat speaks of a "he" or of Ziv."""
+    owner = json.loads(SEAT_FILE.read_text(encoding="utf-8"))
+    connie = json.loads(CLIENT_SEAT_FILE.read_text(encoding="utf-8"))
+    assert connie["allowedTools"] == owner["allowedTools"]
+    assert set(connie["contexts"]) == set(owner["contexts"]) and "week" in connie["contexts"]
+    assert all(len(text) <= 2000 for text in connie["contexts"].values())
+    he = re.compile(r"\b(he|his|him|Ziv)\b")
+    assert not [k for k, text in connie["contexts"].items() if he.search(text)]
+    brief = CLIENT_BRIEF.read_text(encoding="utf-8")
+    assert "Connie" in brief and not he.search(brief)
+    assert "laugh" in brief  # her laughs stay in (29-Oct)
 
 
 def test_the_installer_refuses_a_seat_file_with_no_tce_seat(tmp_path):
@@ -3746,6 +3812,24 @@ def test_find_ideas_passes_a_performers_lane_types():
     assert "magic_clip" not in out["texts"][0]
     assert "story seeds" in out["texts"][1]
     assert "1 new trend topic" in out["texts"][2]
+
+
+def test_find_ideas_passes_a_sales_coachs_lane_types():
+    """29-Oct (Connie on her own call): her lanes reached the API only as "any" or "news"."""
+    out = run({
+        "steps": [step("tce_find_ideas", count=3, type="from_teaching"),
+                  step("tce_find_ideas", count=2, type="practice_room"),
+                  step("tce_find_ideas", count=1, type="in_the_wild")],
+        "responses": {
+            "POST /editorial/idea-research": {"ok": True, "status": 202, "data": {"run_id": RUN}},
+        },
+    })
+    bodies = [s["body"]["type"] for s in out["sent"] if s["key"] == "POST /editorial/idea-research"]
+    assert bodies == ["from_teaching", "practice_room", "in_the_wild"]
+    assert "3 new teaching topics from your teaching" in out["texts"][0]
+    assert "from your practice room" in out["texts"][1]
+    assert "1 new negotiation topic" in out["texts"][2]
+    assert not any("_" in t.split(".")[0] for t in out["texts"])
 
 
 # 15-Oct (T-11694): "what did you get, what are you going to do overall" on the

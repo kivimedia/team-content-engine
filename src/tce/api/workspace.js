@@ -1872,7 +1872,7 @@
       } else if (action.key === "talk_hold") {
         // 18-Oct (T-13809): no edit to give notes on yet, so the call on this video (she
         // can settle the hold by voice).
-        html += (window.TCE_SCOPED ? "" : '<a class="btn" href="' + esc(voiceCallUrl("video:" + item.upload_id)) + '">'
+        html += (!talkOn() ? "" : '<a class="btn" href="' + esc(voiceCallUrl("video:" + item.upload_id)) + '">'
              + esc(action.label) + "</a>");
       } else if (action.key === "keep_mine" || action.key === "use_script") {
         html += '<button class="btn primary" type="button" data-settle-hold="' + esc(item.upload_id)
@@ -2716,8 +2716,10 @@
       sitting: payload,
       notes: list,
       api: api,
-      // 5-Oct (Ziv): a client's own login has no mic; its notes are typed.
-      typedOnly: Boolean(window.TCE_SCOPED),
+      // 5-Oct (Ziv): a client's own login has no mic; its notes are typed. 29-Oct: one
+      // with its own call seat (Connie) talks, to that seat.
+      typedOnly: !talkOn(),
+      seat: voiceSeat(),
       onSitting: function (p) { if (state.notesSheet === sheet) tookSitting(sheet, p); },
       onStale: function (ref, p) { if (state.notesSheet === sheet) newRender(sheet, p); }
     });
@@ -3441,9 +3443,16 @@
    * call's address here and nowhere else. */
   function voiceCallUrl(context) {
     var here = window.location.pathname + window.location.search;
-    return "/voice?seat=tce&context=" + (context || "week")
+    return "/voice?seat=" + voiceSeat() + "&context=" + (context || "week")
       + "&return=" + encodeURIComponent(here);
   }
+
+  /* 29-Oct (Ziv, Connie: "all talk to features on tce need to work for her!"): a client
+   * login whose workspace has its own call seat gets every Talk button, on its own host,
+   * opening that seat (dashboard.py injects TCE_VOICE_SEAT). A client login without one
+   * has no mic, as before. The owner's seat is tce. */
+  function voiceSeat() { return window.TCE_VOICE_SEAT || "tce"; }
+  function talkOn() { return !window.TCE_SCOPED || Boolean(window.TCE_VOICE_SEAT); }
 
   /* The button appears only where there is a specific thing to discuss, and its
    * label names that thing. A conversation that does not know what is on screen
@@ -3504,8 +3513,8 @@
          chat stays one tap away beside it for when talking out loud is wrong. */
       bar.insertAdjacentHTML("beforeend",
         /* 5-Oct: a client's own login has no voice call (KM BOT's /voice is outside
-           its fence); typing to the editor stays. */
-        (window.TCE_SCOPED ? "" : '<a class="bar-btn is-talk" id="talkFab" href="'
+           its fence); typing to the editor stays. 29-Oct: unless it has its own seat. */
+        (!talkOn() ? "" : '<a class="bar-btn is-talk" id="talkFab" href="'
         + esc(voiceCallUrl(state.talkContext.voice)) + '">'
         + esc(state.talkContext.action) + "</a>")
         + '<button class="bar-btn is-type" type="button" id="typeFab"'

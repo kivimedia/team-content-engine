@@ -23,7 +23,7 @@
  *
  * - /voice-client.js (KM BOT's, on the same host, never under /tce) is loaded only
  *   when the sheet opens. When it answers 401 (the "KM BOT" sign-in is not on this
- *   phone yet) the sheet says so and links to /voice?seat=tce&context=video:<id>.
+ *   phone yet) the sheet says so and links to /voice?seat=<seat>&context=video:<id>.
  * - The call starts muted and silent (greet:false, startMuted:true): nothing talks
  *   until he does, and he talks only while he holds the button.
  * - Press: the video pauses, the page reads currentTime and pins it at once. The
@@ -335,6 +335,8 @@
     // typedOnly (5-Oct): a client's own login. No hold button, no sign-in link, and
     // KM BOT's voice client is never fetched: the voice is "off" for the whole sheet.
     var typedOnly = Boolean(opts.typedOnly);
+    // The call seat: the owner's tce, or a client's own (29-Oct, Connie).
+    var seat = /^[a-z][a-z0-9-]{0,40}$/.test(String(opts.seat || "")) ? String(opts.seat) : "tce";
     var voice = typedOnly ? "off" : "loading";
     var hangUp = null;       // the notes left the sheet: {since, spoke, force, timer} until the call ends
     var hangUpWait = opts.hangUpWaitMs || HANGUP_WAIT_MS;
@@ -381,7 +383,7 @@
       button.hidden = true;
       root.querySelector(".tv-slot").hidden = true;
     }
-    signinEl.href = "/voice?seat=tce&context=video:" + encodeURIComponent(sitting.upload || "")
+    signinEl.href = "/voice?seat=" + seat + "&context=video:" + encodeURIComponent(sitting.upload || "")
       + "&return=" + encodeURIComponent(global.location.pathname + global.location.search);
 
     // ------------------------------------------------------------ painting
@@ -617,7 +619,7 @@
       voice = "connecting";
       try {
         call = global.KmVoice.start({
-          seat: "tce",
+          seat: seat,
           context: "video:" + sitting.upload,
           api: "live",
           greet: false,       // nothing talks until he does

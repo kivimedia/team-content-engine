@@ -1098,6 +1098,12 @@ export function register(server, call, { reply, failure, shortId }) {
     },
   );
 
+  // The types a find can ask for: the owner's, then each lane profile's (29-Oct: Connie's
+  // and Brant's lanes, which the API took but no call could ask for). The API checks the
+  // workspace has the lane (idea_lane.kinds_for).
+  const FIND_TYPES = ['news', 'coaching', 'build', 'any', 'trend_reaction', 'magic_clip', 'behind_scenes',
+    'in_the_wild', 'from_teaching', 'practice_room', 'taming_fire', 'sacred_flame', 'keeper_of_flame'];
+
   server.tool(
     'tce_find_ideas',
     'Go and find NEW video topics in the background, when he asks for new topics or ideas. He can say '
@@ -1105,6 +1111,10 @@ export function register(server, call, { reply, failure, shortId }) {
       + 'tools, found on the web), "coaching" (from his own recent calls), "build" (from his own recent '
       + 'commits), or "any". A performer\'s workspace has its own types instead: "trend_reaction" (event '
       + 'news from the web), "magic_clip" (from his saved clips) and "behind_scenes" (from his story seeds). '
+      + 'A sales coach\'s workspace: "in_the_wild" (negotiation and sales moments in the news), '
+      + '"from_teaching" (from her published teaching) and "practice_room" (from her practice-room prompts). '
+      + 'A fire performer\'s: "taming_fire" (records and stunts in the news), "sacred_flame" (fire history) '
+      + 'and "keeper_of_flame" (from his story prompts). "news" on either is its news lane. '
       + 'If he did not say a number or a type, ask once in a short sentence, then go. '
       + 'Give the topic or angle he named; leave it out for "surprise me". Every idea goes through the '
       + 'four checks and is saved only if it passes; a repeat of one on his list is not saved twice. Takes '
@@ -1116,16 +1126,19 @@ export function register(server, call, { reply, failure, shortId }) {
       properties: {
         topic: { type: 'string', description: 'The topic or angle he named. Leave out for "surprise me".' },
         count: { type: 'integer', minimum: 1, maximum: 10, description: 'How many new topics he wants. Default 3.' },
-        type: { type: 'string', enum: ['news', 'coaching', 'build', 'any', 'trend_reaction', 'magic_clip', 'behind_scenes'], description: 'The type of video he asked for. Default any.' },
+        type: { type: 'string', enum: FIND_TYPES, description: 'The type of video he asked for. Default any.' },
         days: { type: 'integer', minimum: 1, maximum: 60, description: 'How far back in his calls or commits, in days ("last two weeks" = 14). Default 21.' },
       },
     },
     async ({ topic, count, type, days }) => {
       const about = String(topic || '').trim();
       const n = Math.max(1, Math.min(10, Number.isInteger(count) ? count : 3));
-      const kind = ['news', 'coaching', 'build', 'any', 'trend_reaction', 'magic_clip', 'behind_scenes']
-        .includes(type) ? type : 'any';
-      const LANE_WORD = { trend_reaction: 'trend', magic_clip: 'clip', behind_scenes: 'behind-the-scenes' };
+      const kind = FIND_TYPES.includes(type) ? type : 'any';
+      const LANE_WORD = {
+        trend_reaction: 'trend', magic_clip: 'clip', behind_scenes: 'behind-the-scenes',
+        in_the_wild: 'negotiation', from_teaching: 'teaching', practice_room: 'practice-room',
+        taming_fire: 'record', sacred_flame: 'fire history', keeper_of_flame: 'story',
+      };
       const back = Number.isInteger(days) ? Math.max(1, Math.min(60, days)) : 21;
       const rehearsal = rehearsing();
       const result = await call('POST', '/editorial/idea-research', {
@@ -1141,6 +1154,9 @@ export function register(server, call, { reply, failure, shortId }) {
         : kind === 'build' ? ` from your commits of the last ${back} days`
         : kind === 'magic_clip' ? ' from your clips'
         : kind === 'behind_scenes' ? ' from your story seeds'
+        : kind === 'from_teaching' ? ' from your teaching'
+        : kind === 'practice_room' ? ' from your practice room'
+        : kind === 'keeper_of_flame' ? ' from your story prompts'
         : about ? ` about "${about}"` : ' about what you have been working on lately';
       return reply(
         `Started looking for ${what}${where}. It takes a few minutes; I will say what it found. `

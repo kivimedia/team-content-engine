@@ -1903,7 +1903,9 @@ function rebindIdeas(ideas, next) {
     const context = inStudio() && state.idea && state.idea.candidate_id
       ? `topic:${state.idea.candidate_id}` : "week";
     const here = window.location.pathname + window.location.search;
-    $("talkHeader").href = `/voice?seat=tce&context=${context}&return=${encodeURIComponent(here)}`;
+    // 29-Oct: a client login with its own call seat (Connie) calls that seat.
+    const seat = window.TCE_VOICE_SEAT || "tce";
+    $("talkHeader").href = `/voice?seat=${seat}&context=${context}&return=${encodeURIComponent(here)}`;
   });
 
   $("homeButton").addEventListener("click", () => {

@@ -4,6 +4,7 @@ The HTML was extracted from the original inline Python string to avoid
 escape sequence corruption. Edit dashboard.html directly for changes.
 """
 
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -76,6 +77,32 @@ SCOPED_HEAD = (
     "</head>"
 )
 
+# 29-Oct (Ziv, Connie: "all talk to features on tce need to work for her!"): a client
+# login whose workspace has its own call seat (settings.client_voice_seats) keeps every
+# Talk button. They open that seat on the client's own host, never the owner's tce seat;
+# "Back to KM BOT" and Record without a script stay hidden.
+SEAT_ID = re.compile(r"^[a-z][a-z0-9-]{0,40}$")
+
+
+def voice_seat(ws) -> str:
+    """The KM BOT seat a client workspace talks to, or "" (no mic, as before)."""
+    for part in (settings.client_voice_seats or "").split(","):
+        ws_text, sep, seat = part.strip().partition(":")
+        if sep and ws_text.strip() == str(ws) and SEAT_ID.match(seat.strip()):
+            return seat.strip()
+    return ""
+
+
+def _scoped_head(ws) -> str:
+    seat = voice_seat(ws)
+    if not seat:
+        return SCOPED_HEAD
+    return (
+        '<style id="tce-scoped">.kmbot-link,.solo-entry{display:none!important}</style>'
+        f'<script>window.TCE_SCOPED = true; window.TCE_VOICE_SEAT = "{seat}";</script>'
+        "</head>"
+    )
+
 
 def _lane_tabs_head(ws) -> str:
     """23-Oct: a workspace whose Topics tabs are its lanes (Connie) gets the same lanes
@@ -96,7 +123,7 @@ def _localize(html: str, request: Request) -> str:
     ws = _scoped_workspace(request)
     if ws is None:
         return html
-    html = html.replace("</head>", _lane_tabs_head(ws) + SCOPED_HEAD, 1)
+    html = html.replace("</head>", _lane_tabs_head(ws) + _scoped_head(ws), 1)
     if _page_language(request) != "he":
         return html
     html = html.replace('<html lang="en">', '<html lang="he" dir="rtl">', 1)

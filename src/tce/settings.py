@@ -175,6 +175,11 @@ class Settings(BaseSettings):
     # TCE_WORKSPACE_LANE_PROFILES=40c0f179-7d5e-4397-b4de-b0b2f3e96fc2:performer.
     # A workspace not listed keeps the owner selector exactly as before.
     workspace_lane_profiles: str = ""
+    # A client login's own voice call (comma list of <workspace uuid>:<KM BOT seat id>),
+    # e.g. TCE_CLIENT_VOICE_SEATS=<connie's workspace>:tce-connie. Its pages show every
+    # Talk button and open that seat, which reads only that workspace (its MCP signs in
+    # as the client). A workspace not listed keeps no mic, exactly as before.
+    client_voice_seats: str = ""
     # Read by scripts/tce-schedule-tick.sh (comma list); declared so the API accepts the .env line.
     schedule_workspaces: str = ""
     # Per-workspace aside names (comma list of <workspace uuid>:Name|Name), the people or
