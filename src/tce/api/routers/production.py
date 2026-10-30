@@ -2823,7 +2823,11 @@ async def _qc_measure(
     if kept:
         await _qc_step(upload_id, ws, round_no, "checking that every word is heard whole")
         marks = await word_marks_for(src, words, keep)
-        checks["audibility"] = qc.check_audibility(kept, marks, heard, levels, why_not_heard=why)
+        # The cut list goes to the first check only (30-Oct): there a word at a cut heard as
+        # less than was kept gets its cut opened; on the re-check it is the recogniser's.
+        checks["audibility"] = qc.check_audibility(
+            kept, marks, heard, levels, why_not_heard=why, keep=keep if round_no == 0 else None
+        )
     else:
         checks["audibility"] = qc.skipped(why or "this video has no word-by-word transcript")
 

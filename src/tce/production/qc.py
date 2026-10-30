@@ -52,6 +52,9 @@ PEAK_TOLERANCE_DB = 0.3
 MIN_LOUDNESS_S = 3.0  # shorter than this, integrated loudness is not a real number
 
 CLIPPED_HOLD_S = 0.15  # the room a clipped word gets on the side the cut took
+CLIP_EDGE_S = 0.12  # a kept word this close to the end (or start) of its kept range sits at a cut
+CLIP_REACH_S = 0.5  # ... which opens to the next kept speech when that is this close
+CLIP_OPEN_S = 0.3  # ... or by this much past the cut when it is not
 CAPTION_DRIFT_S = 1.0  # a box this far from its word is on the wrong word
 
 MAX_ASIDE_WORDS = 30
@@ -608,6 +611,35 @@ def _peak(levels: list[float], a: float, b: float, hop: float) -> float | None:
     return max(frames) if frames else None
 
 
+def edge_holds(w: dict[str, Any], keep: list[list[float]]) -> list[list[Any]]:
+    """The holds that give a kept word at a cut its sound back: [] when it sits inside its
+    kept range. Each side at a cut opens to the next kept speech when that is within
+    CLIP_REACH_S (the pieces join, so the pause is the one he made), or by CLIP_OPEN_S.
+
+    30-Oct, Connie's video 6584bd50: the recogniser ended "pesky" at 4.67 s while its "ky"
+    ran to 5.0 s, so no word mark said the cut was inside it; the render was heard as
+    "has", and that is the only witness there is to a cut the recogniser's own clock hides.
+    """
+    ws, we = float(w["source_start"]), float(w["source_end"])
+    mid = (ws + we) / 2
+    ranges = sorted([float(a), float(b)] for a, b in keep or [])
+    k = next((n for n, (a, b) in enumerate(ranges) if a <= mid <= b), None)
+    if k is None:
+        return []
+    rs, re_ = ranges[k]
+    holds: list[list[Any]] = []
+    # A millisecond past the neighbour, so the two ranges always meet and join.
+    if re_ - we <= CLIP_EDGE_S:
+        nxt = ranges[k + 1][0] if k + 1 < len(ranges) else None
+        reach = nxt - we + 0.002 if nxt is not None and nxt - re_ <= CLIP_REACH_S else re_ - we + CLIP_OPEN_S
+        holds.append([round(we, 3), "end", round(reach, 3)])
+    if ws - rs <= CLIP_EDGE_S:
+        prv = ranges[k - 1][1] if k > 0 else None
+        reach = ws - prv + 0.002 if prv is not None and rs - prv <= CLIP_REACH_S else ws - rs + CLIP_OPEN_S
+        holds.append([round(ws, 3), "start", round(reach, 3)])
+    return holds
+
+
 def check_audibility(
     kept: list[dict[str, Any]],
     marks: dict[int, str] | None,
@@ -616,6 +648,7 @@ def check_audibility(
     *,
     why_not_heard: str | None = None,
     hop: float = tightcut.HOP_S,
+    keep: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     """Every kept word is heard whole.
 
@@ -627,11 +660,16 @@ def check_audibility(
       did not hear at all, whose stretch of the rendered audio never reaches speech
       level either, cannot be heard. A word it only heard differently is not a
       failure: the recogniser mishears; the level reading is the second witness.
+    - cut short at a cut (30-Oct): with `keep`, a kept word at the edge of its kept range
+      that the render is heard as something shorter, or not at all, lost part of its sound
+      to the cut. Fixable: edge_holds opens that cut. Only the first check passes `keep`:
+      on the re-check a word still heard so is the recogniser's, never a reason to hold.
     """
     marks = marks or {}
     words = spoken(kept)
     problems: list[dict[str, Any]] = []
     clipped = phone = 0
+    marked = {w["index"] for w in words if w.get("index") is not None and marks.get(w["index"])}
     for w in words:
         mark = marks.get(w["index"]) if w.get("index") is not None else None
         if not mark:
@@ -671,12 +709,30 @@ def check_audibility(
             if t
         ]
         activity = tightcut.find_activity(levels, hop) if levels else None
-        for op, a0, a1, _b0, _b1 in SequenceMatcher(a=want, b=have, autojunk=False).get_opcodes():
-            if op == "replace":
-                differently += a1 - a0
-            if op != "delete":
+        for op, a0, a1, b0, b1 in SequenceMatcher(a=want, b=have, autojunk=False).get_opcodes():
+            if op in ("equal", "insert"):
                 continue
+            # A cut takes sound away: the render heard as less than was kept, or nothing.
+            shorter = op == "delete" or len("".join(have[b0:b1])) < len("".join(want[a0:a1]))
+            rest = []
             for w in words[a0:a1]:
+                holds = edge_holds(w, keep) if keep and shorter and w.get("index") not in marked else []
+                if not holds:
+                    rest.append(w)
+                    continue
+                clipped += 1
+                as_heard = " ".join(have[b0:b1]) or "nothing"
+                problems.append(
+                    _problem(
+                        "clipped",
+                        f'"{w["text"]}" at {clock(w["start"])} is cut short: the video says "{as_heard}"',
+                        {"hold": holds},
+                    )
+                )
+            if op == "replace":
+                differently += len(rest)
+                continue
+            for w in rest:
                 peak = _peak(levels or [], float(w["start"]) - WORD_PAD_S, float(w["end"]) + WORD_PAD_S, hop)
                 if activity is None:
                     differently += 1  # no second witness: never hold on the recogniser alone

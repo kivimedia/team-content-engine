@@ -447,6 +447,83 @@ def test_a_word_is_inaudible_only_when_the_recogniser_and_the_levels_agree():
     assert qc.check_audibility(words, {}, wrong, hole)["state"] == "pass"
 
 
+# 30-Oct, Connie's video 6584bd50: the recogniser ended "pesky" at 4.67 s, but its "ky" runs to
+# 5.0 s, so the cut kept 4.467-4.733 and the render said "So what is this has sales call". Her
+# note ("I couldn't hear a full word") then moved the wrong cut. The plan's real numbers:
+PESKY_KEEP = [[2.8, 4.2], [4.467, 4.733], [5.133, 5.533], [5.6, 7.367]]
+PESKY_WORDS = [
+    {"index": i, "text": t, "start": s, "end": e}
+    for i, (t, s, e) in enumerate([
+        ("So", 2.83, 3.27), ("what", 3.47, 3.53), ("is", 3.53, 3.83), ("this", 3.83, 4.14),
+        ("pesky", 4.52, 4.67), ("sales", 5.19, 5.39), ("call", 5.67, 5.81), ("reluctance", 5.81, 6.28),
+        ("all", 6.61, 6.79), ("about?", 6.79, 7.17),
+    ])
+]
+
+
+def _pesky_heard(*texts: str) -> list[dict]:
+    return [{"text": t} for t in texts]
+
+
+def test_a_word_at_a_cut_heard_as_something_shorter_gets_its_sound_back():
+    words = qc.kept_on_edit(PESKY_WORDS, PESKY_KEEP)
+    heard = _pesky_heard("So", "what", "is", "this", "has", "sales", "call", "reluctance", "all", "about?")
+    found = qc.check_audibility(words, {}, heard, None, keep=PESKY_KEEP)
+    assert found["state"] == "fail" and found["clipped"] == 1
+    p = found["problems"][0]
+    assert p["kind"] == "clipped" and '"pesky"' in p["detail"] and '"has"' in p["detail"]
+    # Its range opens toward the kept speech on both sides, and the pieces join up: the "ky"
+    # (4.87-5.0 s) is back, with the natural pauses around the word.
+    fixed = tightcut.apply_holds(PESKY_KEEP, qc.merged_fixes(found["problems"])["hold"], 30.0)
+    assert fixed[0][0] == 2.8 and fixed[0][1] >= 5.533 and len(fixed) == 2
+    assert all(not (a < 4.87 < b) for a, b in PESKY_KEEP) and any(a < 4.87 and 5.0 < b for a, b in fixed)
+
+
+def test_a_misheard_word_inside_a_kept_stretch_is_still_only_heard_differently():
+    words = qc.kept_on_edit(PESKY_WORDS, PESKY_KEEP)
+    # "reluctance" sits inside 5.6-7.367, away from both of its edges.
+    heard = _pesky_heard("So", "what", "is", "this", "pesky", "sales", "call", "luck", "all", "about?")
+    found = qc.check_audibility(words, {}, heard, None, keep=PESKY_KEEP)
+    assert found["state"] == "pass" and found["heard_differently"] == 1
+
+
+def test_a_word_at_a_cut_heard_as_something_as_long_is_a_mishearing():
+    words = qc.kept_on_edit(PESKY_WORDS, PESKY_KEEP)
+    heard = _pesky_heard("So", "what", "is", "this", "pesty", "sales", "call", "reluctance", "all", "about?")
+    assert qc.check_audibility(words, {}, heard, None, keep=PESKY_KEEP)["state"] == "pass"
+
+
+def test_a_word_at_a_cut_the_render_lost_entirely_gets_its_sound_back():
+    words = qc.kept_on_edit(PESKY_WORDS, PESKY_KEEP)
+    heard = _pesky_heard("So", "what", "is", "this", "sales", "call", "reluctance", "all", "about?")
+    found = qc.check_audibility(words, {}, heard, None, keep=PESKY_KEEP)
+    assert found["clipped"] == 1 and qc.merged_fixes(found["problems"])["hold"]
+
+
+def test_without_the_keep_the_check_is_what_it_was_so_a_recheck_never_holds_on_a_mishearing():
+    # The re-check after her one fix passes no keep: a word still heard differently there is
+    # the recogniser's, and a held video would wait on the client for nothing.
+    words = qc.kept_on_edit(PESKY_WORDS, PESKY_KEEP)
+    heard = _pesky_heard("So", "what", "is", "this", "has", "sales", "call", "reluctance", "all", "about?")
+    found = qc.check_audibility(words, {}, heard, None)
+    assert found["state"] == "pass" and found["heard_differently"] == 1
+
+
+def test_a_far_cut_opens_by_a_breath_and_never_before_the_recording():
+    keep = [[0.0, 1.0], [3.0, 4.0]]
+    words = qc.kept_on_edit([{"index": 0, "text": "today", "start": 0.4, "end": 0.95},
+                             {"index": 1, "text": "tomorrow", "start": 3.02, "end": 3.6}], keep)
+    found = qc.check_audibility(words, {}, _pesky_heard("to", "tomorrow"), None, keep=keep)
+    holds = qc.merged_fixes(found["problems"])["hold"]
+    assert holds == [[0.95, "end", round(1.0 - 0.95 + qc.CLIP_OPEN_S, 3)]]
+    assert tightcut.apply_holds(keep, holds, 10.0) == [[0.0, 1.0 + qc.CLIP_OPEN_S], [3.0, 4.0]]
+
+
+def test_the_router_hands_the_keep_to_the_first_check_only():
+    router = (Path(__file__).resolve().parents[2] / "src/tce/api/routers/production.py").read_text(encoding="utf-8")
+    assert re.search(r"qc\.check_audibility\([^)]*keep=keep if round_no == 0 else None", router)
+
+
 # ------------------------------------------------------------------ fix or hold
 
 

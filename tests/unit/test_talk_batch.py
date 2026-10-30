@@ -1064,3 +1064,15 @@ def test_a_known_meaning_issue_is_known_when_its_time_moves():
     c = {**a, "detail": a["detail"].replace("no leads", "two leads")}
     assert prod._meaning_issue_key(a) == prod._meaning_issue_key(b)
     assert prod._meaning_issue_key(a) != prod._meaning_issue_key(c)
+
+
+def test_a_word_he_could_not_hear_is_looked_for_before_the_pause():
+    # 30-Oct, Connie's sitting on video 6584bd50: "I couldn't hear a full word" paused at
+    # "call reluctance" (0:02); the chopped word was "pesky", a second earlier, and the
+    # sitting moved the join after the pause ("reluctance" / "all about?") instead.
+    from tce.production import autoedit
+
+    rules = " ".join(autoedit.EDIT_BATCH_RULES.split())
+    assert "BEFORE <note N>" in rules and "three seconds before it" in rules
+    assert "never move a join after <note N> for it" in rules
+    assert autoedit.EDIT_BATCH_PROMPT_VERSION == "edit-batch-v2"

@@ -1000,14 +1000,17 @@ def _earlier_block(history: list[dict[str, Any]] | None) -> str:
 # transcript, so word numbers cannot drift from one note to the next.
 
 EDIT_BATCH_JOB = "video_edit_batch"
-EDIT_BATCH_PROMPT_VERSION = "edit-batch-v1"
+EDIT_BATCH_PROMPT_VERSION = "edit-batch-v2"
 
 EDIT_BATCH_RULES = (
     "THIS TIME HE GAVE SEVERAL NOTES IN ONE SITTING. He watched the edit and paused on it "
     "each time something was wrong; each pause is one note, numbered in the order he gave "
     "them, and the video renders once after all of them. <note N> in the transcript marks "
     "where the video was when he paused for note N: what he means is usually just before "
-    "it, the part he had just heard. 'agreed' is how the editor he spoke with read the note "
+    "it, the part he had just heard. A note that a word cannot be heard, is chopped or sounds "
+    "cut is about a word he heard BEFORE <note N>: look at the /cut/ joins in the three "
+    "seconds before it first and give the word at that join a hold; never move a join after "
+    "<note N> for it. 'agreed' is how the editor he spoke with read the note "
     "back to him; he heard it and did not correct it, but where it and his own words "
     "disagree, his words win.\n"
     "Answer every note once, by its number, in notes, each with only its own changes. The "
