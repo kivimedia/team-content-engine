@@ -1099,10 +1099,11 @@ export function register(server, call, { reply, failure, shortId }) {
   );
 
   // The types a find can ask for: the owner's, then each lane profile's (29-Oct: Connie's
-  // and Brant's lanes, which the API took but no call could ask for). The API checks the
-  // workspace has the lane (idea_lane.kinds_for).
+  // and Brant's lanes, which the API took but no call could ask for; 03-Nov: Tim's). The
+  // API checks the workspace has the lane (idea_lane.kinds_for).
   const FIND_TYPES = ['news', 'coaching', 'build', 'any', 'trend_reaction', 'magic_clip', 'behind_scenes',
-    'in_the_wild', 'from_teaching', 'practice_room', 'taming_fire', 'sacred_flame', 'keeper_of_flame'];
+    'in_the_wild', 'from_teaching', 'practice_room', 'taming_fire', 'sacred_flame', 'keeper_of_flame',
+    'smart_ideas', 'from_my_courses', 'coaching_room'];
 
   server.tool(
     'tce_find_ideas',
@@ -1114,7 +1115,9 @@ export function register(server, call, { reply, failure, shortId }) {
       + 'A sales coach\'s workspace: "in_the_wild" (negotiation and sales moments in the news), '
       + '"from_teaching" (from her published teaching) and "practice_room" (from her practice-room prompts). '
       + 'A fire performer\'s: "taming_fire" (records and stunts in the news), "sacred_flame" (fire history) '
-      + 'and "keeper_of_flame" (from his story prompts). "news" on either is its news lane. '
+      + 'and "keeper_of_flame" (from his story prompts). A florist coach\'s: "smart_ideas" (other small '
+      + 'shops\' sales ideas in the news), "from_my_courses" (from his own courses) and "coaching_room" '
+      + '(from his coaching prompts). "news" on either is its news lane. '
       + 'If he did not say a number or a type, ask once in a short sentence, then go. '
       + 'Give the topic or angle he named; leave it out for "surprise me". Every idea goes through the '
       + 'four checks and is saved only if it passes; a repeat of one on his list is not saved twice. Takes '
@@ -1138,6 +1141,7 @@ export function register(server, call, { reply, failure, shortId }) {
         trend_reaction: 'trend', magic_clip: 'clip', behind_scenes: 'behind-the-scenes',
         in_the_wild: 'negotiation', from_teaching: 'teaching', practice_room: 'practice-room',
         taming_fire: 'record', sacred_flame: 'fire history', keeper_of_flame: 'story',
+        smart_ideas: 'smart idea', from_my_courses: 'course', coaching_room: 'coaching',
       };
       const back = Number.isInteger(days) ? Math.max(1, Math.min(60, days)) : 21;
       const rehearsal = rehearsing();
@@ -1157,6 +1161,8 @@ export function register(server, call, { reply, failure, shortId }) {
         : kind === 'from_teaching' ? ' from your teaching'
         : kind === 'practice_room' ? ' from your practice room'
         : kind === 'keeper_of_flame' ? ' from your story prompts'
+        : kind === 'from_my_courses' ? ' from your courses'
+        : kind === 'coaching_room' ? ' from your coaching prompts'
         : about ? ` about "${about}"` : ' about what you have been working on lately';
       return reply(
         `Started looking for ${what}${where}. It takes a few minutes; I will say what it found. `

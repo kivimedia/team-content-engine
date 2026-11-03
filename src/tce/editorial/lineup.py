@@ -72,6 +72,11 @@ LANE_LABELS = {
     "sacred_flame": "The Sacred Flame",
     "keeper_of_flame": "Keeper of the Flame",
     "taming_fire": "Taming the Fire",
+    # The florist_coach profile's lanes (Tim, 03-Nov): his courses, his coaching and
+    # Ziv's third pillar, smart ideas from businesses close to florists.
+    "from_my_courses": "From your courses",
+    "coaching_room": "From the coaching room",
+    "smart_ideas": "Smart ideas from other shops",
 }
 
 

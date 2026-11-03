@@ -109,6 +109,35 @@ _LANE_RULES = {
         "[your story here]; never write what that day was like for him. Never a story about a "
         "show he did: you do not know his memories."
     ),
+    # 03-Nov: the florist_coach profile (Tim). His slot and his checks come from the
+    # profile (lane_profile.FLORIST_COACH): price and add-on talk is his subject.
+    "from_my_courses": (
+        "THIS IDEA'S LANE: from_my_courses. One lesson from his own courses for florists (the "
+        "lesson in the evidence). Say it simply, the way he would teach it to a shop owner over "
+        "the counter, with one plain example of what the person taking the order says or does. "
+        "Stay true to the lesson: never add a claim, a number or a result it does not give. "
+        "When the lesson gives a script line, use his words."
+    ),
+    "coaching_room": (
+        "THIS IDEA'S LANE: coaching_room. A moment from his coaching of flower shop owners that "
+        "HE will tell from his OWN memory. You do not know what happened, so you never write it. "
+        "Write the frame around his story instead: a line that opens the problem florists bring "
+        "him, short prompts that help him remember (what the shop owner was stuck on, what he "
+        "told them, what changed), one line that is exactly [your story here] where his real "
+        "story goes, and a closing lesson for any shop owner phrased as a general truth, never "
+        "as an event. Never a first-person past tense sentence (no 'I once', 'I remember'), no "
+        "invented shops, owners, quotes or numbers. interviewer_prompt is the one memory "
+        "question he answers on camera."
+    ),
+    "smart_ideas": (
+        "THIS IDEA'S LANE: smart_ideas. A clever sales or profit idea a small business outside "
+        "the flower trade used, in the news (a toy shop, a restaurant, a bakery, a gift shop, a "
+        "garden center, a boutique), and what a flower shop owner can take from it this week. "
+        "Say what the business did in one plain line, using only what the news item says, then "
+        "his take as a coach of flower shops: why it worked and how a florist would try it. "
+        "Opinions and lessons only. Never a story about a shop he coached: you do not know his "
+        "memories."
+    ),
 }
 
 _HOOK_RULE = (

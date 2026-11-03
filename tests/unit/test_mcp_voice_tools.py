@@ -3508,7 +3508,7 @@ def test_connies_seat_has_every_tool_the_owners_has_in_her_words():
     assert "laugh" in brief  # her laughs stay in (29-Oct)
 
 
-CLIENT_SEATS = {"tce-connie": "Connie", "tce-matan": "Matan", "tce-brant": "Brant"}
+CLIENT_SEATS = {"tce-connie": "Connie", "tce-matan": "Matan", "tce-brant": "Brant", "tce-tim": "Tim"}
 
 
 @pytest.mark.parametrize(("seat_id", "person"), sorted(CLIENT_SEATS.items()))
@@ -3846,6 +3846,24 @@ def test_find_ideas_passes_a_sales_coachs_lane_types():
     assert "3 new teaching topics from your teaching" in out["texts"][0]
     assert "from your practice room" in out["texts"][1]
     assert "1 new negotiation topic" in out["texts"][2]
+    assert not any("_" in t.split(".")[0] for t in out["texts"])
+
+
+def test_find_ideas_passes_a_florist_coachs_lane_types():
+    """03-Nov (Tim): his three lanes reach the API by name, and the spoken line says them plainly."""
+    out = run({
+        "steps": [step("tce_find_ideas", count=3, type="from_my_courses"),
+                  step("tce_find_ideas", count=2, type="coaching_room"),
+                  step("tce_find_ideas", count=1, type="smart_ideas")],
+        "responses": {
+            "POST /editorial/idea-research": {"ok": True, "status": 202, "data": {"run_id": RUN}},
+        },
+    })
+    bodies = [s["body"]["type"] for s in out["sent"] if s["key"] == "POST /editorial/idea-research"]
+    assert bodies == ["from_my_courses", "coaching_room", "smart_ideas"]
+    assert "3 new course topics from your courses" in out["texts"][0]
+    assert "from your coaching prompts" in out["texts"][1]
+    assert "1 new smart idea topic" in out["texts"][2]
     assert not any("_" in t.split(".")[0] for t in out["texts"])
 
 
