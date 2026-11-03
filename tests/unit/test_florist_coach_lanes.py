@@ -56,6 +56,7 @@ COACHING_SCRIPT = [
     "Every owner I coach says the same thing about Valentine's Day.",
     "They are scared to charge more for a dozen roses.",
     "What do you tell an owner who thinks the grocery store will win?",
+    "And what does she do the week after?",
     "[your story here]",
     "Your roses are not grocery store roses.",
     "Price them like they are yours.",
@@ -191,7 +192,7 @@ def test_his_news_card_names_his_shops_not_client_work(lanes):
 
 
 def test_his_week_line_reads_as_a_sentence(lanes):
-    counts = {"coaching_room": 1, "from_my_courses": 2}
+    counts = {"from_my_courses": 2, "coaching_room": 1}
     assert lineup.lane_mix(TIM, counts) == "2 from your courses · 1 from the coaching room"
 
 
