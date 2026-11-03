@@ -101,6 +101,9 @@ class LaneProfile:
     collect_fathom: bool = False
     collect_github: bool = False
     audiences: tuple[str, ...] = ("event_owners", "both")
+    # The brief's audience line for every idea in this workspace, in place of the
+    # owner's labels for the selector's codes (briefs.seed_brief). None = the owner's.
+    audience_label: str | None = None
     # docs/<file> that REPLACES docs/news-anchors.md for this workspace's news
     # anchors; settings-, repo- and model-derived anchors (the owner's vendors) are
     # then not built at all. None = the owner index.
@@ -1007,6 +1010,7 @@ FLORIST_COACH = LaneProfile(
     lane_tabs=True,
     appraisal_prompt=FLORIST_COACH_APPRAISAL_PROMPT,
     standing_why="your own work with flower shops",
+    audience_label="Flower shop owners and their teams",
 )
 
 PROFILES: dict[str, LaneProfile] = {

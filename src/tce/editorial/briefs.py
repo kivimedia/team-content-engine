@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tce.editorial import lane_profile
 from tce.models.editorial import TopicCandidate
 from tce.models.editorial_workspace import BRIEF_FIELDS, CandidateBriefVersion
 
@@ -51,9 +52,13 @@ def seed_brief(candidate: TopicCandidate) -> dict[str, str]:
     strings are `why_now` and `why_this_is_yours`, and both are assembled from
     stored fields rather than generated, so seeding never needs a model call.
     """
+    profile = lane_profile.profile_for(getattr(candidate, "workspace_id", None))
+    audience = _AUDIENCE_LABELS.get(candidate.audience or "", candidate.audience or "")
+    if profile is not None and profile.audience_label:
+        audience = profile.audience_label
     brief: dict[str, str] = {
         "topic": candidate.title or "",
-        "audience": _AUDIENCE_LABELS.get(candidate.audience or "", candidate.audience or ""),
+        "audience": audience,
         "big_idea": candidate.lesson or "",
         "distinctive_perspective": candidate.public_angle or "",
     }

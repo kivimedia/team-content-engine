@@ -294,6 +294,28 @@ def test_a_members_only_lesson_page_counts_as_answered():
     assert not seed.page_answered(404, None)
 
 
+def test_his_briefs_name_flower_shop_owners_as_the_audience(lanes):
+    from types import SimpleNamespace
+
+    from tce.editorial import briefs
+
+    def idea(ws, audience):
+        return SimpleNamespace(
+            workspace_id=ws, title="t", audience=audience, lesson="l", public_angle="a",
+            freshness_role="evergreen", citations_private=[{"source_kind": "curated_clip"}],
+            reasons_to_care=[], public_safety_notes="",
+        )
+
+    # The selector's audience codes are the owner's (coaches / event owners); 3-Nov
+    # his room said "Coaches, and the service owners they work with".
+    for code in ("both", "event_owners", "coaches"):
+        assert briefs.seed_brief(idea(TIM, code))["audience"] == "Flower shop owners and their teams"
+    # A profile without its own label keeps the owner's wording.
+    assert briefs.seed_brief(idea(BRANT, "both"))["audience"] == "Coaches, and the service owners they work with"
+    owner = uuid.UUID("3e8c3f9c-0213-57cd-ab30-173d5700090f")
+    assert briefs.seed_brief(idea(owner, "event_owners"))["audience"] == "Event and service business owners"
+
+
 def test_no_shop_or_person_is_named_in_his_lessons_or_prompts():
     seed = _seed()
     text = " ".join(f"{t} {lesson}" for _k, t, _u, lesson, _c in seed.LESSONS)
