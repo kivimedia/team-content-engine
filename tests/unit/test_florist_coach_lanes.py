@@ -317,8 +317,12 @@ def test_his_briefs_name_flower_shop_owners_as_the_audience(lanes):
     assert briefs.seed_brief(idea(BRANT, "both"))["audience"] == (
         "People who book live entertainment, and fans of fire and daredevil feats"
     )
-    # Matan's (Hebrew) and the owner's keep the owner's wording.
-    assert briefs.seed_brief(idea(MATAN, "both"))["audience"] == "Coaches, and the service owners they work with"
+    # Matan's is Hebrew like the rest of his room (3-Nov, Ziv "matan"); before, his
+    # Hebrew brief showed the owner's English line.
+    assert briefs.seed_brief(idea(MATAN, "both"))["audience"] == (
+        "מזמיני אירועים ואורחים בישראל, ומי שסקרן לגבי מנטליזם"
+    )
+    # The owner's keeps the owner's wording.
     owner = uuid.UUID("3e8c3f9c-0213-57cd-ab30-173d5700090f")
     assert briefs.seed_brief(idea(owner, "event_owners"))["audience"] == "Event and service business owners"
 

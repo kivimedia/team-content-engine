@@ -342,6 +342,8 @@ async def _lane_reserve(
 ) -> list[PoolMoment]:
     """Profiled workspaces only: up to reserve_per_lane seeds of each evergreen lane,
     whatever their date, skipping any used by an idea within the reuse window."""
+    from tce.models.editorial_workspace import TopicDecision
+
     since = lane_reserve_used_since(label_start, profile)
     recent: set[str] = set()
     for ids in (
@@ -354,6 +356,21 @@ async def _lane_reserve(
             )
         )
     ).scalars():
+        recent.update(str(i) for i in (ids or []))
+    # 3-Nov (Brant): an idea he decided on (this week, later, away, discuss) holds its
+    # seed back too, this week included. A rerun of the same week withdraws it (its
+    # status stays "proposed" under his decision) and offered its clip again as new.
+    decided = (
+        select(TopicCandidate.moment_ids)
+        .join(TopicDecision, TopicDecision.candidate_id == TopicCandidate.id)
+        .where(
+            TopicCandidate.workspace_id == workspace_id,
+            TopicDecision.decision.is_not(None),
+            TopicCandidate.week_start >= since,
+            TopicCandidate.week_start <= label_start,
+        )
+    )
+    for ids in (await session.execute(decided)).scalars():
         recent.update(str(i) for i in (ids or []))
     picked: list[PoolMoment] = []
     for kind in profile.evergreen_kinds:

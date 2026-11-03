@@ -357,6 +357,9 @@ PERFORMER = LaneProfile(
     # ideas reach Topics (why_yours above), and his news has its own editor.
     lane_tabs=True,
     appraisal_prompt=PERFORMER_APPRAISAL_PROMPT,
+    # Hebrew like the rest of his room: event bookers and guests in Israel, and people
+    # curious about mentalism (his selector prompt's audience).
+    audience_label="מזמיני אירועים ואורחים בישראל, ומי שסקרן לגבי מנטליזם",
 )
 
 SALES_COACH_SYSTEM_PROMPT = """\

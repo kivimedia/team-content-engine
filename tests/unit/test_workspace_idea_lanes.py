@@ -338,6 +338,37 @@ async def test_lane_reserve_rotates_and_skips_recently_used(editorial_session, l
     assert eligible_later > WEEK - timedelta(days=7)
 
 
+async def test_lane_reserve_holds_back_an_idea_he_decided_in_the_same_week(
+    editorial_session, lanes_on
+):
+    """3-Nov, Brant: a second run of the SAME week withdrew the idea already on his
+    week (still status "proposed" under his "this_week" decision) and offered its clip
+    again as a new idea. A decided idea holds its seed back, this week included; an
+    undecided one the rerun supersedes may come back."""
+    from tce.models.editorial_workspace import TopicDecision
+
+    s = editorial_session
+    p = lane_profile.PROFILES["performer"]
+    clips = [await add(s, MATAN, "curated_clip", lesson=f"c{i}") for i in range(3)]
+
+    def idea(clip):
+        return TopicCandidate(
+            workspace_id=MATAN, week_start=WEEK, moment_ids=[str(clip.id)],
+            title="t", lesson="l", audience="both", public_angle="a", gates={},
+            status="withdrawn", citations_private=[], origin="selector",
+            freshness_role="evergreen", reasons_to_care=[], created_at=WEEK, updated_at=WEEK,
+        )
+
+    on_week, undecided = idea(clips[0]), idea(clips[1])
+    s.add_all([on_week, undecided])
+    await s.flush()
+    s.add(TopicDecision(workspace_id=MATAN, candidate_id=on_week.id, decision="this_week"))
+    await s.commit()
+    ids = {pm.id for pm in (await selector.collect_pool(s, MATAN, WEEK, profile=p)).moments}
+    assert str(clips[0].id) not in ids
+    assert {str(clips[1].id), str(clips[2].id)} <= ids
+
+
 # ------------------------------------------------------------ 4. lineup lanes
 
 
