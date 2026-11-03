@@ -192,8 +192,9 @@ def test_his_news_card_names_his_shops_not_client_work(lanes):
 
 
 def test_his_week_line_reads_as_a_sentence(lanes):
+    # Sorted by lane key, labels lowercased into the sentence (his are not proper names).
     counts = {"from_my_courses": 2, "coaching_room": 1}
-    assert lineup.lane_mix(TIM, counts) == "2 from your courses · 1 from the coaching room"
+    assert lineup.lane_mix(TIM, counts) == "1 from the coaching room · 2 from your courses"
 
 
 def test_his_news_has_his_own_editor(lanes):
