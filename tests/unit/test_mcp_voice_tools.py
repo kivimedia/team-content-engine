@@ -302,6 +302,51 @@ def test_the_week_says_the_order_the_script_states_and_what_needs_deciding():
     assert "Next: Start recording." in text
 
 
+def test_the_week_counts_the_waiting_ideas_per_pillar_for_a_lane_client():
+    """3-Nov, Tim's call: "My list doesn't tell me which lane each idea is in, so I
+    can't split that count by lane for you." A lane client hears the count per
+    pillar and each listed idea's pillar."""
+
+    def topic(n, lane, label):
+        return {
+            "candidate_id": f"{n}{n}{n}{n}{n}{n}{n}{n}-0000-0000-0000-000000000000",
+            "title": f"Idea {n}",
+            "decision": None,
+            "lane": lane,
+            "lane_label": label,
+        }
+
+    out = run(
+        {
+            "steps": [step("tce_week")],
+            "responses": {
+                "GET /editorial/today": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"week": {"primary": [], "reserve": []}, "attention": {"waiting": 3}},
+                },
+                "GET /editorial/topics": {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "total": 3,
+                        "topics": [
+                            topic(3, "from_my_courses", "From your courses"),
+                            topic(4, "smart_ideas", "Smart ideas from other shops"),
+                            topic(5, "from_my_courses", "From your courses"),
+                        ],
+                    },
+                },
+            },
+        }
+    )
+    text = out["texts"][0]
+    assert "By pillar: 2 From your courses, 1 Smart ideas from other shops." in text
+    assert "- Idea 3 [From your courses] (id 33333333)" in text
+    assert "- Idea 4 [Smart ideas from other shops] (id 44444444)" in text
+    assert "smart_ideas" in out["seen"][0]
+
+
 def test_the_week_says_a_filmed_topic_is_filmed_not_script_ready():
     """28-Sep review: Today tags a topic he filmed "Filmed" and leaves it out of
     "scripts ready", but the call read it as "script ready" and dropped `filmed`

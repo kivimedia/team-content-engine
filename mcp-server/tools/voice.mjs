@@ -438,13 +438,15 @@ export function register(server, call, { reply, failure, shortId }) {
     'tce_week',
     'This week at a glance: the recording list in order with each script\'s state (or that he '
       + 'filmed it already: never offer to record a filmed one again), and the ideas '
-      + 'still waiting for a decision, each with its id. Read-only. Start here when he says "the week"; '
+      + 'still waiting for a decision, each with its id (and, for a client with pillars, each one\'s '
+      + 'pillar and how many wait in each pillar). Read-only. Start here when he says "the week"; '
       + 'a change to one of them takes the id listed here.',
     { type: 'object', properties: {} },
     async () => {
       const today = await call('GET', '/editorial/today');
       if (!today.ok) return failure(today, 'read this week');
-      const waiting = await call('GET', '/editorial/topics?filter=best&limit=8');
+      // 3-Nov: 60, not 8, so the count per pillar covers the waiting list, not its top.
+      const waiting = await call('GET', '/editorial/topics?filter=best&limit=60');
       const week = today.data.week || {};
       const primary = week.primary || [];
       const lines = [];
@@ -469,9 +471,20 @@ export function register(server, call, { reply, failure, shortId }) {
       const topics = (waiting.ok ? waiting.data.topics : []) || [];
       const undecided = topics.filter((t) => !t.decision);
       const count = today.data.attention?.waiting ?? undecided.length;
+      // A lane client's ideas carry their pillar (Tim 3-Nov: the call could not split
+      // "how many in each lane"). The owner's ideas have none and read as before.
+      const pillar = (t) => (t.lane_label ? ` [${t.lane_label}]` : '');
+      const perPillar = new Map();
+      undecided.forEach((t) => {
+        if (t.lane_label) perPillar.set(t.lane_label, (perPillar.get(t.lane_label) || 0) + 1);
+      });
       if (count) {
         lines.push(`${count} idea${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} a decision, best first:`);
-        undecided.slice(0, 5).forEach((t) => lines.push(`- ${t.title} (id ${shortId(t.candidate_id)})`));
+        undecided.slice(0, 5).forEach((t) => lines.push(`- ${t.title}${pillar(t)} (id ${shortId(t.candidate_id)})`));
+        if (perPillar.size) {
+          const partial = (waiting.data?.total ?? 0) > topics.length ? ` (of the first ${topics.length})` : '';
+          lines.push(`By pillar${partial}: ${[...perPillar].map(([label, n]) => `${n} ${label}`).join(', ')}.`);
+        }
       } else {
         lines.push('No ideas are waiting for a decision.');
       }
@@ -481,7 +494,7 @@ export function register(server, call, { reply, failure, shortId }) {
       return reply(lines.join('\n'), {
         week: primary.map((t) => ({ candidate_id: t.candidate_id, title: t.title, rank: t.rank, script_state: t.script_state, packet_id: t.packet_id, filmed: Boolean(t.filmed) })),
         reserve: reserve.map((t) => ({ candidate_id: t.candidate_id, title: t.title, filmed: Boolean(t.filmed) })),
-        needs_decision: undecided.map((t) => ({ candidate_id: t.candidate_id, title: t.title })),
+        needs_decision: undecided.map((t) => ({ candidate_id: t.candidate_id, title: t.title, ...(t.lane ? { lane: t.lane, pillar: t.lane_label } : {}) })),
         attention: today.data.attention,
       });
     },

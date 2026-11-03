@@ -568,6 +568,7 @@ SALES_COACH = LaneProfile(
     writer_prompt=SALES_COACH_WRITER_PROMPT,
     lane_tabs=True,
     appraisal_prompt=SALES_COACH_APPRAISAL_PROMPT,
+    audience_label="Salespeople, sales managers and leaders, and coaches who sell their own services",
 )
 
 FIRE_PERFORMER_SYSTEM_PROMPT = """\
@@ -785,6 +786,7 @@ FIRE_PERFORMER = LaneProfile(
     lane_tabs=True,
     appraisal_prompt=FIRE_PERFORMER_APPRAISAL_PROMPT,
     standing_why="your own work with fire",
+    audience_label="People who book live entertainment, and fans of fire and daredevil feats",
     proper_lane_names=True,
 )
 

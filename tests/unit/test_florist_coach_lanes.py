@@ -310,8 +310,15 @@ def test_his_briefs_name_flower_shop_owners_as_the_audience(lanes):
     # his room said "Coaches, and the service owners they work with".
     for code in ("both", "event_owners", "coaches"):
         assert briefs.seed_brief(idea(TIM, code))["audience"] == "Flower shop owners and their teams"
-    # A profile without its own label keeps the owner's wording.
-    assert briefs.seed_brief(idea(BRANT, "both"))["audience"] == "Coaches, and the service owners they work with"
+    # Connie's and Brant's come from their own selector prompts (3-Nov, Ziv "labels").
+    assert briefs.seed_brief(idea(CONNIE, "both"))["audience"] == (
+        "Salespeople, sales managers and leaders, and coaches who sell their own services"
+    )
+    assert briefs.seed_brief(idea(BRANT, "both"))["audience"] == (
+        "People who book live entertainment, and fans of fire and daredevil feats"
+    )
+    # Matan's (Hebrew) and the owner's keep the owner's wording.
+    assert briefs.seed_brief(idea(MATAN, "both"))["audience"] == "Coaches, and the service owners they work with"
     owner = uuid.UUID("3e8c3f9c-0213-57cd-ab30-173d5700090f")
     assert briefs.seed_brief(idea(owner, "event_owners"))["audience"] == "Event and service business owners"
 
