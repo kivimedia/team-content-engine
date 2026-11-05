@@ -1112,11 +1112,11 @@ export function register(server, call, { reply, failure, shortId }) {
   );
 
   // The types a find can ask for: the owner's, then each lane profile's (29-Oct: Connie's
-  // and Brant's lanes, which the API took but no call could ask for; 03-Nov: Tim's). The
-  // API checks the workspace has the lane (idea_lane.kinds_for).
+  // and Brant's lanes, which the API took but no call could ask for; 03-Nov: Tim's;
+  // 05-Nov: Chris's). The API checks the workspace has the lane (idea_lane.kinds_for).
   const FIND_TYPES = ['news', 'coaching', 'build', 'any', 'trend_reaction', 'magic_clip', 'behind_scenes',
     'in_the_wild', 'from_teaching', 'practice_room', 'taming_fire', 'sacred_flame', 'keeper_of_flame',
-    'smart_ideas', 'from_my_courses', 'coaching_room'];
+    'smart_ideas', 'from_my_courses', 'coaching_room', 'parent_artist', 'creative_life', 'typewriter_poetry'];
 
   server.tool(
     'tce_find_ideas',
@@ -1130,7 +1130,9 @@ export function register(server, call, { reply, failure, shortId }) {
       + 'A fire performer\'s: "taming_fire" (records and stunts in the news), "sacred_flame" (fire history) '
       + 'and "keeper_of_flame" (from his story prompts). A florist coach\'s: "smart_ideas" (other small '
       + 'shops\' sales ideas in the news), "from_my_courses" (from his own courses) and "coaching_room" '
-      + '(from his coaching prompts). "news" on either is its news lane. '
+      + '(from his coaching prompts). A clown and typewriter poet\'s: "creative_life" (creativity and play '
+      + 'in the news), "parent_artist" (from his parent and artist prompts) and "typewriter_poetry" '
+      + '(from typewriter and poem pages). "news" on either is its news lane. '
       + 'If he did not say a number or a type, ask once in a short sentence, then go. '
       + 'Give the topic or angle he named; leave it out for "surprise me". Every idea goes through the '
       + 'four checks and is saved only if it passes; a repeat of one on his list is not saved twice. Takes '
@@ -1155,6 +1157,7 @@ export function register(server, call, { reply, failure, shortId }) {
         in_the_wild: 'negotiation', from_teaching: 'teaching', practice_room: 'practice-room',
         taming_fire: 'record', sacred_flame: 'fire history', keeper_of_flame: 'story',
         smart_ideas: 'smart idea', from_my_courses: 'course', coaching_room: 'coaching',
+        parent_artist: 'parent and artist', creative_life: 'creative life', typewriter_poetry: 'typewriter poetry',
       };
       const back = Number.isInteger(days) ? Math.max(1, Math.min(60, days)) : 21;
       const rehearsal = rehearsing();
@@ -1176,6 +1179,8 @@ export function register(server, call, { reply, failure, shortId }) {
         : kind === 'keeper_of_flame' ? ' from your story prompts'
         : kind === 'from_my_courses' ? ' from your courses'
         : kind === 'coaching_room' ? ' from your coaching prompts'
+        : kind === 'parent_artist' ? ' from your parent and artist prompts'
+        : kind === 'typewriter_poetry' ? ' from your typewriter and poem pages'
         : about ? ` about "${about}"` : ' about what you have been working on lately';
       return reply(
         `Started looking for ${what}${where}. It takes a few minutes; I will say what it found. `

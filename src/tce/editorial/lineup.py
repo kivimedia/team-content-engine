@@ -77,6 +77,10 @@ LANE_LABELS = {
     "from_my_courses": "From your courses",
     "coaching_room": "From the coaching room",
     "smart_ideas": "Smart ideas from other shops",
+    # The clown_poet profile's lanes (Chris, 05-Nov): the pillars he named on his call.
+    "parent_artist": "Parent as an Artist",
+    "creative_life": "Living a Creative Life",
+    "typewriter_poetry": "Typewriter Poetry",
 }
 
 

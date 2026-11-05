@@ -138,6 +138,38 @@ _LANE_RULES = {
         "Opinions and lessons only. Never a story about a shop he coached: you do not know his "
         "memories."
     ),
+    # 05-Nov: the clown_poet profile (Chris). His slots and his checks come from the
+    # profile (lane_profile.CLOWN_POET): no money talk, his poem is never written for him.
+    "parent_artist": (
+        "THIS IDEA'S LANE: parent_artist. A moment from his life as a single parent and a "
+        "working artist that HE will tell from his OWN memory. You do not know what happened, "
+        "so you never write it. Write the frame around his story instead: a line that opens "
+        "what parents who make things struggle with or love, short prompts that help him "
+        "remember (where he was, what his kids did or said, what he did next), one line that "
+        "is exactly [your story here] where his real story goes, and a closing line for any "
+        "parent who makes things, phrased as a general truth, never as an event. Never a "
+        "first-person past tense sentence (no 'I once', 'I remember'), no invented days, kids' "
+        "words, quotes or numbers, never his children's names, never family conflict or "
+        "anything legal. interviewer_prompt is the one memory question he answers on camera."
+    ),
+    "creative_life": (
+        "THIS IDEA'S LANE: creative_life. Creativity, play or the arts in the news (a study, a "
+        "community art project, a hobby artist, a street performer, a clown, a poet). Say what "
+        "happened in one plain line, using only what the news item says, then his take as a "
+        "clown and typewriter poet on living a creative life: permission to play, and dropping "
+        "the guilt and the pressure on making things. Opinions and lessons only. Never a story "
+        "about a show he did: you do not know his memories."
+    ),
+    "typewriter_poetry": (
+        "THIS IDEA'S LANE: typewriter_poetry. One real thing about typewriters, poems written "
+        "for an occasion or a poem form (the page in the evidence), told simply in two or three "
+        "lines and true to the page: never add a claim it does not make. Then he picks "
+        "something in front of him on his walk (a sign, a dog, a bench, a tree, a stranger who "
+        "says yes) and says he will write it a poem. The script has exactly one line "
+        "[your poem here] where he reads the poem he typed himself. Never write the poem, a "
+        "line of it or a rhyme for it: his poems are made by a person, on the spot, and that "
+        "is the point. End on why a poem made by a person for one moment matters."
+    ),
 }
 
 _HOOK_RULE = (
@@ -401,6 +433,14 @@ def lane_errors(clean: dict[str, Any], lane: str) -> list[str]:
         if hit:
             errors.append(f"no call to action is allowed: '{hit.group(0)}'")
             break
+    if lane_def is not None and lane_def.slot_line:
+        # 05-Nov (Chris): his poem is his; the script leaves exactly one line for it.
+        own = profile.possessive
+        if sum(1 for p in phrases if lane_def.slot_line in p) != 1:
+            errors.append(
+                f"a {lane} script has exactly one line {lane_def.slot_line} where {own} own "
+                "poem goes; never write it for him"
+            )
     if lane_def is not None and lane_def.source_kind == SEED_KIND:
         own = profile.possessive
         slots = [i for i, p in enumerate(phrases) if slot in p]
