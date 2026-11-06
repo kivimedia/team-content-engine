@@ -45,7 +45,8 @@ _PRIMARY_PATHS = {
     "openai.com": ("/index/",),
     "anthropic.com": ("/news/", "/claude-"),
     "deepmind.google": ("/blog/",),
-    "blog.google": ("/products/", "/technology/"),
+    "blog.google": ("/products/", "/technology/",
+                    "/innovation-and-ai/", "/products-and-platforms/"),
     "workspaceupdates.googleblog.com": ("/20",),
     "developers.googleblog.com": ("/en/",),
     # Named KMBot AI-news beats, with exact official publishing hosts.
@@ -78,6 +79,29 @@ _PRIMARY_ARTICLE_PATTERNS = {
     "tella.com": re.compile(r"/blog/[a-z0-9]+(?:-[a-z0-9]+)+/?"),
 }
 
+# A post sits one level below its section page. Section and category pages
+# share the same prefixes (they are in every post's site menu), so on these
+# hosts a prefix match also needs at least this many path segments.
+# blog.google moved its posts under /innovation-and-ai/ and
+# /products-and-platforms/ in Nov 2026; the old sections still hold old posts.
+_PRIMARY_MIN_SEGMENTS = {
+    "blog.google": {
+        "/products/": 3,
+        "/technology/": 3,
+        "/innovation-and-ai/": 4,
+        "/products-and-platforms/": 4,
+    },
+}
+
+
+def _deep_enough(host: str, prefix: str, path: str) -> bool:
+    need = _PRIMARY_MIN_SEGMENTS.get(host, {}).get(prefix, 0)
+    if not need:
+        return True
+    segments = [seg for seg in path.split("/") if seg]
+    # Every section also has a feed one level down (/workspace/rss/).
+    return len(segments) >= need and segments[-1] not in ("rss", "feed")
+
 
 def _public_url(url: str, base: str = "") -> str | None:
     """Public HTTP(S) URL without credentials, query strings, or fragments."""
@@ -101,6 +125,7 @@ def is_primary_announcement(url: str) -> bool:
             and parsed.scheme in ("https", "http")
             and (
                 any(parsed.path.startswith(p) and len(parsed.path) > len(p)
+                    and _deep_enough(host, p, parsed.path)
                     for p in _PRIMARY_PATHS.get(host, ()))
                 or (host in _PRIMARY_ARTICLE_PATTERNS
                     and _PRIMARY_ARTICLE_PATTERNS[host].fullmatch(parsed.path))

@@ -338,3 +338,63 @@ async def test_public_news_fetch_pins_address_and_checks_redirects(monkeypatch):
     assert calls[0].url.host == "93.184.216.34"
     assert calls[0].headers["host"] == "public.example"
     assert calls[0].extensions["sni_hostname"] == "public.example"
+
+
+# 6-Nov (T-18794): blog.google moved its posts under /innovation-and-ai/ and
+# /products-and-platforms/. A post there was not trusted, so its one matching
+# outbound link, the /products/ads-commerce/ section page in the site menu,
+# was cited as the primary and every such post collapsed onto one item.
+@pytest.mark.parametrize("url", [
+    "https://blog.google/products-and-platforms/products/workspace/omni-1-2-flash-google-vids/",
+    "https://blog.google/innovation-and-ai/technology/developers-tools/introducing-gemini-omni-1-2-flash/",
+    "https://blog.google/innovation-and-ai/models-and-research/google-deepmind/introducing-genie-4/",
+    "https://blog.google/products/gemini/gemini-3-5-update/",
+    "https://blog.google/technology/ai/google-ai-updates-october-2026/",
+])
+def test_blog_google_posts_in_old_and_new_sections_are_primary(url):
+    assert url_fetcher.is_primary_announcement(url)
+
+
+@pytest.mark.parametrize("url", [
+    "https://blog.google/products/ads-commerce/",
+    "https://blog.google/technology/ai/",
+    "https://blog.google/products-and-platforms/",
+    "https://blog.google/products-and-platforms/products/",
+    "https://blog.google/products-and-platforms/products/workspace/",
+    "https://blog.google/innovation-and-ai/models-and-research/",
+    "https://blog.google/innovation-and-ai/models-and-research/gemini-models/",
+    "https://blog.google/company-news/inside-google/",
+    "https://blog.google/products/ads-commerce/rss/",
+    "https://blog.google/products-and-platforms/products/workspace/rss/",
+    "https://blog.google.evil.test/products/gemini/gemini-3-5-update/",
+])
+def test_blog_google_section_pages_are_never_primary(url):
+    assert not url_fetcher.is_primary_announcement(url)
+
+
+@pytest.mark.asyncio
+async def test_new_section_blog_google_post_is_its_own_source_not_the_menu(monkeypatch):
+    post = "https://blog.google/products-and-platforms/products/workspace/omni-1-2-flash-google-vids/"
+    markup = (
+        "<html><title>Omni 1.2 Flash in Google Vids</title><nav>"
+        "<a href='/products/ads-commerce/'>Ads and commerce</a>"
+        "<a href='/products-and-platforms/products/workspace/'>Workspace</a></nav>"
+        "<meta property='article:published_time' content='2026-11-05'>"
+        "<main><p class='uni-article-hero__date'>Nov 05, 2026</p>"
+        "<p>Google Vids now makes clips with Omni 1.2 Flash.</p></main></html>"
+    )
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, text=markup, headers={"content-type": "text/html"})
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(url_fetcher.httpx, "AsyncClient", lambda **kw: client_type(
+        transport=httpx.MockTransport(handler),
+    ))
+    result = await url_fetcher.resolve_primary_announcement(post)
+    assert result["source_verified"] is True
+    assert result["url"].rstrip("/") == post.rstrip("/")
+    assert result["published_at"] == datetime(2026, 11, 5)
+    assert all("ads-commerce" not in u for u in seen)
