@@ -71,6 +71,11 @@ _PRIMARY_PATHS = {
 # are not announcement sources.
 _PRIMARY_ARTICLE_PATTERNS = {
     "blog.fal.ai": re.compile(r"/[a-z0-9]+(?:-[a-z0-9]+)+/?"),
+    # AI video tools on the scout's beat (6-Nov): one dated blog post slug only.
+    # Their blog list, tag and page views are not announcements; Tella's
+    # changelog is one undated page and OpusClip's product pages carry no date.
+    "opus.pro": re.compile(r"/blog/[a-z0-9]+(?:-[a-z0-9]+)+/?"),
+    "tella.com": re.compile(r"/blog/[a-z0-9]+(?:-[a-z0-9]+)+/?"),
 }
 
 

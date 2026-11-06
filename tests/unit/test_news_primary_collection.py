@@ -191,6 +191,8 @@ def test_primary_source_allowlist_rejects_lookalikes_credentials_and_homepages()
     "https://blog.suno.com/blog/suno-updates-tos",
     "https://seed.bytedance.com/en/blog/one-take-creation-flexible-referencing-introducing-seedance-2-5",
     "https://blog.modelcontextprotocol.io/posts/2026-07-28-specification/",
+    "https://www.opus.pro/blog/opusclip-4-0",
+    "https://www.tella.com/blog/self-updating-help-docs-with-videos",
 ])
 def test_named_scout_providers_have_explicit_primary_article_routes(url):
     # Providers come from KMBot's existing morning/evening AI-news beat.
@@ -219,6 +221,17 @@ def test_named_scout_providers_have_explicit_primary_article_routes(url):
     "https://blog.modelcontextprotocol.io/posts/",
     "https://github.com/some-user/some-repo/releases/tag/v1",
     "https://secret@x.ai/news/new-model",
+    "https://www.opus.pro/blog/",
+    "https://producer.opus.pro/",
+    "https://www.opus.pro/pricing",
+    "https://opus.pro.evil.test/blog/opusclip-4-0",
+    "https://www.tella.com/blog/",
+    "https://www.tella.com/changelog",
+    "https://www.tella.com/docs/changelog",
+    "https://tella.com.evil.test/blog/post",
+    "https://www.tella.com/blog/tag/ai",
+    "https://www.tella.com/blog/page/2",
+    "https://www.opus.pro/blog/category/product-updates",
 ])
 def test_scout_publisher_roots_do_not_trust_arbitrary_pages_or_subdomains(url):
     assert not url_fetcher.is_primary_announcement(url)
