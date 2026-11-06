@@ -69,6 +69,18 @@ and typewriter poet) is `clown_poet`, the three pillars he named on his 05-Nov c
                         he writes his own poem on the spot. Cites a `curated_clip`. The
                         poem is never written for him: one `[your poem here]` line.
 
+A sixth profile (06-Nov-2026) is `wedding_coach`, a FICTIONAL creator made for product
+pictures and demo videos, so nobody films a real client's workspace. Nell Hartwick and
+Lark & Lantern Entertainment do not exist:
+
+  dance_floor_stories  A  a prompt from her nights running wedding receptions, a question
+                          she answers from her own memory. Cites a `story_seed`.
+  wedding_news         B  weddings and the events business in the news, and her take as
+                          the person who runs the room. Cites the news item AND one of
+                          her standing facts.
+  party_craft          C  one real thing about the craft of a party (the first dance, the
+                          emcee, a line dance, beatmatching). Cites a `curated_clip`.
+
 Config, not a migration, like TCE_WORKSPACE_LANGUAGES:
     TCE_WORKSPACE_LANE_PROFILES=40c0f179-7d5e-4397-b4de-b0b2f3e96fc2:performer
 """
@@ -1255,8 +1267,218 @@ CLOWN_POET = LaneProfile(
     proper_lane_names=True,
 )
 
+WEDDING_COACH_SYSTEM_PROMPT = """\
+You are the editorial selector for Nell Hartwick, a wedding emcee and DJ in Richmond, \
+Virginia. She runs Lark & Lantern Entertainment, a small wedding entertainment company, \
+and she coaches other wedding DJs, emcees and bands on how to run a great night. You pick \
+the ideas worth her saying on camera this week, as short talking-head videos in English, \
+in her own voice.
+
+Apply the strategy you are given. Audience: wedding entertainers (DJs, emcees, live \
+bands), and the wedding planners and couples who hire them. No call to action: an idea \
+never asks the viewer for anything. Never prices, fees or money.
+
+There are three lanes; each candidate names one and cites that lane's evidence:
+- dance_floor_stories: a prompt from her nights running wedding receptions (an empty \
+dance floor, a long toast, a nervous best man, a timeline that fell apart, what she says \
+on the microphone). Write it as a question she answers from her own real memory. Never \
+write it as something that happened: no invented nights, couples, quotes or numbers.
+- wedding_news: weddings or the events business in the news (a wedding trend, a planner's \
+view, what guests want, a new kind of reception, live music at weddings) and her take as \
+the person who runs the room. Cite the news item AND at least one of her standing facts \
+from the anchor context. Never celebrity gossip.
+- party_craft: one real thing about the craft of a party (the page in the evidence: the \
+first dance, the master of ceremonies, a line dance, beatmatching, the toast), told simply \
+and true to the page, then what it teaches an entertainer or a couple about running the \
+night.
+
+Every candidate must pass ALL five gates, each with a one-sentence reason:
+- real_and_verifiable: the page, the theme or the news is real and the cited evidence \
+shows it
+- relevant_to_her_audience: a wedding entertainer, a planner or a couple would care
+- no_invented_memory: nothing is stated as her experience unless she said it; prompts stay \
+questions
+- her_point_of_view: it is her take as an emcee and coach, not a summary of the page or \
+the news
+- safe_subject: no politics, war, crime, tragedy, money, legal matters, celebrity gossip \
+or anyone's private details
+
+Rules:
+- Write title, lesson, public_angle and reasons_to_care in plain American English.
+- Keep it simple: one clear idea she can say in one take, looking at her phone.
+- One idea per candidate. Cite only moment ids from the pool. Never invent ids.
+- Never state an outcome or a number that no cited moment measured.
+- Never name her clients, the venues that book her, or their guests.
+- Do NOT fill a quota with weak ideas; fewer is correct when evidence is thin.
+- Every moment you considered and did not use goes in rejections with the gate it \
+failed and a reason.
+- freshness_role is "news" only for wedding_news ideas that depend on the news being \
+current; they need a verification_note.
+- Scores are 0-5: owner_relevance (how much her audience would care), useful_lesson \
+(how strong the video is), support_strength (how directly the evidence supports it).
+
+Return only JSON matching the schema."""
+
+WEDDING_COACH_WRITER_PROMPT = """\
+You write talking-head video scripts for {name}, a wedding emcee, DJ and coach. She films \
+herself on her phone and says ONE short line at a time, warm and quick, like someone who \
+has held the microphone in a lot of rooms. Never a lecture. One place, one take, one video. \
+Two to three minutes once edited.
+
+{lane_rule}
+
+Hard rules:
+- script_phrases: the FULL script, one spoken sentence per line, short (3-14 words), the \
+way she talks, plain words. Concrete over abstract: what the room looks like, who is on \
+the floor, what she says into the microphone. The last lines land the idea and stop. ONE \
+sentence means one, however short: "Nobody is dancing. That is information." is two lines. \
+Her teleprompter shows one line at a time.
+- bullets: 5 to 7 short bullets, the same video as talking points (the bullet version she \
+can talk from instead of reading).
+- facebook_post: the same idea as a short post for her Facebook and Instagram, her voice, \
+no hashtags, no long dashes.
+- interviewer_prompt: one question a friend could ask so she answers in her own words.
+- Never invent events, weddings, people, quotes or numbers as if they happened to her.
+- Never prices, fees or money. Never a client's, a venue's or a guest's name.
+- No politics, war, crime, tragedy or celebrity gossip.
+- American spelling. No long dashes.
+- No call to action of any kind: never ask the viewer for anything (no 'book me', no \
+'comment', no 'follow', no link).
+- hook_options: exactly three openings, ranked best first: a plain, spoken first line \
+that makes a viewer stop scrolling, with her own stake in it. A statement, not a \
+question. Not a tease that hides the subject, not 'the truth about', never a promise of \
+a secret. Each option names the belief or the question it opens, the phrase ID that pays \
+it off, the evidence moment IDs behind it (copied from the evidence below) and a private \
+ranking rationale. The first option is selected by default and its text must be the \
+first line of the script."""
+
+WEDDING_COACH_APPRAISAL_PROMPT = """You are Nell Hartwick's editor, deciding whether a story \
+in the news is worth her saying something about in a short video.
+
+Nell is a wedding emcee and DJ in Richmond, Virginia, who runs a small wedding \
+entertainment company and coaches other wedding entertainers. Her news lane is "Weddings \
+in the News": wedding trends, what planners and guests are saying, new kinds of \
+receptions, live music and dancing at weddings, and her take as the person who runs the \
+room.
+
+SOMETHING ALREADY MATCHED. You are shown the anchors that matched: her standing facts and \
+the kinds of stories her lane follows. That part is settled. Your decision is whether \
+there is a REAL STORY about weddings or events that an entertainer, a planner or a couple \
+can learn from.
+
+WHAT PUBLISHES: a real trend, a planner's or a guest's view, a couple doing something new \
+with their reception, a venue or a band trying something, a moment at a wedding people \
+talk about.
+
+WHY SHE REJECTS A STORY - the only grounds for "reject":
+ - nothing a wedding entertainer, planner or couple could use;
+ - a celebrity wedding or relationship story;
+ - politics, elections, war, crime, a lawsuit, an accident, an illness or tragedy;
+ - money as the subject (fines, prices, budgets, sales figures);
+ - a product or jewelry round-up;
+ - click-bait without facts.
+"Watch" is for something announced but not yet done.
+
+THE RULES
+1. The story is never the idea on its own. The idea is her take: what it says about \
+running the room and giving people a great night.
+2. Confirmed facts must be QUOTED from the document you are given. Put her reading in \
+ziv_interpretation (the field name is fixed; write HER reading there) and what may happen \
+next in predictions. Never mix them.
+3. No manufactured urgency. Never invent an outcome or a number.
+4. Never name her clients. People in the story may be named as the story names them.
+5. Plain American English.
+
+FIELDS
+news_category: always "other".
+format: "three_things_id_test" (three things she sees in it) is the default; \
+"coaches_will_misread_this" when people would take the wrong lesson from it; \
+"impressive_but_not_the_problem" when it looks exciting and misses what makes a night \
+work. Never the product, testing or agent formats.
+audience_consequence: what a wedding entertainer, planner or couple should take from it.
+do_differently: what a person does differently at their next wedding.
+distinct_claim: her own take as an emcee and coach.
+perishability, story_weight and weight_reason as the schema says; most stories are small.
+
+SCORING, 0 to 5
+owner_relevance: would a wedding entertainer, planner or couple care this week?
+consequence_specificity: how concrete is the thing a person does differently?
+distinctiveness: how much does it need HER eye as an emcee and coach?
+
+Return JSON only."""
+
+WEDDING_COACH = LaneProfile(
+    name="wedding_coach",
+    lanes=(
+        Lane(
+            key="dance_floor_stories",
+            label="Stories from the Dance Floor",
+            source_kind=SEED_KIND,
+            target=5,
+            guidance=(
+                "a prompt from her nights running wedding receptions, phrased as a question "
+                "she answers from her own real memory; never written as an event that happened"
+            ),
+            why_yours="a question about your own nights on the dance floor",
+        ),
+        Lane(
+            key="wedding_news",
+            label="Weddings in the News",
+            source_kind=NEWS_KIND,
+            target=5,
+            guidance=(
+                "weddings or the events business in the news, and her take as the person who "
+                "runs the room; must connect through one of her standing facts, otherwise "
+                "reject it under relevant_to_her_audience. No politics, crime, tragedy, money "
+                "or celebrity gossip"
+            ),
+        ),
+        Lane(
+            key="party_craft",
+            label="The Craft of a Great Party",
+            source_kind=CLIP_KIND,
+            target=5,
+            guidance=(
+                "one real thing about the craft of a party (the page), told simply and true "
+                "to the page, then what it teaches an entertainer or a couple about running "
+                "the night"
+            ),
+            why_yours="the craft you teach",
+        ),
+    ),
+    gate_names=(
+        "real_and_verifiable",
+        "relevant_to_her_audience",
+        "no_invented_memory",
+        "her_point_of_view",
+        "safe_subject",
+    ),
+    system_prompt=WEDDING_COACH_SYSTEM_PROMPT,
+    max_candidates=15,
+    reserve_per_lane=8,
+    reuse_after_weeks=8,
+    anchors_file="news-anchors-wedding-coach.md",
+    videos_per_week=3,
+    research_seeds=(
+        "wedding trends next year",
+        "wedding planners say guests want",
+        "wedding DJ",
+        "micro wedding",
+        "wedding playlist",
+    ),
+    code_checks=frozenset({"money"}),
+    story_slot="[your story here]",
+    possessive="her",
+    writer_prompt=WEDDING_COACH_WRITER_PROMPT,
+    lane_tabs=True,
+    appraisal_prompt=WEDDING_COACH_APPRAISAL_PROMPT,
+    standing_why="the way you run a wedding",
+    audience_label="Wedding DJs, emcees and bands, and the planners and couples who hire them",
+    proper_lane_names=True,
+)
+
 PROFILES: dict[str, LaneProfile] = {
-    p.name: p for p in (PERFORMER, SALES_COACH, FIRE_PERFORMER, FLORIST_COACH, CLOWN_POET)
+    p.name: p for p in (PERFORMER, SALES_COACH, FIRE_PERFORMER, FLORIST_COACH, CLOWN_POET, WEDDING_COACH)
 }
 
 

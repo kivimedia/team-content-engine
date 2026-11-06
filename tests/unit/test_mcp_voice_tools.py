@@ -3931,6 +3931,24 @@ def test_find_ideas_passes_a_clown_poets_lane_types():
     assert not any("_" in t.split(".")[0] for t in out["texts"])
 
 
+def test_find_ideas_passes_a_wedding_coachs_lane_types():
+    """06-Nov (demo creator): her three lanes reach the API by name, and the spoken line says them plainly."""
+    out = run({
+        "steps": [step("tce_find_ideas", count=3, type="party_craft"),
+                  step("tce_find_ideas", count=2, type="dance_floor_stories"),
+                  step("tce_find_ideas", count=1, type="wedding_news")],
+        "responses": {
+            "POST /editorial/idea-research": {"ok": True, "status": 202, "data": {"run_id": RUN}},
+        },
+    })
+    bodies = [s["body"]["type"] for s in out["sent"] if s["key"] == "POST /editorial/idea-research"]
+    assert bodies == ["party_craft", "dance_floor_stories", "wedding_news"]
+    assert "3 new party craft topics from your party craft pages" in out["texts"][0]
+    assert "from your dance floor prompts" in out["texts"][1]
+    assert "1 new wedding news topic" in out["texts"][2]
+    assert not any("_" in t.split(".")[0] for t in out["texts"])
+
+
 # 15-Oct (T-11694): "what did you get, what are you going to do overall" on the
 # 13-Oct call had nothing to answer from: every video tool read only his notes.
 

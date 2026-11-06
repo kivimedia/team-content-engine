@@ -49,11 +49,13 @@ OWNER_KINDS = ("any", "news", "coaching", "build")
 # ideas in the news, lessons from his courses and his coaching-room prompts as evergreen.
 # 05-Nov: the clown_poet workspace (Chris) the same way: creativity and play in the news,
 # his parent-and-artist prompts and typewriter and poem pages as evergreen.
+# 06-Nov: the wedding_coach demo workspace (a fictional creator) the same way.
 LANE_KINDS = ("trend_reaction", "magic_clip", "behind_scenes",
               "in_the_wild", "from_teaching", "practice_room",
               "taming_fire", "sacred_flame", "keeper_of_flame",
               "smart_ideas", "from_my_courses", "coaching_room",
-              "parent_artist", "creative_life", "typewriter_poetry")
+              "parent_artist", "creative_life", "typewriter_poetry",
+              "dance_floor_stories", "wedding_news", "party_craft")
 KINDS = OWNER_KINDS + LANE_KINDS
 KIND_LABEL = {"any": "", "news": "news", "coaching": "coaching", "build": "build",
               "trend_reaction": "trend", "magic_clip": "clip", "behind_scenes": "story",
@@ -62,24 +64,29 @@ KIND_LABEL = {"any": "", "news": "news", "coaching": "coaching", "build": "build
               "sacred_flame": "fire history", "keeper_of_flame": "story",
               "smart_ideas": "smart idea", "from_my_courses": "course",
               "coaching_room": "coaching", "parent_artist": "parent and artist",
-              "creative_life": "creative life", "typewriter_poetry": "typewriter poetry"}
+              "creative_life": "creative life", "typewriter_poetry": "typewriter poetry",
+              "dance_floor_stories": "dance floor", "wedding_news": "wedding news",
+              "party_craft": "party craft"}
 KIND_SOURCES = {"coaching": ("fathom_meeting",), "build": ("github_commit_group",),
                 "magic_clip": ("curated_clip",), "behind_scenes": ("story_seed",),
                 "from_teaching": ("curated_clip",), "practice_room": ("story_seed",),
                 "sacred_flame": ("curated_clip",), "keeper_of_flame": ("story_seed",),
                 "from_my_courses": ("curated_clip",), "coaching_room": ("story_seed",),
-                "parent_artist": ("story_seed",), "typewriter_poetry": ("curated_clip",)}
+                "parent_artist": ("story_seed",), "typewriter_poetry": ("curated_clip",),
+                "dance_floor_stories": ("story_seed",), "party_craft": ("curated_clip",)}
 KIND_WHERE = {"coaching": "calls", "build": "commits", "magic_clip": "clips",
               "behind_scenes": "story seeds", "from_teaching": "teaching pages",
               "practice_room": "practice prompts", "sacred_flame": "fire history pages",
               "keeper_of_flame": "story prompts", "from_my_courses": "course lessons",
               "coaching_room": "coaching prompts", "parent_artist": "parent and artist prompts",
-              "typewriter_poetry": "typewriter and poem pages"}
+              "typewriter_poetry": "typewriter and poem pages",
+              "dance_floor_stories": "dance floor prompts", "party_craft": "party craft pages"}
 EVERGREEN_KINDS = ("magic_clip", "behind_scenes", "from_teaching", "practice_room",
                    "sacred_flame", "keeper_of_flame", "from_my_courses", "coaching_room",
-                   "parent_artist", "typewriter_poetry")
+                   "parent_artist", "typewriter_poetry", "dance_floor_stories", "party_craft")
 # A lane workspace's "news" is its news lane.
-NEWS_LANES = ("trend_reaction", "in_the_wild", "taming_fire", "smart_ideas", "creative_life")
+NEWS_LANES = ("trend_reaction", "in_the_wild", "taming_fire", "smart_ideas", "creative_life",
+              "wedding_news")
 
 
 def kinds_for(ws: uuid.UUID | str | None) -> tuple[str, ...]:

@@ -170,6 +170,32 @@ _LANE_RULES = {
         "line of it or a rhyme for it: his poems are made by a person, on the spot, and that "
         "is the point. End on why a poem made by a person for one moment matters."
     ),
+    # 06-Nov: the wedding_coach profile, a fictional creator for product pictures and demos.
+    "dance_floor_stories": (
+        "THIS IDEA'S LANE: dance_floor_stories. A moment from her nights running wedding "
+        "receptions that SHE will tell from her OWN memory. You do not know what happened, so "
+        "you never write it. Write the frame around her story instead: a line that opens what "
+        "wedding entertainers struggle with or love, short prompts that help her remember "
+        "(where she was, who was on the floor, what she said next), one line that is exactly "
+        "[your story here] where her real story goes, and a closing line for any wedding "
+        "entertainer, phrased as a general truth, never as an event. Never a first-person past "
+        "tense sentence (no 'I once', 'I remember'), no invented nights, couples, quotes or "
+        "numbers. interviewer_prompt is the one memory question she answers on camera."
+    ),
+    "wedding_news": (
+        "THIS IDEA'S LANE: wedding_news. Weddings or the events business in the news (a trend, "
+        "a planner's view, what guests want, a new kind of reception). Say what happened in one "
+        "plain line, using only what the news item says, then her take as the emcee who runs "
+        "the room: what it means for the next wedding. Opinions and lessons only. Never a story "
+        "about a wedding she did: you do not know her memories."
+    ),
+    "party_craft": (
+        "THIS IDEA'S LANE: party_craft. One real thing about the craft of a party (the page in "
+        "the evidence), told simply in two or three lines and true to the page: never add a "
+        "claim it does not make. Then what it teaches a wedding entertainer or a couple about "
+        "running the night, as her opinion and general advice. Never a story about a wedding "
+        "she did: you do not know her memories."
+    ),
 }
 
 _HOOK_RULE = (

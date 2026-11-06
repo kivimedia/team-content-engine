@@ -81,6 +81,10 @@ LANE_LABELS = {
     "parent_artist": "Parent as an Artist",
     "creative_life": "Living a Creative Life",
     "typewriter_poetry": "Typewriter Poetry",
+    # The wedding_coach profile's lanes (06-Nov): the fictional demo creator.
+    "dance_floor_stories": "Stories from the Dance Floor",
+    "wedding_news": "Weddings in the News",
+    "party_craft": "The Craft of a Great Party",
 }
 
 
