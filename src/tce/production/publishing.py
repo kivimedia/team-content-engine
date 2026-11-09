@@ -50,6 +50,50 @@ SKILLS = {
 # His writing rules: never an em or en dash, a plain hyphen instead.
 _DASHES = re.compile("[–—]")
 
+# 9-Nov: "I keep clicking on the write post on ONE post but when I come back to the TCE
+# library, no copy was made and the write post button available again." Where a write
+# stands lives on the server, so the card still says it after he leaves and comes back:
+# "writing", or "failed" with the reason. One process runs the writes (start.sh starts one
+# uvicorn), so this lives where they do; a restart stops both and the card offers the
+# button again, which is then true.
+_WRITES: dict[str, dict[str, Any]] = {}
+
+
+def note_write(upload_id: Any, state: str, detail: str | None = None) -> None:
+    _WRITES[str(upload_id)] = {"state": state, "detail": detail}
+
+
+def clear_write(upload_id: Any) -> None:
+    _WRITES.pop(str(upload_id), None)
+
+
+def write_state(upload_id: Any) -> dict[str, Any] | None:
+    """{"state": "writing" | "failed", "detail": ...} while there is something to say."""
+    got = _WRITES.get(str(upload_id))
+    return dict(got) if got else None
+
+
+def write_failed_detail(status: str, reason: str, language: str, *, owner: bool) -> str:
+    """What the card says when the posts were not written. `status` is the queue's
+    (failed | cancelled | timeout | waiting_capacity); the reason is shown only to him."""
+    waiting = status in ("timeout", "waiting_capacity")
+    if language == "he":
+        return (
+            "הכותב עוד לא הגיע לפוסטים האלה. הם נשארים בתור; לוחצים שוב על לכתוב את הפוסטים בעוד כמה דקות."
+            if waiting
+            else "לא הצלחתי לכתוב את הפוסטים. לוחצים שוב על לכתוב את הפוסטים כדי לנסות שוב."
+        )
+    if waiting:
+        said = (
+            "The writer has not reached these posts yet. They stay in the queue; tap Write the "
+            "posts again in a few minutes and they fill in as soon as the answer is ready."
+        )
+    else:
+        said = "The posts could not be written. Tap Write the posts to try again."
+    if owner and reason and not waiting:
+        said += f" What the writer said: {_DASHES.sub('-', reason.strip())[:200]}"
+    return said
+
 
 def spoken_text(
     words: list[dict[str, Any]], keep: list[list[float]], kept: list[dict[str, Any]] | None = None

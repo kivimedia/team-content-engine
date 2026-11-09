@@ -1704,8 +1704,9 @@
   function libraryBusy(items) {
     var now = Date.now();
     return items.some(function (i) {
-      var writing = state.pubWriting && state.pubWriting[i.upload_id]
-        && !(i.publishing || []).length && now - state.pubWriting[i.upload_id] < 10 * 60000;
+      // 9-Nov: the server's word first, so a finished or failed write stops the re-reads.
+      var said = !(i.publishing || []).length && postsWriting(i);
+      var writing = said && said.state === "writing";
       return LIBRARY_LIVE.indexOf(i.status) >= 0
         || (i.last_request && i.last_request.state === "in_progress")
         // 1-Oct: his notes being made into a new version.
@@ -1924,17 +1925,31 @@
   var PUB_STATUS = { draft: "Ready to post", posting: "Posting now", scheduled: "Scheduled",
                      posted: "Posted", failed: "Did not go out", revising: "Being changed" };
 
+  /* 9-Nov: "when I come back to the TCE library, no copy was made and the write post
+     button available again." Where a write stands comes from the server
+     (item.posts_writing), so leaving and coming back keeps it; a write that did not
+     happen says why above the button instead of quietly offering it again. */
+  function postsWriting(item) {
+    var said = item.posts_writing;
+    if (said && said.state) return said;
+    var tapped = state.pubWriting && state.pubWriting[item.upload_id];
+    return tapped && Date.now() - tapped < 10 * 60000 ? { state: "writing", detail: null } : null;
+  }
+
   function publishSection(item) {
     if (state.library && state.library.post_by_hand) return handPostSection(item);
     var pubs = item.publishing || [];
     var id = esc(item.upload_id);
     var html = '<section class="publish" data-pub-upload="' + id + '"><h4>Publish</h4>';
     if (!pubs.length) {
-      var writing = state.pubWriting && state.pubWriting[item.upload_id];
-      html += writing
-        ? '<p class="notice">Writing the Instagram, Facebook, YouTube and LinkedIn posts from what you say in this video, on your subscription. This card fills in when they are ready.</p>'
-        : '<p class="section-hint">TCE writes the four posts from what you say in the edit. You read them, change anything, then post.</p>'
+      var said = postsWriting(item);
+      if (said && said.state === "writing") {
+        html += '<p class="notice">Writing the Instagram, Facebook, YouTube and LinkedIn posts from what you say in this video, on your subscription. This card fills in when they are ready.</p>';
+      } else {
+        if (said && said.detail) html += '<p class="notice is-bad">' + esc(said.detail) + "</p>";
+        html += '<p class="section-hint">TCE writes the four posts from what you say in the edit. You read them, change anything, then post.</p>'
           + '<div class="actions"><button class="btn primary" type="button" data-pub-draft="' + id + '">Write the posts</button></div>';
+      }
       return html + "</section>";
     }
     // 18-Oct (T-13905): one tab per post; only the open one shows. The others stay in the
@@ -2022,10 +2037,13 @@
     html += '<p class="section-hint">' + esc(state.library.post_by_hand) + "</p>";
     html += '<div class="actions"><a class="btn primary" href="' + file + '?download=1" download>Download</a></div>';
     if (!pubs.length) {
-      var writing = state.pubWriting && state.pubWriting[item.upload_id];
-      html += writing
-        ? '<p class="notice">Writing your posts. This card fills in when they are ready.</p>'
-        : '<div class="actions"><button class="btn" type="button" data-pub-draft="' + id + '">Write the posts</button></div>';
+      var said = postsWriting(item);
+      if (said && said.state === "writing") {
+        html += '<p class="notice">Writing your posts. This card fills in when they are ready.</p>';
+      } else {
+        if (said && said.detail) html += '<p class="notice is-bad">' + esc(said.detail) + "</p>";
+        html += '<div class="actions"><button class="btn" type="button" data-pub-draft="' + id + '">Write the posts</button></div>';
+      }
       return html + "</section>";
     }
     pubs.forEach(function (p) {

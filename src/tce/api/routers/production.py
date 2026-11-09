@@ -4656,10 +4656,15 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
         row = await _load(s, upload_id, ws)
         existing = await _publications(s, ws, upload_id)
         if not rewrite and len(existing) == len(platforms):
+            publishing.clear_write(upload_id)
             return
         words = list(row.transcript or [])
         keep = [list(r) for r in (row.edit_plan or {}).get("keep") or []]
         if not words or not keep:
+            if rewrite:
+                publishing.note_write(upload_id, "failed", publishing.write_failed_detail(
+                    "failed", "", workspace_language(ws), owner=False,
+                ))
             return
         title, script_posts = "", {}
         if row.candidate_id:
@@ -4693,10 +4698,19 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
             schema,
             ws,
             key,
+            # 9-Nov: a tap is him asking again, so a write that failed before (4-Nov: a
+            # passing login error, 3 of 3) runs again instead of being refused for good
+            # under the same key. The queue still runs a failed job again only once.
+            requeue_failed=rewrite,
             **extra,
         )
-    except LLMUnavailable:
-        return  # the card offers "Write the posts" again
+    except LLMUnavailable as gone:
+        # The card offers "Write the posts" again, now under the reason it did not.
+        state = "waiting" if gone.status in ("timeout", "waiting_capacity") else "failed"
+        publishing.note_write(upload_id, state, publishing.write_failed_detail(
+            gone.status, gone.detail, workspace_language(ws), owner=persona is None,
+        ))
+        return
     if persona is None:
         copies, problems = publishing.clean_copy(answer.structured or {}), {}
     else:
@@ -4718,13 +4732,26 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
                 pub.copy = copies[platform]
                 pub.status, pub.detail = "draft", problems.get(platform)
         await s.commit()
+    publishing.clear_write(upload_id)  # the posts themselves are on the card now
+
+
+async def _draft_posts_said(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool) -> None:
+    """draft_posts in the background, where an error used to vanish with the task."""
+    try:
+        await draft_posts(upload_id, ws, rewrite=rewrite)
+    except Exception as broke:
+        structlog.get_logger().warning("production.draft_posts_failed", upload=str(upload_id), exc_info=True)
+        publishing.note_write(upload_id, "failed", publishing.write_failed_detail(
+            "failed", f"{type(broke).__name__}: {broke}", workspace_language(ws),
+            owner=not publishing.is_client_workspace(ws, None),
+        ))
 
 
 def start_draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = False) -> None:
     # 5-Oct (merged): a lane workspace's posts are written by its OWN Hebrew writer
     # (draft_posts picks copy_system(persona), and writes nothing for a client with no
     # persona), so its finished edits get posts to copy, never posts sent.
-    _spawn(draft_posts(upload_id, ws, rewrite=rewrite))
+    _spawn(_draft_posts_said(upload_id, ws, rewrite=rewrite))
 
 
 async def revise_posts(upload_id: uuid.UUID, ws: uuid.UUID, request: str) -> None:
@@ -5018,6 +5045,9 @@ async def write_posts(
         raise HTTPException(status_code=409, detail=refused)
     if not row.edited_path:
         raise HTTPException(status_code=409, detail="Edit the video first; the posts are written from the edit")
+    # Said before the writer starts, so the card reads "Writing" even if he leaves the
+    # Library and comes straight back (9-Nov).
+    publishing.note_write(upload_id, "writing")
     start_draft_posts(upload_id, ws, rewrite=True)
     return {"status": "writing"}
 

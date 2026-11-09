@@ -88,7 +88,7 @@ async def app_client(editorial_sessionmaker, monkeypatch, tmp_path):
 
     asked: list[tuple[str, str, str]] = []
 
-    async def fake_ask(kind, prompt, system, schema, ws, key):
+    async def fake_ask(kind, prompt, system, schema, ws, key, **_options):
         asked.append((kind, prompt, system))
         assert "What he says in the edited video" in prompt
         if kind == publishing.REVISE_JOB:
@@ -377,3 +377,96 @@ async def test_an_unreadable_kmboards_answer_leaves_the_post_queued(app_client, 
     monkeypatch.setattr(prod, "run_platform", broken)
     row = await _linkedin_row(client, ws, uid)
     assert row["status"] == "scheduled" and "Queued on LinkedIn" in row["detail"]
+
+
+# ------------------------------------------------- a write that failed once (9-Nov)
+
+
+async def test_a_tap_after_a_failed_write_runs_it_again_and_the_card_says_where_it_stands(
+    editorial_sessionmaker, monkeypatch
+):
+    """9-Nov: "I keep clicking on the write post on ONE post but when I come back to the
+    TCE library, no copy was made and the write post button available again." Its write
+    had failed on 4-Nov (a passing login error, 3 of 3). Every tap after that asked for
+    the same job, the queue refuses a failed job unless asked to run it again, and the
+    refusal was dropped without a word. The real queue runs here; only the worker is
+    played by hand."""
+    from sqlalchemy import select
+
+    from tce.editorial import library as library_service
+    from tce.llm import provider
+    from tce.models.llm_job import LLMJob
+
+    monkeypatch.setattr(settings, "private_access_key", SecretStr(KEY))
+    monkeypatch.setattr(settings, "editor_default_workspace_id", "")
+    monkeypatch.setattr(settings, "llm_provider", provider.ACCEPTED_PROVIDER)
+    monkeypatch.setattr(settings, "llm_job_wait_timeout_s", 0.0)
+    monkeypatch.setattr(prod, "session_factory", lambda: editorial_sessionmaker)
+    sm = editorial_sessionmaker
+    ws, uid = await seed(sm)
+
+    async def copy_job() -> LLMJob:
+        async with sm() as s:
+            return (await s.execute(select(LLMJob).where(LLMJob.job_type == publishing.COPY_JOB))).scalar_one()
+
+    async def card() -> dict:
+        async with sm() as s:
+            items = (await library_service.list_library(s, ws))["items"]
+        return next(i for i in items if i["upload_id"] == str(uid))
+
+    # The first write is queued, and the worker gives up on it the way it did on 4-Nov.
+    await prod.draft_posts(uid, ws, rewrite=True)
+    async with sm() as s:
+        job = await s.get(LLMJob, (await copy_job()).id)
+        job.status, job.attempt_count, job.error_code = "failed", 3, "cli_error"
+        job.error_detail = "max_attempts reached (3/3): Failed to refresh OAuth token"
+        await s.commit()
+
+    # He taps Write the posts: the failed job runs again instead of being refused.
+    await prod.draft_posts(uid, ws, rewrite=True)
+    job = await copy_job()
+    assert job.status == "queued"
+    assert (job.request_json or {}).get("requeue_count") == 1
+    # The writer has not answered inside the wait (0 s here): coming back to the Library,
+    # the card says the posts are still in the queue, not a bare button.
+    said = (await card())["posts_writing"]
+    assert said["state"] == "waiting" and "queue" in said["detail"]
+
+    # It fails a second time: the queue runs a failed job again only once, so the card
+    # says why, and the button is offered again under it.
+    async with sm() as s:
+        job = await s.get(LLMJob, job.id)
+        job.status, job.error_code, job.error_detail = "failed", "cli_error", "it stopped again"
+        await s.commit()
+    await prod.draft_posts(uid, ws, rewrite=True)
+    said = (await card())["posts_writing"]
+    assert said["state"] == "failed"
+    assert "could not be written" in said["detail"]
+
+    # The worker answers in the end: the next tap writes the four posts, and the card's
+    # note goes, because the posts themselves are there now.
+    async with sm() as s:
+        job = await s.get(LLMJob, job.id)
+        job.status, job.error_code, job.error_detail = "succeeded", None, None
+        job.result_json = {
+            "instagram": {"caption": "IG caption"},
+            "facebook": {"message": "FB post"},
+            "youtube": {"title": "Build that first", "description": "D #shorts", "tags": ["shorts"]},
+            "linkedin": {"message": "LI post", "hashtags": ["Coaching"]},
+        }
+        await s.commit()
+    await prod.draft_posts(uid, ws, rewrite=True)
+    item = await card()
+    assert [p["status"] for p in item["publishing"]] == ["draft"] * 4
+    assert item["posts_writing"] is None
+
+
+async def test_the_tap_itself_says_writing_before_the_writer_starts(app_client, monkeypatch):
+    """The card reads "Writing" from the server the moment the tap is answered, so it
+    still says so when he leaves the Library and comes back."""
+    client, sm, _r, _a = app_client
+    ws, uid = await seed(sm)
+    monkeypatch.setattr(prod, "_spawn", lambda coro: coro.close())
+    started = await client.post(f"/api/v1/production/uploads/{uid}/publishing/draft", headers=h(ws))
+    assert started.status_code == 202
+    assert publishing.write_state(uid) == {"state": "writing", "detail": None}

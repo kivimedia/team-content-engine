@@ -353,7 +353,9 @@ async def test_matan_posts_are_drafted_with_his_system_and_never_posted_by_tce(
     await prod.draft_posts(uid, MATAN)
     system, schema, kw = asked[0]
     assert system == publishing.copy_system(p) and schema == publishing.copy_schema(p)
-    assert kw == {"prompt_version": publishing.CLIENT_PROMPT_VERSION}
+    assert kw["prompt_version"] == publishing.CLIENT_PROMPT_VERSION
+    # 9-Nov: only a tap on Write the posts runs a failed write again; this one is automatic.
+    assert kw["requeue_failed"] is False
     async with editorial_sessionmaker() as s:
         pubs = await prod._publications(s, MATAN, uid)
     assert sorted(pubs) == ["facebook", "instagram", "tiktok", "youtube"]

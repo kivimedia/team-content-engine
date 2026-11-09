@@ -271,6 +271,13 @@ PUBLISH_LABELS = {
 }
 
 
+def _publishing_module():
+    # Imported where it is used, like post_by_hand below: tce.production loads after this.
+    from tce.production import publishing
+
+    return publishing
+
+
 def _publishing_json(pubs: dict[str, VideoPublication]) -> list[dict[str, Any]]:
     """The four posts, in a fixed order; empty until they are written."""
     if not pubs:
@@ -656,6 +663,9 @@ async def list_library(
                 # 30-Sep: the render he would be watching; the player puts it on the address.
                 "render_ref": upload.render_ref if upload.edited_path else None,
                 "publishing": _publishing_json(pubs_by_upload.get(upload.id, {})),
+                # 9-Nov: where a tap on Write the posts stands, so the card says it
+                # after he leaves and comes back (writing, waiting, or why it failed).
+                "posts_writing": _publishing_module().write_state(upload.id),
                 "last_request": (
                     edit_request_to_json(last_by_upload[upload.id])
                     if upload.id in last_by_upload
