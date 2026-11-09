@@ -1,5 +1,8 @@
 """The book app's API (9-Nov-2026, T-19730).
 
+Since T-19824 the chapters, their versions and their status come from the book
+editor's own record whenever it exists (settings.book_editor_record), read on every call.
+
 GET  /book/chapters                      the chapter list, each with its status, and
                                          whether narration can be bought
 GET  /book/chapters/{n}                  one chapter's paragraphs and status
@@ -32,7 +35,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from tce.api.private_access import require_private_workspace, scoped_editor_workspace
-from tce.book.store import STATUS_WORDS, STATUSES, BookStore, summary
+from tce.book.store import STATUS_WORDS, STATUSES, BookStore, EditorRecord, RecordWriteError, summary
 from tce.production import agent_talks
 from tce.settings import settings
 
@@ -54,7 +57,10 @@ async def require_owner(
 
 
 def store() -> BookStore:
-    book = BookStore(Path(settings.evidence_upload_dir) / "book")
+    record = None
+    if settings.book_editor_record:
+        record = EditorRecord(Path(settings.book_editor_record), settings.book_written_through)
+    book = BookStore(Path(settings.evidence_upload_dir) / "book", record=record)
     book.ensure_imported(settings.book_source_path)
     return book
 
@@ -87,6 +93,7 @@ async def list_chapters(ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any
     book = store()
     return {
         "chapters": summary(book),
+        "source": "editor" if book.record is not None else "import",
         "narration": narration_state(book),
         "editor_seat": settings.book_editor_seat,
         "statuses": [{"id": s, "words": STATUS_WORDS[s]} for s in STATUSES],
@@ -106,6 +113,10 @@ async def get_chapter(n: int, ws: uuid.UUID = Depends(require_owner)) -> dict[st
         "status_words": STATUS_WORDS.get(entry.get("status", "draft"), "Draft"),
         "status_at": entry.get("at"),
         "history": entry.get("history", []),
+        "version": chapter.get("version", 0),
+        "layout_items": chapter.get("layout_items", []),
+        "layout_text": chapter.get("layout_text", ""),
+        "group": chapter.get("group", "written"),
         "previous": numbers[at - 1] if at > 0 else None,
         "next": numbers[at + 1] if at + 1 < len(numbers) else None,
         "narration": narration_state(book),
@@ -127,6 +138,10 @@ async def set_status(n: int, body: StatusBody, ws: uuid.UUID = Depends(require_o
         entry = book.set_status(n, body.status, by=body.by or "ziv", note=body.note)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RecordWriteError as exc:
+        # Never keep a second copy of his decision: it is in the editor's record or nowhere.
+        logger.warning("book.status_not_written", chapter=n, error=str(exc)[:300])
+        raise HTTPException(status_code=503, detail="The editor's record could not be written, so nothing changed") from exc
     logger.info("book.status", chapter=n, status=body.status, by=body.by)
     return {"n": n, "status": entry["status"], "status_words": STATUS_WORDS[entry["status"]], "at": entry["at"]}
 

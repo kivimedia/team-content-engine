@@ -79,31 +79,70 @@
     return `Read by this device's own voice for now: the ElevenLabs voice is switched on only after you OK its cost${dollars}.`;
   }
 
+  const isNew = (c) => c.group === "new";
+  const label = (c) => (isNew(c) ? `Episode ${c.n}` : `Chapter ${c.n}`);
+  const itemsWords = (items) => (items && items.length ? (items.length === 1 ? `item ${items[0]}` : `items ${items.join(", ")}`) : "");
+
+  function chapterButton(c) {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.chapter = String(c.n);
+    b.innerHTML = `<span class="num"></span><span class="title"></span><span class="status-chip"></span><span class="length"></span>`;
+    const where = [label(c), c.part, itemsWords(c.layout_items) ? `layout ${itemsWords(c.layout_items)}` : ""].filter(Boolean).join(" - ");
+    b.querySelector(".num").textContent = where;
+    b.querySelector(".title").textContent = c.title;
+    chip(b.querySelector(".status-chip"), c.status, c.status_words);
+    b.querySelector(".length").textContent = c.status === "to_write"
+      ? "Not written yet"
+      : `About ${c.minutes} min read aloud${c.version > 1 ? `, version ${c.version}` : ""}`;
+    if (c.status === "to_write") {
+      b.classList.add("unwritten");
+      if (c.layout_text) {
+        const peek = document.createElement("span");
+        peek.className = "layout-peek";
+        peek.textContent = c.layout_text;
+        b.appendChild(peek);
+      }
+    }
+    b.addEventListener("click", () => go(c.n));
+    li.appendChild(b);
+    return li;
+  }
+
   async function loadList() {
     const data = await api("/book/chapters");
     state.chapters = data.chapters;
     state.narration = data.narration;
     state.seat = data.editor_seat || "tce";
     $("narrationNote").textContent = narrationLine(data.narration);
+    const fresh = data.chapters.filter(isNew);
+    const written = data.chapters.filter((c) => !isNew(c));
     const list = $("chapterList");
+    const fold = $("writtenList");
     list.textContent = "";
-    for (const c of data.chapters) {
-      const li = document.createElement("li");
-      const b = document.createElement("button");
-      b.type = "button";
-      b.dataset.chapter = String(c.n);
-      b.innerHTML = `<span class="num"></span><span class="title"></span><span class="status-chip"></span><span class="length"></span>`;
-      b.querySelector(".num").textContent = `Chapter ${c.n}`;
-      b.querySelector(".title").textContent = c.title;
-      chip(b.querySelector(".status-chip"), c.status, c.status_words);
-      b.querySelector(".length").textContent = `About ${c.minutes} min read aloud`;
-      b.addEventListener("click", () => go(c.n));
-      li.appendChild(b);
-      list.appendChild(li);
+    fold.textContent = "";
+    // No new episode in the record yet: everything is one list, as before.
+    const grouped = fresh.length > 0;
+    for (const c of grouped ? fresh : data.chapters) list.appendChild(chapterButton(c));
+    if (grouped) for (const c of written) fold.appendChild(chapterButton(c));
+    $("newHead").hidden = !grouped;
+    $("writtenFold").hidden = !grouped || !written.length;
+    if (grouped) {
+      const approvedW = written.filter((c) => c.status === "approved").length;
+      $("writtenSummary").textContent = `Part one, already written (${written.length} chapters, ${approvedW} approved)`;
+      const toWrite = fresh.filter((c) => c.status === "to_write").length;
+      const approvedN = fresh.filter((c) => c.status === "approved").length;
+      const ready = fresh.length - toWrite - approvedN;
+      $("progressLine").textContent = `${fresh.length - toWrite} of ${fresh.length} written: ${ready} to check, ${approvedN} approved, ${toWrite} still to write.`;
+      $("progressLine").hidden = false;
+      top(`${fresh.length - toWrite} of ${fresh.length} new episodes written, ${approvedN} approved`);
+    } else {
+      $("progressLine").hidden = true;
+      const approved = data.chapters.filter((c) => c.status === "approved").length;
+      top(`${data.chapters.length} chapters, ${approved} approved`);
     }
     if (!data.chapters.length) status("No chapters are in the Book yet: the manuscript was not found on the server.", true);
-    const approved = data.chapters.filter((c) => c.status === "approved").length;
-    top(`${data.chapters.length} chapters, ${approved} approved`);
     return data;
   }
 
@@ -116,9 +155,14 @@
     state.index = 0;
     state.narration = c.narration;
     state.seat = c.editor_seat || state.seat;
-    $("chapterPart").textContent = c.part || "";
-    $("chapterTitle").textContent = `Chapter ${c.n}: ${c.title}`;
-    $("bookTitle").textContent = `Chapter ${c.n}`;
+    $("chapterPart").textContent = [c.part, c.version > 1 ? `version ${c.version}` : ""].filter(Boolean).join(" - ");
+    $("chapterTitle").textContent = `${label(c)}: ${c.title}`;
+    $("bookTitle").textContent = label(c);
+    $("approveButton").textContent = isNew(c) ? "Approve this episode" : "Approve this chapter";
+    $("layoutBox").hidden = !c.layout_text;
+    $("layoutSummary").textContent = `From your layout${itemsWords(c.layout_items) ? `, ${itemsWords(c.layout_items)}` : ""}`;
+    $("layoutText").textContent = c.layout_text || "";
+    $("notWritten").hidden = c.status !== "to_write";
     showStatus(c.status, c.status_words);
     const box = $("paragraphs");
     box.textContent = "";
@@ -133,9 +177,10 @@
     $("nextChapter").disabled = c.next == null;
     $("listView").hidden = true;
     $("chapterView").hidden = false;
-    $("player").hidden = false;
-    document.body.classList.add("has-player");
-    top(`${c.paragraphs.length} paragraphs, ${narrationShort()}`);
+    const readable = c.paragraphs.length > 0;
+    $("player").hidden = !readable;
+    document.body.classList.toggle("has-player", readable);
+    top(readable ? `${c.paragraphs.length} paragraphs, ${narrationShort()}` : "Not written yet");
     mark();
     window.scrollTo(0, 0);
   }
@@ -144,7 +189,7 @@
 
   function showStatus(s, words) {
     chip($("chapterStatus"), s, words);
-    $("approveButton").hidden = s === "approved";
+    $("approveButton").hidden = s === "approved" || s === "to_write";
     $("unapproveButton").hidden = s !== "approved";
   }
 
@@ -157,7 +202,8 @@
       const row = await api(`/book/chapters/${n}/status`, { method: "POST", body: JSON.stringify({ status: s }) });
       state.chapter.status = row.status;
       showStatus(row.status, row.status_words);
-      status(row.status === "approved" ? `Chapter ${n} is approved.` : `Chapter ${n} is back in review.`);
+      const name = label(state.chapter);
+      status(row.status === "approved" ? `${name} is approved.` : `${name} is back in review.`);
     } catch (error) {
       status(`That did not save: ${error.message}`, true);
     } finally {

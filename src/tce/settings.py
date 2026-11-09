@@ -235,6 +235,11 @@ class Settings(BaseSettings):
     book_voice_id: str = "pNInz6obpgDQGcFmaJgB"
     book_tts_char_budget: int = 6700
     book_editor_seat: str = "tce"
+    # 9-Nov (T-19824): the book editor's own record is the one source of truth (the
+    # newest chNN-vM.md per entry, his Approve written back into it). Chapters up to
+    # book_written_through are the ones he wrote himself, folded below the new episodes.
+    book_editor_record: str = "/opt/kmbot-files/book-editor/book2/chapters.json"
+    book_written_through: int = 11
     # 28-Sep: his dogs. A short line with their name in it is talk to them, not to the
     # viewer, and is cut ("If I call my dogs maple, rain ... that needs to be edited out").
     production_aside_names: str = "Maple,Rain"

@@ -48,9 +48,19 @@
 
     <p id="bookStatus" class="status-line" role="status" aria-live="polite" hidden></p>
 
+    <!-- 9-Nov-2026 (T-19824), Ziv: "The focus on the book app should be to have me check the
+         new episodes you write in my voice based on the layout in the file". The new
+         episodes come first, in his layout's order; the Part one he wrote himself is
+         folded underneath. -->
     <section id="listView" aria-label="Chapters">
       <p id="narrationNote" class="note"></p>
+      <h2 id="newHead" class="list-head" hidden>New episodes, in your layout's order</h2>
+      <p id="progressLine" class="progress" hidden></p>
       <ol id="chapterList" class="chapter-list"></ol>
+      <details id="writtenFold" class="written-fold" hidden>
+        <summary id="writtenSummary">Part one, already written</summary>
+        <ol id="writtenList" class="chapter-list"></ol>
+      </details>
     </section>
 
     <section id="chapterView" hidden aria-label="Chapter">
@@ -63,6 +73,12 @@
           <button id="unapproveButton" class="btn quiet" type="button" hidden>Undo approval</button>
         </div>
       </div>
+      <!-- The layout lines this episode was written from, to check it against. -->
+      <details id="layoutBox" class="layout-box" open hidden>
+        <summary id="layoutSummary">From your layout</summary>
+        <div id="layoutText" class="layout-text"></div>
+      </details>
+      <p id="notWritten" class="note" hidden>The editor has not written this episode yet. It will appear here by itself when it is written.</p>
       <div id="paragraphs" class="paragraphs"></div>
       <div class="chapter-foot">
         <button id="prevChapter" class="btn quiet" type="button">&#8592; Previous chapter</button>

@@ -138,6 +138,7 @@ def api(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "book_source_path", str(source))
     monkeypatch.setattr(settings, "book_tts_char_budget", 0)
     monkeypatch.setattr(settings, "elevenlabs_api_key", "")
+    monkeypatch.setattr(settings, "book_editor_record", str(tmp_path / "no-editor" / "chapters.json"))
     app = FastAPI()
     app.include_router(book_routes.router, prefix="/api/v1")
     app.include_router(dashboard.router)
@@ -250,3 +251,128 @@ def test_the_book_tab_sits_beside_the_other_tabs_and_is_hidden_for_clients():
     for name in ("book.html", "book.js", "book.css"):
         text = (root / name).read_text(encoding="utf-8")
         assert "\u2014" not in text and "\u2013" not in text
+
+
+# --- T-19824: the book editor's record is the source -------------------------------
+# Ziv, 9-Nov: "The focus on the book app should be to have me check the new episodes you
+# write in my voice based on the layout in the file".
+
+import json  # noqa: E402
+
+from tce.book.store import EditorRecord, parse_episode_file  # noqa: E402
+
+LAYOUT_17 = "17. Things that are not frameworks\n    - a sub-bullet he wrote\n    - another one"
+
+
+def _record(root: Path, entries: list[dict]) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "chapters.json"
+    path.write_text(json.dumps({"book": "The other half", "chapters": entries}), encoding="utf-8")
+    return path
+
+
+def _chapter_file(root: Path, n: int, v: int, title: str, lines: list[str]) -> None:
+    body = f"<!-- Version {v}: note.\nsecond comment line -->\n\nChapter {n} - {title}\n" + "\n".join(lines) + "\n"
+    (root / f"ch{n:02d}-v{v}.md").write_text(body, encoding="utf-8")
+
+
+@pytest.fixture
+def editor(api, monkeypatch, tmp_path):
+    root = tmp_path / "book-editor" / "book2"
+    path = _record(root, [
+        {"part": 1, "number": 1, "title": "The first million was hard", "status": "draft", "version": 1, "file": "ch01-v1.md"},
+        {"part": 1, "number": 2, "title": "My second million was easy", "status": "draft", "version": 1, "file": "ch02-v1.md"},
+        {"part": 1, "number": 12, "title": "Not frameworks", "status": "in_review", "version": 1, "file": "ch12-v1.md",
+         "layout_items": [17], "layout_text": LAYOUT_17},
+        {"part": 2, "number": 13, "title": "Asking", "status": "to_write", "version": 0, "file": None,
+         "layout_items": [21], "layout_text": "21. Asking and planning"},
+    ])
+    _chapter_file(root, 1, 1, "The first million was hard\u2026", ["You probably heard this line.", "", "Second paragraph."])
+    _chapter_file(root, 2, 1, "My second million was easy", ["One paragraph here."])
+    _chapter_file(root, 12, 1, "Not frameworks", ["First written line in his voice.", "Second line."])
+    monkeypatch.setattr(settings, "book_editor_record", str(path))
+    monkeypatch.setattr(settings, "book_written_through", 1)
+    return root
+
+
+def test_a_chapter_file_drops_its_version_note_and_heading():
+    title, paragraphs = parse_episode_file("<!-- v2\nmore -->\n\nChapter 12 - Not frameworks\nA line.\n________\nB line.\n")
+    assert title == "Not frameworks" and paragraphs == ["A line.", "B line."]
+
+
+def test_the_list_reads_the_editors_record_new_episodes_and_still_to_write(api, editor):
+    data = api.get("/api/v1/book/chapters", headers=OWNER).json()
+    assert data["source"] == "editor"
+    by_n = {c["n"]: c for c in data["chapters"]}
+    assert [c["n"] for c in data["chapters"]] == [1, 2, 12, 13]
+    assert by_n[1]["group"] == "written" and by_n[2]["group"] == "new"
+    assert by_n[12]["status"] == "in_review" and by_n[12]["paragraphs"] == 2
+    assert by_n[12]["layout_items"] == [17] and by_n[12]["layout_text"] == LAYOUT_17
+    assert by_n[13]["status"] == "to_write" and by_n[13]["status_words"] == "Still to write"
+    assert by_n[13]["paragraphs"] == 0 and by_n[13]["minutes"] == 0 and by_n[13]["part"] == "Part two"
+    one = api.get("/api/v1/book/chapters/13", headers=OWNER).json()
+    assert one["paragraphs"] == [] and one["layout_text"] == "21. Asking and planning" and one["previous"] == 12
+
+
+def test_a_new_episode_and_a_rewrite_appear_by_themselves(api, editor):
+    data = json.loads((editor / "chapters.json").read_text())
+    data["chapters"][3].update(status="draft", version=1, file="ch13-v1.md")
+    (editor / "chapters.json").write_text(json.dumps(data))
+    _chapter_file(editor, 13, 1, "Asking", ["Now written."])
+    _chapter_file(editor, 12, 2, "Not frameworks", ["Rewritten line.", "Another.", "Third."])
+    by_n = {c["n"]: c for c in api.get("/api/v1/book/chapters", headers=OWNER).json()["chapters"]}
+    assert by_n[13]["status"] == "draft" and by_n[13]["paragraphs"] == 1
+    assert by_n[12]["version"] == 2 and by_n[12]["paragraphs"] == 3
+    assert api.get("/api/v1/book/chapters/12", headers=OWNER).json()["paragraphs"][0] == "Rewritten line."
+
+
+def test_approve_is_written_into_the_editors_record_and_a_rewrite_reopens_it(api, editor):
+    r = api.post("/api/v1/book/chapters/12/status", headers=OWNER, json={"status": "approved"})
+    assert r.status_code == 200, r.text
+    entry = json.loads((editor / "chapters.json").read_text())["chapters"][2]
+    assert entry["status"] == "approved" and entry["approved_version"] == 1 and entry["approved_at"]
+    assert entry["status_history"][-1]["by"] == "ziv"
+    assert entry["layout_text"] == LAYOUT_17  # the editor's fields are kept
+    assert (editor / "chapters.json").stat().st_mode & 0o020  # the editor can go on writing it
+    assert not list(editor.glob(".chapters.json.*.tmp"))
+    assert api.get("/api/v1/book/chapters/12", headers=OWNER).json()["status"] == "approved"
+    # The editor saves a rewrite: his yes was for version 1, so version 2 waits for a new look.
+    _chapter_file(editor, 12, 2, "Not frameworks", ["Rewritten."])
+    assert api.get("/api/v1/book/chapters/12", headers=OWNER).json()["status"] == "in_review"
+    # Undo keeps the record and the app in step.
+    api.post("/api/v1/book/chapters/12/status", headers=OWNER, json={"status": "in_review"})
+    entry = json.loads((editor / "chapters.json").read_text())["chapters"][2]
+    assert entry["status"] == "in_review" and entry["approved_at"] is None and "approved_version" not in entry
+    # Nothing to approve on an episode not written yet; nothing kept on TCE's side.
+    assert api.post("/api/v1/book/chapters/13/status", headers=OWNER, json={"status": "approved"}).status_code == 422
+    assert not (Path(settings.evidence_upload_dir) / "book" / "chapters.json").exists()
+
+
+def test_an_approve_that_cannot_be_written_changes_nothing(api, editor, monkeypatch):
+    def refuse(*a, **k):
+        raise PermissionError("read only")
+
+    monkeypatch.setattr("tce.book.store.os.replace", refuse)
+    r = api.post("/api/v1/book/chapters/12/status", headers=OWNER, json={"status": "approved"})
+    assert r.status_code == 503
+    assert json.loads((editor / "chapters.json").read_text())["chapters"][2]["status"] == "in_review"
+    assert not list(editor.glob(".chapters.json.*.tmp"))
+
+
+def test_the_real_editor_record_reads_when_it_is_on_this_box():
+    real = Path("/opt/kmbot-files/book-editor/book2/chapters.json")
+    if not real.is_file():
+        pytest.skip("the editor's record is not on this machine")
+    chapters = EditorRecord(real, 11).chapters()
+    written = [c for c in chapters if c["group"] == "written"]
+    assert len(written) == 11 and all(c["paragraphs"] for c in written)
+    assert written[0]["title"].startswith("The first million")
+
+
+def test_the_page_opens_on_the_new_episodes_with_part_one_folded():
+    html = (Path(dashboard.__file__).parent / "book.html").read_text(encoding="utf-8")
+    js = (Path(dashboard.__file__).parent / "book.js").read_text(encoding="utf-8")
+    for needle in ('id="newHead"', 'id="writtenFold"', "Part one, already written", 'id="layoutBox"', 'id="notWritten"'):
+        assert needle in html
+    assert html.index('id="chapterList"') < html.index('id="writtenFold"')
+    assert "Approve this episode" in js and "still to write" in js
