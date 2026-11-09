@@ -3407,7 +3407,8 @@
   // the in-app routes are intercepted; /record is a different page on purpose.
   $("bottomNav").addEventListener("click", function (event) {
     var link = event.target.closest("a");
-    if (!link || link.dataset.route === "record") return;
+    // 9-Nov: the Book is a page of its own too.
+    if (!link || link.dataset.route === "record" || link.dataset.route === "book") return;
     event.preventDefault();
     // From the route, not the href: the href now carries the prefix and `go`
     // adds it again. The four in-app routes are named exactly like their paths.

@@ -94,6 +94,8 @@ def _subject(agent: str) -> str:
     with no script (12-Oct)."""
     if agent_talks.is_solo(agent):
         return "your recording"
+    if agent_talks.book_episode(agent) is not None:
+        return "your book session"
     return f"the talk with {agent_talks.display_name(agent)}"
 
 

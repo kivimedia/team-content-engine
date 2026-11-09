@@ -24,6 +24,9 @@ _RECORDING_RESUME_JS_PATH = Path(__file__).parent / "recording-resume.js"
 _SOLO_HTML_PATH = Path(__file__).parent / "recording-solo.html"
 _SOLO_JS_PATH = Path(__file__).parent / "recording-solo.js"
 _WORKSPACE_HTML_PATH = Path(__file__).parent / "workspace.html"
+_BOOK_HTML_PATH = Path(__file__).parent / "book.html"
+_BOOK_JS_PATH = Path(__file__).parent / "book.js"
+_BOOK_CSS_PATH = Path(__file__).parent / "book.css"
 _WORKSPACE_CSS_PATH = Path(__file__).parent / "workspace.css"
 _WORKSPACE_JS_PATH = Path(__file__).parent / "workspace.js"
 _WORKSPACE_SW_PATH = Path(__file__).parent / "workspace-sw.js"
@@ -72,7 +75,7 @@ SCOPED_HEAD = (
     # 12-Oct: .solo-entry too - Record without a script is the owner's until Ziv says a
     # client gets it (then: this selector, /record/solo in SCOPED_PAGE_PATHS and the
     # production_solo_for_clients setting).
-    '<style id="tce-scoped">.kmbot-link,#talkHeader,#talkFab,.solo-entry{display:none!important}</style>'
+    '<style id="tce-scoped">.kmbot-link,#talkHeader,#talkFab,.solo-entry,.book-entry{display:none!important}</style>'
     "<script>window.TCE_SCOPED = true;</script>"
     "</head>"
 )
@@ -98,7 +101,7 @@ def _scoped_head(ws) -> str:
     if not seat:
         return SCOPED_HEAD
     return (
-        '<style id="tce-scoped">.kmbot-link,.solo-entry{display:none!important}</style>'
+        '<style id="tce-scoped">.kmbot-link,.solo-entry,.book-entry{display:none!important}</style>'
         f'<script>window.TCE_SCOPED = true; window.TCE_VOICE_SEAT = "{seat}";</script>'
         "</head>"
     )
@@ -170,6 +173,30 @@ async def recording_solo(request: Request):
     if _scoped_workspace(request) is not None and not settings.production_solo_for_clients:
         return RedirectResponse(url="/record")
     return HTMLResponse(_localize(_SOLO_HTML_PATH.read_text(encoding="utf-8"), request))
+
+
+@router.get("/book", response_class=HTMLResponse)
+@router.get("/book/{chapter}", response_class=HTMLResponse)
+async def book_page(request: Request, chapter: int | None = None):
+    """9-Nov (T-19730): the Book, the owner's only. A client login never reaches it (the
+    scoped fence lists no /book path); this sends one to its own Today as well."""
+    if _scoped_workspace(request) is not None:
+        return RedirectResponse(url="/today")
+    return HTMLResponse(_BOOK_HTML_PATH.read_text(encoding="utf-8"))
+
+
+@router.get("/book.js", include_in_schema=False)
+async def book_js():
+    from fastapi.responses import Response
+
+    return Response(_BOOK_JS_PATH.read_text(encoding="utf-8"), media_type="application/javascript")
+
+
+@router.get("/book.css", include_in_schema=False)
+async def book_css():
+    from fastapi.responses import Response
+
+    return Response(_BOOK_CSS_PATH.read_text(encoding="utf-8"), media_type="text/css")
 
 
 async def _workspace_enabled() -> bool:

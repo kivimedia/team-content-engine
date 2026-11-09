@@ -12,6 +12,7 @@ from tce.api.private_access import ScopedEditorGuard
 from tce.api.routers import (
     admin,
     agent_talks,
+    book,
     briefs,
     calendar,
     chat,
@@ -316,6 +317,8 @@ def create_app() -> FastAPI:
     app.include_router(production.router, prefix=prefix)
     # 3-Oct, contract C4: a filmed voice call with an agent, sent in pieces by KM BOT.
     app.include_router(agent_talks.router, prefix=prefix)
+    # 9-Nov (T-19730): the book app, the owner's only.
+    app.include_router(book.router, prefix=prefix)
     # The editorial workspace: Today, topics, the week, changes and the library.
     # Registered after the two routers above so their existing paths win any
     # overlap; these are all new paths, so nothing is shadowed today.

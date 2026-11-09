@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#10213b">
+  <link rel="icon" href="data:,">
+  <title>TCE - Book</title>
+  <script>
+  /* /book and /book/<n>, also mounted under /tce: one base for every asset after it. */
+  (function () {
+    var base = document.createElement("base");
+    base.href = window.location.pathname.indexOf("/tce/") === 0 ? "/tce/" : "/";
+    document.head.appendChild(base);
+  })();
+  </script>
+  <link rel="stylesheet" href="book.css">
+</head>
+<body>
+  <!-- 9-Nov-2026 (Ziv): "I will access it through TCE. There will be a book button. There
+       will be an option to record a video." Pick a chapter, press play and it is read to
+       him; pause any time and talk to the book editor; Approve a chapter when it is right.
+       Film this session records the way Record without a script does (pieces while he
+       listens, one library video at the end, edited by Jennifer), titled
+       "Book session, episode N". -->
+  <header class="topbar">
+    <a id="bookBack" class="icon-button" href="/today" aria-label="Back to TCE">&#8592;</a>
+    <div class="identity">
+      <strong id="bookTitle">Book</strong>
+      <span id="bookState">Opening the book</span>
+    </div>
+    <div class="topbar-actions">
+      <button id="filmButton" class="film-button" type="button" aria-pressed="false" hidden>Film this session</button>
+    </div>
+  </header>
+
+  <main id="bookMain">
+    <!-- Filming: the camera preview sits in the page and pushes the text down, never over it. -->
+    <section id="filmStrip" class="film-strip" hidden aria-label="Filming">
+      <video id="filmCamera" playsinline muted></video>
+      <div class="film-info">
+        <strong id="filmLabel">Book session</strong>
+        <span id="filmClock">00:00</span>
+        <button id="filmDone" class="btn primary" type="button">Done filming<small>send it to Jennifer</small></button>
+      </div>
+    </section>
+
+    <p id="bookStatus" class="status-line" role="status" aria-live="polite" hidden></p>
+
+    <section id="listView" aria-label="Chapters">
+      <p id="narrationNote" class="note"></p>
+      <ol id="chapterList" class="chapter-list"></ol>
+    </section>
+
+    <section id="chapterView" hidden aria-label="Chapter">
+      <div class="chapter-head">
+        <p id="chapterPart" class="part"></p>
+        <h1 id="chapterTitle"></h1>
+        <div class="chapter-meta">
+          <span id="chapterStatus" class="status-chip"></span>
+          <button id="approveButton" class="btn approve" type="button">Approve this chapter</button>
+          <button id="unapproveButton" class="btn quiet" type="button" hidden>Undo approval</button>
+        </div>
+      </div>
+      <div id="paragraphs" class="paragraphs"></div>
+      <div class="chapter-foot">
+        <button id="prevChapter" class="btn quiet" type="button">&#8592; Previous chapter</button>
+        <button id="nextChapter" class="btn quiet" type="button">Next chapter &#8594;</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- The player: a bar under his thumb. The page reserves its height, so it never covers text. -->
+  <nav id="player" class="player" aria-label="Reading controls" hidden>
+    <button id="backPara" class="ctl" type="button" aria-label="Back one paragraph">&#9198;</button>
+    <button id="playButton" class="ctl play" type="button" aria-label="Play">&#9654;</button>
+    <button id="nextPara" class="ctl" type="button" aria-label="Forward one paragraph">&#9197;</button>
+    <button id="talkButton" class="ctl talk" type="button">Talk to the editor</button>
+  </nav>
+
+  <script src="book.js" defer></script>
+</body>
+</html>

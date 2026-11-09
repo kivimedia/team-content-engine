@@ -58,8 +58,24 @@ SOLO_SOURCE = "solo_take"
 SOLO_LABEL = "Recording"
 
 
+# 9-Nov (T-19730, the book app): a filmed listening session is a talk under the reserved
+# name "_book_<episode>". It keeps the agent talk's source, so the edit keeps the other
+# voices (the reading and the book editor), and it is titled "Book session, episode 7".
+BOOK_PREFIX = "_book_"
+BOOK_LABEL = "Book session"
+
+
 def is_solo(agent: str | None) -> bool:
     return str(agent or "").strip() == SOLO
+
+
+def book_episode(agent: str | None) -> int | None:
+    """The episode of a filmed book session, or None for any other talk."""
+    text = str(agent or "").strip()
+    if not text.startswith(BOOK_PREFIX):
+        return None
+    tail = text[len(BOOK_PREFIX):]
+    return int(tail) if tail.isdigit() else None
 
 
 def source_for(agent: str) -> str:
@@ -145,6 +161,8 @@ def display_name(agent: str) -> str:
     agent: it is his own recording."""
     if is_solo(agent):
         return "your recording"
+    if book_episode(agent) is not None:
+        return BOOK_LABEL
     raw = " ".join(str(agent or "").split()).strip()
     if not raw:
         return "the agent"
@@ -165,6 +183,9 @@ def talk_title(agent: str, started_at: datetime) -> str:
     local = local_time(started_at)
     if is_solo(agent):
         return f"{SOLO_LABEL}, {local.day} {local:%b}"
+    episode = book_episode(agent)
+    if episode is not None:
+        return f"{BOOK_LABEL}, episode {episode}"
     return f"Talk with {display_name(agent)}, {local.day} {local:%b}"
 
 
@@ -472,14 +493,16 @@ def call_lines(transcript: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
             continue
         who = str(line.get("who") or "").strip().lower()
         text = str(line.get("text") or "").strip()
-        if not text or who not in ("ziv", "agent", "host"):
+        # 9-Nov (T-19730): "narrator" is the book read aloud in a filmed book session, a
+        # third voice. It is content like the agent's lines, so it is never cut as a retake.
+        if not text or who not in ("ziv", "agent", "host", "narrator"):
             continue
         t_ms = line.get("t_ms")
         try:
             t_s = float(t_ms) / 1000.0 if t_ms is not None else None
         except (TypeError, ValueError):
             t_s = None
-        out.append({"who": AGENT if who == "agent" else HOST, "text": text, "t_s": t_s})
+        out.append({"who": AGENT if who in ("agent", "narrator") else HOST, "text": text, "t_s": t_s})
     return out
 
 

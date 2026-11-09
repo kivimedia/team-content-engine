@@ -41,6 +41,9 @@ def talk_topic(workspace_id: uuid.UUID, agent: str, started_at: datetime) -> Top
         editor_notes=(
             "A take he recorded with no script, on the studio's Record without a script."
             if agent_talks.is_solo(agent)
+            else "A book listening session, filmed in the Book: the chapter read aloud, his"
+            " pauses and his talk with the book editor."
+            if agent_talks.book_episode(agent) is not None
             else f"A voice call with {name}, filmed on the call's page."
         ),
     )

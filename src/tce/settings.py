@@ -224,6 +224,15 @@ class Settings(BaseSettings):
     # 12-Oct: "Record without a script". Owner first: a client workspace gets the button
     # only when this is on, which waits for Ziv's own go.
     production_solo_for_clients: bool = False
+    # 9-Nov (T-19730): the book app. The manuscript imported on first open; the voice
+    # that reads it (a stock ElevenLabs voice until he picks his own); how many
+    # characters of new narration may be bought before he is asked again. 0 = none: the
+    # page reads with the device's own voice, which costs nothing. Narration already
+    # bought is cached and replayed free. The call seat he talks to when he pauses.
+    book_source_path: str = "/opt/kmbot-files/doni/book/book2-the-other-half.txt"
+    book_voice_id: str = "pNInz6obpgDQGcFmaJgB"
+    book_tts_char_budget: int = 0
+    book_editor_seat: str = "tce"
     # 28-Sep: his dogs. A short line with their name in it is talk to them, not to the
     # viewer, and is cut ("If I call my dogs maple, rain ... that needs to be edited out").
     production_aside_names: str = "Maple,Rain"

@@ -243,7 +243,7 @@ dialog h2 { font-family: Georgia, serif; margin-top: 0; }
    own the bottom of the screen and a sixth row would push the camera up. */
 .bottom-nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
   background: var(--ink); border-top: 2px solid #000;
   padding-bottom: env(safe-area-inset-bottom);
   box-shadow: 0 -8px 24px rgba(16, 33, 59, .22);
