@@ -75,7 +75,7 @@ SCOPED_HEAD = (
     # 12-Oct: .solo-entry too - Record without a script is the owner's until Ziv says a
     # client gets it (then: this selector, /record/solo in SCOPED_PAGE_PATHS and the
     # production_solo_for_clients setting).
-    '<style id="tce-scoped">.kmbot-link,#talkHeader,#talkFab,.solo-entry,.book-entry{display:none!important}</style>'
+    '<style id="tce-scoped">.kmbot-link,#talkHeader,#talkFab,.book-entry,.solo-entry{display:none!important}</style>'
     "<script>window.TCE_SCOPED = true;</script>"
     "</head>"
 )
@@ -101,7 +101,7 @@ def _scoped_head(ws) -> str:
     if not seat:
         return SCOPED_HEAD
     return (
-        '<style id="tce-scoped">.kmbot-link,.solo-entry,.book-entry{display:none!important}</style>'
+        '<style id="tce-scoped">.kmbot-link,.book-entry,.solo-entry{display:none!important}</style>'
         f'<script>window.TCE_SCOPED = true; window.TCE_VOICE_SEAT = "{seat}";</script>'
         "</head>"
     )

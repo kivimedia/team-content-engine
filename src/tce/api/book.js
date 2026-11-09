@@ -297,8 +297,12 @@
   function talk() {
     stop();
     top("Paused for the editor");
+    // The book editor's own seat opens on the chapter (its "book" context takes the number
+    // padded to six digits, as a seat context id must be); TCE's general seat, used until
+    // that one exists, has no book context and opens on its default.
     const n = state.chapter ? String(state.chapter.n).padStart(6, "0") : "";
-    const href = `/voice?seat=${encodeURIComponent(state.seat)}&context=${n ? `book:${n}` : "default"}`;
+    const context = state.seat !== "tce" && n ? `book:${n}` : "default";
+    const href = `/voice?seat=${encodeURIComponent(state.seat)}&context=${context}`;
     window.open(href, "_blank", "noopener");
     status(state.film ? "The editor opens in a new tab. Filming goes on here; come back and press Play to carry on."
       : "The editor opens in a new tab. Come back and press Play to carry on.");
