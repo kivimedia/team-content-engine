@@ -413,6 +413,22 @@ class BookStore:
             self._write("state.json", state)
             return state["chars_spent"]
 
+    # 10-Nov-2026 (T-19955): Ziv picks the reading voice from samples ("I want to use
+    # version four... Needs to be a man voice"). His pick is saved here, so it needs no
+    # release; until he picks, the settings' voice and model read.
+    def voice(self) -> dict[str, str] | None:
+        chosen = self.state().get("voice")
+        if isinstance(chosen, dict) and chosen.get("voice_id"):
+            return {"voice_id": str(chosen["voice_id"]), "model": str(chosen.get("model") or ""), "name": str(chosen.get("name") or "")}
+        return None
+
+    def set_voice(self, voice_id: str, model: str, *, name: str = "", by: str = "") -> dict[str, str]:
+        with _lock:
+            state = self.state()
+            state["voice"] = {"voice_id": voice_id, "model": model, "name": name, "by": by}
+            self._write("state.json", state)
+        return self.voice() or {}
+
     def next_episode(self) -> int:
         with _lock:
             state = self.state()

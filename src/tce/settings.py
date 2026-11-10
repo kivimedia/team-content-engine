@@ -242,6 +242,9 @@ class Settings(BaseSettings):
     # so 6,700 may be bought in all; reading more waits for his next yes.
     book_source_path: str = "/opt/kmbot-files/doni/book/book2-the-other-half.txt"
     book_voice_id: str = "pNInz6obpgDQGcFmaJgB"
+    # 10-Nov-2026 (T-19955): the Book's own model; empty reads with elevenlabs_model. Ziv's
+    # voice pick (POST /book/voice) overrides both without a release.
+    book_tts_model: str = ""
     book_tts_char_budget: int = 6700
     book_editor_seat: str = "tce"
     # 9-Nov (T-19824): the book editor's own record is the one source of truth (the
