@@ -139,6 +139,25 @@ def test_a_breath_of_a_gap_stays_inside_the_line():
     assert got == [[1.15, 2.88]]
 
 
+def test_a_cut_never_lands_inside_a_word():
+    # Jennifer on 445b0c26: "the cut at 0:13 starts inside You", "agents. is cut short": only the loud middle of the
+    # word cleared the meter, so its soft start and tail were cut as air
+    got = reels.tighten_keep([[1.0, 3.0]], levels_for([(1.5, 2.0)]), [word("you", 1.3, 2.4)])
+    assert got == [[1.25, 2.48]]
+
+
+def test_her_transcript_times_count_as_the_word_too():
+    # her check reads the transcript's times, which can be wider than the plan's
+    got = reels.tighten_keep(
+        [[1.0, 3.0]], levels_for([(1.5, 2.0)]), [word("you", 1.5, 2.0)], transcript=[word("you", 1.3, 2.4)]
+    )
+    assert got == [[1.25, 2.48]]
+
+
+def test_a_word_cut_by_the_edit_itself_cannot_push_past_the_range():
+    assert reels.tighten_keep([[1.5, 2.2]], levels_for([(1.6, 2.0)]), [word("you", 1.3, 2.6)]) == [[1.5, 2.2]]
+
+
 def test_a_range_of_pure_air_is_dropped():
     assert reels.tighten_keep([[1.0, 2.0], [3.0, 3.5]], levels_for([(1.2, 1.8)]), [word("a", 1.3, 1.7)]) == [[1.15, 1.88]]
 

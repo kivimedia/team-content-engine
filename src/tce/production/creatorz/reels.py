@@ -104,8 +104,8 @@ def shots_for(keep: list[list[float]], words: list[dict[str, Any]]) -> list[dict
 
 def tighten_keep(
     keep: list[list[float]], levels: list[float], words: list[dict[str, Any]], *,
-    protect: list[list[float]] = (), thr_db: float = -40.0, gap_s: float = 0.28, min_run_s: float = 0.12,
-    pad_in: float = 0.05, pad_out: float = 0.08,
+    protect: list[list[float]] = (), transcript: list[dict[str, Any]] = (), thr_db: float = -40.0, gap_s: float = 0.28,
+    min_run_s: float = 0.12, pad_in: float = 0.05, pad_out: float = 0.08,
 ) -> list[list[float]]:
     """The Creatorz pace: no air. TCE's own edit keeps a natural rhythm (445b0c26: 12.3 s of its
     81 s were air at the edges of kept ranges); here each kept range shrinks to the voice inside
@@ -122,6 +122,18 @@ def tighten_keep(
             mid = (w["start_s"] + w["end_s"]) / 2
             if a <= mid < b and not any(s <= mid < e for s, e in spans):
                 spans.append([max(a, w["start_s"] - pad_in), min(b, w["end_s"] + pad_out)])
+        # Only the loud middle of a word clears the meter: its soft start and tail are not air. A cut strictly inside a
+        # word's own times is a clipped word, by the rule Jennifer's check reads (autoedit.word_marks, plus or minus
+        # 30 ms), and "the cut starts inside You" was the first thing she said about this (445b0c26).
+        for w in [*words, *transcript]:
+            s_w, e_w = float(w["start_s"]), float(w["end_s"])
+            if not a <= (s_w + e_w) / 2 < b:
+                continue
+            for span in spans:
+                if s_w + 0.03 < span[0] < e_w - 0.03:
+                    span[0] = max(a, s_w - pad_in)
+                if s_w + 0.03 < span[1] < e_w - 0.03:
+                    span[1] = min(b, e_w + pad_out)
         merged: list[list[float]] = []
         for s, e in sorted(spans):
             if merged and s <= merged[-1][1]:

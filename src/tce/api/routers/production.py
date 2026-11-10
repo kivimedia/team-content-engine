@@ -1191,7 +1191,7 @@ class _Styled:
 
 async def _render_creatorz(
     upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, src: Path, plan: dict[str, Any], keep: list[list[float]],
-    size: tuple[int, int], out: Path, lang: str, report,
+    size: tuple[int, int], out: Path, lang: str, transcript: list[dict[str, Any]], report,
 ) -> tuple[_Styled | None, str | None]:
     """The finished Creatorz file at `out` and what the render needs to say about it, or
     (None, why) so the same render makes the Pill version instead."""
@@ -1205,7 +1205,9 @@ async def _render_creatorz(
         return None, "this video has no word-by-word transcript"
     levels = await _levels(src)
     tight = (
-        creatorz_reels.tighten_keep(keep, levels, words, protect=laugh_rules.spans(plan)) if levels else [list(r) for r in keep]
+        creatorz_reels.tighten_keep(keep, levels, words, protect=laugh_rules.spans(plan), transcript=transcript)
+        if levels
+        else [list(r) for r in keep]
     )
     if not tight:
         return None, "there is no voice in this edit"
@@ -1292,7 +1294,8 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         style_failure = None
         if mode == "cut" and not audio_only and creatorz_reels.style_of(plan) == creatorz_reels.CREATORZ:
             styled, style_failure = await _render_creatorz(
-                upload_id, ws, attempt, src, plan, keep, size, out, lang, report
+                upload_id, ws, attempt, src, plan, keep, size, out, lang,
+                [w for w in words if w.get("start_s") is not None and w.get("end_s") is not None], report,
             )
         if styled is not None:
             # From here on this render's clock is the one it was cut on, for every reader.
