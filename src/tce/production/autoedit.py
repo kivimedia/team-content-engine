@@ -1437,6 +1437,9 @@ def merge_overrides(
     top = old.get("top_caption") if top_caption is None else top_caption
     if top:
         out["top_caption"] = str(top)
+    # 10-Nov: his Pill or Creatorz choice is not something a note changes.
+    if old.get("style"):
+        out["style"] = old["style"]
     return out
 
 

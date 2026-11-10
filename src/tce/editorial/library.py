@@ -43,6 +43,7 @@ from tce.models.editorial_workspace import (
     EditSession,
 )
 from tce.production import agent_talks, autoedit
+from tce.production.creatorz import reels as creatorz_reels
 from tce.production.retakes import edit_join, edit_length, frame_keep, map_to_edit, map_to_source
 
 # Library filters, in the order the chips are shown. Each maps to upload states.
@@ -185,6 +186,9 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
         actions.append({"key": "edit_now", "label": "Edit this now"})
     if upload.edited_path:
         actions.append({"key": "watch_edit", "label": "Watch the edit"})
+        # 10-Nov: Pill or Creatorz, per video, for the workspaces it is switched on for.
+        if creatorz_reels.enabled_for(upload.workspace_id) and upload.status not in _LIVE_STATUSES:
+            actions.append({"key": "style", "label": "Style", "current": creatorz_reels.style_of(upload.edit_plan)})
     if upload.storage_path:
         actions.append(
             {
@@ -1779,7 +1783,10 @@ def watched_plan_words(plan: dict[str, Any] | None, keep: list[list[float]]) -> 
     blocked re-plan or an earlier batch whose render failed, the plan has moved on and
     its words would mark as cut what he heard, or stamp times of an edit he never saw."""
     plan = plan or {}
-    if plan.get("words") and frame_keep(plan.get("keep") or []) == [list(r) for r in keep]:
+    watched = [list(r) for r in keep]
+    # 10-Nov: a Creatorz render is the plan's edit with the air taken out, on its own keep.
+    styled = (plan.get("creatorz") or {}).get("keep")
+    if plan.get("words") and (frame_keep(plan.get("keep") or []) == watched or (styled and frame_keep(styled) == watched)):
         return list(plan["words"])
     return None
 

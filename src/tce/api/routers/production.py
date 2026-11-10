@@ -29,6 +29,7 @@ import os
 import shutil
 import socket
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -68,6 +69,7 @@ from tce.production import (
 )
 from tce.production import laughs as laugh_rules
 from tce.production import rules as rule_text
+from tce.production.creatorz import reels as creatorz_reels
 from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
 from tce.production.retakes import (
@@ -1147,6 +1149,104 @@ def _read_render_sidecar(edited: str | Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+CREATORZ_ASK_WAIT_S = 900.0
+
+
+def creatorz_voice_path(edited: str | Path) -> Path:
+    """The voice alone of a Creatorz render, beside the edit: what Jennifer listens to."""
+    p = Path(edited)
+    return p.with_name(f"{p.stem}.voice.wav")
+
+
+def qc_listen_source(edited: str | Path, sidecar: dict[str, Any]) -> Path:
+    """Music and whooshes under the words must not read as words he did not say or pauses
+    that are not there, so her ear gets the voice of a Creatorz render."""
+    voice = creatorz_voice_path(edited)
+    return voice if sidecar.get("style") == creatorz_reels.CREATORZ and voice.exists() else Path(edited)
+
+
+@dataclass
+class _Styled:
+    """A finished Creatorz render, for the rest of _run_render."""
+
+    shots: int
+    checklist: list[list[str]]
+    captions: list[list[Any]]
+    keep: list[list[float]]  # what the file was cut on: the edit with the air taken out
+    cache: dict[str, Any]
+
+    def detail(self, length: str, top_text: str | None, denoise: str | None) -> str:
+        scored = [v for v in self.checklist if v[0] in ("PASS", "FAIL")]
+        passed = sum(1 for v in scored if v[0] == "PASS")
+        missing = [
+            what
+            for what, on in (("the fixed top line", top_text), ("the background-noise cleaning", denoise))
+            if on
+        ]
+        return (
+            f"Creatorz style ready: {self.shots} shots, {length} long, checklist {passed} of {len(scored)}"
+            + (f". This style leaves out {' and '.join(missing)}" if missing else "")
+        )[:500]
+
+
+async def _render_creatorz(
+    upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, src: Path, plan: dict[str, Any], keep: list[list[float]],
+    size: tuple[int, int], out: Path, lang: str, report,
+) -> tuple[_Styled | None, str | None]:
+    """The finished Creatorz file at `out` and what the render needs to say about it, or
+    (None, why) so the same render makes the Pill version instead."""
+    from tce.llm import LLMUnavailable
+    from tce.llm.queue import QueueError
+
+    if size[1] < size[0]:
+        return None, "it needs an upright recording"
+    words = creatorz_reels.engine_words(plan.get("words") or [])
+    if not words:
+        return None, "this video has no word-by-word transcript"
+    levels = await _levels(src)
+    tight = (
+        creatorz_reels.tighten_keep(keep, levels, words, protect=laugh_rules.spans(plan)) if levels else [list(r) for r in keep]
+    )
+    if not tight:
+        return None, "there is no voice in this edit"
+    key = creatorz_reels.moments_key(tight, words)
+
+    async def ask(prompt: str, system: str, schema: dict[str, Any], try_no: int) -> dict[str, Any]:
+        try:
+            answer = await _ask(
+                creatorz_reels.MOMENTS_JOB, prompt, system, schema, ws, f"{upload_id}:{key}:{try_no}",
+                wait_timeout_s=CREATORZ_ASK_WAIT_S, prompt_version=creatorz_reels.PROMPT_VERSION,
+                max_tokens=8000, requeue_failed=True,
+            )
+        except (LLMUnavailable, QueueError) as exc:
+            raise creatorz_reels.CreatorzFailed("the writer of the text moments did not answer") from exc
+        return answer.structured or {}
+
+    work = src.with_name(f".{src.stem}-creatorz-{attempt}")
+    try:
+        saved = plan.get("creatorz") or {}
+        if saved.get("key") == key and saved.get("moments"):
+            chosen = {"moments": saved["moments"], "punchline": saved.get("punchline")}
+        else:
+            await report("Creatorz style: choosing the words that pop, on the subscription")
+            shots = await asyncio.to_thread(creatorz_reels.shots_for, tight, words)
+            chosen = await creatorz_reels.get_moments(shots, lang, ask)
+        made = await creatorz_reels.render_reel(
+            src=src, words=words, keep=tight, lang=lang, work=work, moments=chosen["moments"],
+            punchline=chosen["punchline"], bed=creatorz_reels.bed_for(upload_id), on_status=report,
+        )
+        os.replace(made.voice, creatorz_voice_path(out))
+        os.replace(made.out, out)
+    except creatorz_reels.CreatorzFailed as exc:
+        return None, str(exc)
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        return None, f"the engine stopped ({str(exc)[:200]})"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    await media.make_light_copy(out, report)
+    return _Styled(made.shots, made.checklist, made.captions, tight, {"key": key, "keep": tight, **chosen}), None
+
+
 async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str) -> None:
     async def report(text: str) -> None:
         await _set_status(upload_id, ws, "rendering", text, attempt)
@@ -1186,61 +1286,83 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         on_edit = wordbox.on_edit_timeline(spoken, keep)
         pages = None
         lang = workspace_language(ws)
-        if not audio_only and on_edit and wordbox.usable(on_edit, lang):
-            await report(f"Drawing {len(on_edit)} caption words, each boxed while you say it")
-            pages = wordbox.pages(on_edit, lang)
-            # Hundreds of images: drawn off the event loop so the API keeps answering.
-            band = await asyncio.to_thread(
-                wordbox.render_band,
-                pages, size[0], size[1], band_dir, sum(e - s for s, e in keep), lang,
+        # 10-Nov: Creatorz style, when he chose it for this video. It never decides what
+        # stays, only how the edit looks; if it cannot run he gets the Pill version and why.
+        styled: _Styled | None = None
+        style_failure = None
+        if mode == "cut" and not audio_only and creatorz_reels.style_of(plan) == creatorz_reels.CREATORZ:
+            styled, style_failure = await _render_creatorz(
+                upload_id, ws, attempt, src, plan, keep, size, out, lang, report
             )
+        if styled is not None:
+            # From here on this render's clock is the one it was cut on, for every reader.
+            keep = styled.keep
+            plan = {**plan, "keep": keep}
+            cues = build_cues(plan)
+            srt_text = to_srt(cues)
+            on_edit = wordbox.on_edit_timeline(spoken, keep)
         top = None
-        if top_text and not audio_only:
-            top = await asyncio.to_thread(
-                wordbox.render_top_caption, top_text, size[0], size[1], band_dir / "top.png", lang
-            )
-            if top is None:
-                await report("The top line has letters the caption font cannot draw; left it off")
-            else:
-                await report(f'Adding the top line: "{top_text}"')
         made: dict[str, Any] = {}
-        try:
-            await media.render_edit(
-                src,
-                keep,
-                out,
-                on_status=report,
-                ass_text=None if band else to_ass(cues, *size),
-                srt_text=srt_text,
-                caption_band=band,
-                make_preview=not audio_only,
-                report=made,
-                denoise=denoise,
-                top_caption=top,
-            )
-        finally:
-            shutil.rmtree(band_dir, ignore_errors=True)
+        if styled is None:
+            if not audio_only and on_edit and wordbox.usable(on_edit, lang):
+                await report(f"Drawing {len(on_edit)} caption words, each boxed while you say it")
+                pages = wordbox.pages(on_edit, lang)
+                # Hundreds of images: drawn off the event loop so the API keeps answering.
+                band = await asyncio.to_thread(
+                    wordbox.render_band,
+                    pages, size[0], size[1], band_dir, sum(e - s for s, e in keep), lang,
+                )
+            if top_text and not audio_only:
+                top = await asyncio.to_thread(
+                    wordbox.render_top_caption, top_text, size[0], size[1], band_dir / "top.png", lang
+                )
+                if top is None:
+                    await report("The top line has letters the caption font cannot draw; left it off")
+                else:
+                    await report(f'Adding the top line: "{top_text}"')
+            try:
+                await media.render_edit(
+                    src,
+                    keep,
+                    out,
+                    on_status=report,
+                    ass_text=None if band else to_ass(cues, *size),
+                    srt_text=srt_text,
+                    caption_band=band,
+                    make_preview=not audio_only,
+                    report=made,
+                    denoise=denoise,
+                    top_caption=top,
+                )
+            finally:
+                shutil.rmtree(band_dir, ignore_errors=True)
         srt = src.with_name(f"{src.stem}-edited.srt")
         srt.write_text(srt_text, encoding="utf-8")
         src.with_name(f"{src.stem}-edited.vtt").write_text(to_vtt(cues), encoding="utf-8")
         # 3-Oct, Jennifer's check: what this render's captions were drawn from, and what
         # the render did about loudness, kept beside the file. The check reads the
         # render's own data, never a plan that may have moved on since.
-        _write_render_sidecar(
-            out,
-            {
-                "mode": mode,
-                "keep": frame_keep(keep),
-                "captions": qc.caption_data(on_edit, pages if band else None, cues),
-                "loudness": made.get("loudness"),
-                "denoise": made.get("denoise"),
-                "top_caption": top_text if top else None,
-            },
-        )
+        sidecar: dict[str, Any] = {
+            "mode": mode,
+            "keep": frame_keep(keep),
+            "captions": qc.caption_data(on_edit, pages if band else None, cues),
+            "loudness": made.get("loudness"),
+            "denoise": made.get("denoise"),
+            "top_caption": top_text if top else None,
+        }
+        if styled is not None:
+            sidecar["style"] = creatorz_reels.CREATORZ
+            sidecar["checklist"] = styled.checklist
+            sidecar["captions"] = qc.caption_data(
+                on_edit, None, [{"start": a, "end": b, "lines": [text]} for a, b, text in styled.captions]
+            )
+        _write_render_sidecar(out, sidecar)
         async with session_factory()() as s:
             row = await _load(s, upload_id, ws)
             if not _owns(row, attempt):
                 return
+            if styled is not None:
+                row.edit_plan = {**dict(row.edit_plan or {}), "creatorz": styled.cache}
             row.edited_path = str(out)
             row.captions_path = str(srt)
             row.status = "edited"
@@ -1262,6 +1384,10 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
                 + (", word-box captions" if band else f", {len(cues)} captions burned in")
                 + ", plus a subtitle track and SRT and VTT sidecars"
             )
+            if styled is not None:
+                row.status_detail = styled.detail(fmt_ts(kept_s), top_text, denoise)
+            elif style_failure:
+                row.status_detail = f"Creatorz style could not be made ({style_failure}), so this is the Pill version. {row.status_detail}"[:500]
             row.job_ids = _with_lease(row.job_ids, None)
             await s.commit()
     except media.StepUnavailableError as exc:
@@ -1435,6 +1561,54 @@ async def render_upload(
     # 3-Oct: a render he starts by hand is checked too; Jennifer measures and says,
     # and changes nothing about a render he chose himself.
     _spawn(_render_then_check(row.id, ws, attempt, body.mode))
+    return upload_json(row)
+
+
+class StyleChoice(BaseModel):
+    style: Literal["pill", "creatorz"]
+
+
+@router.post("/uploads/{upload_id}/style", status_code=202)
+async def choose_style(
+    upload_id: uuid.UUID,
+    body: StyleChoice,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """10-Nov: Pill or Creatorz for this one video. Saved with the edit's other choices, so
+    his later notes and Jennifer's fixes keep it, then rendered like any render he starts."""
+    if not creatorz_reels.enabled_for(ws):
+        raise HTTPException(status_code=404, detail="Styles are not switched on for this workspace")
+    await reconcile_interrupted_uploads(db, ws)
+    row = await _upload(db, ws, upload_id)
+    if not row.edit_plan or not row.edited_path:
+        raise HTTPException(status_code=409, detail="This video has no edit to restyle yet")
+    await _refuse_while_sitting(db, ws, row.id)
+    if row.edit_plan.get("meaning_check", {}).get("status") == "blocked":
+        raise HTTPException(status_code=409, detail="The meaning check is holding this edit. Settle that first.")
+    if upload_busy(row) or creatorz_reels.style_of(row.edit_plan) == body.style:
+        return upload_json(row)
+    if not row.storage_path or not Path(row.storage_path).exists():
+        raise HTTPException(status_code=409, detail="The original upload is missing from storage; upload it again")
+    plan = dict(row.edit_plan)
+    overrides = dict(plan.get("overrides") or {})
+    if body.style == creatorz_reels.CREATORZ:
+        overrides["style"] = body.style
+    else:
+        overrides.pop("style", None)
+    plan["overrides"] = overrides
+    row.edit_plan = plan
+    attempt = _claim(
+        row, "rendering",
+        "Queued: making the Creatorz version" if body.style == creatorz_reels.CREATORZ else "Queued: making the Pill version",
+    )
+    try:
+        await db.commit()
+    except BaseException:
+        _active_attempts.discard(attempt)
+        raise
+    await db.refresh(row)
+    _spawn(_render_then_check(row.id, ws, attempt, "cut"))
     return upload_json(row)
 
 
@@ -2759,8 +2933,12 @@ async def _qc_measure(
     ff = media.ffmpeg_path()
     if not ff or edited is None or not edited.exists() or not keep:
         return None
+    sidecar = _read_render_sidecar(edited)
+    if sidecar.get("keep") != keep:
+        sidecar = {}  # left by an older render of this video: not this file's data
+    listen_to = qc_listen_source(edited, sidecar)
     try:
-        levels = await tightcut.measure_levels(str(edited), ff)
+        levels = await tightcut.measure_levels(str(listen_to), ff)
     except RuntimeError:
         levels = []
     if not levels:
@@ -2775,9 +2953,6 @@ async def _qc_measure(
         voices = await talk_voices(row, words)
         rules = await editor_rules.prompt_rules(s, ws)
     duration = len(levels) * tightcut.HOP_S
-    sidecar = _read_render_sidecar(edited)
-    if sidecar.get("keep") != keep:
-        sidecar = {}  # left by an older render of this video: not this file's data
     uncut = sidecar.get("mode") == "uncut"
     # The words in the file: the plan's, only while the plan is still what made it.
     plan_words = library_service.watched_plan_words(plan, keep)
@@ -2792,7 +2967,7 @@ async def _qc_measure(
         await _qc_step(
             upload_id, ws, round_no, f"listening to it again on this server ({len(kept)} words to hear)"
         )
-        heard, why = await _qc_listen(edited, duration, ws)
+        heard, why = await _qc_listen(listen_to, duration, ws)
 
     await _qc_step(upload_id, ws, round_no, "measuring the pauses in the finished video")
     checks["gaps"] = (

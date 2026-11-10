@@ -226,6 +226,10 @@ main { width: min(100%, 860px); margin: 0 auto; }
 /* A grid cell is a block box; the flex display above must survive it. */
 .btn-row .btn, .order-controls .btn, .actions .btn { display: inline-flex; }
 .btn-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 14px; }
+/* 10-Nov: Pill or Creatorz, one whole row of the card's buttons. */
+.style-pick { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; }
+.style-pick-label { font-weight: 800; color: var(--ink); }
+.style-pick .btn { flex: 1 1 0; }
 
 /* Ordering controls. Every move has a button; nothing here is drag-only. */
 .order-controls { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }

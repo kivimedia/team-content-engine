@@ -585,6 +585,32 @@ async def render_edit(
     return out
 
 
+async def make_light_copy(out: str | Path, on_status: StatusCallback) -> None:
+    """The light copy for an edit made elsewhere (Creatorz style, 10-Nov). If it fails, the
+    old copy must not keep playing in place of the new edit: without one the player
+    streams the edit itself."""
+    out = Path(out)
+    light = preview_path(out)
+    part = out.parent / f".{out.stem}-{os.urandom(4).hex()}-preview{out.suffix}"
+    ff = ffmpeg_path()
+    try:
+        if not ff:
+            raise RuntimeError("ffmpeg is not installed")
+        await on_status("Making the light copy your phone plays")
+        await _ffmpeg(
+            ff,
+            ["-y", "-i", str(out), "-map", "0:v:0", "-map", "0:a:0", *PREVIEW_VIDEO,
+             "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(part)],
+            cwd=out.parent,
+        )
+        os.replace(part, light)
+    except RuntimeError as exc:
+        light.unlink(missing_ok=True)
+        await on_status(f"Edit ready; the light copy for your phone failed ({exc})")
+    finally:
+        part.unlink(missing_ok=True)
+
+
 async def _measure_loudnorm(
     ff: str, src: Path, heard: list[str], listen: Path, cwd: Path, label: str = "[outa]"
 ) -> tuple[dict[str, float] | None, str | None]:

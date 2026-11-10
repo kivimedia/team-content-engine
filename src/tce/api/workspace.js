@@ -1887,6 +1887,14 @@
       } else if (action.key === "edit_now") {
         // 4-Oct: never edited, archived by his choice after Stop or brought back. One tap edits it.
         html += '<button class="btn primary" type="button" data-edit-now="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
+      } else if (action.key === "style") {
+        // 10-Nov: Pill or Creatorz, for this one video. The one it is now is lit and does nothing.
+        html += '<div class="style-pick" role="group" aria-label="Video style"><span class="style-pick-label">Style</span>'
+             + [["pill", "Pill"], ["creatorz", "Creatorz"]].map(function (s) {
+                 var on = action.current === s[0];
+                 return '<button class="btn' + (on ? " primary" : " quiet") + '" type="button" aria-pressed="' + on + '"'
+                      + (on ? "" : ' data-style-pick="' + esc(item.upload_id) + '" data-style="' + s[0] + '"') + ">" + s[1] + "</button>";
+               }).join("") + "</div>";
       } else if (action.key === "edit_again") {
         html += '<button class="btn quiet" type="button" data-edit-again="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "check_again") {
@@ -2313,6 +2321,18 @@
     try {
       await api("/production/uploads/" + encodeURIComponent(uploadId) + "/auto-edit", { method: "POST" });
       toast("Editing it again. The card shows each step as it happens.");
+      renderLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function pickStyle(uploadId, style) {
+    var name = style === "creatorz" ? "Creatorz" : "Pill";
+    if (!window.confirm("Make this video in " + name + " style? It takes a few minutes. The current edit is replaced when the new one is ready.")) return;
+    try {
+      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/style", { method: "POST", body: { style: style } });
+      toast("Making the " + name + " version. The card shows each step as it happens.");
       renderLibrary();
     } catch (error) {
       toast(error.message, true);
@@ -3304,7 +3324,7 @@
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise", "pub-copy",
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
     "check-again", "release-hold", "settle-hold", "note-reply", "rule-delete",
-    "rename", "rename-save", "add-anyway", "pubtab", "libcount", "topic-more", "title-review"
+    "rename", "rename-save", "add-anyway", "pubtab", "libcount", "topic-more", "title-review", "style-pick"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -3331,6 +3351,7 @@
     if (d.saveRules !== undefined) { saveRules(); return; }
     if (d.archive !== undefined) { archiveRecording(d.archive, true); return; }
     if (d.unarchive !== undefined) { archiveRecording(d.unarchive, false); return; }
+    if (d.stylePick !== undefined) { pickStyle(d.stylePick, d.style); return; }
     if (d.editAgain !== undefined) { editAgain(d.editAgain); return; }
     if (d.editNow !== undefined) { editNow(d.editNow); return; }
     if (d.renameSave !== undefined) { renameSave(target); return; }

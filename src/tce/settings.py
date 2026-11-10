@@ -218,6 +218,15 @@ class Settings(BaseSettings):
     production_laugh_python: str = ""
     production_laugh_dir: str = ""
     production_pause_threshold_s: float = 1.2
+    # 10-Nov: the per-video Pill or Creatorz style. Which workspaces see the choice (comma list
+    # of workspace ids, or "*"); empty = nobody, and every video renders as Pill. The music beds
+    # live on the server, not in this public repo; no folder means no music.
+    production_creatorz_workspaces: str = ""
+    production_creatorz_beds_dir: str = ""
+    # Its own venv (numpy, Pillow, OpenCV, rembg, python-bidi), like the laugh detector's, so
+    # rembg's dependencies can never move what TCE imports. Empty: this Python.
+    production_creatorz_python: str = ""
+    production_creatorz_timeout_s: float = 3600.0
     # 25-Sep: a finished session edits itself and editing requests run themselves,
     # on the subscription worker. Off = the old click-each-step flow.
     production_auto_edit: bool = True
