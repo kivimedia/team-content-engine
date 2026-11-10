@@ -376,3 +376,145 @@ def test_the_page_opens_on_the_new_episodes_with_part_one_folded():
         assert needle in html
     assert html.index('id="chapterList"') < html.index('id="writtenFold"')
     assert "Approve this episode" in js and "still to write" in js
+
+
+# --- T-19955: Ziv's 10 Nov call ----------------------------------------------------------
+
+BOOK_DIR = Path(dashboard.__file__).parent
+
+
+def test_the_book_films_through_the_studio_camera_ladder_not_one_landscape_ask():
+    # "When you click the video feature, it shows me zoomed in a lot, not the same as the
+    # regular record video of TCE."
+    js = (BOOK_DIR / "book.js").read_text(encoding="utf-8")
+    solo = (BOOK_DIR / "recording-solo.js").read_text(encoding="utf-8")
+    ladder = solo.split("const CAMERA_ATTEMPTS = [", 1)[1].split("];", 1)[0]
+    assert ladder in js, "the Book's camera ladder drifted from Record without a script's"
+    assert "width: { ideal: 1080 }, height: { ideal: 1920 } },\n        audio" not in js
+    assert "function portraitVideo(" in js and "canvas.captureStream(30)" in js
+    css = (BOOK_DIR / "book.css").read_text(encoding="utf-8")
+    assert "object-fit: contain" in css.split(".film-strip video", 1)[1].split("}", 1)[0]
+
+
+def test_stop_asks_send_or_archive_and_nothing_finishes_before_the_choice():
+    js = (BOOK_DIR / "book.js").read_text(encoding="utf-8")
+    html = (BOOK_DIR / "book.html").read_text(encoding="utf-8")
+    for element in ("choiceBox", "choiceSend", "choiceArchive"):
+        assert f'id="{element}"' in html
+    assert "edit: true" not in js
+    assert "!take.choice" in js and 'const edit = take.choice === "send"' in js
+    # A take from an earlier visit with no choice is archived, never sent.
+    assert 'choice: take.choice || "archive"' in js
+
+
+def test_the_device_voice_says_it_is_the_device_voice():
+    js = (BOOK_DIR / "book.js").read_text(encoding="utf-8")
+    html = (BOOK_DIR / "book.html").read_text(encoding="utf-8")
+    assert 'id="voiceBadge"' in html
+    assert "not ElevenLabs" in js and "not ElevenLabs" in html
+
+
+def test_the_editor_chat_is_an_icon_inside_the_book_never_a_new_tab():
+    js = (BOOK_DIR / "book.js").read_text(encoding="utf-8")
+    html = (BOOK_DIR / "book.html").read_text(encoding="utf-8")
+    assert "window.open(" not in js and "/voice?seat=" not in js
+    for element in ("talkButton", "listTalk", "editorPanel", "editorForm", "editorMic"):
+        assert f'id="{element}"' in html
+    assert ">Talk to the editor<" not in html
+    assert 'const EDITOR_AGENT = "book-editor"' in js and "greet: false" in js
+    assert "[Where I am in the Book]" in js
+
+
+class _FakeTTS:
+    calls: list = []
+
+    def __init__(self, *a, model="", output_dir="", **k):
+        self.model = model
+        self.out = Path(output_dir) if output_dir else None
+
+    async def generate(self, segments, voice_id=None, **k):
+        _FakeTTS.calls.append((segments[0]["narratorText"], voice_id, self.model))
+        path = self.out / "voiceover.mp3"
+        path.write_bytes(b"ID3" + voice_id.encode())
+
+        class R:
+            file_path = str(path)
+
+        return R()
+
+    async def list_voices(self):
+        return [{"voice_id": "maleVoice01", "name": "Brian", "category": "premade", "labels": {"gender": "male", "accent": "american"}},
+                {"voice_id": "femVoice01", "name": "Sarah", "category": "premade", "labels": {"gender": "female"}}]
+
+
+def test_his_voice_pick_reads_from_then_on_on_eleven_v4_without_a_release(api, monkeypatch):
+    _FakeTTS.calls = []
+    monkeypatch.setattr("tce.services.tts.TTSService", _FakeTTS)
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "configured")
+    monkeypatch.setattr(settings, "book_tts_char_budget", 1000)
+    voices = api.get("/api/v1/book/voices", headers=OWNER).json()
+    assert [v["gender"] for v in voices["voices"]] == ["male", "female"]
+    sample = api.get("/api/v1/book/voice-sample?voice_id=maleVoice01&chapter=1", headers=OWNER)
+    assert sample.status_code == 200 and sample.content == b"ID3maleVoice01"
+    assert _FakeTTS.calls[-1][1:] == ("maleVoice01", "eleven_v4")
+    # The same sample again is free.
+    assert api.get("/api/v1/book/voice-sample?voice_id=maleVoice01&chapter=1", headers=OWNER).status_code == 200
+    assert len(_FakeTTS.calls) == 1
+    picked = api.post("/api/v1/book/voice", headers=OWNER, json={"voice_id": "maleVoice01", "model": "eleven_v4", "name": "Brian"})
+    assert picked.status_code == 200 and picked.json()["narration"]["model"] == "eleven_v4"
+    assert api.get("/api/v1/book/chapters/1/audio/0", headers=OWNER).content == b"ID3maleVoice01"
+    assert _FakeTTS.calls[-1][1:] == ("maleVoice01", "eleven_v4")
+    assert api.post("/api/v1/book/voice", headers=CLIENT, json={"voice_id": "maleVoice01"}).status_code == 403
+    assert api.get("/api/v1/book/voice-sample?voice_id=../x", headers=OWNER).status_code == 422
+
+
+def test_a_sample_is_never_bought_past_the_budget(api, monkeypatch):
+    _FakeTTS.calls = []
+    monkeypatch.setattr("tce.services.tts.TTSService", _FakeTTS)
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "configured")
+    monkeypatch.setattr(settings, "book_tts_char_budget", 3)
+    assert api.get("/api/v1/book/voice-sample?voice_id=maleVoice01&chapter=1", headers=OWNER).status_code == 409
+    assert _FakeTTS.calls == []
+
+
+def test_eleven_v4_goes_through_text_to_dialogue_and_v2_stays_on_text_to_speech(monkeypatch, tmp_path):
+    import asyncio
+
+    import httpx
+
+    from tce.services import tts as tts_mod
+
+    seen = []
+
+    class Resp:
+        status_code = 200
+        content = b"ID3audio"
+        text = ""
+
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            seen.append((url, json))
+            return Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+
+    async def no_duration(self, path):
+        return 1.0
+
+    monkeypatch.setattr(tts_mod.TTSService, "_detect_duration", no_duration)
+    for model in ("eleven_v4", "eleven_multilingual_v2"):
+        svc = tts_mod.TTSService(api_key="k", model=model, output_dir=str(tmp_path / model))
+        asyncio.run(svc.generate(segments=[{"narratorText": "Hello there."}], voice_id="vid123"))
+    (v4_url, v4_body), (v2_url, v2_body) = seen
+    assert v4_url.endswith("/text-to-dialogue")
+    assert v4_body["inputs"] == [{"text": "Hello there.", "voice_id": "vid123"}] and v4_body["model_id"] == "eleven_v4"
+    assert v2_url.endswith("/text-to-speech/vid123") and v2_body["model_id"] == "eleven_multilingual_v2"

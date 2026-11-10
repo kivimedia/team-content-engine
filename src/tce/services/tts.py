@@ -29,6 +29,11 @@ class TTSResult:
     cost_estimate_usd: float  # rough estimate: ~$0.30 per 1K chars
 
 
+def uses_dialogue(model: str) -> bool:
+    """Eleven v4 (and v4 Turbo) are reached through Text to Dialogue, not Text to Speech."""
+    return str(model or "").startswith("eleven_v4")
+
+
 class TTSService:
     """Generates voiceover audio from narration script segments via ElevenLabs."""
 
@@ -141,9 +146,25 @@ class TTSService:
             "voice_settings": voice_settings,
         }
 
+        # 10-Nov-2026 (T-19955): Eleven v4 is served through Text to Dialogue (ElevenLabs
+        # changelog 28-Sep-2026: "Use eleven_v4 through the Text to Dialogue API for content
+        # creation and long-form audio"), one voice, one input. Every other model keeps the
+        # Text to Speech road unchanged.
+        url = f"{ELEVENLABS_API_URL}/text-to-speech/{vid}"
+        if uses_dialogue(self.model):
+            url = f"{ELEVENLABS_API_URL}/text-to-dialogue"
+            payload = {
+                "inputs": [{"text": full_text, "voice_id": vid}],
+                "model_id": self.model,
+                "settings": {
+                    "stability": voice_settings["stability"],
+                    "similarity": voice_settings["similarity_boost"],
+                },
+            }
+
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
-                f"{ELEVENLABS_API_URL}/text-to-speech/{vid}",
+                url,
                 headers={
                     "xi-api-key": self.api_key,
                     "Content-Type": "application/json",
