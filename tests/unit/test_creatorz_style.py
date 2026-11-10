@@ -326,10 +326,42 @@ async def test_a_clean_answer_is_not_asked_twice():
     async def ask(prompt, system, schema, attempt):
         nonlocal calls
         calls += 1
-        return {"moments": [{"type": "tag", "text": "x", "at": at(0, "count")}], "punchline": 99}
+        return {"moments": [{"type": "tag", "text": "x", "at": at(1, "who")}], "punchline": 99}
 
     got = await reels.get_moments(shots(), "en", ask)
     assert calls == 1 and got["punchline"] is None  # a punchline past the end means none
+
+
+async def test_a_stretch_with_no_text_goes_back_to_the_writer_once():
+    # 11-Nov: the writer let one headline "cover" several lines. A headline is a one-second
+    # beat now, so 7 seconds of his real video had nothing on screen and the checklist failed.
+    first = [{"type": "headline", "text": "MOST", "place": "top", "at": at(0, "Most")}]
+    filled = first + [{"type": "tag", "text": "x", "at": at(2, "number")}]
+    prompts: list[str] = []
+
+    async def ask(prompt, system, schema, attempt):
+        prompts.append(prompt)
+        return {"moments": first if attempt == 0 else filled, "punchline": None}
+
+    got = await reels.get_moments(shots(), "en", ask)
+    assert len(prompts) == 2 and "nothing pops between" in prompts[1]
+    assert got["moments"] == filled
+    assert reels.quiet_gaps(first, shots(), "en") and not reels.quiet_gaps(filled, shots(), "en")
+
+
+async def test_a_second_answer_with_more_holes_is_not_taken():
+    full = [
+        {"type": "headline", "text": "MOST", "place": "top", "at": at(0, "Most")},
+        {"type": "tag", "text": "x", "at": at(2, "number")},
+        {"type": "tag", "text": "y", "at": at(0, "price")},  # a bad cue, so it is asked again
+    ]
+    worse = [{"type": "headline", "text": "MOST", "place": "top", "at": at(0, "Most")}] * 1
+
+    async def ask(prompt, system, schema, attempt):
+        return {"moments": full if attempt == 0 else worse + [{"type": "flash", "at": at(0, "count")}], "punchline": None}
+
+    got = await reels.get_moments(shots(), "en", ask)
+    assert [m["type"] for m in got["moments"]] == ["headline", "tag"]
 
 
 async def test_no_usable_moments_is_a_failure_not_a_bare_reel():

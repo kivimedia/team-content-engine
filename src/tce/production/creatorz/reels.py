@@ -38,7 +38,7 @@ PILL, CREATORZ = "pill", "creatorz"
 STYLES = (PILL, CREATORZ)
 ENGINE_DIR = Path(__file__).parent / "engine"
 MOMENTS_JOB = "video_creatorz_moments"
-PROMPT_VERSION = "creatorz-moments-2"
+PROMPT_VERSION = "creatorz-moments-3"
 # Exit 1 from the engine means a checklist line failed: the video is made, and the card says so.
 ENGINE_OK = (0, 1)
 _one_render = asyncio.Semaphore(1)
@@ -346,6 +346,7 @@ Rules:
 - You never choose where text sits: the engine finds the free spot and keeps every word off the speaker's face.
 - Screen places: top (headline), middle (headline with place "chest", pair, bubble, cards), badge, tag. Never two at once in one place.
 - A moment lasts until the end of its line unless you give "until" (a cue).
+- A headline is ONE BEAT, about a second, whatever its "until" says. It cannot cover a stretch: over several lines in a row, put a moment on each.
 - Give the eye a rest from the face: a talking head with nothing else for 20 seconds is too long. Use the full-screen cards for that.
 
 Types:
@@ -411,12 +412,46 @@ def _punchline(answer: dict[str, Any], shots: list[dict[str, Any]]) -> int | Non
     return p if isinstance(p, int) and not isinstance(p, bool) and 0 <= p < len(shots) else None
 
 
+QUIET_MAX_S = 5.0  # the engine's own checklist line: a text moment at least every 5 seconds
+
+
+def quiet_gaps(moments: list[dict[str, Any]], shots: list[dict[str, Any]], lang: str) -> list[tuple[float, float]]:
+    """Stretches of the video where nothing pops for longer than the style allows, as
+    (from, to) in seconds. What counts is when a moment STARTS (and each tick of a card): a
+    headline is a one-second beat, so it does not fill the lines after it (11-Nov: the writer
+    let one headline cover four lines and 7 seconds had nothing on screen)."""
+    if not shots:
+        return []
+    edit = {"shots": shots, "duration": shots[-1]["out_out"], "lang": lang}
+    try:
+        items = compose_plan.build({"moments": moments}, edit)["items"]
+    except (engine_plan.CueError, KeyError, TypeError, ValueError, IndexError, StopIteration):
+        return []
+    marks = sorted({0.0, edit["duration"]} | {it["t0"] for it in items} | {t for it in items for t in it.get("ticks", [])})
+    return [(a, b) for a, b in zip(marks, marks[1:]) if b - a > QUIET_MAX_S]
+
+
+def _line_at(shots: list[dict[str, Any]], t: float) -> int:
+    return next((s["pick"] for s in shots if s["out_in"] <= t < s["out_out"]), shots[-1]["pick"])
+
+
+def _hole_sentences(holes: list[tuple[float, float]], shots: list[dict[str, Any]]) -> list[str]:
+    return [
+        f"nothing pops between {a:.0f} s and {b:.0f} s (lines {_line_at(shots, a + 0.05)} to {_line_at(shots, b - 0.05)}): "
+        "add a moment there. A headline is one beat and does not cover the lines after it"
+        for a, b in holes
+    ]
+
+
 async def get_moments(shots: list[dict[str, Any]], lang: str, ask: Ask) -> dict[str, Any]:
-    """The writer's moments, checked. Anything wrong goes back once with the exact reasons;
-    after that the good ones go ahead and the rest are dropped."""
+    """The writer's moments, checked. Anything wrong goes back once with the exact reasons,
+    a stretch with nothing on screen included; after that the good ones go ahead and the
+    rest are dropped."""
     prompt = moments_prompt(shots, lang)
     answer = await ask(prompt, MOMENTS_SYSTEM, MOMENTS_SCHEMA, 0)
     moments, problems = clean_moments(answer.get("moments"), shots, lang)
+    holes = quiet_gaps(moments, shots, lang) if moments else []
+    problems = problems + _hole_sentences(holes, shots)
     if problems:
         again = (
             prompt + "\n\nYour last answer could not be used as it was:\n- " + "\n- ".join(problems[:30])
@@ -429,7 +464,10 @@ async def get_moments(shots: list[dict[str, Any]], lang: str, ask: Ask) -> dict[
             second = None
         if second is not None:
             better, _still = clean_moments(second.get("moments"), shots, lang)
-            if len(better) >= len(moments):
+            # fewer quiet stretches wins; with the same number, the answer that kept more moments
+            was = (len(holes) if moments else 10**6, -len(moments))
+            now = (len(quiet_gaps(better, shots, lang)) if better else 10**6, -len(better))
+            if now <= was:
                 moments, answer = better, second
     if not moments:
         raise CreatorzFailed("the writer of the text moments gave nothing that fits this video")
