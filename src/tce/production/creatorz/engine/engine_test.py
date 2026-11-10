@@ -157,6 +157,21 @@ class CutTest(unittest.TestCase):
         s = C.build_exact_shots([(0.0, 9.0), (10.0, 11.0)], ws, fps=30)
         self.assertEqual([x['pick'] for x in s], list(range(len(s))))
 
+    def test_an_opencv_without_face_finding_only_loses_the_centering(self):
+        # OpenCV 5 moved CascadeClassifier: the reel must still be made (10-Nov, first render on the server)
+        import sys
+        import types
+        fake = types.SimpleNamespace(VideoCapture=lambda path: None)
+        real = sys.modules.get('cv2')
+        sys.modules['cv2'] = fake
+        try:
+            self.assertEqual(C._faces('x.mkv', [{}, {}]), [None, None])
+        finally:
+            if real is None:
+                del sys.modules['cv2']
+            else:
+                sys.modules['cv2'] = real
+
     def test_contiguous_shots_have_no_fade_at_their_join(self):
         shots = [{'src_in': 1.0, 'src_out': 2.0}, {'src_in': 2.0, 'src_out': 3.0}, {'src_in': 5.0, 'src_out': 6.0}]
         self.assertEqual(C.join_fades(shots), [(True, False), (False, True), (True, True)])

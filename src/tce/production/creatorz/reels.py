@@ -427,7 +427,11 @@ def _stop(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
-async def _run_engine(plan_path: Path, work: Path, on_status: Status) -> None:
+def _last_error(tail: list[str]) -> str:
+    return next((t for t in reversed(tail) if not re.match(r"^(PASS|FAIL|INFO|compose:|masks:|cut:)", t)), "no output")[:200]
+
+
+async def _run_engine(plan_path: Path, work: Path, on_status: Status) -> list[str]:
     python = settings.production_creatorz_python or sys.executable
     command = [*_wrapper(), python, "-P", str(ENGINE_DIR / "reel.py"), "all", str(plan_path)]
     proc = await asyncio.create_subprocess_exec(
@@ -458,8 +462,8 @@ async def _run_engine(plan_path: Path, work: Path, on_status: Status) -> None:
         if proc.returncode is None:
             _stop(proc)
     if proc.returncode not in ENGINE_OK:
-        why = next((t for t in reversed(tail) if not re.match(r"^(PASS|FAIL|INFO|compose:|masks:)", t)), "no output")
-        raise CreatorzFailed(f"the engine stopped (exit {proc.returncode}): {why[:200]}")
+        raise CreatorzFailed(f"the engine stopped (exit {proc.returncode}): {_last_error(tail)}")
+    return tail
 
 
 async def render_reel(
@@ -482,10 +486,11 @@ async def render_reel(
         await on_status("Creatorz style: waiting for the video ahead of this one to finish")
     async with _one_render:
         await on_status("Creatorz style: preparing the footage")
-        await _run_engine(plan_path, work, on_status)
+        tail = await _run_engine(plan_path, work, on_status)
     out, voice = work / "reel.mp4", work / "voice.wav"
     if not out.exists() or out.stat().st_size == 0 or not voice.exists():
-        raise CreatorzFailed("the engine finished without a video")
+        # exit 1 is also what a crash returns, not only a failed checklist line
+        raise CreatorzFailed(f"the engine stopped without a video: {_last_error(tail)}")
     read = lambda name: json.loads((work / name).read_text(encoding="utf-8"))  # noqa: E731
     return ReelResult(
         out=out, voice=voice, shots=len(read("edit.json")["shots"]), checklist=read("checklist.json"),

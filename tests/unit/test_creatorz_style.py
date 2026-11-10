@@ -257,6 +257,31 @@ async def test_no_usable_moments_is_a_failure_not_a_bare_reel():
         await reels.get_moments(shots(), "en", ask)
 
 
+async def test_an_engine_that_crashes_says_what_broke(tmp_path, monkeypatch):
+    # a crash exits 1, the same code as a failed checklist line: the card must say the real error
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    (engine / "reel.py").write_text(
+        "import sys\nprint('cut: 3 shots, 2.0 s')\nprint('Traceback (most recent call last):')\n"
+        "print(\"AttributeError: module 'cv2' has no attribute 'CascadeClassifier'\")\nsys.exit(1)\n"
+    )
+    monkeypatch.setattr(reels, "ENGINE_DIR", engine)
+    monkeypatch.setattr(reels, "_wrapper", lambda: [])
+    monkeypatch.setattr(settings, "production_creatorz_python", "")
+    said: list[str] = []
+
+    async def status(text):
+        said.append(text)
+
+    with pytest.raises(reels.CreatorzFailed) as failed:
+        await reels.render_reel(
+            src=tmp_path / "raw.mp4", words=reels.engine_words(WORDS), keep=KEEP, lang="en", work=tmp_path / "work",
+            moments=[], punchline=None, bed=None, on_status=status,
+        )
+    assert "CascadeClassifier" in str(failed.value)
+    assert any("3 shots" in s for s in said)
+
+
 def test_progress_lines_say_what_is_happening():
     assert "18 shots" in reels.progress_sentence("cut: 18 shots, 39.72 s")
     assert "200 of 1000" in reels.progress_sentence("compose: frame 200/1000")

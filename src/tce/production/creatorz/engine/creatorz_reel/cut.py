@@ -280,6 +280,8 @@ def _faces(mezz, shots):
         import cv2
     except ImportError:
         return [None] * len(shots)
+    if not hasattr(cv2, 'CascadeClassifier'):            # OpenCV 5 moved it: the punch-ins just stay centered
+        return [None] * len(shots)
     cap = cv2.VideoCapture(mezz)
     casc = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     out = []
