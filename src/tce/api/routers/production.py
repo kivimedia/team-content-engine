@@ -1204,11 +1204,12 @@ async def _render_creatorz(
     if not words:
         return None, "this video has no word-by-word transcript"
     levels = await _levels(src)
-    tight = (
-        creatorz_reels.tighten_keep(keep, levels, words, protect=laugh_rules.spans(plan), transcript=transcript)
-        if levels
-        else [list(r) for r in keep]
-    )
+    tight = [list(r) for r in keep]
+    if levels:
+        floor = tightcut.find_activity(levels).low_db + 2.0  # this recording's own "speech has stopped" level
+        tight = creatorz_reels.tighten_keep(
+            keep, levels, words, protect=laugh_rules.spans(plan), transcript=transcript, edge_db=floor
+        )
     if not tight:
         return None, "there is no voice in this edit"
     key = creatorz_reels.moments_key(tight, words)

@@ -139,6 +139,20 @@ def test_a_breath_of_a_gap_stays_inside_the_line():
     assert got == [[1.15, 2.88]]
 
 
+def test_an_edge_follows_a_soft_start_and_tail_down_to_the_recording_s_floor():
+    # 445b0c26: "It" starts at -50 dB, 100 ms before the meter's -40 dB: a soft start is speech, not air
+    levels = [-60.0] * 130 + [-50.0] * 20 + [-20.0] * 50 + [-50.0] * 20 + [-60.0] * 80
+    assert reels.tighten_keep([[1.0, 3.0]], levels, [word("it", 1.5, 2.0)], edge_db=-55.0) == [[1.25, 2.28]]
+    assert reels.tighten_keep([[1.0, 3.0]], levels, [word("it", 1.5, 2.0)]) == [[1.45, 2.08]]  # no floor given: the meter alone
+
+
+def test_an_edge_never_walks_further_than_a_breath():
+    levels = [-50.0] * 300  # a noisy recording never reaches its floor: the edge stops within reach
+    levels[150:200] = [-20.0] * 50
+    got = reels.tighten_keep([[0.5, 3.0]], levels, [word("a", 1.5, 2.0)], edge_db=-55.0)
+    assert got == [[1.1, 2.43]]
+
+
 def test_a_cut_never_lands_inside_a_word():
     # Jennifer on 445b0c26: "the cut at 0:13 starts inside You", "agents. is cut short": only the loud middle of the
     # word cleared the meter, so its soft start and tail were cut as air
@@ -152,6 +166,13 @@ def test_her_transcript_times_count_as_the_word_too():
         [[1.0, 3.0]], levels_for([(1.5, 2.0)]), [word("you", 1.5, 2.0)], transcript=[word("you", 1.3, 2.4)]
     )
     assert got == [[1.25, 2.48]]
+
+
+def test_a_first_word_stretched_back_over_silence_still_counts():
+    # 445b0c26: "It" is 13.95-14.63 in the transcript, so its middle is before the kept range that starts at 14.4
+    levels = levels_for([(14.55, 15.5)], seconds=20.0)
+    got = reels.tighten_keep([[14.4, 16.0]], levels, [word("next", 14.7, 15.4)], transcript=[word("It", 13.95, 14.63)])
+    assert got[0][0] == 14.4
 
 
 def test_a_word_cut_by_the_edit_itself_cannot_push_past_the_range():

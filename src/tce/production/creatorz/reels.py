@@ -102,21 +102,43 @@ def shots_for(keep: list[list[float]], words: list[dict[str, Any]]) -> list[dict
     return shots
 
 
+EDGE_WALK_S = 0.35
+
+
 def tighten_keep(
     keep: list[list[float]], levels: list[float], words: list[dict[str, Any]], *,
     protect: list[list[float]] = (), transcript: list[dict[str, Any]] = (), thr_db: float = -40.0, gap_s: float = 0.28,
-    min_run_s: float = 0.12, pad_in: float = 0.05, pad_out: float = 0.08,
+    min_run_s: float = 0.12, pad_in: float = 0.05, pad_out: float = 0.08, edge_db: float | None = None,
 ) -> list[list[float]]:
     """The Creatorz pace: no air. TCE's own edit keeps a natural rhythm (445b0c26: 12.3 s of its
     81 s were air at the edges of kept ranges); here each kept range shrinks to the voice inside
     it, and a real pause inside one becomes a jump cut. It only ever removes air: a word too
     quiet for the meter keeps its place, and a laugh kept on purpose stays."""
+    hop, reach = 0.01, int(round(EDGE_WALK_S / 0.01))
+
+    def edges(v0: float, v1: float, a: float, b: float) -> tuple[float, float]:
+        """A word starts and ends softer than the meter's -40 dB. With the recording's own floor
+        given, each edge follows the sound out to it, a breath at most ("It" on 445b0c26 opens
+        100 ms before -40 dB, and cutting there is a clipped word)."""
+        if edge_db is None:
+            return v0, v1
+        lo, hi, k0, k1 = int(round(a / hop)), min(len(levels), int(round(b / hop))), int(round(v0 / hop)), int(round(v1 / hop))
+        for _ in range(reach):
+            if k0 - 1 < lo or levels[k0 - 1] <= edge_db:
+                break
+            k0 -= 1
+        for _ in range(reach):
+            if k1 >= hi or levels[k1] <= edge_db:
+                break
+            k1 += 1
+        return k0 * hop, k1 * hop
+
     out: list[list[float]] = []
     for a, b in keep:
-        spans = [
-            [max(a, v0 - pad_in), min(b, v1 + pad_out)]
-            for v0, v1 in engine_cut.voiced_runs(levels, a, b, thr_db, gap_s, min_run_s)
-        ]
+        spans = []
+        for v0, v1 in engine_cut.voiced_runs(levels, a, b, thr_db, gap_s, min_run_s):
+            s0, s1 = edges(v0, v1, a, b)
+            spans.append([max(a, s0 - pad_in), min(b, s1 + pad_out)])
         spans += [[max(a, p_a), min(b, p_b)] for p_a, p_b in protect if p_a < b and a < p_b]
         for w in words:
             mid = (w["start_s"] + w["end_s"]) / 2
@@ -127,7 +149,7 @@ def tighten_keep(
         # 30 ms), and "the cut starts inside You" was the first thing she said about this (445b0c26).
         for w in [*words, *transcript]:
             s_w, e_w = float(w["start_s"]), float(w["end_s"])
-            if not a <= (s_w + e_w) / 2 < b:
+            if not (s_w < b and a < e_w):  # any overlap: a first word's times can stretch back over silence
                 continue
             for span in spans:
                 if s_w + 0.03 < span[0] < e_w - 0.03:
