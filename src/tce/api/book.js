@@ -9,7 +9,7 @@
 
    Filming: the agent talk road Record without a script uses (POST a talk, PUT every
    MediaRecorder slice while he listens, POST finish), under the reserved name the
-   server hands out ("_book_7" is "Book session, episode 7"). The narration is mixed
+   server hands out ("_book_7_e12" is "Book session on Episode 12, 10 Nov"). The narration is mixed
    into the recording, and finish carries each paragraph read as a "narrator" line, so
    the edit keeps the reading and never cuts it as a retake. Jennifer edits it (edit:
    true) only when he presses Send after Stop; Archive keeps it unedited (10-Nov, T-19955). Slices wait on
@@ -75,11 +75,14 @@
     return data;
   }
 
-  function status(text, bad = false) {
+  /* kind: true (or "bad") is a problem, drawn red; "saved" is good news, drawn as a calm
+     green note (10-Nov, T-20030: a saved take read like an error); anything else is plain. */
+  function status(text, kind = false) {
     const line = $("bookStatus");
     line.textContent = text || "";
     line.hidden = !text;
-    line.classList.toggle("bad", Boolean(bad));
+    line.classList.toggle("bad", kind === true || kind === "bad");
+    line.classList.toggle("saved", kind === "saved");
   }
   const top = (text) => { $("bookState").textContent = text; };
 
@@ -618,10 +621,10 @@
               body: JSON.stringify({ ended_at: take.endedAt, duration_ms: take.durationMs, transcript: take.lines || [], edit }),
             });
             await dropTake(take.talkId);
-            const name = take.title || "The book session";
-            status(edit ? `${name} is in your Library and Jennifer is editing it.`
-              : take.unchosen ? `${name} had no Send or Archive choice, so it is kept in your Library, archived and not edited. To edit it, open Archived in the Library and tap Edit this now.`
-                : `${name} is archived in your Library and not edited. To edit it, open Archived in the Library and tap Edit this now.`);
+            const name = `"${take.title || "Book session"}"`;
+            status(edit ? `Saved in your Library: ${name}. Jennifer is editing it.`
+              : take.unchosen ? `Saved in your Library: ${name}, under Archived. You did not pick Send or Archive, so it was not sent for editing. To edit it, open Archived and tap Edit this now.`
+                : `Saved in your Library: ${name}, under Archived, not edited. To edit it, open Archived and tap Edit this now.`, "saved");
           } catch (error) { failed = error; }
         }
       }
@@ -742,7 +745,8 @@
       const mix = ctx.createMediaStreamDestination();
       ctx.createMediaStreamSource(camera).connect(mix);
       const stream = new MediaStream([...opened.video, ...mix.stream.getAudioTracks()]);
-      const session = await api("/book/sessions", { method: "POST", body: "{}" });
+      // 10-Nov (T-20030): the take is named after the chapter it began on.
+      const session = await api("/book/sessions", { method: "POST", body: JSON.stringify(state.chapter ? { chapter: state.chapter.n } : {}) });
       const startedAt = new Date();
       const talk = await api("/production/agent-talks", {
         method: "POST",

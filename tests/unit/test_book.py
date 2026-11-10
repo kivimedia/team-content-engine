@@ -225,6 +225,35 @@ def test_sessions_hand_out_episode_names_the_talk_road_titles(api):
     assert agent_talks.talk_title(two["agent"], datetime(2026, 11, 9)) == "Book session, episode 2"
 
 
+def test_a_session_is_named_after_the_chapter_it_began_on_not_only_a_running_count(api):
+    # 10-Nov (T-20030): his first filmed take began on Episode 12 and the note called it
+    # "episode 1". A session now carries the chapter; with none it keeps the old name.
+    took = api.post("/api/v1/book/sessions", headers=OWNER, json={"chapter": 2}).json()
+    assert took["agent"].startswith("_book_") and took["agent"].endswith("_c2")
+    assert took["place"] == "Chapter 2" and took["title"].startswith("Book session on Chapter 2, ")
+    started = datetime(2026, 11, 10, 12, 50)
+    assert agent_talks.talk_title("_book_1_e12", started) == "Book session on Episode 12, 10 Nov"
+    assert agent_talks.talk_title("_book_3_c4", started) == "Book session on Chapter 4, 10 Nov"
+    assert agent_talks.book_episode("_book_1_e12") == 1
+    assert agent_talks.book_place("_book_1_e12") == "Episode 12"
+    assert agent_talks.book_place("_book_1") is None
+    assert agent_talks.book_episode("_book_1_x12") is None
+    assert agent_talks.source_for("_book_1_e12") == agent_talks.SOURCE
+    # A chapter the Book does not hold is not invented: the take keeps the running count.
+    ghost = api.post("/api/v1/book/sessions", headers=OWNER, json={"chapter": 999}).json()
+    assert ghost["place"] is None and ghost["title"].startswith("Book session, episode ")
+
+
+def test_a_saved_take_is_drawn_as_good_news_never_in_the_error_colour():
+    # 10-Nov (T-20030): "Error" was his one word for a note that his take was kept.
+    js = (Path(book_routes.__file__).resolve().parents[1] / "book.js").read_text(encoding="utf-8")
+    css = (Path(book_routes.__file__).resolve().parents[1] / "book.css").read_text(encoding="utf-8")
+    assert "had no Send or Archive choice" not in js
+    assert "Saved in your Library: ${name}, under Archived. You did not pick" in js
+    assert '"saved");' in js and ".status-line.saved" in css
+    assert "body: JSON.stringify(state.chapter ? { chapter: state.chapter.n } : {})" in js
+
+
 def test_a_client_login_never_reaches_the_book(api):
     assert api.get("/api/v1/book/chapters", headers=CLIENT).status_code == 403
     assert api.post("/api/v1/book/sessions", headers=CLIENT).status_code == 403

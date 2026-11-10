@@ -69,13 +69,44 @@ def is_solo(agent: str | None) -> bool:
     return str(agent or "").strip() == SOLO
 
 
-def book_episode(agent: str | None) -> int | None:
-    """The episode of a filmed book session, or None for any other talk."""
+# 10-Nov (T-20030): the running count read "episode 1" on a take he filmed from Episode
+# 12, so a session now carries the chapter it began on: "_book_7_e12" (an episode of the
+# new book) or "_book_7_c3" (a chapter of Part one), titled "Book session on Episode 12,
+# 10 Nov". A bare "_book_7" from before keeps its old title.
+_BOOK_PLACES = {"e": "Episode", "c": "Chapter"}
+
+
+def _book_parts(agent: str | None) -> tuple[int, str] | None:
     text = str(agent or "").strip()
     if not text.startswith(BOOK_PREFIX):
         return None
-    tail = text[len(BOOK_PREFIX):]
-    return int(tail) if tail.isdigit() else None
+    count, _, place = text[len(BOOK_PREFIX):].partition("_")
+    if not count.isdigit():
+        return None
+    if place and not (place[:1] in _BOOK_PLACES and place[1:].isdigit()):
+        return None
+    return int(count), place
+
+
+def book_episode(agent: str | None) -> int | None:
+    """The running count of a filmed book session, or None for any other talk."""
+    parts = _book_parts(agent)
+    return parts[0] if parts else None
+
+
+def book_place(agent: str | None) -> str | None:
+    """Where in the Book a filmed session began ("Episode 12"), or None when unknown."""
+    parts = _book_parts(agent)
+    if not parts or not parts[1]:
+        return None
+    return f"{_BOOK_PLACES[parts[1][0]]} {int(parts[1][1:])}"
+
+
+def book_agent(count: int, n: int | None = None, new: bool = True) -> str:
+    """The reserved talk name of a filmed book session, with the chapter it began on."""
+    if n is None:
+        return f"{BOOK_PREFIX}{int(count)}"
+    return f"{BOOK_PREFIX}{int(count)}_{'e' if new else 'c'}{int(n)}"
 
 
 def source_for(agent: str) -> str:
@@ -185,6 +216,9 @@ def talk_title(agent: str, started_at: datetime) -> str:
         return f"{SOLO_LABEL}, {local.day} {local:%b}"
     episode = book_episode(agent)
     if episode is not None:
+        place = book_place(agent)
+        if place:
+            return f"{BOOK_LABEL} on {place}, {local.day} {local:%b}"
         return f"{BOOK_LABEL}, episode {episode}"
     return f"Talk with {display_name(agent)}, {local.day} {local:%b}"
 

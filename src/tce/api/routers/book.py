@@ -12,9 +12,10 @@ GET  /book/chapters/{n}/audio/{i}        paragraph i read aloud (mp3). 409 with
                                          bought: the page then reads it with the
                                          device's own voice, free
 POST /book/import                        {"text"} new chapter text (the book editor)
-POST /book/sessions                      the next episode: the agent name a filmed
-                                         session records under ("_book_7" becomes
-                                         "Book session, episode 7")
+POST /book/sessions                      {"chapter"} the agent name a filmed session
+                                         records under: "_book_7_e12" becomes "Book
+                                         session on Episode 12, 10 Nov" (T-20030); with no
+                                         chapter "_book_7" is "Book session, episode 7"
 GET  /book/voices                        ElevenLabs voices with gender and accent (10-Nov)
 GET  /book/voice-sample?voice_id=&model= a short sample of a paragraph, charged to the
                                          same narration budget (10-Nov, T-19955)
@@ -30,6 +31,7 @@ import asyncio
 import shutil
 import tempfile
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -230,11 +232,24 @@ async def import_text(body: ImportBody, ws: uuid.UUID = Depends(require_owner)) 
     return {"chapters": len(found), "titles": [c["title"] for c in found]}
 
 
+class SessionBody(BaseModel):
+    # 10-Nov (T-20030): the chapter he is on when he presses Film, so the take is named
+    # after it ("Book session on Episode 12, 10 Nov") and not only by a running count.
+    chapter: int | None = Field(default=None, ge=1, le=10_000)
+
+
 @router.post("/sessions", status_code=201)
-async def next_session(ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
-    episode = store().next_episode()
-    agent = f"{agent_talks.BOOK_PREFIX}{episode}"
-    return {"episode": episode, "agent": agent, "title": f"Book session, episode {episode}"}
+async def next_session(body: SessionBody | None = None, ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
+    book = store()
+    n = body.chapter if body else None
+    found = next((c for c in book.chapters() if int(c.get("n", 0)) == n), None) if n else None
+    episode = book.next_episode()
+    if found is None:
+        agent = agent_talks.book_agent(episode)
+    else:
+        agent = agent_talks.book_agent(episode, n, new=found.get("group", "written") == "new")
+    title = agent_talks.talk_title(agent, datetime.now(UTC).replace(tzinfo=None))
+    return {"episode": episode, "agent": agent, "title": title, "place": agent_talks.book_place(agent)}
 
 
 # --- 10-Nov-2026 (T-19955): choosing the reading voice --------------------------------
