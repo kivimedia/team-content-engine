@@ -2,12 +2,15 @@
 Also the C1 caption line breaker (English + Hebrew) and the sky-text occlusion rule."""
 import re
 
+from . import layout
 from .plan import resolve, cue_pick, CueError
 
-W, H = 1080, 1920
-CAP_Y = 1190                      # C1 captions: chest height, 62% of 1920
-CARD_X0, CARD_X1, CARD_Y0 = 90, 990, 880
-TOP_Y = 190
+W, H = layout.W, layout.H
+CAP_Y = layout.CAP_Y              # C1 captions with no face found: chest height, 62% of 1920
+SCENES = ('card_grid', 'card_list', 'card_stat', 'insert')   # full-screen cutaways
+SWAP_MAX = 1.2                    # a headline that takes the caption line holds it for one beat
+PRE_ROLL = 0.4                    # a caption may show this long before its first word is said
+STAT_HOLD, INSERT_HOLD, INSERT_MAX = 1.6, 1.5, 4.0
 OCCLUDE_LIMIT = 0.20              # sky text may lose at most 20% of its ink to the speaker in ANY frame
 LETTER_LIMIT = 0.35               # ...and no single letter more than 35% ('NOT DONE.' lost its T at 12.5% overall)
 
@@ -55,8 +58,11 @@ def captions(shots, lang='en'):
     caps = []
     for s in shots:
         ws = s['owords']
-        for i0, i1 in chunk_words([w['text'] for w in ws], lang):
-            caps.append({'t0': ws[i0]['s'], 'text': ' '.join(w['text'] for w in ws[i0:i1]), 'shot_end': s['out_out']})
+        for n, (i0, i1) in enumerate(chunk_words([w['text'] for w in ws], lang)):
+            t0 = ws[i0]['s']
+            if n == 0 and t0 - s['out_in'] <= PRE_ROLL:      # a shot opens WITH its caption: the frames between the cut
+                t0 = s['out_in']                              # and the first word used to blink empty (10-Nov)
+            caps.append({'t0': t0, 'text': ' '.join(w['text'] for w in ws[i0:i1]), 'shot_end': s['out_out']})
     for k, c in enumerate(caps):
         nxt = caps[k + 1]['t0'] if k + 1 < len(caps) else shots[-1]['out_out']
         c['t1'] = min(nxt, c['shot_end'])
@@ -85,18 +91,19 @@ def hidden_shares(ink, hid, solid, solid_hid, letters):
 
 
 def drop_covered(drawn):
-    """drawn: [{'kind', 'box': [x0, y0, x1, y1]}] for one frame's front items, cards included. A card hides any other
-    item its box meets, never text over text (demo 3's tag showed through the list card, 10-Nov)."""
-    cards = [d['box'] for d in drawn if d['kind'] in ('card_grid', 'card_list')]
+    """drawn: [{'kind', 'box': [x0, y0, x1, y1]}] for one frame's front items, scenes included. A scene (a card, a
+    picture) hides any other item its box meets, never text over text (demo 3's tag showed through the list card,
+    10-Nov). A full-screen scene therefore hides everything but the captions."""
+    cards = [d['box'] for d in drawn if d['kind'] in SCENES]
 
     def meets(b, c):
         return b[0] < c[2] and c[0] < b[2] and b[1] < c[3] and c[1] < b[3]
-    return [d for d in drawn if d['kind'] in ('card_grid', 'card_list') or not any(meets(d['box'], c) for c in cards)]
+    return [d for d in drawn if d['kind'] in SCENES or not any(meets(d['box'], c) for c in cards)]
 
 
 def decide_layer(fractions, limit=OCCLUDE_LIMIT):
     """sky text stays behind the head only if no frame hides more than `limit` of its ink; else it goes to the
-    front at the top (a handheld head rises mid-shot and ate 'WEE__ SLOT' on 10-Nov). Each entry is a share or an
+    front (a handheld head rises mid-shot and ate 'WEE__ SLOT' on 10-Nov). Each entry is a share or an
     (overall, worst letter) pair from hidden_shares."""
     if not fractions:
         return 'top'
@@ -115,15 +122,48 @@ def _until(m, shots, t0):
     return s['out_out']
 
 
+def _face(s):
+    f = s.get('face')
+    return f if isinstance(f, dict) and 'chin' in f else None      # an old edit.json kept a list here
+
+
+def _over(shots, t0, t1):
+    return [s for s in shots if s['out_in'] < t1 - 0.02 and t0 < s['out_out'] - 0.02] or \
+           [s for s in shots if s['out_in'] - 1e-6 <= t0 < s['out_out'] + 1e-6]
+
+
+def face_union(shots):
+    """the face across several shots, at its worst for layout: the highest top, the lowest chin and mouth, the widest
+    sides. None when no shot has a face."""
+    fs = [f for f in (_face(s) for s in shots) if f]
+    if not fs:
+        return None
+    return {'top': min(f['top'] for f in fs), 'chin': max(f['chin'] for f in fs), 'left': min(f['left'] for f in fs),
+            'right': max(f['right'] for f in fs), 'mouth': max(f['mouth'] for f in fs),
+            'eye_y': min(f['eye_y'] for f in fs), 'fh': max(f['fh'] for f in fs), 'fw': max(f['fw'] for f in fs)}
+
+
+def apply_slot(it, spec):
+    """A front headline takes its slot. One that has to take the caption line holds it for a beat, captions off."""
+    if it['slot'][0] == 'swap':
+        it['t1'] = round(min(it['t1'], it['t0'] + SWAP_MAX), 3)
+        spec['hide_cap'].append((it['t0'], it['t1']))
+
+
 def build(plan, edit):
     shots = edit['shots']
     lang = edit.get('lang', plan.get('lang', 'en'))
-    items, sfx, flashes, hide, cap_y = [], [], [], [], []
+    items, sfx, flashes, whips = [], [], [], []
     rtl = lang == 'he'
+    lines = layout.caption_lines([_face(s) for s in shots])
+    spec = {'items': items, 'hide_cap': [], 'cap_lines': [(s['out_in'], s['out_out'], y) for s, y in zip(shots, lines)]}
 
     def sound(t, name, gain):
         if name:
-            sfx.append((round(t, 3), name, float(gain)))
+            sfx.append((round(max(0.0, t), 3), name, float(gain)))
+
+    def line_for(sel):
+        return max(y for s, y in zip(shots, lines) if s in sel)
 
     for i, m in enumerate(plan['moments']):
         kind = m['type']
@@ -140,67 +180,82 @@ def build(plan, edit):
                 flashes.append(round(t, 3))
                 sound(t, m.get('sound', 'flash'), m.get('gain', -6))
                 continue
+            if kind == 'whip':
+                t = resolve(m['at'], shots)
+                whips.append(round(t, 3))
+                sound(t - 0.08, m.get('sound', 'whoosh'), m.get('gain', -3))
+                continue
             t0 = resolve(m['at'], shots)
             t1 = _until(m, shots, t0)
         except CueError as e:
             raise CueError(f'moment {i} ({kind}): {e}')
         if t1 <= t0:
             raise CueError(f'moment {i} ({kind}): ends ({t1:.2f}) before it starts ({t0:.2f})')
-        it = {'idx': i, 'kind': kind, 't0': round(t0, 3), 't1': round(t1, 3), 'm': m, 'entry': m.get('entry', 6)}
+        it = {'idx': i, 'kind': kind, 't0': round(t0, 3), 't1': round(t1, 3), 'm': m, 'entry': m.get('entry', 7)}
+        sel = _over(shots, it['t0'], it['t1'])
+        it['face'], it['cap_y'] = face_union(sel), line_for(sel)
         snd, gain = m.get('sound', 'whoosh'), m.get('gain', -6)
         if kind == 'headline':
             place = m.get('place', 'sky')
-            it['layer'] = 'sky' if place == 'sky' else 'front'
-            it['pos'] = m.get('pos') or ({'chest': [W // 2, CAP_Y], 'low': [W // 2, CAP_Y + 60], 'top': [W // 2, TOP_Y]}.get(place, 'auto'))
-            if place in ('chest', 'low'):
-                hide.append((it['t0'], it['t1']))
+            it['slot'] = layout.headline_slot(it['face'], it['cap_y'], place)
+            # behind the head only where there is sky to stand in: on a tight selfie the head would hide it all
+            roomy = it['face'] is None or it['slot'][0] == 'above'
+            it['layer'] = 'sky' if (place == 'sky' and roomy and not m.get('pos')) else 'front'
+            it['pos'] = m.get('pos') or 'auto'
+            if it['layer'] == 'front' and not m.get('pos'):
+                apply_slot(it, spec)
         elif kind == 'strike':
-            tgt = m['target']
-            it['layer'] = 'follow'
-            it['target'] = tgt
-            it['entry'] = 0
+            it['layer'], it['target'], it['entry'] = 'follow', m['target'], 0
             snd, gain = m.get('sound', 'whoosh'), m.get('gain', -10)
         elif kind == 'pair':
-            it['layer'], it['pos'] = 'front', [W // 2, CAP_Y + 25]
+            it['layer'] = 'front'
             if 'bold_at' in m:
                 it['bold_t'] = round(resolve(m['bold_at'], shots, cue_pick(m['at'])), 3)
                 sound(it['bold_t'], snd, gain)
                 gain = m.get('light_gain', -12)
-            hide.append((it['t0'], it['t1']))
+            spec['hide_cap'].append((it['t0'], it['t1']))
         elif kind == 'badge':
-            side = m.get('side', 'right' if rtl else 'left')
-            it['layer'], it['pos'] = 'front', m.get('pos') or ([150, 420] if side == 'left' else [930, 420])
+            it['layer'], it['side'] = 'front', m.get('side', 'right' if rtl else 'left')
+            it['pos'] = m.get('pos') or 'auto'
         elif kind == 'bubble':
-            it['layer'], it['pos'] = 'front', [W // 2, CAP_Y - 20]
-            it['entry'] = m.get('entry', 5)
-            hide.append((it['t0'], it['t1']))
+            it['layer'], it['entry'] = 'front', m.get('entry', 6)
+            spec['hide_cap'].append((it['t0'], it['t1']))
         elif kind == 'tag':
-            it['layer'], it['pos'] = 'front', m.get('pos') or ([830, CAP_Y - 80] if rtl else [250, CAP_Y - 80])
-            it['entry'] = 4
+            it['layer'], it['entry'], it['rtl'] = 'front', 5, rtl
+            it['pos'] = m.get('pos') or 'auto'
             gain = m.get('gain', -12)
-        elif kind in ('card_grid', 'card_list'):
-            it['layer'] = 'card'
-            it['entry'] = 4
-            flashes.append(it['t0'])
-            sound(it['t0'], 'flash', m.get('flash_gain', -8))
+        elif kind in SCENES:
+            it['layer'], it['entry'] = 'scene', 5
+            it['bottom'] = min(y for s, y in zip(shots, lines) if s in sel) - 150      # the captions run under it
             snd = None
-            ticks = m.get('ticks', 'spread')
-            n = len(m.get('filled', [])) if kind == 'card_grid' else len(m.get('items', []))
-            if ticks == 'spread':
-                span = it['t1'] - it['t0']
-                tt = [it['t0'] + 0.2 + k * min(0.32, (span - 0.4) / max(1, n)) for k in range(n)]
+            if kind in ('card_grid', 'card_list'):
+                ticks = m.get('ticks', 'spread')
+                n = len(m.get('filled', [])) if kind == 'card_grid' else len(m.get('items', []))
+                if ticks == 'spread':
+                    span = it['t1'] - it['t0']
+                    tt = [it['t0'] + 0.2 + k * min(0.32, (span - 0.4) / max(1, n)) for k in range(n)]
+                else:
+                    tt = [resolve(c, shots, cue_pick(m.get('at'))) for c in ticks]
+                it['ticks'] = [round(x, 3) for x in tt]
+                for x in it['ticks']:
+                    sound(x, 'tick', m.get('tick_gain', -6))
+                it['windows'] = layout.card_windows(it['t0'], it['t1'], it['ticks'])
+            elif kind == 'card_stat':
+                it['windows'] = [(it['t0'], round(min(it['t1'], it['t0'] + m.get('hold', STAT_HOLD)), 3))]
             else:
-                tt = [resolve(c, shots, cue_pick(m.get('at'))) for c in ticks]
-            it['ticks'] = [round(x, 3) for x in tt]
-            for x in it['ticks']:
-                sound(x, 'tick', m.get('tick_gain', -6))
-            cap_y.append((it['t0'], it['t1'], CARD_Y0))
+                hold = min(INSERT_MAX, it['t1'] - it['t0']) if 'until' in m else m.get('hold', INSERT_HOLD)
+                it['windows'] = [(it['t0'], round(min(it['t1'], it['t0'] + hold), 3))]
+            for k, (a, _b) in enumerate(it['windows']):         # every cut to a scene flashes; only the first is loud
+                flashes.append(a)
+                sound(a, 'flash' if k == 0 else 'whoosh', m.get('flash_gain', -8) if k == 0 else -12)
         sound(it['t0'], snd, gain)
         items.append(it)
-    return {'items': items, 'sfx': sorted(sfx), 'flashes': sorted(flashes), 'hide_cap': hide, 'cap_y': cap_y,
-            'captions': captions(shots, lang), 'duration': edit['duration']}
+    spec.update(sfx=sorted(sfx), flashes=sorted(set(flashes)), whips=sorted(whips), captions=captions(shots, lang),
+                duration=edit['duration'])
+    return spec
 
 
 def sky_intervals(plan, edit):
     spec = build(plan, edit)
     return [(it['t0'], it['t1']) for it in spec['items'] if it.get('layer') == 'sky']
+

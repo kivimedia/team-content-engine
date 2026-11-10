@@ -13,7 +13,7 @@ W2, H2 = 540, 960
 
 def cut_stamp(edit):
     """what the base.mp4 frames depend on: every shot's source range and crop"""
-    key = json.dumps([(s['src_in'], s['src_out'], s['crop']) for s in edit['shots']])
+    key = json.dumps([(s['src_in'], s['src_out'], s['crop'], s.get('follow') or []) for s in edit['shots']])
     return hashlib.sha1(key.encode()).hexdigest()[:16]
 
 

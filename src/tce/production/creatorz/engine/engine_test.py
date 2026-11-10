@@ -7,6 +7,8 @@ from creatorz_reel import cut as C
 from creatorz_reel import compose_plan as CP
 from creatorz_reel import draw as D
 from creatorz_reel import measure as M
+from creatorz_reel import layout as L
+from creatorz_reel import faces as F
 
 
 def shot(pick, t0, t1, words):
@@ -165,7 +167,7 @@ class CutTest(unittest.TestCase):
         real = sys.modules.get('cv2')
         sys.modules['cv2'] = fake
         try:
-            self.assertEqual(C._faces('x.mkv', [{}, {}]), [None, None])
+            self.assertEqual(F.detect('x.mkv', [{}, {}], 30), ([None, None], None))
         finally:
             if real is None:
                 del sys.modules['cv2']
@@ -218,13 +220,22 @@ class CutTest(unittest.TestCase):
         self.assertGreaterEqual(abs(sc[0] - sc[1]), 0.05)
 
     def test_crop_puts_eyes_on_upper_third_and_stays_inside(self):
-        x, y, w, h = C.crop_for(1.26, [540, 700, 400, 400])
+        f = face(top=500, fh=400, eye=652)
+        x, y, w, h = L.crop_for(1.26, f)
         self.assertTrue(0 <= x and x + w <= 1080 and 0 <= y and y + h <= 1920)
-        eyes = 700 - 400 * 0.12
-        self.assertAlmostEqual((eyes - y) / h, 1 / 3, delta=0.02)
+        self.assertAlmostEqual((652 - y) / h, 1 / 3, delta=0.02)
 
 
 class CaptionTest(unittest.TestCase):
+    def test_a_shot_opens_with_its_caption(self):
+        # 10-Nov: the frames between a cut and the shot's first word had no caption, so captions blinked at every cut
+        s = [{'pick': 0, 'out_in': 0.0, 'out_out': 2.0, 'owords': [{'text': 'One', 's': 0.2, 'e': 0.6}, {'text': 'two.', 's': 0.7, 'e': 1.9}]},
+             {'pick': 1, 'out_in': 2.0, 'out_out': 4.0, 'owords': [{'text': 'Three', 's': 2.25, 'e': 2.6}, {'text': 'four.', 's': 2.7, 'e': 3.9}]},
+             {'pick': 2, 'out_in': 4.0, 'out_out': 7.0, 'owords': [{'text': 'Late.', 's': 5.5, 'e': 6.0}]}]
+        caps = CP.captions(s)
+        self.assertEqual([c['t0'] for c in caps], [0.0, 2.0, 5.5])     # a word a second and a half in does not show early
+        self.assertEqual(caps[0]['t1'], 2.0)
+
     def test_line_never_ends_on_a_weak_word(self):
         texts = 'I do the same thing to my own clients.'.split()
         for i0, i1 in CP.chunk_words(texts, 'en'):
@@ -329,7 +340,8 @@ class RtlTest(unittest.TestCase):
 class ChecklistTest(unittest.TestCase):
     GOOD = {'duration': 39.3, 'first_word': 0.0, 'tail': 0.01, 'pauses': [], 'still_max': 2.1, 'text_gap_max': 3.8,
             'scales': [1.0, 1.18, 1.26], 'lufs': -14.4, 'tp': -1.3, 'video': '1080,1920,25/1', 'silent_pops': [],
-            'sky': [{'text': 'PRICE', 'layer': 'sky', 'max_hidden': 0.1}]}
+            'sky': [{'text': 'PRICE', 'layer': 'sky', 'max_hidden': 0.1}],
+            'look': {'on_face': [], 'edge': [], 'cut_head': [], 'accents': ['sand']}}
 
     def test_good_reel_passes(self):
         self.assertTrue(all(v[0] == 'PASS' for v in M.verdicts(self.GOOD)))
@@ -355,6 +367,256 @@ class ChecklistTest(unittest.TestCase):
     def test_length_range_is_per_plan(self):
         long_ok = dict(self.GOOD, duration=97.3, length_range=(20, 600))
         self.assertTrue(all(v[0] == 'PASS' for v in M.verdicts(long_ok)))
+
+    def test_look_lines_fail_on_planted_ugly(self):
+        # 10-Nov, the first real TCE render: captions on the mouth, headlines against the top edge, cut foreheads,
+        # five colors. A clean look report passes; each planted fault fails its own line and only that line.
+        clean = dict(self.GOOD, look={'on_face': [], 'edge': [], 'cut_head': [], 'accents': ['sand']})
+        self.assertTrue(all(v[0] == 'PASS' for v in M.verdicts(clean)))
+        blind = {k: v for k, v in self.GOOD.items() if k != 'look'}          # no report at all: nothing was looked at
+        self.assertEqual(len([v for v in M.verdicts(blind) if v[0] == 'FAIL']), 4)
+        for key, bad, line in (('on_face', [{'what': 'caption', 't': 4.0}], 'no text on the face'),
+                               ('edge', [{'what': 'DONE', 't': 1.2}], 'text inside the safe area'),
+                               ('cut_head', [12.4], 'the head stays in the frame'),
+                               ('accents', ['sand', 'green'], 'one accent color')):
+            x = dict(self.GOOD, look=dict(clean['look'], **{key: bad}))
+            self.assertEqual({v[1] for v in M.verdicts(x) if v[0] == 'FAIL'}, {line}, key)
+
+
+def face(top=500, fh=600, cx=540, fw=460, eye=None, luma=0.5):
+    """a face as faces.summarize() returns it, in source pixels: a box `fh` tall whose top is at `top`"""
+    return {'cx': cx, 'cy': top + fh / 2, 'fw': fw, 'fh': fh, 'eye_y': eye if eye is not None else top + 0.36 * fh,
+            'top': top, 'chin': top + fh, 'left': cx - fw / 2, 'right': cx + fw / 2, 'mouth': top + 0.78 * fh,
+            'luma': luma, 'track': []}
+
+
+class LayoutTest(unittest.TestCase):
+    def test_a_face_that_fills_the_frame_caps_the_punch_in(self):
+        # the selfie: a 760 px face box in a 1920 frame is already 40%; 1.26x and the 1.48x punchline made a giant face
+        big = face(top=400, fh=760)
+        self.assertAlmostEqual(L.scale_cap(big), 0.46 * 1920 / 760, places=3)
+        got = L.fit_scales([1.18, 1.26, 1.48], [big, big, big], punch=2)
+        self.assertTrue(all(s * 760 / 1920 <= L.FACE_HARD + 1e-6 for s in got), got)
+        self.assertLessEqual(got[0] * 760 / 1920, 0.46 + 1e-6)
+
+    def test_a_cut_between_two_full_faces_still_changes_scale(self):
+        # the real video, shots 34-38: every face capped near 1.0, so neighbors came out 1.01 / 1.00 / 1.00 / 1.01
+        full = face(top=300, fh=880)                                 # 46% of the frame at 1.0x already
+        got = L.fit_scales([1.18, 1.26, 1.12, 1.22], [full] * 4)
+        self.assertTrue(all(abs(a - b) >= L.MIN_STEP - 1e-9 for a, b in zip(got, got[1:])), got)
+        self.assertTrue(all(s * 880 / 1920 <= L.FACE_HARD + 1e-6 for s in got), got)
+
+    def test_capped_neighbors_still_differ(self):
+        big = face(top=400, fh=760)
+        got = L.fit_scales([1.18, 1.26, 1.12, 1.22], [big] * 4)
+        self.assertTrue(all(abs(a - b) >= L.MIN_STEP - 1e-9 for a, b in zip(got, got[1:])), got)
+        self.assertTrue(all(s >= 1.0 for s in got))
+
+    def test_no_face_keeps_the_planned_scale(self):
+        self.assertEqual(L.fit_scales([1.18, 1.26], [None, None]), [1.18, 1.26])
+
+    def test_crop_never_cuts_into_the_forehead(self):
+        # a face whose eyes sit low in its box: eyes-on-the-upper-third alone starts the crop inside the forehead
+        f = face(top=420, fh=800, eye=880)
+        x, y, cw, ch = L.crop_for(1.3, f)
+        self.assertLessEqual(y, f['top'] - L.FOREHEAD * f['fh'] + 1)
+        self.assertGreaterEqual(y + ch, f['chin'])
+        out = L.to_out(f, [x, y, cw, ch])
+        self.assertGreaterEqual(out['top'], L.FOREHEAD * out['fh'] - 2)
+
+    def test_crop_without_a_face_is_centered(self):
+        self.assertEqual(L.crop_for(1.25, None), [108, 192, 864, 1536])
+
+    def test_one_caption_line_under_every_chin(self):
+        outs = [{'chin': 1150}, {'chin': 1220}, None, {'chin': 1180}]
+        lines = L.caption_lines(outs)
+        self.assertEqual(len(set(lines)), 1)                         # one steady line
+        self.assertGreaterEqual(lines[0], 1220 + L.CAP_GAP)          # under the lowest chin
+        self.assertLessEqual(max(lines), L.CAP_MAX)
+
+    def test_caption_line_never_rises_above_chest_or_sinks_past_the_floor(self):
+        self.assertEqual(L.caption_lines([{'chin': 700}, {'chin': 760}]), [L.CAP_Y, L.CAP_Y])
+        self.assertEqual(L.caption_lines([{'chin': 1700}]), [L.CAP_MAX])
+        self.assertEqual(L.caption_lines([None, None]), [L.CAP_Y, L.CAP_Y])
+
+    def test_headline_goes_above_only_with_real_room(self):
+        roomy = {'top': 900, 'fh': 500, 'chin': 1400}                # a wide low-angle shot: sky above the head
+        self.assertEqual(L.headline_slot(roomy, 1300)[0], 'above')
+        tight = {'top': 330, 'fh': 760, 'chin': 1090}                # the selfie: hair starts near the top edge
+        slot = L.headline_slot(tight, 1190)
+        self.assertEqual(slot[0], 'under')
+        self.assertGreaterEqual(slot[1], 1190 + 50)                  # below the caption line, never on the face
+        self.assertLessEqual(slot[2], L.BOTTOM_SAFE)
+
+    def test_headline_with_no_room_anywhere_takes_the_caption_line(self):
+        tight = {'top': 330, 'fh': 900, 'chin': 1400}
+        self.assertEqual(L.headline_slot(tight, L.CAP_MAX)[0], 'swap')
+
+    def test_look_report_names_text_on_a_face_and_at_the_edge(self):
+        fo = {'top': 400, 'chin': 1150, 'left': 300, 'right': 780, 'eye_y': 670, 'mouth': 985, 'fh': 750, 'fw': 480}
+        shots = [{'out_in': 0.0, 'out_out': 3.0, 'face': fo, 'crop_top': 120},
+                 {'out_in': 3.0, 'out_out': 6.0, 'face': dict(fo, top=10), 'crop_top': 120},     # our zoom cut the forehead
+                 {'out_in': 6.0, 'out_out': 9.0, 'face': dict(fo, top=10), 'crop_top': 0}]       # the phone never filmed it
+        texts = [{'what': 'caption on the mouth', 't0': 0.5, 't1': 1.5, 'box': [200, 940, 880, 1030]},
+                 {'what': 'caption under the chin', 't0': 1.5, 't1': 2.5, 'box': [200, 1200, 880, 1290]},
+                 {'what': 'DONE against the top', 't0': 0.2, 't1': 1.0, 'box': [300, 30, 780, 150]}]
+        rep = L.look_report(texts, shots)
+        self.assertEqual([x['what'] for x in rep['on_face']], ['caption on the mouth'])
+        self.assertEqual([x['what'] for x in rep['edge']], ['DONE against the top'])
+        self.assertEqual(rep['cut_head'], [3.0])
+
+    def test_badge_moves_off_the_face(self):
+        fo = {'top': 200, 'chin': 950, 'left': 60, 'right': 700, 'eye_y': 470, 'mouth': 785, 'fh': 750, 'fw': 640}
+        cx, cy = L.side_spot(fo, 320, 320, 'left', 1190)
+        self.assertFalse(L.meets([cx - 160, cy - 160, cx + 160, cy + 160], L.face_zone(fo)))
+
+    def test_accent_comes_from_the_background(self):
+        self.assertEqual(L.pick_accent((120, 170, 230)), 'sand')     # sky
+        self.assertEqual(L.pick_accent((70, 120, 60)), 'sand')       # trees
+        self.assertEqual(L.pick_accent((190, 130, 80)), 'ice')       # warm wood
+        self.assertEqual(L.pick_accent((120, 120, 122)), 'butter')   # gray
+        self.assertEqual(L.pick_accent(None), 'sand')
+
+    def test_a_long_card_comes_and_goes_a_short_one_stays(self):
+        self.assertEqual(L.card_windows(10.0, 13.5, [10.4, 11.5, 12.6]), [(10.0, 13.5)])
+        wins = L.card_windows(10.0, 22.0, [10.5, 14.0, 17.5, 21.0])
+        self.assertGreaterEqual(len(wins), 3)                        # the speaker comes back between ticks
+        self.assertTrue(all(b - a <= 2.6 for a, b in wins), wins)
+        self.assertTrue(all(any(a <= x < b for a, b in wins) for x in (10.5, 14.0, 17.5, 21.0)))   # every tick is seen
+        self.assertTrue(all(10.0 <= a and b <= 22.0 for a, b in wins))
+
+    def test_exposure_gamma_brightens_dark_shots_and_leaves_close_ones(self):
+        self.assertGreater(L.exposure_gamma(0.30, 0.45), 1.0)
+        self.assertLess(L.exposure_gamma(0.60, 0.45), 1.0)
+        self.assertEqual(L.exposure_gamma(0.45, 0.455), 1.0)
+        self.assertLessEqual(L.exposure_gamma(0.05, 0.6), 1.22)       # a backlit shot is only partly lifted
+        self.assertEqual(L.exposure_gamma(None, 0.5), 1.0)
+
+    def test_face_follow_is_smooth_bounded_and_covers_the_shot(self):
+        track = [[2, 500, 600], [8, 560, 600], [14, 520, 640], [20, 900, 600], [26, 540, 610]]
+        keys = L.smooth_track(track, 30, max_shift=40)
+        self.assertEqual(keys[0][0], 0)
+        self.assertEqual(keys[-1][0], 29)
+        self.assertTrue(all(abs(dx) <= 40 and abs(dy) <= 40 for _k, dx, dy in keys), keys)
+        self.assertEqual(L.smooth_track(track[:2], 30, 40), [])      # two samples are not a track
+        expr = L.piecewise(keys, 1)
+        self.assertIn('if(lt(n,', expr)
+        self.assertEqual(L.piecewise([], 1), '0')
+
+    def test_pop_overshoots_then_settles(self):
+        self.assertAlmostEqual(L.ease_back(0.0), 0.0, places=6)
+        self.assertAlmostEqual(L.ease_back(1.0), 1.0, places=6)
+        self.assertGreater(max(L.ease_back(k / 20) for k in range(21)), 1.02)
+
+
+def tight(shot_):
+    """the same shot with a selfie face in it (output pixels): hair at the top edge, chin at 68%"""
+    return dict(shot_, face={'top': 330, 'chin': 1300, 'left': 250, 'right': 830, 'eye_y': 680, 'mouth': 1090, 'fh': 970, 'fw': 580})
+
+
+class CutawayTest(unittest.TestCase):
+    EDIT = {'duration': 7.0, 'shots': [tight(s) for s in SHOTS], 'lang': 'en'}
+
+    def build(self, moments, edit=None):
+        return CP.build({'lang': 'en', 'moments': moments}, edit or self.EDIT)
+
+    def test_a_headline_with_no_room_takes_the_caption_line_for_one_beat(self):
+        # the real video: every "top" headline was jammed against the frame edge above a face that fills the frame
+        spec = self.build([{'type': 'headline', 'text': 'PRICE', 'place': 'top', 'at': {'pick': 0, 'word': 'Sometimes'}}])
+        it = spec['items'][0]
+        self.assertEqual(it['layer'], 'front')
+        self.assertEqual(it['slot'][0], 'swap')
+        self.assertLessEqual(it['t1'] - it['t0'], CP.SWAP_MAX + 1e-6)
+        self.assertIn((it['t0'], it['t1']), spec['hide_cap'])
+
+    def test_sky_headline_goes_behind_the_head_only_where_there_is_sky(self):
+        m = [{'type': 'headline', 'text': 'PRICE', 'place': 'sky', 'at': {'pick': 0, 'word': 'Sometimes'}}]
+        self.assertEqual(self.build(m)['items'][0]['layer'], 'front')            # the tight selfie
+        self.assertEqual(self.build(m, {'duration': 7.0, 'shots': SHOTS, 'lang': 'en'})['items'][0]['layer'], 'sky')
+
+    def test_captions_sit_under_the_chin_on_one_line(self):
+        lines = {y for _a, _b, y in self.build([])['cap_lines']}
+        self.assertEqual(lines, {1300 + L.CAP_GAP})
+
+    def test_a_long_list_card_cuts_away_in_beats_each_with_a_flash(self):
+        long_edit = {'duration': 30.0, 'lang': 'en', 'shots': [shot(0, 0.0, 14.0, 'one two three four'.split()),
+                                                                 shot(1, 14.0, 30.0, 'five six seven eight'.split())]}
+        spec = self.build([{'type': 'card_list', 'items': ['A', 'B', 'C'], 'at': {'pick': 0, 'at': 'start'},
+                            'until': {'pick': 1, 'at': 'end'},
+                            'ticks': [{'pick': 0, 'word': 'two'}, {'pick': 0, 'word': 'four'}, {'pick': 1, 'word': 'seven'}]}], long_edit)
+        card = spec['items'][0]
+        self.assertEqual(card['layer'], 'scene')
+        self.assertGreaterEqual(len(card['windows']), 3)
+        self.assertLess(sum(b - a for a, b in card['windows']), 0.4 * (card['t1'] - card['t0']))   # the speaker gets most of it
+        for a, _b in card['windows']:
+            self.assertIn(a, spec['flashes'])
+            self.assertTrue(any(abs(a - t) <= 0.01 for t, _n, _g in spec['sfx']))
+
+    def test_number_card_and_picture_hold_for_a_beat_not_the_whole_line(self):
+        spec = self.build([{'type': 'card_stat', 'text': '80%', 'label': 'said yes', 'at': {'pick': 0, 'at': 'start'}},
+                           {'type': 'insert', 'src': 'x.png', 'at': {'pick': 1, 'at': 'start'}}])
+        stat, pic = spec['items']
+        self.assertAlmostEqual(stat['windows'][0][1] - stat['windows'][0][0], CP.STAT_HOLD, places=3)
+        self.assertAlmostEqual(pic['windows'][0][1] - pic['windows'][0][0], CP.INSERT_HOLD, places=3)
+        self.assertEqual({stat['layer'], pic['layer']}, {'scene'})
+
+    def test_a_whip_is_a_cut_with_a_whoosh_not_an_item(self):
+        spec = self.build([{'type': 'whip', 'at': {'pick': 1, 'at': 'start'}}])
+        self.assertEqual(spec['items'], [])
+        self.assertEqual(spec['whips'], [3.6])
+        self.assertTrue(any(n == 'whoosh' and abs(t - 3.52) < 0.01 for t, n, _g in spec['sfx']))
+
+    def test_a_full_screen_scene_hides_every_other_item(self):
+        scene = {'kind': 'card_stat', 'box': [0, 0, 1080, 1920]}
+        tag = {'kind': 'tag', 'box': [40, 1080, 560, 1160]}
+        self.assertEqual([d['kind'] for d in CP.drop_covered([tag, scene])], ['card_stat'])
+
+    def test_a_picture_moment_needs_a_real_picture(self):
+        base = {'schema': P.SCHEMA, 'source': 'a.mp4', 'words': 'w.json', 'picks': [{'span': [0, 1]}]}
+        with self.assertRaises(P.PlanError):
+            P.normalize(dict(base, moments=[{'type': 'insert', 'at': 0.5}]))
+        with self.assertRaises(P.PlanError) as e:
+            P.normalize(dict(base, moments=[{'type': 'insert', 'src': 'no-such-picture.png', 'at': 0.5}]))
+        self.assertIn('no picture at', str(e.exception))
+
+    def test_a_tall_screenshot_scrolls_a_wide_picture_fits_a_portrait_covers(self):
+        self.assertEqual(D.picture_mode(780, 1688, 940, 1025), 'pan')       # fitted whole it was the size of a stamp
+        self.assertEqual(D.picture_mode(1600, 900, 940, 1025), 'fit')
+        self.assertEqual(D.picture_mode(1080, 1920, 940, 1025), 'cover')
+        self.assertEqual(D.picture_mode(1170, 2000, 940, 1025), 'cover')
+
+    def test_every_color_but_white_is_the_one_accent(self):
+        self.assertFalse(D.is_accent('white'))
+        self.assertFalse(D.is_accent(None))
+        for name in ('accent', 'yellow', 'green', 'cyan', 'red'):
+            self.assertTrue(D.is_accent(name), name)
+        self.assertEqual(D.set_accent('ice'), 'ice')
+        self.assertEqual(D.set_accent('no-such-color'), 'sand')
+        self.assertEqual(D.set_accent([10, 200, 30]), 'custom')
+        D.set_accent('sand')
+
+
+class FaceSampleTest(unittest.TestCase):
+    def test_every_shot_gets_its_samples_even_a_short_one(self):
+        shots = [{'src_in': 10.0, 'src_out': 12.4}, {'src_in': 12.4, 'src_out': 12.5}, {'src_in': 30.0, 'src_out': 31.0}]
+        ks = F.shot_samples(shots, 10.0, 110)                        # 22 s of samples, 5 a second
+        self.assertEqual(ks[0], list(range(0, 12)))
+        self.assertEqual(len(ks[1]), 1)                              # 0.1 s long: the nearest sample, not nothing
+        self.assertEqual(ks[2], list(range(100, 105)))
+        self.assertTrue(all(0 <= k < 110 for row in ks for k in row))
+
+    def test_layout_uses_extremes_the_crop_uses_medians(self):
+        found = [{'k': k, 'x0': 300, 'y0': y0, 'x1': 760, 'y1': y0 + 600, 'eye_y': y0 + 210, 'mouth_y': y0 + 470, 'luma': 0.5}
+                 for k, y0 in enumerate((400, 420, 380, 500, 410))]
+        s = F.summarize(found, 5)
+        self.assertEqual(s['top'], 380)                              # the highest the head got
+        self.assertEqual(s['chin'], 1100)                            # the lowest the chin got
+        self.assertEqual(s['cy'], 410 + 300)                         # the median, for the crop
+        self.assertEqual(len(s['track']), 5)
+
+    def test_a_face_seen_once_in_six_samples_is_not_a_face(self):
+        one = [{'k': 0, 'x0': 0, 'y0': 0, 'x1': 10, 'y1': 10, 'eye_y': 3, 'mouth_y': 8, 'luma': 0.5}]
+        self.assertIsNone(F.summarize(one, 6))
 
 
 if __name__ == '__main__':

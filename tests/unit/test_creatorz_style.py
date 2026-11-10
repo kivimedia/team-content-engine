@@ -55,7 +55,7 @@ def test_the_engine_suite_runs_and_passes():
     )
     assert done.returncode == 0, done.stderr[-800:]
     ran = re.search(r"Ran (\d+) tests", done.stderr)
-    assert ran and int(ran.group(1)) >= 46, done.stderr[-300:]  # a suite that found nothing must not pass
+    assert ran and int(ran.group(1)) >= 79, done.stderr[-300:]  # a suite that found nothing must not pass
 
 
 # ---------------------------------------------------------------- the choice
@@ -254,10 +254,51 @@ def test_a_strike_with_no_headline_is_dropped():
 def test_two_moments_in_one_place_at_once_keep_the_first():
     raw = [
         {"type": "headline", "text": "ONE", "place": "chest", "at": at(0, "most")},
-        {"type": "pair", "light": "a", "bold": "TWO", "at": at(0, "count")},
+        {"type": "pair", "light": "a", "bold": "TWO", "at": at(0, "owners")},
     ]
     moments, problems = reels.clean_moments(raw, shots(), "en")
     assert [m.get("text") for m in moments] == ["ONE"] and "overlaps" in problems[0]
+
+
+def test_a_headline_holds_the_caption_line_for_one_beat_then_it_is_free():
+    # 10-Nov: a headline on the caption line lasts a beat (1.2 s), not its whole line, so the
+    # next thing in the middle of the screen a moment later is no clash
+    raw = [
+        {"type": "headline", "text": "ONE", "place": "chest", "at": at(0, "most")},
+        {"type": "pair", "light": "a", "bold": "TWO", "at": at(1, "back.")},
+    ]
+    moments, problems = reels.clean_moments(raw, shots(), "en")
+    assert [m["type"] for m in moments] == ["headline", "pair"] and problems == []
+
+
+def test_the_new_cutaways_reach_the_engine_and_stay_rare():
+    # 10-Nov: 74 seconds of face and nothing else. A full-screen number and a whip across a
+    # cut are allowed; more than a couple stop being cutaways.
+    raw = [
+        {"type": "card_stat", "text": 80, "label": "came back", "at": at(0, "count")},
+        {"type": "whip", "at": {"pick": 2, "at": "start"}},
+        {"type": "card_stat", "text": "3x", "at": at(2, "number")},
+        {"type": "card_stat", "text": "9", "at": at(1, "who")},
+        {"type": "card_stat", "text": "1234567", "at": at(1, "came")},
+    ]
+    moments, problems = reels.clean_moments(raw, shots(), "en")
+    assert [m["type"] for m in moments] == ["card_stat", "whip", "card_stat"]
+    assert moments[0]["text"] == "80"  # a number the writer sent as a number
+    assert any("at most 2" in p for p in problems) and any("one short number" in p for p in problems)
+
+
+def test_one_accent_color_is_the_only_color_the_writer_is_offered():
+    assert '"white" or "accent"' in reels.MOMENTS_SYSTEM
+    for old in ("yellow", "green", "cyan"):
+        assert old not in reels.MOMENTS_SYSTEM
+    # saved plans from before still name the old colors: they are kept and drawn as the accent
+    kept, _ = reels.clean_moments(
+        [{"type": "headline", "text": "A", "color": "green", "place": "top", "at": at(0, "count")},
+         {"type": "headline", "text": "B", "color": "accent", "place": "top", "at": at(1, "back.")},
+         {"type": "headline", "text": "C", "color": "purple", "place": "top", "at": at(2, "job.")}],
+        shots(), "en",
+    )
+    assert [m.get("color") for m in kept] == ["green", "accent", None]
 
 
 def test_rubbish_in_the_list_is_ignored():

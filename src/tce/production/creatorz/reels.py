@@ -38,7 +38,7 @@ PILL, CREATORZ = "pill", "creatorz"
 STYLES = (PILL, CREATORZ)
 ENGINE_DIR = Path(__file__).parent / "engine"
 MOMENTS_JOB = "video_creatorz_moments"
-PROMPT_VERSION = "creatorz-moments-1"
+PROMPT_VERSION = "creatorz-moments-2"
 # Exit 1 from the engine means a checklist line failed: the video is made, and the card says so.
 ENGINE_OK = (0, 1)
 _one_render = asyncio.Semaphore(1)
@@ -205,15 +205,20 @@ _ALLOWED: dict[str, set[str]] = {
     "tag": _COMMON | {"text"},
     "card_grid": {"at", "until", "title", "title_color", "cells", "filled", "labels", "empty_label", "ticks"},
     "card_list": {"at", "until", "items", "ticks"},
+    "card_stat": {"at", "until", "text", "label"},
+    "whip": {"at"},
     "flash": {"at", "sound", "gain"},
     "riser": {"into", "gain"},
     "sound": {"name", "at", "gain"},
 }
-_COLORS = {"white", "yellow", "green", "cyan", "red"}
+# The engine draws white or the video's ONE accent color (10-Nov: five glowing colors in one video read as
+# cheap). The old color names are still accepted from saved plans; each means "accent".
+_COLORS = {"white", "accent", "yellow", "green", "cyan", "red"}
 _LOOKS = {"plain", "extrude", "neon"}
 _PLACES = {"sky", "top", "chest", "low"}
 _SOUNDS = {"whoosh", "tick", "ding", "flash", "riser"}
-_MID = {"pair", "bubble", "card_grid", "card_list"}
+_MID = {"pair", "bubble", "card_grid", "card_list", "card_stat"}
+_CAPS = {"card_stat": 2, "whip": 4}  # the most of each in one video: a cutaway that repeats stops being one
 
 
 def _tidy(raw: dict[str, Any]) -> dict[str, Any]:
@@ -221,6 +226,8 @@ def _tidy(raw: dict[str, Any]) -> dict[str, Any]:
     kind = raw["type"]
     m = {k: v for k, v in raw.items() if k in _ALLOWED[kind]}
     m["type"] = kind
+    if kind == "card_stat" and m.get("text") is not None:
+        m["text"] = str(m["text"])
     for field, allowed in (("color", _COLORS), ("title_color", _COLORS), ("look", _LOOKS), ("sound", _SOUNDS)):
         if field in m and m[field] not in allowed:
             del m[field]
@@ -234,7 +241,8 @@ def _missing(m: dict[str, Any]) -> str | None:
     required = {
         "headline": ["text", "at"], "pair": ["light", "bold", "at"], "badge": ["text", "at"], "bubble": ["lines", "at"],
         "tag": ["text", "at"], "card_grid": ["title", "at"], "card_list": ["items", "at"], "flash": ["at"],
-        "riser": ["into"], "sound": ["name", "at"], "strike": ["target", "at"],
+        "riser": ["into"], "sound": ["name", "at"], "strike": ["target", "at"], "card_stat": ["text", "at"],
+        "whip": ["at"],
     }[kind]
     for field in required:
         if not m.get(field) and m.get(field) != 0:
@@ -248,6 +256,10 @@ def _missing(m: dict[str, Any]) -> str | None:
         return "a list card holds 1 to 6 lines"
     if kind == "bubble" and not (isinstance(m["lines"], list) and 1 <= len(m["lines"]) <= 3):
         return "a bubble holds 1 to 3 lines"
+    if kind == "card_stat" and len(str(m["text"])) > 6:
+        return "a number card holds one short number, like 80% or 3x"
+    if kind == "card_stat" and len(str(m.get("label") or "")) > 28:
+        return "its label is too long for the screen"
     return None
 
 
@@ -292,6 +304,10 @@ def clean_moments(
         if clash is not None:
             problems.append(f"moment {i} ({m['type']}): overlaps moment {clash['raw_index']} in the same place on screen")
             continue
+        most = _CAPS.get(m["type"])
+        if most is not None and sum(1 for k in kept if k["m"]["type"] == m["type"]) >= most:
+            problems.append(f"moment {i} ({m['type']}): a video holds at most {most} of these")
+            continue
         kept.append({"raw_index": i, "m": m, "t0": t0, "t1": t1})
     # A strike names a headline by its place in the list, and the list may just have shrunk.
     position = {k["raw_index"]: new for new, k in enumerate(kept)}
@@ -316,7 +332,8 @@ def clean_moments(
 
 
 MOMENTS_SYSTEM = """You direct short talking-head videos in the Creatorz style: fast, punchy, one idea at a time.
-You get the lines of a finished edit, numbered, each with how long it lasts. Choose where text pops on screen.
+You get the lines of a finished edit, numbered, each with how long it lasts. Choose where text pops on screen and
+where the picture cuts away from the speaker.
 
 Answer with JSON only: {"moments": [...], "punchline": <line number or null>}.
 
@@ -325,27 +342,35 @@ Rules:
 - Pop the word that carries the point, never filler.
 - "word" in a cue must be a word exactly as written in THAT line. Cue: {"pick": <line number>, "word": "..."} or {"pick": <line number>, "at": "start"} or "end".
 - Write on-screen text in the same language as the lines. Headlines are 1 to 3 words; UPPERCASE for Latin letters.
-- Screen places: top (headline with place "top" or "sky"), middle (headline with place "chest" or "low", pair, bubble, cards), badge, tag. Never two at once in one place.
+- The video has ONE accent color, picked from the footage. "color" is "white" or "accent", nothing else. Use accent for the few words that matter most, white for the rest.
+- You never choose where text sits: the engine finds the free spot and keeps every word off the speaker's face.
+- Screen places: top (headline), middle (headline with place "chest", pair, bubble, cards), badge, tag. Never two at once in one place.
 - A moment lasts until the end of its line unless you give "until" (a cue).
+- Give the eye a rest from the face: a talking head with nothing else for 20 seconds is too long. Use the full-screen cards for that.
 
 Types:
-- headline: text, color (white, yellow, green, cyan, red), look (plain, extrude, neon), place (sky behind the head, top, chest, low)
-- pair: light (small first line), bold (big line), color, at, bold_at (cue where the bold line lands)
-- badge: text (a short number), color
+- headline: text, color, place ("top", or "chest" to take the caption line for one beat)
+- pair: light (small first line), bold (big line), at, bold_at (cue where the bold line lands)
+- badge: text (a short number)
 - bubble: lines (1 to 3 short lines), for a sentence someone said
 - tag: text, a small handwritten label that names what comes next
 - strike: target (the index in your moments list of a headline), at: a red line through the old or wrong idea
-- card_list: items (2 to 4 short lines), at, until, ticks: "spread": a checklist; at most one every 30 seconds
-- card_grid: title, cells (3 to 6), filled (cell numbers, from 1), labels ("Week {n}"), empty_label, at, until: a row of boxes; rarely
+- card_list: items (2 to 4 short lines), at, until, ticks: a FULL-SCREEN checklist. The picture cuts to it at "at" and again for a beat at every tick. "ticks" is a list with one cue per item, at the word where the speaker gets to that item (or "spread" when the items are not said one by one). At most one every 30 seconds.
+- card_stat: text (ONE number, like "80%" or "3x"), label (2 to 4 words under it), at: a FULL-SCREEN number for a second and a half, for the one number that matters. At most 2 in a video.
+- card_grid: title, cells (3 to 6), filled (cell numbers, the first cell is 0), labels ("Week {n}"), empty_label, at, until: a FULL-SCREEN row of boxes; rarely
+- whip: at ({"pick": N, "at": "start"}): a fast blur across the cut into line N, where the talk turns to a new part. At most 4 in a video, never closer than 12 seconds apart.
 - flash: at: a white flash before a turn in the story, rarely
 
 "punchline" is the line number of the single strongest line.
 
-Example: {"moments": [{"type": "headline", "text": "PRICE", "place": "sky", "look": "extrude", "at": {"pick": 0, "word": "price,"}},
+Example: {"moments": [{"type": "headline", "text": "PRICE", "color": "accent", "place": "top", "at": {"pick": 0, "word": "price,"}},
 {"type": "strike", "target": 0, "at": {"pick": 0, "word": "calendar."}},
-{"type": "pair", "light": "here's what he", "bold": "NEVER SAID", "color": "yellow", "at": {"pick": 3, "word": "Here's"}, "bold_at": {"pick": 3, "word": "never"}},
+{"type": "pair", "light": "here's what he", "bold": "NEVER SAID", "at": {"pick": 3, "word": "Here's"}, "bold_at": {"pick": 3, "word": "never"}},
+{"type": "card_stat", "text": "80%", "label": "said yes", "at": {"pick": 5, "word": "80%"}},
+{"type": "whip", "at": {"pick": 6, "at": "start"}},
 {"type": "tag", "text": "the fix:", "at": {"pick": 6, "at": "start"}},
-{"type": "card_list", "items": ["Every two weeks", "Same help"], "at": {"pick": 7, "at": "start"}, "until": {"pick": 8, "at": "end"}, "ticks": "spread"}],
+{"type": "card_list", "items": ["Every two weeks", "Same help"], "at": {"pick": 7, "at": "start"}, "until": {"pick": 8, "at": "end"},
+ "ticks": [{"pick": 7, "word": "two"}, {"pick": 8, "word": "help"}]}],
 "punchline": 3}"""
 
 MOMENTS_SCHEMA: dict[str, Any] = {

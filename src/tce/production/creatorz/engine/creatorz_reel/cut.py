@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
+from . import faces as facesmod
+from . import layout
 from . import plan as planmod
 
 W, H = 1080, 1920
@@ -14,16 +16,19 @@ SR = 48000
 ALT = (1.18, 1.26, 1.12, 1.22)
 WIDE, PUNCH = 1.0, 1.48
 GRADES = {
-    # golden hour outdoors: warm skin and mids, teal-leaning sky, deeper blacks
-    'golden': ("eq=contrast=1.07:saturation=1.16:gamma=0.98,"
-               "colorbalance=rs=0.03:bs=-0.04:rm=0.035:gm=0.0:bm=-0.035:rh=-0.03:gh=0.0:bh=0.03,"
-               "curves=all='0/0 0.08/0.05 0.5/0.5 0.92/0.95 1/1'"),
+    # golden hour outdoors: warm skin and mids, deeper blacks, and a soft SHOULDER on the highlights. The first grade
+    # lifted them (0.92 -> 0.95) and burned the sky; vibrance lifts the dull colors and leaves skin alone.
+    'golden': ("eq=contrast=1.06:gamma=0.99,vibrance=intensity=0.22,"
+               "colorbalance=rs=0.03:bs=-0.04:rm=0.03:gm=0.0:bm=-0.03:rh=-0.02:gh=0.0:bh=0.02,"
+               "curves=all='0/0 0.08/0.055 0.5/0.5 0.86/0.845 1/0.97'"),
     # studio: teal-cyan shadows and background, warm skin, deep blacks
-    'studio': ("eq=contrast=1.09:saturation=1.08,"
+    'studio': ("eq=contrast=1.08,vibrance=intensity=0.12,"
                "colorbalance=rs=-0.04:gs=0.0:bs=0.05:rm=0.03:gm=0.0:bm=-0.02,"
-               "curves=all='0/0 0.1/0.05 0.5/0.5 1/1'"),
+               "curves=all='0/0 0.1/0.055 0.5/0.5 0.88/0.865 1/0.97'"),
     'none': 'null',
 }
+FINISH = 'unsharp=5:5:0.35:5:5:0.0,vignette=angle=0.38'      # a punch-in softens the picture; the edges fall off a little
+PUSH_PER_S, PUSH_MAX, FOLLOW_MAX = 0.011, 0.03, 48
 
 
 def voiced_runs(db10, t0, t1, thr=-40.0, gap_max=0.28, min_run=0.12, hop=0.01):
@@ -172,12 +177,21 @@ def build_exact_shots(spans, words, fps=25):
 def video_segment_cmd(mezz, shot, fps, grade, out):
     """One shot of the base picture as its own short job. One graph with a trim branch per shot makes ffmpeg hold the
     decoded frames of every later branch (3 MB a frame: past 6 GB on a 2 minute recording, killed by the kernel on the
-    server, 10-Nov). The seek sits a quarter frame early, so the frame at src_in is the first one kept."""
+    server, 10-Nov). The seek sits a quarter frame early, so the frame at src_in is the first one kept. A shot with
+    `follow` keys moves its crop with the face (the eyes stay put while the phone drifts); `gamma` matches its
+    brightness to the rest of the reel."""
     frames = max(1, round((shot['src_out'] - shot['src_in']) * fps))
     x, y, cw, ch = shot['crop']
     seek = max(0.0, shot['src_in'] - 0.25 / fps)
+    keys = shot.get('follow') or []
+    if keys:
+        crop = f"crop=w={cw}:h={ch}:x='{x}+({layout.piecewise(keys, 1)})':y='{y}+({layout.piecewise(keys, 2)})'"
+    else:
+        crop = f'crop={cw}:{ch}:{x}:{y}'
+    gamma = shot.get('gamma') or 1.0
+    match = f'eq=gamma={gamma},' if abs(gamma - 1.0) > 1e-6 else ''
     return ['ffmpeg', '-v', 'error', '-y', '-ss', f'{seek:.6f}', '-i', mezz, '-map', '0:v:0', '-frames:v', str(frames),
-            '-vf', f'crop={cw}:{ch}:{x}:{y},scale={W}:{H}:flags=lanczos,setsar=1,{grade},format=yuv420p', '-r', str(fps),
+            '-vf', f'{crop},scale={W}:{H}:flags=lanczos,setsar=1,{match}{grade},format=yuv420p', '-r', str(fps),
             '-c:v', 'libx264', '-crf', '12', '-preset', 'veryfast', '-bf', '0', '-g', str(fps), '-threads', '4',
             '-pix_fmt', 'yuv420p', '-an', out]
 
@@ -248,19 +262,6 @@ def plan_scales(shot_picks, wide_picks=(), punch_pick=None):
     return out
 
 
-def crop_for(scale, face, w=W, h=H):
-    """Crop box [x, y, w, h] for a punch-in, eyes on the upper third; face = [cx, cy, fw, fh] or None."""
-    cw, ch = w / scale, h / scale
-    if face:
-        fx, fy, fw, fh = face
-        cx, cy = fx, (fy - fh * 0.12) - ch / 3 + ch / 2
-    else:
-        cx, cy = w / 2, h / 2
-    cx = min(max(cx, cw / 2), w - cw / 2)
-    cy = min(max(cy, ch / 2), h - ch / 2)
-    return [round(cx - cw / 2), round(cy - ch / 2), round(cw), round(ch)]
-
-
 def timeline(shots):
     t = 0.0
     for s in shots:
@@ -290,35 +291,22 @@ def _db10(path):
     return (20 * np.log10(np.sqrt(np.mean(a[:n * hop].reshape(n, hop) ** 2, axis=1)) + 1e-12)).tolist()
 
 
-def _faces(mezz, shots):
-    try:
-        import cv2
-    except ImportError:
-        return [None] * len(shots)
-    if not hasattr(cv2, 'CascadeClassifier'):            # OpenCV 5 moved it: the punch-ins just stay centered
-        return [None] * len(shots)
-    cap = cv2.VideoCapture(mezz)
-    casc = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    out = []
-    for s in shots:
-        found = []
-        for k in range(1, 6):
-            cap.set(cv2.CAP_PROP_POS_MSEC, (s['src_in'] + (s['src_out'] - s['src_in']) * k / 6) * 1000)
-            ok, fr = cap.read()
-            if not ok:
-                continue
-            g = cv2.resize(cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY), (fr.shape[1] // 3, fr.shape[0] // 3))
-            fs = cap_faces = casc.detectMultiScale(g, 1.1, 5, minSize=(60, 60))
-            if len(cap_faces):
-                x, y, w, h = max(fs, key=lambda f: f[2] * f[3])
-                found.append((x * 3 + w * 1.5, y * 3 + h * 1.5, w * 3, h * 3))
-        if found:
-            found.sort(key=lambda f: f[0])
-            mid = found[len(found) // 2]
-            out.append([float(v) for v in mid])
-        else:
-            out.append(None)
-    return out
+def frame_shots(shots, faces, scales, fps, plan, target_luma):
+    """Scale, crop, face-follow, brightness match and slow push for every shot, from its face. Pure."""
+    for s, f, sc in zip(shots, faces, scales):
+        s['scale'] = sc
+        s['crop'] = layout.crop_for(sc, f)
+        fo = layout.to_out(f, s['crop'])
+        s['face'] = {k: round(v, 1) for k, v in fo.items()} if fo else None
+        s['gamma'] = layout.exposure_gamma(f.get('luma') if f else None, target_luma)
+        x, y, cw, ch = s['crop']
+        room = min(x, W - x - cw, y, H - y - ch)
+        frames = max(1, round((s['src_out'] - s['src_in']) * fps))
+        steady = bool(f) and plan.get('steady', True) and room >= 6
+        s['follow'] = layout.smooth_track(f['track'], frames, min(room, FOLLOW_MAX)) if steady else []
+        d = s['src_out'] - s['src_in']
+        s['push'] = round(min(PUSH_MAX, PUSH_PER_S * d), 4) if (plan.get('push', True) and d >= 0.8) else 0.0
+    return shots
 
 
 def run(plan):
@@ -338,15 +326,17 @@ def run(plan):
             raise planmod.PlanError('every kept range is shorter than one frame')
     else:
         shots = build_shots(spans, words, _db10(mezz), plan, fps)
-    faces = _faces(mezz, shots)
-    scales = plan_scales([s['pick'] for s in shots], wide_picks_from(plan), plan.get('punchline'))
-    for s, f, sc in zip(shots, faces, scales):
-        s['face'], s['scale'] = f, sc
-        s['crop'] = crop_for(sc, f)
+    faces, back = facesmod.detect(mezz, shots, fps)
+    picks = [s['pick'] for s in shots]
+    punch = picks.index(plan['punchline']) if plan.get('punchline') in picks else None
+    scales = layout.fit_scales(plan_scales(picks, wide_picks_from(plan), plan.get('punchline')), faces, punch)
+    lumas = sorted(f['luma'] for f in faces if f and f.get('luma'))
+    frame_shots(shots, faces, scales, fps, plan, lumas[len(lumas) // 2] if lumas else None)
     dur = timeline(shots)
     for s in shots:
         del s['words']
-    edit = {'fps': fps, 'duration': dur, 'lang': plan['lang'], 'shots': shots}
+    edit = {'fps': fps, 'duration': dur, 'lang': plan['lang'], 'shots': shots,
+            'accent': plan.get('accent') or layout.pick_accent(back), 'background': [round(v) for v in back] if back else None}
     json.dump(edit, open(os.path.join(work, 'edit.json'), 'w', encoding='utf8'), indent=1, ensure_ascii=False)
     # graded picture + cut voice
     parts, al = [], []
@@ -365,6 +355,8 @@ def run(plan):
     os.makedirs(segments, exist_ok=True)
     names = [os.path.join(segments, f's{i:04d}.mkv') for i in range(len(shots))]
     grade = GRADES.get(plan['grade'], 'null')
+    if plan['grade'] != 'none':
+        grade = f'{grade},{FINISH}'
     with ThreadPoolExecutor(max_workers=3) as pool:
         list(pool.map(lambda job: subprocess.run(video_segment_cmd(mezz, job[0], fps, grade, job[1]), check=True), zip(shots, names)))
     listing = os.path.join(segments, 'list.txt')
@@ -373,7 +365,7 @@ def run(plan):
     subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', listing, '-c', 'copy', os.path.join(work, 'base.mp4')],
                    check=True)
     shutil.rmtree(segments, ignore_errors=True)
-    print(f'cut: {len(shots)} shots, {dur:.2f} s')
+    print(f"cut: {len(shots)} shots, {dur:.2f} s, faces in {sum(1 for s in shots if s['face'])}, accent {edit['accent']}")
     for i, s in enumerate(shots):
         print(f"  {i:2d} pick {s['pick']:2d} {s['out_in']:6.2f}-{s['out_out']:6.2f} x{s['scale']:.2f}  {s['text']}")
     return edit

@@ -8,8 +8,12 @@ DEFAULTS = {
     'fps': 25, 'lang': 'en', 'grade': 'golden', 'bed': None, 'bed_gain_db': -15.0,
     'work': 'work', 'out': 'reel.mp4', 'thr_db': -40.0, 'gap_max': 0.28, 'min_run': 0.12,
     'pad_in': 0.05, 'pad_out': 0.08, 'wide': None, 'punchline': None, 'moments': [], 'exact': False,
+    'accent': None,       # sand / butter / ice / [r, g, b]; None = picked from the footage's background
+    'steady': True,       # the crop follows the face inside a shot
+    'push': True,         # a slow push inside every shot
 }
-MOMENT_TYPES = {'headline', 'pair', 'badge', 'bubble', 'tag', 'strike', 'card_grid', 'card_list', 'flash', 'riser', 'sound'}
+MOMENT_TYPES = {'headline', 'pair', 'badge', 'bubble', 'tag', 'strike', 'card_grid', 'card_list', 'card_stat', 'insert',
+                'whip', 'flash', 'riser', 'sound'}
 
 
 class PlanError(ValueError):
@@ -38,6 +42,13 @@ def normalize(plan, base='.'):
     for i, m in enumerate(out['moments']):
         if m.get('type') not in MOMENT_TYPES:
             raise PlanError(f"moment {i}: unknown type {m.get('type')!r} (one of {sorted(MOMENT_TYPES)})")
+        if m['type'] == 'insert':
+            if not m.get('src'):
+                raise PlanError(f'moment {i} (insert): needs "src", the picture to show')
+            if not os.path.isabs(m['src']):
+                m['src'] = os.path.normpath(os.path.join(base, m['src']))
+            if not os.path.exists(m['src']):
+                raise PlanError(f"moment {i} (insert): no picture at {m['src']}")
     if out['lang'] not in ('en', 'he'):
         raise PlanError("lang must be 'en' or 'he'")
     return out

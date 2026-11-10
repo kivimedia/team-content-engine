@@ -31,6 +31,20 @@ def verdicts(x):
     ok('sky text kept readable', all(d['layer'] != 'sky' or ((d['max_hidden'] or 0) <= 0.20 and (d.get('worst_letter') or 0) <= 0.35)
                                      for d in x.get('sky', [])),
        '; '.join(f"{d['text']}: {d['layer']}" for d in x.get('sky', [])) or 'no sky text')
+    # the look (10-Nov): what a viewer calls ugly, measured from where every text box and face really is.
+    # A reel with no look report fails these lines: a check that saw nothing proves nothing.
+    look = x.get('look')
+
+    def seen(key):
+        return (look or {}).get(key) or []
+
+    def names(key):
+        return ', '.join(f"{i['what'][:24]} at {i['t']:.1f} s" if isinstance(i, dict) else f'{i:.1f} s' for i in seen(key)[:4]) or 'none'
+    ok('no text on the face', look is not None and not seen('on_face'), names('on_face') if look is not None else 'no look report')
+    ok('text inside the safe area', look is not None and not seen('edge'), names('edge') if look is not None else 'no look report')
+    ok('the head stays in the frame', look is not None and not seen('cut_head'), names('cut_head') if look is not None else 'no look report')
+    ok('one accent color', look is not None and len(set(seen('accents'))) <= 1,
+       ', '.join(seen('accents')) or ('white only' if look is not None else 'no look report'))
     return r
 
 
@@ -67,6 +81,7 @@ def run(plan):
          'text_gap_max': gaps(pops + ev.get('ticks', []), dur),
          'scales': [s['scale'] for s in edit['shots']], 'lufs': float(m['input_i']), 'tp': float(m['input_tp']), 'video': pr,
          'silent_pops': [t for t in pops if not any(abs(t - c) <= 0.12 for c in cues)], 'sky': ev.get('sky', []),
+         'look': ev.get('look'),
          'length_range': tuple(plan.get('length_range', (20, 90))), 'fps': plan.get('fps', 25)}
     res = verdicts(x)
     words = sum(len(s['owords']) for s in edit['shots'])
