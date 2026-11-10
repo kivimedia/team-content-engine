@@ -547,3 +547,11 @@ def test_eleven_v4_goes_through_text_to_dialogue_and_v2_stays_on_text_to_speech(
     assert v4_url.endswith("/text-to-dialogue")
     assert v4_body["inputs"] == [{"text": "Hello there.", "voice_id": "vid123"}] and v4_body["model_id"] == "eleven_v4"
     assert v2_url.endswith("/text-to-speech/vid123") and v2_body["model_id"] == "eleven_multilingual_v2"
+
+
+def test_choice_box_scrolls_clear_of_the_sticky_top_bar():
+    # 10-Nov (T-19982): at 390px Stop scrolled the Send or Archive box under the sticky
+    # top bar, hiding the take's name and length.
+    css = (Path(book_routes.__file__).resolve().parents[1] / "book.css").read_text(encoding="utf-8")
+    rule = css.split(".choice-box {", 1)[1].split("}", 1)[0]
+    assert "scroll-margin-top" in rule

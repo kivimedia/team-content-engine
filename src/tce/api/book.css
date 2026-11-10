@@ -142,7 +142,8 @@ main { width: min(100%, 760px); margin: 0 auto; padding: 16px 16px 24px; }
 .layout-text { margin-top: 6px; white-space: pre-wrap; color: var(--ink); font-size: .95rem; line-height: 1.5; overflow-wrap: anywhere; }
 
 /* 10-Nov-2026 (T-19955): Send or Archive after Stop; the device-voice line on the player. */
-.choice-box { margin: 0 0 14px; padding: 14px; border-radius: 12px; background: var(--white); border: 2px solid var(--ink); }
+/* 10-Nov (T-19982): Stop scrolls the choice into view; keep its first line clear of the sticky top bar. */
+.choice-box { margin: 0 0 14px; padding: 14px; border-radius: 12px; background: var(--white); border: 2px solid var(--ink); scroll-margin-top: 96px; }
 .choice-ask { margin: 0 0 12px; display: flex; flex-direction: column; gap: 4px; line-height: 1.4; }
 .choice-ask span { color: var(--body); font-size: .95rem; }
 .choice-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
