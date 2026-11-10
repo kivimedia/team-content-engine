@@ -172,6 +172,21 @@ class CutTest(unittest.TestCase):
             else:
                 sys.modules['cv2'] = real
 
+    def test_each_shot_renders_as_its_own_small_job(self):
+        # one graph with a trim branch per shot buffered every later branch's frames: 6 GB and the kernel killed it
+        # (first full TCE render on the server, 10-Nov); one seek and one short encode per shot stays flat
+        shot = {'src_in': 3.0, 'src_out': 3.0 + 22 / 30, 'crop': [10, 20, 900, 1600]}
+        cmd = C.video_segment_cmd('m.mkv', shot, 30, 'null', 's.mkv')
+        self.assertEqual(cmd[cmd.index('-frames:v') + 1], '22')
+        self.assertNotIn('-filter_complex', cmd)
+        self.assertNotIn('-filter_complex_script', cmd)
+        seek = float(cmd[cmd.index('-ss') + 1])
+        self.assertLess(seek, 3.0)                     # the seek must keep the frame at 3.0
+        self.assertGreater(seek, 3.0 - 1 / 30)         # and drop the frame before it
+        self.assertLess(cmd.index('-ss'), cmd.index('-i'))
+        self.assertIn('crop=900:1600:10:20', cmd[cmd.index('-vf') + 1])
+        self.assertEqual(cmd[cmd.index('-bf') + 1], '0')    # joined with stream copy, so no reordered frames at a join
+
     def test_contiguous_shots_have_no_fade_at_their_join(self):
         shots = [{'src_in': 1.0, 'src_out': 2.0}, {'src_in': 2.0, 'src_out': 3.0}, {'src_in': 5.0, 'src_out': 6.0}]
         self.assertEqual(C.join_fades(shots), [(True, False), (False, True), (True, True)])

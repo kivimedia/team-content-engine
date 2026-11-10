@@ -3,7 +3,9 @@ graded base.mp4 + voice.wav + edit.json. The pure helpers (voiced_runs, plan_sca
 import json
 import math
 import os
+import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 from . import plan as planmod
 
@@ -165,6 +167,19 @@ def build_exact_shots(spans, words, fps=25):
                  for w in inside if sa - 1e-6 <= (w['start_s'] + w['end_s']) / 2 < sb]
             shots.append({'pick': len(shots), 'src_in': sa, 'src_out': sb, 'words': g, 'text': ' '.join(w['text'] for w in g)})
     return shots
+
+
+def video_segment_cmd(mezz, shot, fps, grade, out):
+    """One shot of the base picture as its own short job. One graph with a trim branch per shot makes ffmpeg hold the
+    decoded frames of every later branch (3 MB a frame: past 6 GB on a 2 minute recording, killed by the kernel on the
+    server, 10-Nov). The seek sits a quarter frame early, so the frame at src_in is the first one kept."""
+    frames = max(1, round((shot['src_out'] - shot['src_in']) * fps))
+    x, y, cw, ch = shot['crop']
+    seek = max(0.0, shot['src_in'] - 0.25 / fps)
+    return ['ffmpeg', '-v', 'error', '-y', '-ss', f'{seek:.6f}', '-i', mezz, '-map', '0:v:0', '-frames:v', str(frames),
+            '-vf', f'crop={cw}:{ch}:{x}:{y},scale={W}:{H}:flags=lanczos,setsar=1,{grade},format=yuv420p', '-r', str(fps),
+            '-c:v', 'libx264', '-crf', '12', '-preset', 'veryfast', '-bf', '0', '-g', str(fps), '-threads', '4',
+            '-pix_fmt', 'yuv420p', '-an', out]
 
 
 def join_fades(shots, eps=1e-6):
@@ -334,24 +349,30 @@ def run(plan):
     edit = {'fps': fps, 'duration': dur, 'lang': plan['lang'], 'shots': shots}
     json.dump(edit, open(os.path.join(work, 'edit.json'), 'w', encoding='utf8'), indent=1, ensure_ascii=False)
     # graded picture + cut voice
-    parts, vl, al = [], [], []
+    parts, al = [], []
     fades = join_fades(shots)
     for i, s in enumerate(shots):
-        x, y, cw, ch = s['crop']
         d = s['src_out'] - s['src_in']
-        parts.append(f"[0:v]trim=start={s['src_in']}:end={s['src_out']},setpts=PTS-STARTPTS,crop={cw}:{ch}:{x}:{y},"
-                     f"scale={W}:{H}:flags=lanczos,setsar=1[v{i}]")
         afade = ''.join(([',afade=t=in:d=0.008'] if fades[i][0] else []) + ([f',afade=t=out:st={d - 0.008:.3f}:d=0.008'] if fades[i][1] else []))
         parts.append(f"[0:a]atrim=start={s['src_in']}:end={s['src_out']},asetpts=PTS-STARTPTS{afade}[a{i}]")
-        vl.append(f'[v{i}]')
         al.append(f'[a{i}]')
-    parts.append(''.join(vl) + f"concat=n={len(shots)}:v=1:a=0,{GRADES.get(plan['grade'], 'null')},format=yuv420p[vout]")
     parts.append(''.join(al) + f'concat=n={len(shots)}:v=0:a=1[aout]')
     fscript = os.path.join(work, 'base.filter')
     open(fscript, 'w').write(';\n'.join(parts))
-    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', mezz, '-filter_complex_script', fscript,
-                    '-map', '[vout]', '-c:v', 'libx264', '-crf', '12', '-preset', 'medium', '-r', str(fps), os.path.join(work, 'base.mp4'),
-                    '-map', '[aout]', '-c:a', 'pcm_s16le', '-ar', str(SR), os.path.join(work, 'voice.wav')], check=True)
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', mezz, '-filter_complex_script', fscript, '-map', '[aout]', '-c:a', 'pcm_s16le',
+                    '-ar', str(SR), os.path.join(work, 'voice.wav')], check=True)
+    segments = os.path.join(work, 'segments')
+    os.makedirs(segments, exist_ok=True)
+    names = [os.path.join(segments, f's{i:04d}.mkv') for i in range(len(shots))]
+    grade = GRADES.get(plan['grade'], 'null')
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(lambda job: subprocess.run(video_segment_cmd(mezz, job[0], fps, grade, job[1]), check=True), zip(shots, names)))
+    listing = os.path.join(segments, 'list.txt')
+    with open(listing, 'w', encoding='utf8') as f:
+        f.write(''.join(f"file '{os.path.basename(n)}'\n" for n in names))
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', listing, '-c', 'copy', os.path.join(work, 'base.mp4')],
+                   check=True)
+    shutil.rmtree(segments, ignore_errors=True)
     print(f'cut: {len(shots)} shots, {dur:.2f} s')
     for i, s in enumerate(shots):
         print(f"  {i:2d} pick {s['pick']:2d} {s['out_in']:6.2f}-{s['out_out']:6.2f} x{s['scale']:.2f}  {s['text']}")
