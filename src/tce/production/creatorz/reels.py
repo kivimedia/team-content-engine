@@ -110,16 +110,14 @@ def tighten_keep(
     """The Creatorz pace: no air. TCE's own edit keeps a natural rhythm (445b0c26: 12.3 s of its
     81 s were air at the edges of kept ranges); here each kept range shrinks to the voice inside
     it, and a real pause inside one becomes a jump cut. It only ever removes air: a word too
-    quiet for the meter keeps its place, and a laugh kept on purpose is left whole."""
+    quiet for the meter keeps its place, and a laugh kept on purpose stays."""
     out: list[list[float]] = []
     for a, b in keep:
-        if any(p_a < b and a < p_b for p_a, p_b in protect):
-            out.append([a, b])
-            continue
         spans = [
             [max(a, v0 - pad_in), min(b, v1 + pad_out)]
             for v0, v1 in engine_cut.voiced_runs(levels, a, b, thr_db, gap_s, min_run_s)
         ]
+        spans += [[max(a, p_a), min(b, p_b)] for p_a, p_b in protect if p_a < b and a < p_b]
         for w in words:
             mid = (w["start_s"] + w["end_s"]) / 2
             if a <= mid < b and not any(s <= mid < e for s, e in spans):

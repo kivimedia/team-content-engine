@@ -149,9 +149,11 @@ def test_a_word_too_quiet_for_the_meter_keeps_its_place():
     assert got == [[1.15, 1.88], [2.95, 3.58]]
 
 
-def test_a_kept_laugh_is_left_alone():
-    # kept on purpose, and it may be quieter than speech (TCE b3a0456)
-    assert reels.tighten_keep([[1.0, 3.0]], levels_for([]), [], protect=[[1.5, 2.5]]) == [[1.0, 3.0]]
+def test_a_kept_laugh_stays_and_only_the_air_around_it_goes():
+    # kept on purpose, and it may be quieter than speech (TCE b3a0456); protecting its whole range kept 6 s of air on 445b0c26
+    assert reels.tighten_keep([[1.0, 3.0]], levels_for([]), [], protect=[[1.5, 2.5]]) == [[1.5, 2.5]]
+    got = reels.tighten_keep([[1.0, 5.0]], levels_for([(1.2, 1.8)]), [word("a", 1.3, 1.7)], protect=[[3.0, 3.6]])
+    assert got == [[1.15, 1.88], [3.0, 3.6]]
 
 
 def test_a_pause_at_the_edge_of_voice_never_passes_the_range():

@@ -2329,7 +2329,8 @@
 
   async function pickStyle(uploadId, style) {
     var name = style === "creatorz" ? "Creatorz" : "Pill";
-    if (!window.confirm("Make this video in " + name + " style? It takes a few minutes. The current edit is replaced when the new one is ready.")) return;
+    var wait = style === "creatorz" ? "It takes about 20 minutes." : "It takes a few minutes.";
+    if (!window.confirm("Make this video in " + name + " style? " + wait + " The current edit is replaced when the new one is ready.")) return;
     try {
       await api("/production/uploads/" + encodeURIComponent(uploadId) + "/style", { method: "POST", body: { style: style } });
       toast("Making the " + name + " version. The card shows each step as it happens.");
