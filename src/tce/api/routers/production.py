@@ -1165,6 +1165,9 @@ def qc_listen_source(edited: str | Path, sidecar: dict[str, Any]) -> Path:
     return voice if sidecar.get("style") == creatorz_reels.CREATORZ and voice.exists() else Path(edited)
 
 
+_REEL_PACING_LINES = ("first word at", "tail after the last word", "pauses over")
+
+
 @dataclass
 class _Styled:
     """A finished Creatorz render, for the rest of _run_render."""
@@ -1176,7 +1179,14 @@ class _Styled:
     cache: dict[str, Any]
 
     def detail(self, length: str, top_text: str | None, denoise: str | None) -> str:
-        scored = [v for v in self.checklist if v[0] in ("PASS", "FAIL")]
+        # The engine's three short-reel pacing lines (first word on frame 1, a 0.2 s tail, no
+        # pause over 0.3 s) are rules for a 30 second reel. This is a full edit whose pacing
+        # Jennifer checks, so they are not counted here: "15 of 18" on every card read as a
+        # failure the moment clients could see it (11-Nov, before the switch was opened).
+        scored = [
+            v for v in self.checklist
+            if v[0] in ("PASS", "FAIL") and not str(v[1]).startswith(_REEL_PACING_LINES)
+        ]
         passed = sum(1 for v in scored if v[0] == "PASS")
         missing = [
             what

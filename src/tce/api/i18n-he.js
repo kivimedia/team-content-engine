@@ -236,6 +236,7 @@
     "Edit": "עריכה",
     "Download the edit": "להוריד את העריכה",
     "Download": "הורדה",
+    "Style": "סגנון",
     "Did not go out": "לא יצא",
     "Description": "תיאור",
     "Could not load": "לא הצלחתי לטעון",

@@ -487,7 +487,14 @@ def fake_engine(monkeypatch, wired):
         (work / "voice.wav").write_bytes(b"voice")
         return reels.ReelResult(
             out=work / "reel.mp4", voice=work / "voice.wav", shots=7,
-            checklist=[["PASS", "a", "b"], ["FAIL", "c", "d"], ["INFO", "e", "f"]],
+            checklist=[
+                ["PASS", "a", "b"], ["FAIL", "c", "d"], ["INFO", "e", "f"],
+                # the short-reel pacing lines: a full edit's pacing is Jennifer's to judge, so a
+                # client's card never counts them (11-Nov: "checklist 15 of 18" read as a failure)
+                ["FAIL", "first word at 0.00-0.10 s", "0.16 s"],
+                ["FAIL", "tail after the last word <= 0.2 s", "0.26 s"],
+                ["FAIL", "pauses over 0.3 s: at most 1 per 30 s", "11"],
+            ],
             captions=[[0.0, 1.5, "Most owners never"], [1.5, 3.0, "count who came back."]],
         )
 

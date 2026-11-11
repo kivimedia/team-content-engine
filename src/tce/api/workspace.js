@@ -2329,7 +2329,7 @@
 
   async function pickStyle(uploadId, style) {
     var name = style === "creatorz" ? "Creatorz" : "Pill";
-    var wait = style === "creatorz" ? "It takes about 20 minutes." : "It takes a few minutes.";
+    var wait = style === "creatorz" ? "It takes about 10 minutes." : "It takes a few minutes.";
     if (!window.confirm("Make this video in " + name + " style? " + wait + " The current edit is replaced when the new one is ready.")) return;
     try {
       await api("/production/uploads/" + encodeURIComponent(uploadId) + "/style", { method: "POST", body: { style: style } });
