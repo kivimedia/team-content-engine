@@ -38,7 +38,7 @@ PILL, CREATORZ = "pill", "creatorz"
 STYLES = (PILL, CREATORZ)
 ENGINE_DIR = Path(__file__).parent / "engine"
 MOMENTS_JOB = "video_creatorz_moments"
-PROMPT_VERSION = "creatorz-moments-3"
+PROMPT_VERSION = "creatorz-moments-4"
 # Exit 1 from the engine means a checklist line failed: the video is made, and the card says so.
 ENGINE_OK = (0, 1)
 _one_render = asyncio.Semaphore(1)
@@ -292,10 +292,19 @@ def clean_moments(
             problems.append(f"moment {i} ({m['type']}): {why}")
             continue
         try:
-            items = compose_plan.build({"moments": [m]}, edit)["items"]
+            built = compose_plan.build({"moments": [m]}, edit)
         except (engine_plan.CueError, KeyError, TypeError, ValueError, IndexError, StopIteration) as exc:
             problems.append(f"moment {i} ({m['type']}): {str(exc)[:160]}")
             continue
+        if built.get("dropped"):
+            # 11-Nov: the engine does not show a tag that repeats the caption under it (Ziv at 0:06,
+            # "its weird to show twice the same caption"); the writer hears why, once
+            problems.append(
+                f"moment {i} ({m['type']}): it repeats what he says on that line. A tag names what comes "
+                "next, in words he does not say there"
+            )
+            continue
+        items = built["items"]
         t0, t1 = (items[0]["t0"], items[0]["t1"]) if items else (None, None)
         slot = _slot(m)
         clash = next(
@@ -346,6 +355,7 @@ Rules:
 - You never choose where text sits: the engine finds the free spot and keeps every word off the speaker's face.
 - Screen places: top (headline), middle (headline with place "chest", pair, bubble, cards), badge, tag. Never two at once in one place.
 - A moment lasts until the end of its line unless you give "until" (a cue).
+- Never put on screen the words the caption is already saying: a headline with his own words takes the caption's place for a beat.
 - A headline is ONE BEAT, about a second, whatever its "until" says. It cannot cover a stretch: over several lines in a row, put a moment on each.
 - Give the eye a rest from the face: a talking head with nothing else for 20 seconds is too long. Use the full-screen cards for that.
 
@@ -354,7 +364,7 @@ Types:
 - pair: light (small first line), bold (big line), at, bold_at (cue where the bold line lands)
 - badge: text (a short number)
 - bubble: lines (1 to 3 short lines), for a sentence someone said
-- tag: text, a small handwritten label that names what comes next
+- tag: text, a small handwritten label that names what comes next ("the fix:", "step 2"), never the words of the line it shows on: the caption already says them
 - strike: target (the index in your moments list of a headline), at: a red line through the old or wrong idea
 - card_list: items (2 to 4 short lines), at, until, ticks: a FULL-SCREEN checklist. The picture cuts to it at "at" and again for a beat at every tick. "ticks" is a list with one cue per item, at the word where the speaker gets to that item (or "spread" when the items are not said one by one). At most one every 30 seconds.
 - card_stat: text (ONE number, like "80%" or "3x"), label (2 to 4 words under it), at: a FULL-SCREEN number for a second and a half, for the one number that matters. At most 2 in a video.

@@ -287,6 +287,19 @@ def test_the_new_cutaways_reach_the_engine_and_stay_rare():
     assert any("at most 2" in p for p in problems) and any("one short number" in p for p in problems)
 
 
+def test_a_tag_that_repeats_his_words_goes_back_to_the_writer():
+    # 11-Nov, Ziv at 0:06: the tag "our own delivery" sat right above the caption "in our own
+    # delivery." ("its weird to show twice the same caption"). A tag names what comes next.
+    raw = [
+        {"type": "tag", "text": "who came back", "at": at(1, "who")},
+        {"type": "tag", "text": "the job:", "at": at(2, "That")},
+    ]
+    moments, problems = reels.clean_moments(raw, shots(), "en")
+    assert [m["text"] for m in moments] == ["the job:"]  # one word he says is a chapter label, the style
+    assert len(problems) == 1 and "repeats what he says" in problems[0]
+    assert "never the words of the line" in reels.MOMENTS_SYSTEM
+
+
 def test_one_accent_color_is_the_only_color_the_writer_is_offered():
     assert '"white" or "accent"' in reels.MOMENTS_SYSTEM
     for old in ("yellow", "green", "cyan"):

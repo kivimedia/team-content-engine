@@ -262,10 +262,9 @@ def list_scene(items, ticks_on, bottom=1080):
             check_mark(d, cx, y, r * 0.95, w=max(8, r // 4))
         else:
             d.ellipse((cx - r, y - r, cx + r, y + r), outline=(120, 140, 255, 255), width=4)
-        col = WHITE if k < ticks_on else (150, 160, 210)
-        t = text_img(it, font(size, 800 if k < ticks_on else 600, text=it), col,
-                     glow=(80, 110, 255) if k < ticks_on else None, glow_r=12, shadow=False, margin=24)
-        t = chroma(t) if k < ticks_on else t
+        col = WHITE if k < ticks_on else (170, 180, 225)
+        # crisp: no glow, no color fringe. With both, and a slow zoom over them, Ziv asked "is this blurry?" (11-Nov)
+        t = text_img(it, font(size, 800 if k < ticks_on else 600, text=it), col, shadow=False, margin=24)
         tx = (cx - r - 26 - t.width + 24) if rtl else (cx + r + 26 - 24)
         img.alpha_composite(t, (int(tx), int(y - t.height // 2)))
         y += pitch
@@ -280,8 +279,8 @@ def grid_scene(title, cells, filled, ticks_on, labels='Week {n}', empty_label='f
     rtl = is_rtl(title) or is_rtl(labels)
     face, _side = accent()
     mid = (300 + bottom) // 2
-    t = text_img(title, fit(title, 900, 110, W - 160), face, glow=(60, 90, 255), glow_r=18, shadow=False, margin=40)
-    img.alpha_composite(chroma(t), ((W - t.width) // 2, mid - 250 - t.height // 2 + 40))
+    t = text_img(title, fit(title, 900, 110, W - 160), face, shadow=False, margin=40)
+    img.alpha_composite(t, ((W - t.width) // 2, mid - 250 - t.height // 2 + 40))
     d = ImageDraw.Draw(img)
     n = max(1, min(int(cells), 6))
     gap = 30
@@ -320,8 +319,8 @@ def stat_scene(number, label='', bottom=1080):
     num = text_img(number, fit(number, 900, 380, W - 180), face, extrude=18, extrude_col=side, margin=50, shadow=False)
     img.alpha_composite(num, ((W - num.width) // 2, mid - num.height // 2 - (70 if label else 0)))
     if label:
-        lab = text_img(label, fit(label, 700, 92, W - 200), WHITE, glow=(80, 110, 255), glow_r=12, shadow=False, margin=30)
-        img.alpha_composite(chroma(lab), ((W - lab.width) // 2, mid + num.height // 2 - 110))
+        lab = text_img(label, fit(label, 700, 92, W - 200), WHITE, shadow=False, margin=30)
+        img.alpha_composite(lab, ((W - lab.width) // 2, mid + num.height // 2 - 110))
     return img
 
 

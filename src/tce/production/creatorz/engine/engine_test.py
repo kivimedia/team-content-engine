@@ -374,11 +374,14 @@ class ChecklistTest(unittest.TestCase):
         clean = dict(self.GOOD, look={'on_face': [], 'edge': [], 'cut_head': [], 'accents': ['sand']})
         self.assertTrue(all(v[0] == 'PASS' for v in M.verdicts(clean)))
         blind = {k: v for k, v in self.GOOD.items() if k != 'look'}          # no report at all: nothing was looked at
-        self.assertEqual(len([v for v in M.verdicts(blind) if v[0] == 'FAIL']), 4)
+        self.assertEqual(len([v for v in M.verdicts(blind) if v[0] == 'FAIL']), 6)
         for key, bad, line in (('on_face', [{'what': 'caption', 't': 4.0}], 'no text on the face'),
                                ('edge', [{'what': 'DONE', 't': 1.2}], 'text inside the safe area'),
                                ('cut_head', [12.4], 'the head stays in the frame'),
-                               ('accents', ['sand', 'green'], 'one accent color')):
+                               ('accents', ['sand', 'green'], 'one accent color'),
+                               ('twice', [{'what': 'our own delivery', 't': 6.1}], 'nothing said twice on screen'),
+                               ('short_cards', [{'what': 'card_list', 't': 29.0, 'shown': 1.5, 'needs': 4.3}],
+                                'cards stay up long enough to read')):
             x = dict(self.GOOD, look=dict(clean['look'], **{key: bad}))
             self.assertEqual({v[1] for v in M.verdicts(x) if v[0] == 'FAIL'}, {line}, key)
 
@@ -479,11 +482,25 @@ class LayoutTest(unittest.TestCase):
 
     def test_a_long_card_comes_and_goes_a_short_one_stays(self):
         self.assertEqual(L.card_windows(10.0, 13.5, [10.4, 11.5, 12.6]), [(10.0, 13.5)])
-        wins = L.card_windows(10.0, 22.0, [10.5, 14.0, 17.5, 21.0])
+        wins = L.card_windows(10.0, 26.0, [10.5, 15.0, 20.0, 25.0])
         self.assertGreaterEqual(len(wins), 3)                        # the speaker comes back between ticks
-        self.assertTrue(all(b - a <= 2.6 for a, b in wins), wins)
-        self.assertTrue(all(any(a <= x < b for a, b in wins) for x in (10.5, 14.0, 17.5, 21.0)))   # every tick is seen
-        self.assertTrue(all(10.0 <= a and b <= 22.0 for a, b in wins))
+        self.assertTrue(all(any(a <= x < b for a, b in wins) for x in (10.5, 15.0, 20.0, 25.0)))   # every tick is seen
+        self.assertTrue(all(10.0 <= a and b <= 26.0 for a, b in wins))
+
+    def test_a_card_stays_up_long_enough_to_read(self):
+        # 11-Nov, Ziv at 0:39 of his video: "it transitions too fast so I can't manage to read it on time". The card
+        # showed for 1.5 s, then came back for 1.25 s beats: four lines, 14 words, gone before they were read.
+        items = ['Log into the real system', 'Test the change', 'Screenshots & videos', 'Point at the exact spot']
+        words = sum(len(i.split()) for i in items)
+        ticks = [29.6, 32.3, 35.4, 38.5]
+        wins = L.card_windows(29.0, 40.6, ticks, words)
+        self.assertGreaterEqual(wins[0][1] - wins[0][0], L.read_time(words) - 1e-6)       # the first look reads it all
+        for x in ticks:                                              # every tick stays up long enough to see it land
+            self.assertTrue(any(a <= x and b - x >= L.TICK_HOLD - 1e-6 for a, b in wins), (x, wins))
+        for (_a0, b0), (a1, _b1) in zip(wins, wins[1:]):             # never back to the face for a blink
+            self.assertGreaterEqual(a1 - b0, L.MIN_BACK - 1e-6, wins)
+        self.assertGreaterEqual(L.read_time(words), 4.0)             # 14 words take about four seconds
+        self.assertLessEqual(L.read_time(200), L.READ_MAX)
 
     def test_exposure_gamma_brightens_dark_shots_and_leaves_close_ones(self):
         self.assertGreater(L.exposure_gamma(0.30, 0.45), 1.0)
@@ -548,8 +565,10 @@ class CutawayTest(unittest.TestCase):
         self.assertEqual(card['layer'], 'scene')
         self.assertGreaterEqual(len(card['windows']), 3)
         self.assertLess(sum(b - a for a, b in card['windows']), 0.4 * (card['t1'] - card['t0']))   # the speaker gets most of it
+        self.assertIn(card['windows'][0][0], spec['flashes'])        # the first cut to the card flashes
+        for a, _b in card['windows'][1:]:                            # a return is a plain cut with a soft whoosh:
+            self.assertNotIn(a, spec['flashes'])                      # four flashes in ten seconds were too much
         for a, _b in card['windows']:
-            self.assertIn(a, spec['flashes'])
             self.assertTrue(any(abs(a - t) <= 0.01 for t, _n, _g in spec['sfx']))
 
     def test_number_card_and_picture_hold_for_a_beat_not_the_whole_line(self):
@@ -594,6 +613,56 @@ class CutawayTest(unittest.TestCase):
         self.assertEqual(D.set_accent('no-such-color'), 'sand')
         self.assertEqual(D.set_accent([10, 200, 30]), 'custom')
         D.set_accent('sand')
+
+
+class SaidTwiceTest(unittest.TestCase):
+    """11-Nov, Ziv at 0:06 of his video: the tag "our own delivery" sat right above the caption "in our own delivery."
+    ("its weird to show twice the same caption"). Text on screen never says what the caption already says."""
+    SHOTS = [shot(0, 0.0, 3.0, 'I learned this in our own delivery.'.split()),
+             shot(1, 3.0, 5.0, 'You hand a task over.'.split())]
+    EDIT = {'duration': 5.0, 'shots': SHOTS, 'lang': 'en'}
+
+    def build(self, *moments):
+        return CP.build({'lang': 'en', 'moments': list(moments)}, self.EDIT)
+
+    def test_a_tag_that_repeats_the_caption_is_not_shown(self):
+        spec = self.build({'type': 'tag', 'text': 'our own delivery', 'at': {'pick': 0, 'word': 'delivery.'}})
+        self.assertEqual(spec['items'], [])
+        self.assertEqual([d['text'] for d in spec['dropped']], ['our own delivery'])
+
+    def test_a_tag_that_names_what_comes_next_stays(self):
+        spec = self.build({'type': 'tag', 'text': 'the fix:', 'at': {'pick': 0, 'word': 'delivery.'}})
+        self.assertEqual([it['kind'] for it in spec['items']], ['tag'])
+
+    def test_a_one_word_chapter_tag_on_the_word_he_says_stays(self):
+        # his real video: "the rule:" over "I made a rule for my agents." is a chapter label, the reels' own style
+        edit = {'duration': 3.0, 'lang': 'en', 'shots': [shot(0, 0.0, 3.0, 'I made a rule for my agents.'.split())]}
+        spec = CP.build({'lang': 'en', 'moments': [{'type': 'tag', 'text': 'the rule:', 'at': {'pick': 0, 'at': 'start'}}]}, edit)
+        self.assertEqual([it['kind'] for it in spec['items']], ['tag'])
+        self.assertTrue(CP.repeats('the rule:', ['I made a rule']))             # one word for a headline: a beat
+        self.assertFalse(CP.repeats('the rule:', ['I made a rule'], min_hits=CP.TAG_HITS))
+
+    def test_a_headline_that_repeats_the_caption_takes_its_place_for_a_beat(self):
+        spec = self.build({'type': 'headline', 'text': 'OUR OWN DELIVERY', 'place': 'top', 'at': {'pick': 0, 'word': 'our'}})
+        it = spec['items'][0]
+        self.assertLessEqual(it['t1'] - it['t0'], CP.SWAP_MAX + 1e-6)
+        self.assertIn((it['t0'], it['t1']), spec['hide_cap'])        # one of the two goes: the caption, for the beat
+
+    def test_what_counts_as_saying_it_twice(self):
+        self.assertTrue(CP.repeats('DONE', ["it's not done."]))        # a keyword pop REPLACES the caption for a beat
+        self.assertTrue(CP.repeats('our own delivery', ['in our own delivery.']))
+        self.assertTrue(CP.repeats('like a new hire', ["Honestly, that's what I want from a new hire."]))
+        self.assertTrue(CP.repeats('SAY IT', ["it's finished when you say it's finished."]))
+        self.assertFalse(CP.repeats('the rule:', ['for my agents.']))
+        self.assertFalse(CP.repeats('the fix:', ['Every two weeks.']))
+        self.assertFalse(CP.repeats('', ['anything']))
+
+    def test_a_struck_headline_keeps_its_time(self):
+        # the strike crosses out the old idea later in the line: cutting the headline to a beat would lose the joke
+        spec = self.build({'type': 'headline', 'text': 'OUR OWN DELIVERY', 'place': 'top', 'at': {'pick': 0, 'word': 'our'}},
+                          {'type': 'strike', 'target': 0, 'at': {'pick': 0, 'word': 'delivery.'}})
+        head = spec['items'][0]
+        self.assertGreater(head['t1'] - head['t0'], CP.SWAP_MAX)
 
 
 class FaceSampleTest(unittest.TestCase):

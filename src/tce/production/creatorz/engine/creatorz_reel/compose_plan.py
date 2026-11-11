@@ -90,6 +90,27 @@ def hidden_shares(ink, hid, solid, solid_hid, letters):
     return overall, max(per) if per else overall
 
 
+def content_words(text, lang='en'):
+    weak = WEAK.get(lang, WEAK['en'])
+    return [w for w in (bare(t) for t in str(text).split()) if w and w not in weak]
+
+
+TAG_HITS = 2                      # a chapter tag naming the word he says ("the rule:") is the style; two words is a repeat
+
+
+def repeats(text, caption_texts, lang='en', share=0.6, min_hits=1):
+    """True when text on screen says what a caption showing with it already says: most of its meaningful words, and at
+    least `min_hits` of them, are in the caption. 11-Nov, Ziv at 0:06: the tag "our own delivery" sat right above "in
+    our own delivery." ("its weird to show twice the same caption"). For a headline one keyword counts: the skill's
+    escalation REPLACES the caption for a beat. A tag needs TAG_HITS: a one-word chapter label is the style."""
+    mine = content_words(text, lang)
+    if not mine:
+        return False
+    said = {w for c in caption_texts for w in content_words(c, lang)}
+    hits = sum(1 for w in mine if w in said)
+    return hits >= min_hits and hits / len(mine) >= share
+
+
 def drop_covered(drawn):
     """drawn: [{'kind', 'box': [x0, y0, x1, y1]}] for one frame's front items, scenes included. A scene (a card, a
     picture) hides any other item its box meets, never text over text (demo 3's tag showed through the list card,
@@ -153,10 +174,15 @@ def apply_slot(it, spec):
 def build(plan, edit):
     shots = edit['shots']
     lang = edit.get('lang', plan.get('lang', 'en'))
-    items, sfx, flashes, whips = [], [], [], []
+    items, sfx, flashes, whips, dropped = [], [], [], [], []
     rtl = lang == 'he'
     lines = layout.caption_lines([_face(s) for s in shots])
     spec = {'items': items, 'hide_cap': [], 'cap_lines': [(s['out_in'], s['out_out'], y) for s, y in zip(shots, lines)]}
+    caps = captions(shots, lang)
+    struck = {m.get('target') for m in plan['moments'] if m.get('type') == 'strike'}
+
+    def said_with(t0, t1):
+        return [c['text'] for c in caps if c['t0'] < t1 - 0.02 and t0 < c['t1'] - 0.02]
 
     def sound(t, name, gain):
         if name:
@@ -204,6 +230,12 @@ def build(plan, edit):
             it['pos'] = m.get('pos') or 'auto'
             if it['layer'] == 'front' and not m.get('pos'):
                 apply_slot(it, spec)
+            # the same words as the caption: the headline takes the caption's place for a beat, never both at once.
+            # A struck headline is the old idea being crossed out, not a repeat: it keeps its time
+            if i not in struck and (it['t0'], it['t1']) not in spec['hide_cap'] and repeats(m.get('text', ''), said_with(it['t0'], it['t1']), lang):
+                it['t1'] = round(min(it['t1'], it['t0'] + SWAP_MAX), 3)
+                it['repeat'] = True
+                spec['hide_cap'].append((it['t0'], it['t1']))
         elif kind == 'strike':
             it['layer'], it['target'], it['entry'] = 'follow', m['target'], 0
             snd, gain = m.get('sound', 'whoosh'), m.get('gain', -10)
@@ -221,6 +253,10 @@ def build(plan, edit):
             it['layer'], it['entry'] = 'front', m.get('entry', 6)
             spec['hide_cap'].append((it['t0'], it['t1']))
         elif kind == 'tag':
+            # a tag names what comes next; one that repeats the line under it says the same thing twice: not shown
+            if repeats(m.get('text', ''), said_with(it['t0'], it['t1']), lang, min_hits=TAG_HITS):
+                dropped.append({'moment': i, 'kind': kind, 'text': m.get('text', ''), 'why': 'repeats the caption'})
+                continue
             it['layer'], it['entry'], it['rtl'] = 'front', 5, rtl
             it['pos'] = m.get('pos') or 'auto'
             gain = m.get('gain', -12)
@@ -239,20 +275,45 @@ def build(plan, edit):
                 it['ticks'] = [round(x, 3) for x in tt]
                 for x in it['ticks']:
                     sound(x, 'tick', m.get('tick_gain', -6))
-                it['windows'] = layout.card_windows(it['t0'], it['t1'], it['ticks'])
+                it['words'] = card_words(m)
+                it['windows'] = layout.card_windows(it['t0'], it['t1'], it['ticks'], it['words'])
             elif kind == 'card_stat':
                 it['windows'] = [(it['t0'], round(min(it['t1'], it['t0'] + m.get('hold', STAT_HOLD)), 3))]
             else:
                 hold = min(INSERT_MAX, it['t1'] - it['t0']) if 'until' in m else m.get('hold', INSERT_HOLD)
                 it['windows'] = [(it['t0'], round(min(it['t1'], it['t0'] + hold), 3))]
-            for k, (a, _b) in enumerate(it['windows']):         # every cut to a scene flashes; only the first is loud
-                flashes.append(a)
-                sound(a, 'flash' if k == 0 else 'whoosh', m.get('flash_gain', -8) if k == 0 else -12)
+            for k, (a, _b) in enumerate(it['windows']):         # the first cut to a scene flashes; a return is a plain
+                if k == 0:                                        # cut with a soft whoosh (four flashes in ten seconds
+                    flashes.append(a)                             # were part of "it transitions too fast", 11-Nov)
+                    sound(a, 'flash', m.get('flash_gain', -8))
+                else:
+                    sound(a, 'whoosh', -12)
         sound(it['t0'], snd, gain)
         items.append(it)
-    spec.update(sfx=sorted(sfx), flashes=sorted(set(flashes)), whips=sorted(whips), captions=captions(shots, lang),
+    spec.update(sfx=sorted(sfx), flashes=sorted(set(flashes)), whips=sorted(whips), captions=caps, dropped=dropped,
                 duration=edit['duration'])
     return spec
+
+
+def card_words(m):
+    """how many words a card asks the viewer to read"""
+    if m['type'] == 'card_list':
+        return sum(len(str(i).split()) for i in m.get('items', []))
+    if m['type'] == 'card_grid':
+        return len(str(m.get('title', '')).split()) + int(m.get('cells', 4))
+    return len(str(m.get('text', '')).split()) + len(str(m.get('label', '')).split())
+
+
+def short_cards(items):
+    """cards whose first look is shorter than it takes to read them (only when the card's own line is that short)"""
+    out = []
+    for it in items:
+        if it.get('kind') in ('card_list', 'card_grid') and it.get('windows'):
+            a, b = it['windows'][0]
+            need = layout.read_time(it.get('words', 0))
+            if b - a < min(need, it['t1'] - it['t0']) - 1e-3 or (it['t1'] - it['t0'] < need - 1e-3):
+                out.append({'what': it['kind'], 't': round(a, 2), 'shown': round(b - a, 2), 'needs': round(need, 2)})
+    return out
 
 
 def sky_intervals(plan, edit):

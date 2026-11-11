@@ -45,6 +45,10 @@ def verdicts(x):
     ok('the head stays in the frame', look is not None and not seen('cut_head'), names('cut_head') if look is not None else 'no look report')
     ok('one accent color', look is not None and len(set(seen('accents'))) <= 1,
        ', '.join(seen('accents')) or ('white only' if look is not None else 'no look report'))
+    ok('nothing said twice on screen', look is not None and not seen('twice'), names('twice') if look is not None else 'no look report')
+    ok('cards stay up long enough to read', look is not None and not seen('short_cards'),
+       ', '.join(f"{c['what']} at {c['t']:.1f} s: {c['shown']:.1f} of {c['needs']:.1f} s" for c in seen('short_cards')) or
+       ('none' if look is not None else 'no look report'))
     return r
 
 

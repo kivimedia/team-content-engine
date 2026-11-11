@@ -279,9 +279,23 @@ def run(plan, stills=None):
                       'box': draw.glyph_box(cap_img(c['text']), W / 2, cap_line(tm))})
     look = layout.look_report(texts, [{'out_in': s['out_in'], 'out_out': s['out_out'], 'face': cp._face(s),
                                        'crop_top': s['crop'][1]} for s in edit['shots']])
+    # the same words twice at once: every text item against the captions actually on screen with it
+    struck = {it['target'] for it in items if it['kind'] == 'strike'}
+    look['twice'] = []
+    for it in items:
+        if it['kind'] not in ('headline', 'tag') or it['idx'] in struck:
+            continue
+        with_it = [c['text'] for c in caps if c['t0'] < it['t1'] - 0.02 and it['t0'] < c['t1'] - 0.02
+                   and not hidden((max(c['t0'], it['t0']) + min(c['t1'], it['t1'])) / 2) and not scene_at(c['t0'] + 1e-3)]
+        if cp.repeats(it['m'].get('text', ''), with_it, lang, min_hits=cp.TAG_HITS if it['kind'] == 'tag' else 1):
+            look['twice'].append({'what': str(it['m'].get('text')), 't': round(it['t0'], 2)})
+    look['short_cards'] = cp.short_cards(items)
+    look['dropped'] = spec.get('dropped', [])
     look['accents'] = sorted(draw.USED)
     look['faces'] = sum(1 for s in edit['shots'] if cp._face(s))
-    for key in ('on_face', 'edge'):
+    for d in look['dropped']:
+        print(f"compose: not shown - {d['kind']} '{d['text']}': {d['why']}")
+    for key in ('on_face', 'edge', 'twice'):
         for x in look[key]:
             print(f"compose: look - {key.replace('_', ' ')}: {x['what'][:40]} at {x['t']:.2f} s")
 
@@ -334,14 +348,15 @@ def run(plan, stills=None):
             if n not in it['cache']:
                 it['cache'][n] = it['make'](n)
             layer = it['cache'][n]
-        z = 1.0 + 0.045 * (t - a) / max(0.2, b - a)    # every scene drifts in slowly: a still frame reads as a freeze
+        drift = 1.0 + 0.045 * (t - a) / max(0.2, b - a)  # the scene drifts in slowly: a still frame reads as a freeze
         p = (t - a) * fps / it['entry']
-        if p < 1.0:
-            z *= 0.94 + 0.06 * layout.ease_back(p)
-        if it.get('covers'):
-            return _zoomed(layer, z).convert('RGBA')
-        frame = draw.scene_bg().copy()
-        frame.alpha_composite(_zoomed(layer, z))
+        pop = (0.94 + 0.06 * layout.ease_back(p)) if p < 1.0 else 1.0
+        if it.get('covers'):                           # a full-frame photo drifts with it
+            return _zoomed(layer, drift * pop).convert('RGBA')
+        # only the background drifts. Resampling the TEXT every frame softened it to a third of its sharpness
+        # (11-Nov, Ziv: "is this blurry?"); after its entry pop the text sits still, pixel for pixel as drawn
+        frame = _zoomed(draw.scene_bg(), drift).convert('RGBA')
+        frame.alpha_composite(_zoomed(layer, pop) if pop != 1.0 else layer)
         return frame
 
     want = None

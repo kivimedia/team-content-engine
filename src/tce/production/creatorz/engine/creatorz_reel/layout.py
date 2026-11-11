@@ -191,16 +191,27 @@ def pick_accent(bg_rgb):
 
 
 # ---------------------------------------------------------------- cutaways: when a full-screen card is on
-def card_windows(t0, t1, ticks, lead=0.25, hold=1.0, first=1.5, whole=4.6):
-    """A full-screen card must not hide the speaker for long. A short card (up to `whole` seconds) stays up for all of
-    it. A long one shows at its start and comes back for a beat at every tick, the speaker in between."""
+READ_BASE, READ_PER_WORD, READ_MIN, READ_MAX = 0.8, 0.25, 2.0, 5.0
+TICK_LEAD, TICK_HOLD, MIN_BACK = 0.3, 1.8, 1.6
+
+
+def read_time(words):
+    """Seconds a full-screen card needs on its first look: a beat to find it, then about four words a second."""
+    return max(READ_MIN, min(READ_MAX, READ_BASE + READ_PER_WORD * words))
+
+
+def card_windows(t0, t1, ticks, words=0, whole=6.0):
+    """When a full-screen card is up. A short card (up to `whole` seconds) stays for all of it. A long one stays long
+    enough to READ on its first look (read_time of its words), comes back at every tick for TICK_HOLD seconds, and
+    gives the speaker back only for a real stretch (MIN_BACK or more). 11-Nov, Ziv at 0:39: "it transitions too fast
+    so I can't manage to read it on time": it was 1.5 s, then 1.25 s beats."""
     if t1 - t0 <= whole:
         return [(round(t0, 3), round(t1, 3))]
-    wins = [(t0, min(t1, t0 + first))] + [(max(t0, x - lead), min(t1, x + hold)) for x in sorted(ticks)]
+    wins = [(t0, min(t1, t0 + read_time(words)))] + [(max(t0, x - TICK_LEAD), min(t1, x + TICK_HOLD)) for x in sorted(ticks)]
     wins.sort()
     out = []
     for a, b in wins:
-        if out and a <= out[-1][1] + 0.35:            # a gap shorter than a blink is not worth a cut back
+        if out and a < out[-1][1] + MIN_BACK:           # back to the face for less than that reads as a flicker
             out[-1] = (out[-1][0], max(out[-1][1], b))
         else:
             out.append((a, b))
