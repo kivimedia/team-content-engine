@@ -192,7 +192,7 @@ def pick_accent(bg_rgb):
 
 # ---------------------------------------------------------------- cutaways: when a full-screen card is on
 READ_BASE, READ_PER_WORD, READ_MIN, READ_MAX = 0.8, 0.25, 2.0, 5.0
-TICK_LEAD, TICK_HOLD, MIN_BACK = 0.3, 1.8, 1.6
+TICK_LEAD, TICK_HOLD, MIN_BACK = 0.3, 1.8, 2.0
 
 
 def read_time(words):
@@ -203,7 +203,7 @@ def read_time(words):
 def card_windows(t0, t1, ticks, words=0, whole=6.0):
     """When a full-screen card is up. A short card (up to `whole` seconds) stays for all of it. A long one stays long
     enough to READ on its first look (read_time of its words), comes back at every tick for TICK_HOLD seconds, and
-    gives the speaker back only for a real stretch (MIN_BACK or more). 11-Nov, Ziv at 0:39: "it transitions too fast
+    gives the speaker back only for a real stretch (MIN_BACK or more: his own render came back for 1.7 s, then the card for 1.5 s, the flicker he flagged). 11-Nov, Ziv at 0:39: "it transitions too fast
     so I can't manage to read it on time": it was 1.5 s, then 1.25 s beats."""
     if t1 - t0 <= whole:
         return [(round(t0, 3), round(t1, 3))]

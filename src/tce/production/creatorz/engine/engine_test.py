@@ -500,6 +500,9 @@ class LayoutTest(unittest.TestCase):
         for (_a0, b0), (a1, _b1) in zip(wins, wins[1:]):             # never back to the face for a blink
             self.assertGreaterEqual(a1 - b0, L.MIN_BACK - 1e-6, wins)
         self.assertGreaterEqual(L.read_time(words), 4.0)             # 14 words take about four seconds
+        # his re-render (11-Nov 08:15): the card left for 1.7 s, then came back for 1.5 s to tick the last line,
+        # the same flicker he flagged. A last tick that close keeps the card up
+        self.assertEqual(len(L.card_windows(28.97, 40.6, [30.0, 32.9, 35.6, 39.41], words)), 1)
         self.assertLessEqual(L.read_time(200), L.READ_MAX)
 
     def test_exposure_gamma_brightens_dark_shots_and_leaves_close_ones(self):
