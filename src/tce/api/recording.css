@@ -447,6 +447,9 @@ body.solo-page { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr
 .solo-stage { min-height: 50dvh; border-radius: 14px; }
 .solo-stage video { position: absolute; inset: 0; }
 .solo-help, .solo-status { margin: 0; font-size: 1.05rem; line-height: 1.45; color: var(--ink); }
+/* 11-Nov: one line on how to hold the phone, before he records (the edit cannot fix a face that fills the frame) */
+.record-tip { margin: 0; font-size: 0.95rem; line-height: 1.45; color: var(--ink); opacity: 0.85; }
+.camera-empty .record-tip { color: #c7d5e5; opacity: 1; max-width: 320px; font-size: 0.9rem; }
 .solo-status { padding: 10px 12px; border: 2px solid var(--moss); border-radius: 10px; background: var(--white); font-weight: 700; }
 .solo-status.is-bad { border-color: var(--signal); color: #8c1717; }
 .solo-library-link { color: var(--lake); font-weight: 900; }

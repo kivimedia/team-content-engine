@@ -54,6 +54,7 @@
 
     // Recording studio: camera and teleprompter
     "Front camera": "מצלמה קדמית",
+    "Framing tip: hold the phone at arm's length on the wide lens, with a little sky or wall above your head. It leaves room for text and keeps your head in the frame.": "טיפ לצילום: מחזיקים את הטלפון ביד מושטת, עם העדשה הרחבה, ומשאירים קצת שמיים או קיר מעל הראש. כך יש מקום לטקסט והראש נשאר בתוך התמונה.",
     "Camera and microphone start only when you press Record.": "המצלמה והמיקרופון נדלקים רק כשלוחצים הקלטה.",
     "Recording": "מקליט",
     "Recording interrupted. Check the camera before continuing.": "ההקלטה נקטעה. כדאי לבדוק את המצלמה לפני שממשיכים.",

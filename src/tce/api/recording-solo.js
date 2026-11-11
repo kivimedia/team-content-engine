@@ -331,6 +331,7 @@
       $("soloFlag").hidden = false;
       $("soloDone").disabled = false;
       $("soloHelp").hidden = true;
+      $("soloTip").hidden = true;
       status("");
       top("Recording, sending as you talk");
     } catch (error) {
@@ -379,6 +380,7 @@
     if ($("soloRecord").textContent === "Record another" && !state.stream) {
       $("soloRecord").textContent = "Record";
       $("soloHelp").hidden = false;
+      $("soloTip").hidden = false;
       $("soloTimer").hidden = true;
       tryCamera();
       return;
