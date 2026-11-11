@@ -1650,26 +1650,61 @@ async def choose_style(
 # notes and Jennifer's fixes keep them. Adding or removing one never starts a render.
 PICTURE_TYPES = {"image/png", "image/jpeg", "image/webp"}
 PICTURE_MAX_BYTES = 15 * 1024 * 1024
-_PICTURE_FORMATS = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}
+# Review, 11-Nov: a phone or camera JPEG with an MPF segment (more than one frame) is "MPO" to Pillow.
+_PICTURE_FORMATS = {"image/png": {"PNG"}, "image/jpeg": {"JPEG", "MPO"}, "image/webp": {"WEBP"}}
 _PICTURE_SUFFIXES = {"image/png": (".png",), "image/jpeg": (".jpg", ".jpeg"), "image/webp": (".webp",)}
 _PICTURE_MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+_PICTURE_SAVE_AS = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}
 PICTURE_NOTE_MAX = 120
+# Review, 11-Nov: a small file can still hold a huge picture the engine decodes in full.
+PICTURE_MAX_PIXELS = 40_000_000
+
+
+class PictureTooLarge(ValueError):
+    """More pixels than PICTURE_MAX_PIXELS."""
 
 
 def picture_size(data: bytes, ctype: str) -> tuple[int, int]:
     """The picture's width and height, read from its own bytes. ValueError when the bytes are
-    not the kind of picture the upload says they are."""
-    from PIL import Image, UnidentifiedImageError
+    not the kind of picture the upload says they are, or do not decode in full."""
+    return _read_picture(data, ctype)[:2]
+
+
+def _read_picture(data: bytes, ctype: str) -> tuple[int, int, bytes]:
+    """Width, height and the bytes to store: the upload itself, or (review, 11-Nov) the picture
+    turned upright when its EXIF says it was taken sideways, since the engine never turns it."""
+    import warnings
+
+    from PIL import Image, ImageOps, UnidentifiedImageError
 
     try:
-        with Image.open(io.BytesIO(data)) as img:
-            fmt, size = img.format, img.size
-            img.verify()
-    except (Image.DecompressionBombError, UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data)) as img:
+                fmt, size = img.format, img.size
+                if size[0] * size[1] > PICTURE_MAX_PIXELS:
+                    raise PictureTooLarge(f"{size[0]}x{size[1]}")
+                img.verify()
+            # verify() does not decode the pixels: a cut-off JPEG passes it and stops the engine later
+            with Image.open(io.BytesIO(data)) as img:
+                img.load()
+                orientation = img.getexif().get(0x0112, 1)
+                upright = ImageOps.exif_transpose(img) if orientation not in (None, 1) else None
+                if upright is not None:
+                    out = io.BytesIO()
+                    save_as = _PICTURE_SAVE_AS.get(ctype, "PNG")
+                    if save_as == "JPEG" and upright.mode not in ("RGB", "L"):
+                        upright = upright.convert("RGB")
+                    upright.save(out, save_as, **({"quality": 95} if save_as in ("JPEG", "WEBP") else {}))
+                    size, data = upright.size, out.getvalue()
+    except PictureTooLarge:
+        raise
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning, UnidentifiedImageError, OSError,
+            SyntaxError, ValueError) as exc:
         raise ValueError("not a picture") from exc
-    if fmt != _PICTURE_FORMATS.get(ctype):
+    if fmt not in _PICTURE_FORMATS.get(ctype, set()):
         raise ValueError(f"a {fmt} file sent as {ctype}")
-    return int(size[0]), int(size[1])
+    return int(size[0]), int(size[1]), data
 
 
 async def _picture_row(
@@ -1688,6 +1723,18 @@ async def _picture_row(
         if busy:
             raise HTTPException(status_code=409, detail=busy)
     return row
+
+
+_picture_locks: dict[uuid.UUID, asyncio.Lock] = {}
+
+
+def _picture_lock(upload_id: uuid.UUID) -> asyncio.Lock:
+    """One change to a video's pictures at a time in this process. Not the render lock: holding
+    that would make the video look busy to everything else."""
+    lock = _picture_locks.get(upload_id)
+    if lock is None:
+        lock = _picture_locks[upload_id] = asyncio.Lock()
+    return lock
 
 
 def _set_pictures(row: RecordingUpload, pictures: list[dict[str, Any]]) -> None:
@@ -1746,28 +1793,43 @@ async def add_picture(
         if len(data) > PICTURE_MAX_BYTES:
             raise HTTPException(status_code=413, detail=too_big)
     if not data:
-        raise HTTPException(status_code=400, detail="Empty file")
+        raise HTTPException(status_code=400, detail="This picture file is empty")
     try:
-        w, h = await asyncio.to_thread(picture_size, bytes(data), ctype)
+        w, h, stored = await asyncio.to_thread(_read_picture, bytes(data), ctype)
+    except PictureTooLarge as exc:
+        raise HTTPException(
+            status_code=413, detail=f"The picture has too many pixels (over {PICTURE_MAX_PIXELS // 1_000_000} million)"
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="This file is not a real PNG, JPEG or WebP picture") from exc
-    numbers = [int(m.group(1)) for p in pictures if (m := _re.fullmatch(r"p(\d+)", str(p["id"])))]
-    pid = f"p{max(numbers, default=0) + 1}"
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _PICTURE_SUFFIXES[ctype]:
         suffix = _PICTURE_SUFFIXES[ctype][0]
-    folder = creatorz_reels.pictures_dir(row.storage_path)
-    folder.mkdir(parents=True, exist_ok=True)
-    name = f"{pid}{suffix}"
-    tmp = folder / f".{name}.part"
-    try:
-        tmp.write_bytes(bytes(data))
-        os.replace(tmp, folder / name)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    _set_pictures(row, [*pictures, {"id": pid, "file": name, "note": note, "w": w, "h": h}])
-    await db.commit()
+    # Review, 11-Nov: one change to a video's pictures at a time (a double tap read the same list twice).
+    async with _picture_lock(row.id):
+        await db.refresh(row)
+        busy = upload_busy(row)
+        if busy:
+            raise HTTPException(status_code=409, detail=busy)
+        pictures = creatorz_reels.pictures_of(row.edit_plan)
+        if len(pictures) >= creatorz_reels.MAX_PICTURES:
+            raise HTTPException(
+                status_code=409, detail=f"A video holds at most {creatorz_reels.MAX_PICTURES} pictures. Remove one first."
+            )
+        numbers = [int(m.group(1)) for p in pictures if (m := _re.fullmatch(r"p(\d+)", str(p["id"])))]
+        pid = f"p{max(numbers, default=0) + 1}"
+        folder = creatorz_reels.pictures_dir(row.storage_path)
+        folder.mkdir(parents=True, exist_ok=True)
+        name = f"{pid}{suffix}"
+        tmp = folder / f".{name}.part"
+        try:
+            tmp.write_bytes(stored)
+            os.replace(tmp, folder / name)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        _set_pictures(row, [*pictures, {"id": pid, "file": name, "note": note, "w": w, "h": h}])
+        await db.commit()
     await db.refresh(row)
     return upload_json(row)
 
@@ -1780,10 +1842,15 @@ async def remove_picture(
     db: AsyncSession = Depends(get_db),
 ):
     row = await _picture_row(db, ws, upload_id, changing=True)
-    hit = _picture(row, picture_id)
-    _picture_path(row, hit).unlink(missing_ok=True)
-    _set_pictures(row, [p for p in creatorz_reels.pictures_of(row.edit_plan) if p["id"] != picture_id])
-    await db.commit()
+    async with _picture_lock(row.id):
+        await db.refresh(row)
+        busy = upload_busy(row)
+        if busy:
+            raise HTTPException(status_code=409, detail=busy)
+        hit = _picture(row, picture_id)
+        _picture_path(row, hit).unlink(missing_ok=True)
+        _set_pictures(row, [p for p in creatorz_reels.pictures_of(row.edit_plan) if p["id"] != picture_id])
+        await db.commit()
     await db.refresh(row)
     return upload_json(row)
 

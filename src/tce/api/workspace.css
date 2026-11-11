@@ -226,12 +226,12 @@ main { width: min(100%, 860px); margin: 0 auto; }
 /* A grid cell is a block box; the flex display above must survive it. */
 .btn-row .btn, .order-controls .btn, .actions .btn { display: inline-flex; }
 .btn-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 14px; }
-/* 10-Nov: Pill or Creatorz, one whole row of the card's buttons. */
-.style-pick { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; }
+/* 10-Nov: Pill or Creatorz, one whole row of the card's buttons (a grid row in .btn-row, a flex row in .actions). */
+.style-pick { grid-column: 1 / -1; flex: 1 1 100%; display: flex; align-items: center; gap: 8px; }
 .style-pick-label { font-weight: 800; color: var(--ink); }
 .style-pick .btn { flex: 1 1 0; }
 /* 11-Nov: pictures for the Creatorz writer, under the Style picker. */
-.pictures-pick { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.pictures-pick { grid-column: 1 / -1; flex: 1 1 100%; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .pictures-pick > .btn { align-self: flex-start; }
 .pictures-panel { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .pictures-panel[hidden] { display: none; }

@@ -124,18 +124,34 @@ async def test_a_ninth_picture_is_refused(client, editorial_sessionmaker, tmp_pa
 
 async def test_another_workspaces_video_is_not_found(client, editorial_sessionmaker, tmp_path):
     src, out = edited_file(tmp_path)
-    uid, _ = await seed(editorial_sessionmaker, src, edited=str(out), status="edited", ws=OTHER_WS)
+    # a real picture on the other workspace's video, so a 404 can only come from the scoping
+    uid, _ = await seed(editorial_sessionmaker, src, edited=str(out), status="edited", ws=OTHER_WS,
+                        overrides={"pictures": [P1]})
+    stored = stored_p1(tmp_path)
     assert (await post_picture(client, uid, image_bytes())).status_code == 404
-    assert (await client.delete(f"/api/v1/production/uploads/{uid}/pictures/p1", headers=AUTH)).status_code == 404
     assert (await client.get(f"/api/v1/production/uploads/{uid}/pictures/p1", headers=AUTH)).status_code == 404
+    assert (await client.delete(f"/api/v1/production/uploads/{uid}/pictures/p1", headers=AUTH)).status_code == 404
+    assert stored.exists()
 
 
 async def test_a_workspace_not_listed_has_no_pictures(client, editorial_sessionmaker, tmp_path, monkeypatch):
     src, out = edited_file(tmp_path)
-    uid, _ = await seed(editorial_sessionmaker, src, edited=str(out), status="edited")
+    uid, _ = await seed(editorial_sessionmaker, src, edited=str(out), status="edited", overrides={"pictures": [P1]})
+    stored = stored_p1(tmp_path)
+    assert (await client.get(f"/api/v1/production/uploads/{uid}/pictures/p1", headers=AUTH)).status_code == 200
     monkeypatch.setattr(settings, "production_creatorz_workspaces", "")
     assert (await post_picture(client, uid, image_bytes())).status_code == 404
     assert (await client.get(f"/api/v1/production/uploads/{uid}/pictures/p1", headers=AUTH)).status_code == 404
+    assert (await client.delete(f"/api/v1/production/uploads/{uid}/pictures/p1", headers=AUTH)).status_code == 404
+    assert stored.exists()
+
+
+def stored_p1(tmp_path) -> Path:
+    folder = tmp_path / ".walk-pictures"
+    folder.mkdir(exist_ok=True)
+    stored = folder / "p1.png"
+    stored.write_bytes(image_bytes())
+    return stored
 
 
 async def test_no_picture_changes_while_the_video_is_being_made(client, editorial_sessionmaker, tmp_path):
@@ -310,3 +326,89 @@ def test_each_picture_type_is_read_by_its_bytes(ctype):
     assert prod.picture_size(image_bytes(fmt), ctype) == (40, 70)
     with pytest.raises(ValueError):
         prod.picture_size(b"nope", ctype)
+
+
+# ---------------------------------------------------------------- review fixes (11-Nov)
+async def test_a_phone_photo_with_more_than_one_frame_is_a_jpeg(client, editorial_sessionmaker, tmp_path):
+    # Many phone and camera JPEGs carry an MPF segment; Pillow names them MPO, they are still JPEGs.
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 70), "red").save(buf, "MPO", save_all=True, append_images=[Image.new("RGB", (40, 70), "blue")])
+    assert buf.getvalue()[:3] == b"\xff\xd8\xff"
+    assert prod.picture_size(buf.getvalue(), "image/jpeg") == (40, 70)
+    src, out = edited_file(tmp_path)
+    uid, _ = await seed(editorial_sessionmaker, src, edited=str(out), status="edited")
+    r = await post_picture(client, uid, buf.getvalue(), ctype="image/jpeg", name="IMG_0001.JPG")
+    assert r.status_code == 201, r.text
+
+
+async def test_a_cut_off_jpeg_is_refused_at_the_upload(client, editorial_sessionmaker, tmp_path):
+    buf = io.BytesIO()
+    Image.effect_noise((400, 400), 50).convert("RGB").save(buf, "JPEG")
+    half = buf.getvalue()[: len(buf.getvalue()) // 2]
+    with pytest.raises(ValueError):
+        prod.picture_size(half, "image/jpeg")
+    src, out = edited_file(tmp_path)
+    uid, _ = await seed(editorial_sessionmaker, src, edited=str(out), status="edited")
+    assert (await post_picture(client, uid, half, ctype="image/jpeg", name="a.jpg")).status_code == 400
+
+
+async def test_a_sideways_phone_photo_is_stored_upright(client, editorial_sessionmaker, tmp_path):
+    exif = Image.Exif()
+    exif[0x0112] = 6  # stored landscape, shown upright
+    buf = io.BytesIO()
+    Image.new("RGB", (60, 30), (200, 40, 20)).save(buf, "JPEG", exif=exif)
+    src, out = edited_file(tmp_path)
+    uid, _ = await seed(editorial_sessionmaker, src, edited=str(out), status="edited")
+    r = await post_picture(client, uid, buf.getvalue(), ctype="image/jpeg", name="IMG.jpg")
+    assert r.status_code == 201, r.text
+    assert (r.json()["pictures"][0]["w"], r.json()["pictures"][0]["h"]) == (30, 60)
+    with Image.open(tmp_path / ".walk-pictures" / "p1.jpg") as stored:
+        assert stored.size == (30, 60) and stored.format == "JPEG"
+        assert stored.getexif().get(0x0112, 1) == 1
+
+
+async def test_a_picture_with_too_many_pixels_is_refused(client, editorial_sessionmaker, tmp_path, monkeypatch):
+    monkeypatch.setattr(prod, "PICTURE_MAX_PIXELS", 1000)
+    src, out = edited_file(tmp_path)
+    uid, _ = await seed(editorial_sessionmaker, src, edited=str(out), status="edited")
+    r = await post_picture(client, uid, image_bytes(size=(40, 70)))
+    assert r.status_code == 413 and "pixels" in r.json()["detail"]
+    assert prod.PICTURE_MAX_PIXELS == 1000
+
+
+def test_the_real_pixel_limit_is_40_million():
+    assert prod.PICTURE_MAX_PIXELS == 40_000_000
+
+
+async def test_two_adds_at_once_get_two_pictures(client, editorial_sessionmaker, tmp_path):
+    import asyncio
+
+    src, out = edited_file(tmp_path)
+    uid, _ = await seed(editorial_sessionmaker, src, edited=str(out), status="edited")
+    a, b = await asyncio.gather(
+        post_picture(client, uid, image_bytes(), note="one"), post_picture(client, uid, image_bytes(), note="two"),
+    )
+    assert a.status_code == 201 and b.status_code == 201
+    got = (await load(editorial_sessionmaker, uid)).edit_plan["overrides"]["pictures"]
+    assert sorted(p["id"] for p in got) == ["p1", "p2"] and sorted(p["note"] for p in got) == ["one", "two"]
+    assert sorted(f.name for f in (tmp_path / ".walk-pictures").iterdir()) == ["p1.png", "p2.png"]
+
+
+def test_the_picture_block_takes_a_row_of_its_own():
+    css = (Path(prod.__file__).parents[1] / "workspace.css").read_text(encoding="utf-8")
+    import re
+
+    for cls in (".style-pick", ".pictures-pick"):
+        rule = re.search(re.escape(cls) + r"\s*\{([^}]*)\}", css).group(1)
+        assert "flex: 1 1 100%" in rule, cls
+
+
+def test_the_page_guards_a_picture_upload_and_a_second_remove():
+    js = (Path(prod.__file__).parents[1] / "workspace.js").read_text(encoding="utf-8")
+    he = (Path(prod.__file__).parents[1] / "i18n-he.js").read_text(encoding="utf-8")
+    assert "pictureBusy" in js and "Adding the picture..." in js
+    assert '"Adding the picture...":' in he
+    assert '"Creatorz again":' in he
+    for sentence in ("This picture file is empty", "This video has no such picture",
+                     "The picture has too many pixels (over 40 million)"):
+        assert f'"{sentence}":' in he, sentence

@@ -1893,9 +1893,14 @@
         html += '<div class="style-pick" role="group" aria-label="Video style"><span class="style-pick-label">Style</span>'
              + [["pill", "Pill"], ["creatorz", "Creatorz"]].map(function (s) {
                  var on = action.current === s[0];
-                 var live = !on || (s[0] === "creatorz" && action.stale);
+                 // Review, 11-Nov: after the pictures changed, Creatorz reads as an action, not a pressed toggle.
+                 var again = on && s[0] === "creatorz" && action.stale;
+                 if (again) {
+                   return '<button class="btn primary" type="button" data-style-pick="' + esc(item.upload_id)
+                        + '" data-style="creatorz">Creatorz again</button>';
+                 }
                  return '<button class="btn' + (on ? " primary" : " quiet") + '" type="button" aria-pressed="' + on + '"'
-                      + (live ? ' data-style-pick="' + esc(item.upload_id) + '" data-style="' + s[0] + '"' : "") + ">" + s[1] + "</button>";
+                      + (on ? "" : ' data-style-pick="' + esc(item.upload_id) + '" data-style="' + s[0] + '"') + ">" + s[1] + "</button>";
                }).join("") + "</div>";
         html += picturesBlock(item.upload_id, action.pictures || []);
       } else if (action.key === "edit_again") {
@@ -2347,10 +2352,34 @@
             + '<span class="picture-note" translate="no">' + esc(p.note) + "</span>"
             + '<button class="btn quiet" type="button" data-picture-remove="' + esc(uploadId) + '" data-picture="' + esc(p.id) + '">Remove</button></div>';
     });
-    if (pictures.length < PICTURES_MAX) {
+    if (pictureBusy[uploadId]) {
+      // Review, 11-Nov: a big upload on a phone outlasts the toast; the card keeps saying it.
+      html += '<button class="btn" type="button" disabled aria-busy="true">Adding the picture...</button>';
+    } else if (pictures.length < PICTURES_MAX) {
       html += '<button class="btn" type="button" data-picture-add="' + esc(uploadId) + '">Add a picture</button>';
     }
     return html + "</div></div>";
+  }
+
+  // One upload or removal per video at a time, and one hidden file input for the page.
+  var pictureBusy = {};
+  var pictureInput = null;
+
+  function askPictureNote() {
+    var asked = "";
+    for (;;) {
+      var note = window.prompt("What does this picture show? One short line.", asked);
+      if (note === null) return null;
+      note = note.trim();
+      if (note && note.length <= 120) return note;
+      toast("Say what the picture shows in one short line, up to 120 characters", true);
+      asked = note;
+    }
+  }
+
+  function showAdding(uploadId) {
+    var add = document.querySelector('[data-picture-add="' + uploadId + '"]');
+    if (add) add.outerHTML = '<button class="btn" type="button" disabled aria-busy="true">Adding the picture...</button>';
   }
 
   function togglePictures(button) {
@@ -2362,49 +2391,68 @@
   }
 
   function addPicture(uploadId) {
-    var input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/png,image/jpeg,image/webp";
-    input.className = "picture-input";
-    document.body.appendChild(input);
-    input.addEventListener("change", async function () {
-      var file = input.files && input.files[0];
-      input.remove();
-      if (!file) return;
-      var note = window.prompt("What does this picture show? One short line.");
-      if (note === null || !note.trim()) return;
-      var form = new FormData();
-      form.append("file", file);
-      form.append("note", note.trim());
-      toast("Adding the picture");
-      try {
-        var response = await fetch(apiV1 + "/production/uploads/" + encodeURIComponent(uploadId) + "/pictures", {
-          method: "POST", credentials: "same-origin", body: form
-        });
-        if (!response.ok) {
-          var payload = null;
-          try { payload = await response.json(); } catch (e) { payload = null; }
-          throw new Error(errorText(payload, response.status));
-        }
-        picturesOpen[uploadId] = true;
-        toast("Picture added. Make the Creatorz version again to use it.");
-        renderLibrary();
-      } catch (error) {
-        toast(error.message, true);
+    if (pictureBusy[uploadId]) return;
+    if (!pictureInput) {
+      pictureInput = document.createElement("input");
+      pictureInput.type = "file";
+      pictureInput.accept = "image/png,image/jpeg,image/webp";
+      pictureInput.className = "picture-input";
+      document.body.appendChild(pictureInput);
+      pictureInput.addEventListener("change", function () {
+        var file = pictureInput.files && pictureInput.files[0];
+        var forId = pictureInput.dataset.uploadId;
+        pictureInput.value = "";
+        if (file && forId) sendPicture(forId, file);
+      });
+    }
+    pictureInput.dataset.uploadId = uploadId;
+    pictureInput.value = "";
+    pictureInput.click();
+  }
+
+  async function sendPicture(uploadId, file) {
+    if (pictureBusy[uploadId]) return;
+    var note = askPictureNote();
+    if (note === null) return;
+    var form = new FormData();
+    form.append("file", file);
+    form.append("note", note);
+    pictureBusy[uploadId] = true;
+    showAdding(uploadId);
+    toast("Adding the picture");
+    try {
+      var response = await fetch(apiV1 + "/production/uploads/" + encodeURIComponent(uploadId) + "/pictures", {
+        method: "POST", credentials: "same-origin", body: form
+      });
+      if (!response.ok) {
+        var payload = null;
+        try { payload = await response.json(); } catch (e) { payload = null; }
+        throw new Error(errorText(payload, response.status));
       }
-    });
-    input.click();
+      picturesOpen[uploadId] = true;
+      toast("Picture added. Make the Creatorz version again to use it.");
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      delete pictureBusy[uploadId];
+      renderLibrary();
+    }
   }
 
   async function removePicture(uploadId, pictureId) {
+    if (pictureBusy[uploadId]) return;
     if (!window.confirm("Remove this picture?")) return;
+    if (pictureBusy[uploadId]) return;
+    pictureBusy[uploadId] = true;
     try {
       await api("/production/uploads/" + encodeURIComponent(uploadId) + "/pictures/" + encodeURIComponent(pictureId), { method: "DELETE" });
       picturesOpen[uploadId] = true;
       toast("Picture removed. Make the Creatorz version again to leave it out.");
-      renderLibrary();
     } catch (error) {
       toast(error.message, true);
+    } finally {
+      delete pictureBusy[uploadId];
+      renderLibrary();
     }
   }
 
