@@ -38,7 +38,7 @@ PILL, CREATORZ = "pill", "creatorz"
 STYLES = (PILL, CREATORZ)
 ENGINE_DIR = Path(__file__).parent / "engine"
 MOMENTS_JOB = "video_creatorz_moments"
-PROMPT_VERSION = "creatorz-moments-4"
+PROMPT_VERSION = "creatorz-moments-5"
 # Exit 1 from the engine means a checklist line failed: the video is made, and the card says so.
 ENGINE_OK = (0, 1)
 _one_render = asyncio.Semaphore(1)
@@ -57,6 +57,70 @@ class ReelResult:
     shots: int
     checklist: list[list[str]]
     captions: list[list[Any]]
+
+
+MAX_PICTURES = 8
+
+
+def pictures_of(plan: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """11-Nov: the pictures he attached to this video, in the order he added them."""
+    raw = ((plan or {}).get("overrides") or {}).get("pictures") or []
+    return [p for p in raw if isinstance(p, dict) and p.get("id") and p.get("file")]
+
+
+def pictures_dir(recording: str | Path) -> Path:
+    """Where a recording's pictures live: a folder next to it, like its other working files."""
+    path = Path(recording)
+    return path.with_name(f".{path.stem}-pictures")
+
+
+def pictures_seen(pictures: list[dict[str, Any]]) -> list[list[str]]:
+    """What the writer reads of the pictures: each id and its note."""
+    return [[str(p["id"]), str(p.get("note") or "")] for p in pictures]
+
+
+def pictures_json(upload_id: uuid.UUID | str, plan: dict[str, Any] | None) -> list[dict[str, Any]]:
+    return [
+        {"id": p["id"], "note": p.get("note") or "", "w": p.get("w"), "h": p.get("h"),
+         "url": f"/api/v1/production/uploads/{upload_id}/pictures/{p['id']}"}
+        for p in pictures_of(plan)
+    ]
+
+
+def pictures_changed(plan: dict[str, Any] | None) -> bool:
+    """A Creatorz video whose pictures are not the ones its last render was written with."""
+    if style_of(plan) != CREATORZ:
+        return False
+    used = ((plan or {}).get("creatorz") or {}).get("pictures") or []
+    return pictures_seen(pictures_of(plan)) != used
+
+
+def with_picture_files(
+    moments: list[dict[str, Any]], pictures: list[dict[str, Any]], folder: Path
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The moments as the engine reads them: each picture id becomes the file on disk. A
+    picture whose file is gone is left out (never the render), and a strike that names a
+    headline by its place in the list follows it. The saved moments keep the ids."""
+    files = {p["id"]: Path(folder) / Path(str(p["file"])).name for p in pictures}
+    missing: list[str] = []
+    kept: list[tuple[int, dict[str, Any]]] = []
+    for i, m in enumerate(moments):
+        if m.get("type") == "insert":
+            path = files.get(m.get("picture"))
+            if path is None or not path.is_file():
+                missing.append(str(m.get("picture")))
+                continue
+            m = {**m, "src": str(path.resolve())}
+        kept.append((i, m))
+    position = {i: new for new, (i, _m) in enumerate(kept)}
+    out: list[dict[str, Any]] = []
+    for _i, m in kept:
+        if m.get("type") == "strike":
+            if m.get("target") not in position:
+                continue
+            m = {**m, "target": position[m["target"]]}
+        out.append(m)
+    return out, missing
 
 
 def style_of(plan: dict[str, Any] | None) -> str:
@@ -166,9 +230,14 @@ def tighten_keep(
     return out
 
 
-def moments_key(keep: list[list[float]], words: list[dict[str, Any]]) -> str:
-    """The moments belong to these words on this cut; anything else asks again."""
-    body = json.dumps([keep, [[w["text"], w["start_s"]] for w in words], PROMPT_VERSION])
+def moments_key(
+    keep: list[list[float]], words: list[dict[str, Any]], pictures: list[dict[str, Any]] = ()
+) -> str:
+    """The moments belong to these words on this cut, with these pictures; anything else asks again."""
+    parts: list[Any] = [keep, [[w["text"], w["start_s"]] for w in words], PROMPT_VERSION]
+    if pictures:  # a video with no pictures keeps the key it had
+        parts.append(pictures_seen(list(pictures)))
+    body = json.dumps(parts)
     return hashlib.sha256(body.encode()).hexdigest()[:20]
 
 
@@ -210,6 +279,8 @@ _ALLOWED: dict[str, set[str]] = {
     "flash": {"at", "sound", "gain"},
     "riser": {"into", "gain"},
     "sound": {"name", "at", "gain"},
+    # 11-Nov: one of his own pictures, by its id; the file is found at render time, never named by the writer
+    "insert": {"at", "picture"},
 }
 # The engine draws white or the video's ONE accent color (10-Nov: five glowing colors in one video read as
 # cheap). The old color names are still accepted from saved plans; each means "accent".
@@ -217,7 +288,7 @@ _COLORS = {"white", "accent", "yellow", "green", "cyan", "red"}
 _LOOKS = {"plain", "extrude", "neon"}
 _PLACES = {"sky", "top", "chest", "low"}
 _SOUNDS = {"whoosh", "tick", "ding", "flash", "riser"}
-_MID = {"pair", "bubble", "card_grid", "card_list", "card_stat"}
+_MID = {"pair", "bubble", "card_grid", "card_list", "card_stat", "insert"}
 _CAPS = {"card_stat": 2, "whip": 4}  # the most of each in one video: a cutaway that repeats stops being one
 
 
@@ -242,7 +313,7 @@ def _missing(m: dict[str, Any]) -> str | None:
         "headline": ["text", "at"], "pair": ["light", "bold", "at"], "badge": ["text", "at"], "bubble": ["lines", "at"],
         "tag": ["text", "at"], "card_grid": ["title", "at"], "card_list": ["items", "at"], "flash": ["at"],
         "riser": ["into"], "sound": ["name", "at"], "strike": ["target", "at"], "card_stat": ["text", "at"],
-        "whip": ["at"],
+        "whip": ["at"], "insert": ["picture", "at"],
     }[kind]
     for field in required:
         if not m.get(field) and m.get(field) != 0:
@@ -273,11 +344,13 @@ def _slot(m: dict[str, Any]) -> str | None:
 
 
 def clean_moments(
-    raw: Any, shots: list[dict[str, Any]], lang: str
+    raw: Any, shots: list[dict[str, Any]], lang: str, pictures: list[dict[str, Any]] = ()
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """What the writer gave, checked against the real cut: what the engine can draw, and a
     sentence for each thing it cannot, so the writer can be told once. One bad pop never
-    costs the render."""
+    costs the render. An insert names one of the video's pictures, each at most once."""
+    picture_ids = {str(p["id"]) for p in pictures}
+    shown: set[str] = set()
     edit = {"shots": shots, "duration": shots[-1]["out_out"] if shots else 0.0, "lang": lang}
     problems: list[str] = []
     kept: list[dict[str, Any]] = []  # {"raw_index", "m", "t0", "t1"}
@@ -287,10 +360,21 @@ def clean_moments(
             problems.append(f"moment {i}: unknown type {entry.get('type') if isinstance(entry, dict) else entry!r}")
             continue
         m = _tidy(entry)
+        if m["type"] == "insert" and not picture_ids:
+            problems.append(f"moment {i} (insert): this video has no pictures, so there is nothing to cut away to")
+            continue
         why = _missing(m)
         if why:
             problems.append(f"moment {i} ({m['type']}): {why}")
             continue
+        if m["type"] == "insert":
+            pid = str(m["picture"])
+            if pid not in picture_ids:
+                problems.append(f"moment {i} (insert): there is no picture {pid}; use an id from the pictures list")
+                continue
+            if pid in shown:
+                problems.append(f"moment {i} (insert): picture {pid} is already shown; show each picture once")
+                continue
         try:
             built = compose_plan.build({"moments": [m]}, edit)
         except (engine_plan.CueError, KeyError, TypeError, ValueError, IndexError, StopIteration) as exc:
@@ -318,6 +402,8 @@ def clean_moments(
             problems.append(f"moment {i} ({m['type']}): a video holds at most {most} of these")
             continue
         kept.append({"raw_index": i, "m": m, "t0": t0, "t1": t1})
+        if m["type"] == "insert":
+            shown.add(str(m["picture"]))
     # A strike names a headline by its place in the list, and the list may just have shrunk.
     position = {k["raw_index"]: new for new, k in enumerate(kept)}
     final: list[dict[str, Any]] = []
@@ -371,6 +457,7 @@ Types:
 - card_grid: title, cells (3 to 6), filled (cell numbers, the first cell is 0), labels ("Week {n}"), empty_label, at, until: a FULL-SCREEN row of boxes; rarely
 - whip: at ({"pick": N, "at": "start"}): a fast blur across the cut into line N, where the talk turns to a new part. At most 4 in a video, never closer than 12 seconds apart.
 - flash: at: a white flash before a turn in the story, rarely
+- insert: picture (an id from the pictures list), at: a cue on the word where he talks about it. A full-screen cutaway for a second and a half. Only pictures from the list; each at most once.
 
 "punchline" is the line number of the single strongest line.
 
@@ -403,15 +490,20 @@ MOMENTS_SCHEMA: dict[str, Any] = {
 }
 
 
-def moments_prompt(shots: list[dict[str, Any]], lang: str) -> str:
+def moments_prompt(shots: list[dict[str, Any]], lang: str, pictures: list[dict[str, Any]] = ()) -> str:
     lines = [
         f"[{s['pick']}] ({s['out_out'] - s['out_in']:.1f}s) {s['text']}" for s in shots if s.get("text")
     ]
     length = shots[-1]["out_out"] if shots else 0.0
-    return (
+    text = (
         f"Language: {'Hebrew' if lang == 'he' else 'English'}. The video is {length:.0f} seconds long, so about "
         f"{max(1, round(length / 3.5))} moments.\n\nLines:\n" + "\n".join(lines)
     )
+    if pictures:
+        text += "\n\nPictures he added (show each one at most once, when he talks about what it shows):\n" + "\n".join(
+            f"[{pid}] {note}" for pid, note in pictures_seen(list(pictures))
+        )
+    return text
 
 
 Ask = Callable[[str, str, dict[str, Any], int], Awaitable[dict[str, Any]]]
@@ -453,13 +545,15 @@ def _hole_sentences(holes: list[tuple[float, float]], shots: list[dict[str, Any]
     ]
 
 
-async def get_moments(shots: list[dict[str, Any]], lang: str, ask: Ask) -> dict[str, Any]:
+async def get_moments(
+    shots: list[dict[str, Any]], lang: str, ask: Ask, pictures: list[dict[str, Any]] = ()
+) -> dict[str, Any]:
     """The writer's moments, checked. Anything wrong goes back once with the exact reasons,
     a stretch with nothing on screen included; after that the good ones go ahead and the
     rest are dropped."""
-    prompt = moments_prompt(shots, lang)
+    prompt = moments_prompt(shots, lang, pictures)
     answer = await ask(prompt, MOMENTS_SYSTEM, MOMENTS_SCHEMA, 0)
-    moments, problems = clean_moments(answer.get("moments"), shots, lang)
+    moments, problems = clean_moments(answer.get("moments"), shots, lang, pictures)
     holes = quiet_gaps(moments, shots, lang) if moments else []
     problems = problems + _hole_sentences(holes, shots)
     if problems:
@@ -473,7 +567,7 @@ async def get_moments(shots: list[dict[str, Any]], lang: str, ask: Ask) -> dict[
         except CreatorzFailed:
             second = None
         if second is not None:
-            better, _still = clean_moments(second.get("moments"), shots, lang)
+            better, _still = clean_moments(second.get("moments"), shots, lang, pictures)
             # fewer quiet stretches wins; with the same number, the answer that kept more moments
             was = (len(holes) if moments else 10**6, -len(moments))
             now = (len(quiet_gaps(better, shots, lang)) if better else 10**6, -len(better))

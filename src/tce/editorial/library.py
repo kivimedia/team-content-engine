@@ -188,7 +188,15 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
         actions.append({"key": "watch_edit", "label": "Watch the edit"})
         # 10-Nov: Pill or Creatorz, per video, for the workspaces it is switched on for.
         if creatorz_reels.enabled_for(upload.workspace_id) and upload.status not in _LIVE_STATUSES:
-            actions.append({"key": "style", "label": "Style", "current": creatorz_reels.style_of(upload.edit_plan)})
+            actions.append(
+                {
+                    "key": "style", "label": "Style", "current": creatorz_reels.style_of(upload.edit_plan),
+                    # 11-Nov: his pictures for the Creatorz writer, and whether the Creatorz
+                    # version on the card was made before the last change to them.
+                    "pictures": creatorz_reels.pictures_json(upload.id, upload.edit_plan),
+                    "stale": creatorz_reels.pictures_changed(upload.edit_plan),
+                }
+            )
     if upload.storage_path:
         actions.append(
             {

@@ -1888,13 +1888,16 @@
         // 4-Oct: never edited, archived by his choice after Stop or brought back. One tap edits it.
         html += '<button class="btn primary" type="button" data-edit-now="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "style") {
-        // 10-Nov: Pill or Creatorz, for this one video. The one it is now is lit and does nothing.
+        // 10-Nov: Pill or Creatorz, for this one video. The one it is now is lit and does nothing,
+        // except Creatorz after his pictures changed (11-Nov): one tap makes it again with them.
         html += '<div class="style-pick" role="group" aria-label="Video style"><span class="style-pick-label">Style</span>'
              + [["pill", "Pill"], ["creatorz", "Creatorz"]].map(function (s) {
                  var on = action.current === s[0];
+                 var live = !on || (s[0] === "creatorz" && action.stale);
                  return '<button class="btn' + (on ? " primary" : " quiet") + '" type="button" aria-pressed="' + on + '"'
-                      + (on ? "" : ' data-style-pick="' + esc(item.upload_id) + '" data-style="' + s[0] + '"') + ">" + s[1] + "</button>";
+                      + (live ? ' data-style-pick="' + esc(item.upload_id) + '" data-style="' + s[0] + '"' : "") + ">" + s[1] + "</button>";
                }).join("") + "</div>";
+        html += picturesBlock(item.upload_id, action.pictures || []);
       } else if (action.key === "edit_again") {
         html += '<button class="btn quiet" type="button" data-edit-again="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "check_again") {
@@ -2321,6 +2324,84 @@
     try {
       await api("/production/uploads/" + encodeURIComponent(uploadId) + "/auto-edit", { method: "POST" });
       toast("Editing it again. The card shows each step as it happens.");
+      renderLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  // 11-Nov: pictures for the Creatorz writer, on the card that shows the Style picker. Each has
+  // a short note saying what it shows; the writer cuts away to it when he talks about that.
+  var PICTURES_MAX = 8;
+  var picturesOpen = {};
+
+  function picturesBlock(uploadId, pictures) {
+    var open = !!picturesOpen[uploadId];
+    var html = '<div class="pictures-pick"><button class="btn quiet" type="button" aria-expanded="' + open + '"'
+             + ' data-pictures-toggle="' + esc(uploadId) + '">'
+             + (pictures.length ? "Pictures (" + pictures.length + ")" : "Pictures") + "</button>";
+    html += '<div class="pictures-panel"' + (open ? "" : " hidden") + ">";
+    pictures.forEach(function (p) {
+      var src = apiV1 + "/production/uploads/" + encodeURIComponent(uploadId) + "/pictures/" + encodeURIComponent(p.id);
+      html += '<div class="picture-row"><img class="picture-thumb" src="' + esc(src) + '" alt="" loading="lazy">'
+            + '<span class="picture-note" translate="no">' + esc(p.note) + "</span>"
+            + '<button class="btn quiet" type="button" data-picture-remove="' + esc(uploadId) + '" data-picture="' + esc(p.id) + '">Remove</button></div>';
+    });
+    if (pictures.length < PICTURES_MAX) {
+      html += '<button class="btn" type="button" data-picture-add="' + esc(uploadId) + '">Add a picture</button>';
+    }
+    return html + "</div></div>";
+  }
+
+  function togglePictures(button) {
+    var uploadId = button.dataset.picturesToggle;
+    picturesOpen[uploadId] = !picturesOpen[uploadId];
+    button.setAttribute("aria-expanded", String(picturesOpen[uploadId]));
+    var panel = button.parentNode.querySelector(".pictures-panel");
+    if (panel) panel.hidden = !picturesOpen[uploadId];
+  }
+
+  function addPicture(uploadId) {
+    var input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp";
+    input.className = "picture-input";
+    document.body.appendChild(input);
+    input.addEventListener("change", async function () {
+      var file = input.files && input.files[0];
+      input.remove();
+      if (!file) return;
+      var note = window.prompt("What does this picture show? One short line.");
+      if (note === null || !note.trim()) return;
+      var form = new FormData();
+      form.append("file", file);
+      form.append("note", note.trim());
+      toast("Adding the picture");
+      try {
+        var response = await fetch(apiV1 + "/production/uploads/" + encodeURIComponent(uploadId) + "/pictures", {
+          method: "POST", credentials: "same-origin", body: form
+        });
+        if (!response.ok) {
+          var payload = null;
+          try { payload = await response.json(); } catch (e) { payload = null; }
+          throw new Error(errorText(payload, response.status));
+        }
+        picturesOpen[uploadId] = true;
+        toast("Picture added. Make the Creatorz version again to use it.");
+        renderLibrary();
+      } catch (error) {
+        toast(error.message, true);
+      }
+    });
+    input.click();
+  }
+
+  async function removePicture(uploadId, pictureId) {
+    if (!window.confirm("Remove this picture?")) return;
+    try {
+      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/pictures/" + encodeURIComponent(pictureId), { method: "DELETE" });
+      picturesOpen[uploadId] = true;
+      toast("Picture removed. Make the Creatorz version again to leave it out.");
       renderLibrary();
     } catch (error) {
       toast(error.message, true);
@@ -3325,7 +3406,8 @@
     "videos-step", "save-settings", "pub-draft", "pub-post", "pub-schedule", "pub-revise", "pub-copy",
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
     "check-again", "release-hold", "settle-hold", "note-reply", "rule-delete",
-    "rename", "rename-save", "add-anyway", "pubtab", "libcount", "topic-more", "title-review", "style-pick"
+    "rename", "rename-save", "add-anyway", "pubtab", "libcount", "topic-more", "title-review", "style-pick",
+    "pictures-toggle", "picture-add", "picture-remove"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -3353,6 +3435,9 @@
     if (d.archive !== undefined) { archiveRecording(d.archive, true); return; }
     if (d.unarchive !== undefined) { archiveRecording(d.unarchive, false); return; }
     if (d.stylePick !== undefined) { pickStyle(d.stylePick, d.style); return; }
+    if (d.picturesToggle !== undefined) { togglePictures(target); return; }
+    if (d.pictureAdd !== undefined) { addPicture(d.pictureAdd); return; }
+    if (d.pictureRemove !== undefined) { removePicture(d.pictureRemove, d.picture); return; }
     if (d.editAgain !== undefined) { editAgain(d.editAgain); return; }
     if (d.editNow !== undefined) { editNow(d.editNow); return; }
     if (d.renameSave !== undefined) { renameSave(target); return; }

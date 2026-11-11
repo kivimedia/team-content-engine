@@ -1440,6 +1440,9 @@ def merge_overrides(
     # 10-Nov: his Pill or Creatorz choice is not something a note changes.
     if old.get("style"):
         out["style"] = old["style"]
+    # 11-Nov: nor the pictures he attached for it.
+    if old.get("pictures"):
+        out["pictures"] = old["pictures"]
     return out
 
 

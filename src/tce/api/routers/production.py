@@ -24,7 +24,9 @@ from __future__ import annotations
 import asyncio
 import re as _re
 import hashlib
+import io
 import json
+import logging
 import os
 import shutil
 import socket
@@ -34,7 +36,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -88,6 +90,7 @@ from tce.production.retakes import (
 from tce.settings import settings
 
 router = APIRouter(prefix="/production", tags=["production"])
+_log = logging.getLogger(__name__)
 
 PLATFORMS = ("facebook", "linkedin", "instagram", "youtube", "tiktok", "newsletter", "other")
 _CHUNK = 1024 * 1024
@@ -385,6 +388,8 @@ def upload_json(u: RecordingUpload) -> dict[str, Any]:
         "agent_name": u.agent_name,
         # 4-Oct (C4.1): kept under the Library's Archived list, out of Still to do.
         "archived": u.archived_at is not None,
+        # 11-Nov: the pictures he attached for the Creatorz writer.
+        "pictures": creatorz_reels.pictures_json(u.id, plan),
         "created_at": _iso(u.created_at),
         "updated_at": _iso(u.updated_at),
     }
@@ -1222,7 +1227,8 @@ async def _render_creatorz(
         )
     if not tight:
         return None, "there is no voice in this edit"
-    key = creatorz_reels.moments_key(tight, words)
+    pictures = creatorz_reels.pictures_of(plan)
+    key = creatorz_reels.moments_key(tight, words, pictures)
 
     async def ask(prompt: str, system: str, schema: dict[str, Any], try_no: int) -> dict[str, Any]:
         try:
@@ -1243,9 +1249,15 @@ async def _render_creatorz(
         else:
             await report("Creatorz style: choosing the words that pop, on the subscription")
             shots = await asyncio.to_thread(creatorz_reels.shots_for, tight, words)
-            chosen = await creatorz_reels.get_moments(shots, lang, ask)
+            chosen = await creatorz_reels.get_moments(shots, lang, ask, pictures=pictures)
+        # 11-Nov: the engine gets each picture as its file; the saved moments keep the ids.
+        moments, missing = creatorz_reels.with_picture_files(
+            chosen["moments"], pictures, creatorz_reels.pictures_dir(src)
+        )
+        if missing:
+            _log.warning("creatorz %s: left out picture(s) %s, the file is gone", upload_id, ", ".join(missing))
         made = await creatorz_reels.render_reel(
-            src=src, words=words, keep=tight, lang=lang, work=work, moments=chosen["moments"],
+            src=src, words=words, keep=tight, lang=lang, work=work, moments=moments,
             punchline=chosen["punchline"], bed=creatorz_reels.bed_for(upload_id), on_status=report,
         )
         os.replace(made.voice, creatorz_voice_path(out))
@@ -1257,7 +1269,9 @@ async def _render_creatorz(
     finally:
         shutil.rmtree(work, ignore_errors=True)
     await media.make_light_copy(out, report)
-    return _Styled(made.shots, made.checklist, made.captions, tight, {"key": key, "keep": tight, **chosen}), None
+    return _Styled(made.shots, made.checklist, made.captions, tight, {
+        "key": key, "keep": tight, **chosen, "pictures": creatorz_reels.pictures_seen(pictures),
+    }), None
 
 
 async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str) -> None:
@@ -1600,7 +1614,9 @@ async def choose_style(
     await _refuse_while_sitting(db, ws, row.id)
     if row.edit_plan.get("meaning_check", {}).get("status") == "blocked":
         raise HTTPException(status_code=409, detail="The meaning check is holding this edit. Settle that first.")
-    if upload_busy(row) or creatorz_reels.style_of(row.edit_plan) == body.style:
+    # 11-Nov: Creatorz again after a picture changed makes a new version that uses them.
+    same = creatorz_reels.style_of(row.edit_plan) == body.style and not creatorz_reels.pictures_changed(row.edit_plan)
+    if upload_busy(row) or same:
         return upload_json(row)
     if not row.storage_path or not Path(row.storage_path).exists():
         raise HTTPException(status_code=409, detail="The original upload is missing from storage; upload it again")
@@ -1625,6 +1641,169 @@ async def choose_style(
     _spawn(_render_then_check(row.id, ws, attempt, "cut"))
     return upload_json(row)
 
+
+
+# ---------------------------------------------------------------- pictures (11-Nov)
+# Ziv, 11-Nov: "pictures". Real pictures or screenshots attached to a video, each with a
+# short note saying what it shows; the Creatorz writer cuts away to one when he talks about
+# that thing. The files sit next to the recording, the list in the edit's overrides, so his
+# notes and Jennifer's fixes keep them. Adding or removing one never starts a render.
+PICTURE_TYPES = {"image/png", "image/jpeg", "image/webp"}
+PICTURE_MAX_BYTES = 15 * 1024 * 1024
+_PICTURE_FORMATS = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}
+_PICTURE_SUFFIXES = {"image/png": (".png",), "image/jpeg": (".jpg", ".jpeg"), "image/webp": (".webp",)}
+_PICTURE_MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+PICTURE_NOTE_MAX = 120
+
+
+def picture_size(data: bytes, ctype: str) -> tuple[int, int]:
+    """The picture's width and height, read from its own bytes. ValueError when the bytes are
+    not the kind of picture the upload says they are."""
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            fmt, size = img.format, img.size
+            img.verify()
+    except (Image.DecompressionBombError, UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
+        raise ValueError("not a picture") from exc
+    if fmt != _PICTURE_FORMATS.get(ctype):
+        raise ValueError(f"a {fmt} file sent as {ctype}")
+    return int(size[0]), int(size[1])
+
+
+async def _picture_row(
+    db: AsyncSession, ws: uuid.UUID, upload_id: uuid.UUID, *, changing: bool
+) -> RecordingUpload:
+    if not creatorz_reels.enabled_for(ws):
+        raise HTTPException(status_code=404, detail="Pictures are not switched on for this workspace")
+    if changing:
+        await reconcile_interrupted_uploads(db, ws)
+    row = await _upload(db, ws, upload_id)
+    if changing:
+        if not row.edit_plan or not row.storage_path:
+            raise HTTPException(status_code=409, detail="This video has no edit to add pictures to yet")
+        await _refuse_while_sitting(db, ws, row.id)
+        busy = upload_busy(row)
+        if busy:
+            raise HTTPException(status_code=409, detail=busy)
+    return row
+
+
+def _set_pictures(row: RecordingUpload, pictures: list[dict[str, Any]]) -> None:
+    plan = dict(row.edit_plan or {})
+    overrides = dict(plan.get("overrides") or {})
+    if pictures:
+        overrides["pictures"] = pictures
+    else:
+        overrides.pop("pictures", None)
+    plan["overrides"] = overrides
+    row.edit_plan = plan
+
+
+def _picture(row: RecordingUpload, picture_id: str) -> dict[str, Any]:
+    hit = next((p for p in creatorz_reels.pictures_of(row.edit_plan) if p["id"] == picture_id), None)
+    if hit is None or not row.storage_path:
+        raise HTTPException(status_code=404, detail="This video has no such picture")
+    return hit
+
+
+def _picture_path(row: RecordingUpload, picture: dict[str, Any]) -> Path:
+    return creatorz_reels.pictures_dir(row.storage_path) / Path(str(picture["file"])).name
+
+
+@router.post("/uploads/{upload_id}/pictures", status_code=201)
+async def add_picture(
+    upload_id: uuid.UUID,
+    request: Request,
+    file: UploadFile = File(...),
+    note: str = Form(...),
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """One picture for the Creatorz writer, with a line saying what it shows."""
+    row = await _picture_row(db, ws, upload_id, changing=True)
+    note = " ".join(note.split())
+    if not 1 <= len(note) <= PICTURE_NOTE_MAX:
+        raise HTTPException(
+            status_code=422, detail=f"Say what the picture shows in one short line, up to {PICTURE_NOTE_MAX} characters"
+        )
+    pictures = creatorz_reels.pictures_of(row.edit_plan)
+    if len(pictures) >= creatorz_reels.MAX_PICTURES:
+        raise HTTPException(
+            status_code=409, detail=f"A video holds at most {creatorz_reels.MAX_PICTURES} pictures. Remove one first."
+        )
+    ctype = (file.content_type or "").split(";")[0].strip().lower()
+    if ctype not in PICTURE_TYPES:
+        raise HTTPException(status_code=415, detail="Add a PNG, JPEG or WebP picture")
+    too_big = f"The picture is larger than the {PICTURE_MAX_BYTES // (1024 * 1024)} MB limit"
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > PICTURE_MAX_BYTES + 1_000_000:
+        raise HTTPException(status_code=413, detail=too_big)
+    data = bytearray()
+    while chunk := await file.read(_CHUNK):
+        data += chunk
+        if len(data) > PICTURE_MAX_BYTES:
+            raise HTTPException(status_code=413, detail=too_big)
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    try:
+        w, h = await asyncio.to_thread(picture_size, bytes(data), ctype)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="This file is not a real PNG, JPEG or WebP picture") from exc
+    numbers = [int(m.group(1)) for p in pictures if (m := _re.fullmatch(r"p(\d+)", str(p["id"])))]
+    pid = f"p{max(numbers, default=0) + 1}"
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in _PICTURE_SUFFIXES[ctype]:
+        suffix = _PICTURE_SUFFIXES[ctype][0]
+    folder = creatorz_reels.pictures_dir(row.storage_path)
+    folder.mkdir(parents=True, exist_ok=True)
+    name = f"{pid}{suffix}"
+    tmp = folder / f".{name}.part"
+    try:
+        tmp.write_bytes(bytes(data))
+        os.replace(tmp, folder / name)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    _set_pictures(row, [*pictures, {"id": pid, "file": name, "note": note, "w": w, "h": h}])
+    await db.commit()
+    await db.refresh(row)
+    return upload_json(row)
+
+
+@router.delete("/uploads/{upload_id}/pictures/{picture_id}")
+async def remove_picture(
+    upload_id: uuid.UUID,
+    picture_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await _picture_row(db, ws, upload_id, changing=True)
+    hit = _picture(row, picture_id)
+    _picture_path(row, hit).unlink(missing_ok=True)
+    _set_pictures(row, [p for p in creatorz_reels.pictures_of(row.edit_plan) if p["id"] != picture_id])
+    await db.commit()
+    await db.refresh(row)
+    return upload_json(row)
+
+
+@router.get("/uploads/{upload_id}/pictures/{picture_id}")
+async def get_picture(
+    upload_id: uuid.UUID,
+    picture_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await _picture_row(db, ws, upload_id, changing=False)
+    path = _picture_path(row, _picture(row, picture_id))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="This picture's file is missing")
+    # no-cache: an id can come back for a new picture after the last one was removed
+    return FileResponse(
+        path, media_type=_PICTURE_MEDIA.get(path.suffix.lower(), "application/octet-stream"),
+        headers={"Cache-Control": "private, no-cache"},
+    )
 
 class MeaningHoldChoice(BaseModel):
     choice: Literal["keep_mine", "use_script"]
