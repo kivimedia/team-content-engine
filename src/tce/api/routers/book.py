@@ -20,6 +20,13 @@ GET  /book/voices                        ElevenLabs voices with gender and accen
 GET  /book/voice-sample?voice_id=&model= a short sample of a paragraph, charged to the
                                          same narration budget (10-Nov, T-19955)
 POST /book/voice                         {"voice_id", "model"} Ziv's pick, read from then on
+POST /book/chapters/{n}/layout           {"action": approve|reopen|note, "note"} his word on a
+                                         new chapter's layout (12-Nov, T-20758)
+POST /book/chapters/{n}/write            his ask to write a chapter from its approved layout
+
+12-Nov-2026 (T-20758): a new chapter's text and audio are HELD (no paragraphs, 423 on
+audio) until its layout is approved and its current version was written or confirmed
+after that. The page cannot get round it: the server never sends held text.
 
 The owner's only: a client login never reaches it (the scoped fence lists no /book
 path, and this router refuses a scoped key as well).
@@ -41,7 +48,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from tce.api.private_access import require_private_workspace, scoped_editor_workspace
-from tce.book.store import STATUS_WORDS, STATUSES, BookStore, EditorRecord, RecordWriteError, summary
+from tce.book.store import PHASE_WORDS, STATUS_WORDS, STATUSES, BookStore, EditorRecord, RecordWriteError, summary
 from tce.production import agent_talks
 from tce.settings import settings
 
@@ -65,7 +72,8 @@ async def require_owner(
 def store() -> BookStore:
     record = None
     if settings.book_editor_record:
-        record = EditorRecord(Path(settings.book_editor_record), settings.book_written_through)
+        record = EditorRecord(Path(settings.book_editor_record), settings.book_written_through,
+                              seed=settings.book_layout_seed or None)
     book = BookStore(Path(settings.evidence_upload_dir) / "book", record=record)
     book.ensure_imported(settings.book_source_path)
     return book
@@ -76,6 +84,14 @@ def _chapter(book: BookStore, n: int) -> dict[str, Any]:
         if chapter["n"] == n:
             return chapter
     raise HTTPException(status_code=404, detail=f"There is no chapter {n}")
+
+
+def _refuse_held(chapter: dict[str, Any]) -> None:
+    if not chapter.get("readable", True):
+        raise HTTPException(
+            status_code=423,
+            detail=f"Episode {chapter['n']} is held: its layout has to be approved and the chapter written from it first",
+        )
 
 
 def reading_voice(book: BookStore) -> dict[str, str]:
@@ -116,6 +132,7 @@ async def list_chapters(ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any
         "narration": narration_state(book),
         "editor_seat": settings.book_editor_seat,
         "statuses": [{"id": s, "words": STATUS_WORDS[s]} for s in STATUSES],
+        "phases": [{"id": p, "words": w} for p, w in PHASE_WORDS.items()],
     }
 
 
@@ -126,8 +143,12 @@ async def get_chapter(n: int, ws: uuid.UUID = Depends(require_owner)) -> dict[st
     entry = book.status_of(n)
     numbers = [c["n"] for c in book.chapters()]
     at = numbers.index(n)
+    held = not chapter.get("readable", True)
     return {
         **chapter,
+        # Held text never leaves the server (T-20758), so no page can show or read it.
+        "paragraphs": [] if held else chapter["paragraphs"],
+        "held_paragraphs": len(chapter["paragraphs"]) if held else 0,
         "status": entry.get("status", "draft"),
         "status_words": STATUS_WORDS.get(entry.get("status", "draft"), "Draft"),
         "status_at": entry.get("at"),
@@ -172,6 +193,7 @@ _generating: dict[str, asyncio.Lock] = {}
 async def paragraph_audio(n: int, i: int, ws: uuid.UUID = Depends(require_owner)):
     book = store()
     chapter = _chapter(book, n)
+    _refuse_held(chapter)
     if i < 0 or i >= len(chapter["paragraphs"]):
         raise HTTPException(status_code=404, detail=f"Chapter {n} has no paragraph {i + 1}")
     text = chapter["paragraphs"][i]
@@ -283,12 +305,19 @@ async def list_voices(ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
 
 
 @router.get("/voice-sample")
-async def voice_sample(voice_id: str, model: str = "eleven_v4", chapter: int = 12, paragraph: int = 0,
+async def voice_sample(voice_id: str, model: str = "eleven_v4", chapter: int = 0, paragraph: int = 0,
                        ws: uuid.UUID = Depends(require_owner)):
     if not voice_id.isalnum() or len(voice_id) > 40 or not model.replace("_", "").isalnum() or len(model) > 40:
         raise HTTPException(status_code=422, detail="That voice or model id is not valid")
     book = store()
-    chap = _chapter(book, chapter)
+    if chapter <= 0:
+        # The first chapter he may hear (T-20758: a held episode is never read, not even as a sample).
+        chap = next((c for c in book.chapters() if c.get("readable", True) and c["paragraphs"]), None)
+        if chap is None:
+            raise HTTPException(status_code=404, detail="No chapter is ready to be read yet")
+    else:
+        chap = _chapter(book, chapter)
+        _refuse_held(chap)
     if not chap["paragraphs"]:
         raise HTTPException(status_code=404, detail=f"Chapter {chapter} has no text yet")
     text = chap["paragraphs"][min(max(0, paragraph), len(chap["paragraphs"]) - 1)]
@@ -331,3 +360,66 @@ async def choose_voice(body: VoiceBody, ws: uuid.UUID = Depends(require_owner)) 
     book = store()
     book.set_voice(body.voice_id, body.model, name=body.name, by=body.by)
     return {"narration": narration_state(book)}
+
+
+# --- 12-Nov-2026 (T-20758): layout first, then write, then listen ----------------------
+# Ziv, on a call: he wants to agree each chapter's layout before any text is written or read
+# to him, the way TCE has a big idea, then a script, then a workshop. His approval, his notes
+# and his ask to write go into the editor's own record, the way Approve does.
+
+
+class LayoutBody(BaseModel):
+    action: str = Field(pattern=r"^(approve|reopen|note)$")
+    note: str = Field(default="", max_length=2000)
+    by: str = Field(default="ziv", max_length=40)
+
+
+def _editor_record(book: BookStore) -> EditorRecord:
+    if book.record is None:
+        raise HTTPException(status_code=409, detail="The editor's record is not on this server, so layouts cannot be kept")
+    return book.record
+
+
+@router.post("/chapters/{n}/layout")
+async def layout_word(n: int, body: LayoutBody, ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
+    book = store()
+    record = _editor_record(book)
+    _chapter(book, n)
+    by = body.by or "ziv"
+    try:
+        if body.action == "note":
+            text = body.note.strip()
+            if not text:
+                raise HTTPException(status_code=422, detail="The note is empty")
+            out = record.add_layout_note(n, text, by=by)
+        else:
+            out = record.layout_decision(n, body.action == "approve", by=by)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RecordWriteError as exc:
+        logger.warning("book.layout_not_written", chapter=n, action=body.action, error=str(exc)[:300])
+        raise HTTPException(status_code=503, detail="The editor's record could not be written, so nothing changed") from exc
+    logger.info("book.layout", chapter=n, action=body.action, by=by)
+    chapter = _chapter(store(), n)
+    return {"n": n, "action": body.action, "result": out, "phase": chapter.get("phase"), "phase_words": chapter.get("phase_words")}
+
+
+class WriteBody(BaseModel):
+    by: str = Field(default="ziv", max_length=40)
+
+
+@router.post("/chapters/{n}/write")
+async def ask_to_write(n: int, body: WriteBody | None = None, ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
+    book = store()
+    record = _editor_record(book)
+    _chapter(book, n)
+    by = (body.by if body else "") or "ziv"
+    try:
+        out = record.request_write(n, by=by)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RecordWriteError as exc:
+        logger.warning("book.write_not_asked", chapter=n, error=str(exc)[:300])
+        raise HTTPException(status_code=503, detail="The editor's record could not be written, so nothing changed") from exc
+    logger.info("book.write_requested", chapter=n, by=by, already=out.get("already"))
+    return {"n": n, **out}

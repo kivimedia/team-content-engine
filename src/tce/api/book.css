@@ -178,3 +178,42 @@ body.has-player.device-voice { padding-bottom: calc(var(--player-h) + 34px + env
 .editor-form input::placeholder { color: #6b7789; }
 .mic { min-height: 48px; border: 0; border-radius: 50%; background: var(--lake); color: #fff; display: inline-flex; align-items: center; justify-content: center; }
 .mic.on { background: var(--signal); }
+
+/* 12-Nov-2026 (T-20758): layout first. Full ink everywhere; the panel pushes, never floats. */
+.steps { margin: 0 0 10px; color: var(--body); font-size: .95rem; line-height: 1.45; }
+.status-chip.layout { background: var(--amber-bg); color: var(--amber); border: 1px solid #e7c98f; }
+.status-chip.on_hold { background: #ece8de; color: var(--body); border: 1px dashed var(--helper); }
+.status-chip.approved_unwritten { background: #e4eef8; color: #0e4470; }
+.status-chip.ready { background: #dce9f5; color: #0e4470; }
+.chapter-list button.held { background: #fbf9f3; }
+.chapter-list .idea-peek {
+  grid-column: 1 / -1; margin: 4px 0 0; color: var(--body); font-size: .9rem; line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.layout-plan { margin: 0 0 14px; padding: 14px; border-radius: 12px; background: var(--white); border: 1px solid var(--line); }
+.plan-lead { margin: 0 0 10px; color: var(--body); font-size: .95rem; line-height: 1.45; }
+.plan-h { margin: 12px 0 4px; font-size: 1rem; color: var(--ink); }
+.plan-idea { margin: 0; font-size: 1.05rem; line-height: 1.55; color: var(--ink); }
+.plan-covers { margin: 0; padding-inline-start: 1.4em; display: grid; gap: 4px; line-height: 1.5; color: var(--ink); }
+.plan-question { margin-top: 10px; padding: 8px 12px; border-radius: 10px; background: var(--amber-bg); border: 1px solid #e7c98f; }
+.plan-question .plan-h { margin-top: 0; color: var(--amber); }
+.plan-question p { margin: 0; color: var(--ink); line-height: 1.5; }
+.plan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 14px 0 4px; }
+.plan-approved, .plan-asked { margin: 0; flex-basis: 100%; color: var(--moss); font-weight: 700; font-size: .95rem; }
+.plan-asked { color: #0e4470; }
+.plan-outline { margin-top: 12px; }
+.plan-outline > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; font-weight: 800; color: #0e4470; }
+.plan-notes { margin-top: 10px; display: grid; gap: 6px; }
+.plan-note { margin: 0; padding: 8px 10px; border-radius: 10px; background: #eef3f8; color: var(--ink); line-height: 1.45; }
+.plan-note small { display: block; color: var(--helper); font-size: .85rem; font-weight: 700; }
+.plan-note-form { margin-top: 12px; display: grid; gap: 6px; }
+.plan-note-form label { font-weight: 800; font-size: .95rem; }
+.plan-note-form textarea {
+  width: 100%; min-height: 64px; padding: 10px 12px; border-radius: 12px; border: 2px solid var(--line);
+  background: var(--white); color: var(--ink); font: inherit; font-size: 1rem; resize: vertical;
+}
+.plan-note-form textarea::placeholder { color: #6b7789; }
+.plan-note-form .btn { justify-self: start; }
+/* A held row's longer phase words sit under the title, so the title keeps the full width. */
+.chapter-list button.held .title, .chapter-list button.held .length { grid-column: 1 / -1; }
+.chapter-list button.held .status-chip { grid-row: auto; grid-column: 1 / -1; justify-self: start; }

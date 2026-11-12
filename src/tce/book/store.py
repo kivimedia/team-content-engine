@@ -18,6 +18,29 @@ version), the Book reads it on every open instead of the one-time import: new ep
 and rewrites appear by themselves, an entry still "to_write" shows his layout lines, and
 his Approve is written into that same record, so the app and the editor never disagree.
 The imported manuscript stays only as the fallback when that record is absent.
+
+12-Nov-2026 (T-20758), Ziv on a call: he agrees each new chapter's layout before any of
+it is written or read to him, the way TCE goes big idea, then script, then workshop. So a
+new chapter (one past written_through) moves through phases:
+
+  layout              Layout to approve: the big idea, what it covers, one question
+  on_hold             Drafted earlier, on hold: text exists from before the rule
+  approved_unwritten  Layout approved, not written: Write this chapter waits for his word
+  ready               Ready to listen
+  approved            Approved
+
+and its text is READABLE only when the layout is approved and the current version was
+written after that approval (a version newer than the one on disk when he approved) or
+the editor confirmed that version against the approved layout. A chapter that is not
+readable sends no paragraphs and no audio from the API, whatever the page asks.
+
+The record fields, per entry (the editor's names; the app writes only the ones marked *):
+  layout {big_idea, covers[], question, version}   the layout (else the seed file's)
+  layout_status        to_plan | proposed | approved *
+  layout_approved_at / _by / _version *, layout_approved_draft_version *
+  layout_notes [{at, by, text}] *, layout_history [...] *
+  write_requested_at / _by *
+  draft_confirmed_version, draft_confirmed_layout_version   the editor's confirm
 """
 
 from __future__ import annotations
@@ -34,6 +57,14 @@ from typing import Any
 
 STATUSES = ("draft", "in_review", "approved")
 STATUS_WORDS = {"draft": "Draft", "in_review": "In review", "approved": "Approved", "to_write": "Still to write"}
+PHASE_WORDS = {
+    "layout": "Layout to approve",
+    "on_hold": "Drafted earlier, on hold",
+    "approved_unwritten": "Layout approved, not written",
+    "ready": "Ready to listen",
+    "approved": "Approved",
+}
+LAYOUT_STATUSES = ("to_plan", "proposed", "approved")
 PART_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
 _VERSION_FILE = re.compile(r"^ch(\d+)-v(\d+)\.md$", re.IGNORECASE)
 
@@ -150,10 +181,91 @@ class EditorRecord:
     """The book editor's record of the book: the one source of truth for what is written,
     which version is newest and where each episode stands."""
 
-    def __init__(self, path: Path, written_through: int = 0):
+    def __init__(self, path: Path, written_through: int = 0, seed: Path | str | None = None):
         self.path = Path(path)
         self.dir = self.path.parent
         self.written_through = int(written_through or 0)
+        self.seed = Path(seed) if seed else None
+
+    def _seed(self) -> dict[int, dict[str, Any]]:
+        """The layouts drawn up before the record carried its own, by chapter number."""
+        if self.seed is None:
+            return {}
+        try:
+            data = json.loads(self.seed.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        rows = data.get("chapters") if isinstance(data, dict) else data
+        out: dict[int, dict[str, Any]] = {}
+        for row in rows or []:
+            if isinstance(row, dict):
+                with contextlib.suppress(TypeError, ValueError):
+                    out[int(row.get("number"))] = row
+        return out
+
+    @staticmethod
+    def _layout_of(entry: dict[str, Any], seed: dict[str, Any] | None) -> dict[str, Any] | None:
+        """The chapter's layout: the record's own when it has one, else the seed's."""
+        own = entry.get("layout")
+        if isinstance(own, dict) and (own.get("big_idea") or own.get("covers")):
+            src, where = own, "record"
+        elif seed and (seed.get("big_idea") or seed.get("covers")):
+            src, where = seed, "seed"
+        else:
+            return None
+        covers = src.get("covers") or []
+        return {
+            "big_idea": str(src.get("big_idea") or "").strip(),
+            "covers": [str(x).strip() for x in (covers if isinstance(covers, list) else [covers]) if str(x).strip()],
+            "question": str(src.get("question") or src.get("question_for_ziv") or "").strip(),
+            "version": int(src.get("version") or 1),
+            "from": where,
+        }
+
+    def _phase(self, n: int, entry: dict[str, Any], seed: dict[str, Any] | None, version: int, has_text: bool,
+               status: str) -> dict[str, Any]:
+        """Where a chapter stands in layout, write, listen, and whether its text may be shown."""
+        if n <= self.written_through:
+            return {"phased": False, "readable": True, "phase": "", "phase_words": ""}
+        layout = self._layout_of(entry, seed)
+        raw = str(entry.get("layout_status") or (seed or {}).get("layout_status") or "").strip().lower()
+        if raw not in LAYOUT_STATUSES:
+            raw = "proposed" if layout else "to_plan"
+        if layout is None:
+            raw = "to_plan"
+        approved_version = entry.get("layout_approved_version")
+        if raw == "approved" and layout and approved_version is not None and layout["version"] > int(approved_version):
+            raw = "proposed"  # the editor redrew the layout after his yes: it needs a new look
+        approved = raw == "approved"
+        readable = False
+        if approved and has_text:
+            before = int(entry.get("layout_approved_draft_version") or 0)
+            confirmed = entry.get("draft_confirmed_version")
+            confirmed_against = entry.get("draft_confirmed_layout_version")
+            readable = version > before or (
+                confirmed is not None and int(confirmed) == version
+                and (confirmed_against is None or approved_version is None or int(confirmed_against) == int(approved_version))
+            )
+        if readable:
+            phase = "approved" if status == "approved" else "ready"
+        elif approved:
+            phase = "approved_unwritten"
+        else:
+            phase = "on_hold" if has_text else "layout"
+        notes = entry.get("layout_notes") or []
+        return {
+            "phased": True,
+            "readable": readable,
+            "phase": phase,
+            "phase_words": PHASE_WORDS[phase],
+            "layout": layout,
+            "layout_status": raw,
+            "layout_approved_at": entry.get("layout_approved_at") if approved else None,
+            "layout_approved_by": entry.get("layout_approved_by") if approved else None,
+            "layout_notes": [x for x in notes if isinstance(x, dict)][-30:],
+            "write_requested_at": entry.get("write_requested_at") if approved else None,
+            "outline": str(entry.get("layout_text") or (seed or {}).get("his_outline") or ""),
+        }
 
     def exists(self) -> bool:
         return self.path.is_file()
@@ -201,6 +313,7 @@ class EditorRecord:
         data = self.load()
         entries = data.get("chapters") or []
         newest = self._versions()
+        seeds = self._seed()
         out: list[dict[str, Any]] = []
         for entry in entries:
             if not isinstance(entry, dict):
@@ -224,7 +337,9 @@ class EditorRecord:
                 title = title or heading
             status = self._status(entry, bool(paragraphs), version)
             items = entry.get("layout_items") or []
+            phase = self._phase(n, entry, seeds.get(n), version, bool(paragraphs), status)
             out.append({
+                **phase,
                 "n": n,
                 "title": title or f"Chapter {n}",
                 "part": part_label(entry.get("part")),
@@ -285,16 +400,94 @@ class EditorRecord:
             history.append(row)
             entry["status_history"] = history[-30:]
             data["updated_at"] = at
-            tmp = self.dir / f".chapters.json.{os.getpid()}.tmp"
-            try:
-                tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-                os.chmod(tmp, 0o664)
-                os.replace(tmp, self.path)
-            except OSError as exc:
-                with contextlib.suppress(OSError):
-                    tmp.unlink()
-                raise RecordWriteError(str(exc)) from exc
+            self._save(data)
         return {"status": status, "at": at, "by": by, "history": history[-30:]}
+
+    def _save(self, data: dict[str, Any]) -> None:
+        tmp = self.dir / f".chapters.json.{os.getpid()}.tmp"
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.chmod(tmp, 0o664)
+            os.replace(tmp, self.path)
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise RecordWriteError(str(exc)) from exc
+
+    def _change(self, n: int, work) -> dict[str, Any]:
+        """Change one entry, read fresh under the lock; work(entry, now) returns the answer."""
+        with self._locked():
+            data = self.load()
+            entries = data.get("chapters") or []
+            entry = next((e for e in entries if isinstance(e, dict) and str(e.get("number")) == str(n)), None)
+            if entry is None:
+                raise KeyError(n)
+            at = _now()
+            out = work(entry, at)
+            data["updated_at"] = at
+            self._save(data)
+        return out
+
+    # 12-Nov-2026 (T-20758): his word on a layout, his notes on it, and his ask to write.
+
+    def layout_decision(self, n: int, approve: bool, *, by: str) -> dict[str, Any]:
+        current = next((c for c in self.chapters() if c["n"] == n), None)
+        if current is None:
+            raise KeyError(n)
+        if not current.get("phased"):
+            raise ValueError(f"Chapter {n} is one you wrote yourself, so it has no layout to approve")
+        layout = current.get("layout")
+        if approve and not layout:
+            raise ValueError(f"Episode {n} has no layout drawn up yet, so there is nothing to approve")
+
+        def work(entry: dict[str, Any], at: str) -> dict[str, Any]:
+            history = list(entry.get("layout_history") or [])
+            if approve:
+                if not (isinstance(entry.get("layout"), dict) and entry["layout"].get("big_idea")):
+                    # Pin exactly what he approved into the record, so a later seed cannot change it.
+                    entry["layout"] = {k: layout[k] for k in ("big_idea", "covers", "question", "version")}
+                entry["layout_status"] = "approved"
+                entry["layout_approved_at"] = at
+                entry["layout_approved_by"] = by
+                entry["layout_approved_version"] = int(layout["version"])
+                entry["layout_approved_draft_version"] = int(current.get("version") or 0)
+            else:
+                entry["layout_status"] = "proposed"
+                for key in ("layout_approved_at", "layout_approved_by", "layout_approved_version",
+                            "layout_approved_draft_version", "write_requested_at", "write_requested_by"):
+                    entry.pop(key, None)
+            history.append({"layout": "approved" if approve else "reopened", "at": at, "by": by,
+                            "layout_version": int((layout or {}).get("version") or 0), "draft_version": int(current.get("version") or 0)})
+            entry["layout_history"] = history[-30:]
+            return {"layout_status": entry["layout_status"], "at": at, "by": by}
+
+        return self._change(n, work)
+
+    def add_layout_note(self, n: int, text: str, *, by: str) -> dict[str, Any]:
+        def work(entry: dict[str, Any], at: str) -> dict[str, Any]:
+            note = {"at": at, "by": by, "text": text[:2000]}
+            entry["layout_notes"] = ([x for x in entry.get("layout_notes") or [] if isinstance(x, dict)] + [note])[-60:]
+            return note
+
+        return self._change(n, work)
+
+    def request_write(self, n: int, *, by: str) -> dict[str, Any]:
+        current = next((c for c in self.chapters() if c["n"] == n), None)
+        if current is None:
+            raise KeyError(n)
+        if not current.get("phased") or current.get("layout_status") != "approved":
+            raise ValueError(f"Episode {n} can be written only after you approve its layout")
+        if current.get("readable"):
+            raise ValueError(f"Episode {n} is already written from its approved layout")
+
+        def work(entry: dict[str, Any], at: str) -> dict[str, Any]:
+            if entry.get("write_requested_at"):
+                return {"write_requested_at": entry["write_requested_at"], "already": True}
+            entry["write_requested_at"] = at
+            entry["write_requested_by"] = by
+            return {"write_requested_at": at, "already": False}
+
+        return self._change(n, work)
 
 
 class BookStore:
@@ -385,6 +578,8 @@ class BookStore:
                 raise KeyError(n)
             if chapter["status"] == "to_write":
                 raise ValueError(f"Episode {n} is not written yet, so there is nothing to approve")
+            if not chapter.get("readable", True):
+                raise ValueError(f"Episode {n} is held until its layout is approved and it is written from it")
             return self.record.set_status(n, status, by=by, note=note, version=chapter["version"])
         if not any(c["n"] == n for c in self.chapters()):
             raise KeyError(n)
@@ -446,11 +641,19 @@ def summary(store: BookStore) -> list[dict[str, Any]]:
             entry = {"status": c["status"], "at": c.get("status_at")}
         else:
             entry = state["status"].get(str(c["n"])) or {"status": "draft"}
-        words = sum(len(p.split()) for p in c["paragraphs"])
+        readable = c.get("readable", True)
+        words = sum(len(p.split()) for p in c["paragraphs"]) if readable else 0
         s = entry.get("status", "draft")
         out.append({
+            "phased": c.get("phased", False),
+            "readable": readable,
+            "phase": c.get("phase", ""),
+            "phase_words": c.get("phase_words", ""),
+            "big_idea": (c.get("layout") or {}).get("big_idea", ""),
+            "layout_status": c.get("layout_status", ""),
+            "write_requested_at": c.get("write_requested_at"),
             "n": c["n"], "title": c["title"], "part": c.get("part", ""),
-            "paragraphs": len(c["paragraphs"]), "words": words,
+            "paragraphs": len(c["paragraphs"]) if readable else 0, "words": words,
             "minutes": max(1, round(words / 150)) if words else 0,
             "status": s,
             "status_words": STATUS_WORDS.get(s, "Draft"),

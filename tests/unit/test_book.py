@@ -139,6 +139,7 @@ def api(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "book_tts_char_budget", 0)
     monkeypatch.setattr(settings, "elevenlabs_api_key", "")
     monkeypatch.setattr(settings, "book_editor_record", str(tmp_path / "no-editor" / "chapters.json"))
+    monkeypatch.setattr(settings, "book_layout_seed", "")
     app = FastAPI()
     app.include_router(book_routes.router, prefix="/api/v1")
     app.include_router(dashboard.router)
@@ -305,16 +306,24 @@ def _chapter_file(root: Path, n: int, v: int, title: str, lines: list[str]) -> N
     (root / f"ch{n:02d}-v{v}.md").write_text(body, encoding="utf-8")
 
 
+# Since T-20758 a new episode is readable only once its layout is approved; these T-19824
+# tests are about reading and approving written text, so their episodes carry an approved
+# layout the drafts were written after.
+APPROVED_LAYOUT = {"layout": {"big_idea": "An idea.", "covers": ["One thing"], "version": 1},
+                   "layout_status": "approved", "layout_approved_version": 1, "layout_approved_draft_version": 0}
+
+
 @pytest.fixture
 def editor(api, monkeypatch, tmp_path):
     root = tmp_path / "book-editor" / "book2"
     path = _record(root, [
         {"part": 1, "number": 1, "title": "The first million was hard", "status": "draft", "version": 1, "file": "ch01-v1.md"},
-        {"part": 1, "number": 2, "title": "My second million was easy", "status": "draft", "version": 1, "file": "ch02-v1.md"},
+        {"part": 1, "number": 2, "title": "My second million was easy", "status": "draft", "version": 1, "file": "ch02-v1.md",
+         **APPROVED_LAYOUT},
         {"part": 1, "number": 12, "title": "Not frameworks", "status": "in_review", "version": 1, "file": "ch12-v1.md",
-         "layout_items": [17], "layout_text": LAYOUT_17},
+         "layout_items": [17], "layout_text": LAYOUT_17, **APPROVED_LAYOUT},
         {"part": 2, "number": 13, "title": "Asking", "status": "to_write", "version": 0, "file": None,
-         "layout_items": [21], "layout_text": "21. Asking and planning"},
+         "layout_items": [21], "layout_text": "21. Asking and planning", **APPROVED_LAYOUT},
     ])
     _chapter_file(root, 1, 1, "The first million was hard\u2026", ["You probably heard this line.", "", "Second paragraph."])
     _chapter_file(root, 2, 1, "My second million was easy", ["One paragraph here."])
@@ -555,3 +564,151 @@ def test_choice_box_scrolls_clear_of_the_sticky_top_bar():
     css = (Path(book_routes.__file__).resolve().parents[1] / "book.css").read_text(encoding="utf-8")
     rule = css.split(".choice-box {", 1)[1].split("}", 1)[0]
     assert "scroll-margin-top" in rule
+
+
+
+# --- T-20758: layout first, then write, then listen --------------------------------------
+# Ziv, on a call 12-Nov: he agrees each chapter's layout before any text is written or read
+# to him, the way TCE has a big idea, then a script, then a workshop.
+
+SEED_12 = {"number": 12, "big_idea": "Before you label your business, I label mine.",
+           "covers": ["Why my own businesses", "The school for balloon artists"],
+           "question_for_ziv": "Is each stage label right?", "his_outline": "17. Examples of my businesses",
+           "layout_status": "proposed"}
+SEED_13 = {"number": 13, "big_idea": "Asking is a plan.", "covers": ["Ask", "Plan"], "question_for_ziv": "",
+           "layout_status": "proposed"}
+
+
+@pytest.fixture
+def held(api, monkeypatch, tmp_path):
+    root = tmp_path / "held" / "book2"
+    path = _record(root, [
+        {"part": 1, "number": 1, "title": "The first million was hard", "status": "draft", "version": 1, "file": "ch01-v1.md"},
+        {"part": 1, "number": 12, "title": "My businesses", "status": "draft", "version": 1, "file": "ch12-v1.md",
+         "layout_items": [17], "layout_text": "17. Examples of my businesses"},
+        {"part": 2, "number": 13, "title": "Asking", "status": "to_write", "version": 0, "file": None},
+    ])
+    _chapter_file(root, 1, 1, "The first million was hard", ["His own words."])
+    _chapter_file(root, 12, 1, "My businesses", ["A draft from before the rule.", "Second line."])
+    seed = tmp_path / "held" / "layouts.json"
+    seed.write_text(json.dumps({"chapters": [SEED_12, SEED_13]}), encoding="utf-8")
+    monkeypatch.setattr(settings, "book_editor_record", str(path))
+    monkeypatch.setattr(settings, "book_written_through", 11)
+    monkeypatch.setattr(settings, "book_layout_seed", str(seed))
+    return root
+
+
+def _entry(root: Path, n: int) -> dict:
+    return next(e for e in json.loads((root / "chapters.json").read_text())["chapters"] if e["number"] == n)
+
+
+def test_a_new_chapter_opens_on_its_layout_and_its_text_never_leaves_the_server(api, held):
+    by_n = {c["n"]: c for c in api.get("/api/v1/book/chapters", headers=OWNER).json()["chapters"]}
+    assert by_n[1]["phased"] is False and by_n[1]["readable"] is True
+    assert by_n[12]["phase"] == "on_hold" and by_n[12]["phase_words"] == "Drafted earlier, on hold"
+    assert by_n[12]["readable"] is False and by_n[12]["paragraphs"] == 0 and by_n[12]["minutes"] == 0
+    assert by_n[12]["big_idea"] == SEED_12["big_idea"]
+    assert by_n[13]["phase"] == "layout" and by_n[13]["phase_words"] == "Layout to approve"
+    one = api.get("/api/v1/book/chapters/12", headers=OWNER).json()
+    assert one["paragraphs"] == [] and one["held_paragraphs"] == 2
+    assert one["layout"]["covers"] == SEED_12["covers"] and one["layout"]["question"] == SEED_12["question_for_ziv"]
+    assert one["outline"] == "17. Examples of my businesses"
+    # No route reads it: not the audio, not a sample, not a text approve, not a write ask.
+    assert api.get("/api/v1/book/chapters/12/audio/0", headers=OWNER).status_code == 423
+    assert api.get("/api/v1/book/voice-sample?voice_id=abc123&chapter=12", headers=OWNER).status_code == 423
+    assert api.post("/api/v1/book/chapters/12/status", headers=OWNER, json={"status": "approved"}).status_code == 422
+    assert api.post("/api/v1/book/chapters/12/write", headers=OWNER, json={}).status_code == 422
+    # Part one is his own text and reads as before.
+    assert api.get("/api/v1/book/chapters/1", headers=OWNER).json()["paragraphs"] == ["His own words."]
+
+
+def test_his_note_and_his_yes_go_into_the_editors_record_then_write_waits_for_his_word(api, held):
+    r = api.post("/api/v1/book/chapters/12/layout", headers=OWNER, json={"action": "note", "note": "Put the coaching business first"})
+    assert r.status_code == 200, r.text
+    assert _entry(held, 12)["layout_notes"][-1]["text"] == "Put the coaching business first"
+    r = api.post("/api/v1/book/chapters/12/layout", headers=OWNER, json={"action": "approve", "by": "dev-test"})
+    assert r.status_code == 200, r.text
+    assert r.json()["phase"] == "approved_unwritten" and r.json()["phase_words"] == "Layout approved, not written"
+    entry = _entry(held, 12)
+    assert entry["layout_status"] == "approved" and entry["layout_approved_by"] == "dev-test"
+    assert entry["layout"]["big_idea"] == SEED_12["big_idea"]  # what he approved is pinned in the record
+    assert entry["layout_approved_draft_version"] == 1 and entry["layout_text"] == "17. Examples of my businesses"
+    assert (held / "chapters.json").stat().st_mode & 0o020
+    # The draft from before is still held: approving a layout writes nothing and reads nothing.
+    assert api.get("/api/v1/book/chapters/12", headers=OWNER).json()["paragraphs"] == []
+    assert "write_requested_at" not in entry
+    r = api.post("/api/v1/book/chapters/12/write", headers=OWNER, json={"by": "dev-test"})
+    assert r.status_code == 200 and r.json()["already"] is False
+    assert _entry(held, 12)["write_requested_by"] == "dev-test"
+    assert api.post("/api/v1/book/chapters/12/write", headers=OWNER, json={}).json()["already"] is True
+
+
+def test_only_a_version_written_or_confirmed_after_his_yes_can_be_heard(api, held):
+    api.post("/api/v1/book/chapters/12/layout", headers=OWNER, json={"action": "approve"})
+    # The editor confirms the old draft against the approved layout: now it may be heard.
+    data = json.loads((held / "chapters.json").read_text())
+    data["chapters"][1].update(draft_confirmed_version=1, draft_confirmed_layout_version=1)
+    (held / "chapters.json").write_text(json.dumps(data))
+    one = api.get("/api/v1/book/chapters/12", headers=OWNER).json()
+    assert one["readable"] is True and one["phase"] == "ready" and len(one["paragraphs"]) == 2
+    assert api.get("/api/v1/book/chapters/12/audio/0", headers=OWNER).status_code == 409  # device voice, budget 0
+    # He reopens the layout: the chapter is held again.
+    api.post("/api/v1/book/chapters/12/layout", headers=OWNER, json={"action": "reopen"})
+    assert api.get("/api/v1/book/chapters/12", headers=OWNER).json()["paragraphs"] == []
+    # Approved again, then the editor writes version 2 from it: readable without a confirm.
+    api.post("/api/v1/book/chapters/12/layout", headers=OWNER, json={"action": "approve"})
+    data = json.loads((held / "chapters.json").read_text())
+    data["chapters"][1].pop("draft_confirmed_version")
+    (held / "chapters.json").write_text(json.dumps(data))
+    assert api.get("/api/v1/book/chapters/12", headers=OWNER).json()["paragraphs"] == []
+    _chapter_file(held, 12, 2, "My businesses", ["Written from the approved layout."])
+    one = api.get("/api/v1/book/chapters/12", headers=OWNER).json()
+    assert one["phase"] == "ready" and one["paragraphs"] == ["Written from the approved layout."]
+    # The editor redraws the layout after his yes: it needs his look again and the text is held.
+    data = json.loads((held / "chapters.json").read_text())
+    data["chapters"][1]["layout"]["version"] = 2
+    (held / "chapters.json").write_text(json.dumps(data))
+    one = api.get("/api/v1/book/chapters/12", headers=OWNER).json()
+    assert one["layout_status"] == "proposed" and one["paragraphs"] == []
+
+
+def test_a_layout_word_that_cannot_be_written_changes_nothing(api, held, monkeypatch):
+    def refuse(*a, **k):
+        raise PermissionError("read only")
+
+    monkeypatch.setattr("tce.book.store.os.replace", refuse)
+    assert api.post("/api/v1/book/chapters/12/layout", headers=OWNER, json={"action": "approve"}).status_code == 503
+    assert "layout_status" not in _entry(held, 12)
+    assert not list(held.glob(".chapters.json.*.tmp"))
+
+
+def test_part_one_has_no_layout_step_and_a_client_cannot_reach_it(api, held):
+    assert api.post("/api/v1/book/chapters/1/layout", headers=OWNER, json={"action": "approve"}).status_code == 422
+    assert api.post("/api/v1/book/chapters/12/layout", headers=CLIENT, json={"action": "approve"}).status_code == 403
+    assert api.post("/api/v1/book/chapters/12/write", headers=CLIENT, json={}).status_code == 403
+
+
+def test_the_page_opens_a_new_chapter_on_its_layout_with_the_three_steps():
+    html = (BOOK_DIR / "book.html").read_text(encoding="utf-8")
+    js = (BOOK_DIR / "book.js").read_text(encoding="utf-8")
+    for needle in ('id="layoutPlan"', "The layout is right", "Write this chapter", "Workshop this chapter",
+                   'id="planNoteForm"', "One question for you", "Your own outline lines", 'id="stepsLine"'):
+        assert needle in html, needle
+    # The layout sits above where the text would be, and the chat panel stays first in the page.
+    assert html.index('id="editorPanel"') < html.index('id="layoutPlan"') < html.index('id="paragraphs"')
+    assert "/layout`" in js and "/write`" in js and "drawPlan(c)" in js
+    assert "nothing is written or read to him before he approves it" in js  # what the editor hears
+    for text in (html, js, (BOOK_DIR / "book.css").read_text(encoding="utf-8")):
+        assert "—" not in text and "–" not in text
+
+
+def test_the_real_record_holds_every_new_chapter_until_its_layout_is_approved():
+    real = Path("/opt/kmbot-files/book-editor/book2/chapters.json")
+    seed = Path("/opt/kmbot-files/doni/book/book2-layouts-v1.json")
+    if not (real.is_file() and seed.is_file()):
+        pytest.skip("the editor's record or the layouts are not on this machine")
+    chapters = EditorRecord(real, 11, seed=seed).chapters()
+    new = [c for c in chapters if c["n"] > 11]
+    assert all(not c["readable"] or c["layout_status"] == "approved" for c in new)
+    assert all(c["layout"] and c["layout"]["big_idea"] for c in new)
+    assert all(c["readable"] and not c["phased"] for c in chapters if c["n"] <= 11)

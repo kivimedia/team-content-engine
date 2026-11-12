@@ -13,7 +13,14 @@
    into the recording, and finish carries each paragraph read as a "narrator" line, so
    the edit keeps the reading and never cuts it as a retake. Jennifer edits it (edit:
    true) only when he presses Send after Stop; Archive keeps it unedited (10-Nov, T-19955). Slices wait on
-   this device until the server has them, exactly as the solo take's do. */
+   this device until the server has them, exactly as the solo take's do.
+
+   12-Nov-2026 (T-20758), Ziv on a call: he agrees each new chapter's layout before any of
+   it is written or read to him (TCE's big idea, then script, then workshop). A new chapter
+   opens on its layout: the big idea, what it covers, one question, his outline folded, a
+   note box and "The layout is right". Only then "Write this chapter" appears, and only a
+   chapter written (or confirmed by the editor) after that approval can be played. The
+   server holds the text of every other new chapter, so this page could not show it anyway. */
 (() => {
   "use strict";
 
@@ -113,6 +120,26 @@
     const where = [label(c), c.part, itemsWords(c.layout_items) ? `layout ${itemsWords(c.layout_items)}` : ""].filter(Boolean).join(" - ");
     b.querySelector(".num").textContent = where;
     b.querySelector(".title").textContent = c.title;
+    if (c.phased) {
+      chip(b.querySelector(".status-chip"), c.phase, c.phase_words);
+      b.querySelector(".length").textContent = c.readable
+        ? `About ${c.minutes} min read aloud${c.version > 1 ? `, version ${c.version}` : ""}`
+        : c.phase === "approved_unwritten"
+          ? (c.write_requested_at ? "You asked for it to be written" : "Ready for you to ask for it to be written")
+          : "Open it to agree the layout";
+      if (!c.readable) {
+        b.classList.add("held");
+        if (c.big_idea) {
+          const peek = document.createElement("span");
+          peek.className = "idea-peek";
+          peek.textContent = c.big_idea;
+          b.appendChild(peek);
+        }
+      }
+      b.addEventListener("click", () => go(c.n));
+      li.appendChild(b);
+      return li;
+    }
     chip(b.querySelector(".status-chip"), c.status, c.status_words);
     b.querySelector(".length").textContent = c.status === "to_write"
       ? "Not written yet"
@@ -149,9 +176,26 @@
     if (grouped) for (const c of written) fold.appendChild(chapterButton(c));
     $("newHead").hidden = !grouped;
     $("writtenFold").hidden = !grouped || !written.length;
+    const phased = fresh.some((c) => c.phased);
+    $("stepsLine").hidden = !phased;
     if (grouped) {
       const approvedW = written.filter((c) => c.status === "approved").length;
       $("writtenSummary").textContent = `Part one, already written (${written.length} chapters, ${approvedW} approved)`;
+    }
+    if (grouped && phased) {
+      const count = (p) => fresh.filter((c) => c.phase === p).length;
+      const toApprove = count("layout") + count("on_hold");
+      const parts = [
+        `${toApprove} layout${toApprove === 1 ? "" : "s"} to approve`,
+        count("on_hold") ? `${count("on_hold")} of them drafted earlier and on hold` : "",
+        count("approved_unwritten") ? `${count("approved_unwritten")} approved, not written` : "",
+        `${count("ready")} ready to listen`,
+        `${count("approved")} approved`,
+      ].filter(Boolean);
+      $("progressLine").textContent = `${parts.join(", ")}.`;
+      $("progressLine").hidden = false;
+      top(`${toApprove} layouts to approve, ${count("ready")} ready to listen`);
+    } else if (grouped) {
       const toWrite = fresh.filter((c) => c.status === "to_write").length;
       const approvedN = fresh.filter((c) => c.status === "approved").length;
       const ready = fresh.length - toWrite - approvedN;
@@ -180,10 +224,11 @@
     $("chapterTitle").textContent = `${label(c)}: ${c.title}`;
     $("bookTitle").textContent = label(c);
     $("approveButton").textContent = isNew(c) ? "Approve this episode" : "Approve this chapter";
-    $("layoutBox").hidden = !c.layout_text;
+    drawPlan(c);
+    $("layoutBox").hidden = !c.layout_text || (c.phased && !c.readable);
     $("layoutSummary").textContent = `From your layout${itemsWords(c.layout_items) ? `, ${itemsWords(c.layout_items)}` : ""}`;
     $("layoutText").textContent = c.layout_text || "";
-    $("notWritten").hidden = c.status !== "to_write";
+    $("notWritten").hidden = c.status !== "to_write" || Boolean(c.phased);
     showStatus(c.status, c.status_words);
     const box = $("paragraphs");
     box.textContent = "";
@@ -201,7 +246,9 @@
     const readable = c.paragraphs.length > 0;
     $("player").hidden = !readable;
     document.body.classList.toggle("has-player", readable);
-    top(readable ? `${c.paragraphs.length} paragraphs, ${narrationShort()}` : "Not written yet");
+    // No player on a layout (T-20758): the chat icon sits in the top bar, so he can talk the layout over.
+    $("listTalk").hidden = readable;
+    top(readable ? `${c.paragraphs.length} paragraphs, ${narrationShort()}` : c.phased ? c.phase_words : "Not written yet");
     state.mode = "";
     voiceBadge();
     mark();
@@ -222,10 +269,108 @@
   }
 
   function showStatus(s, words) {
-    chip($("chapterStatus"), s, words);
-    $("approveButton").hidden = s === "approved" || s === "to_write";
-    $("unapproveButton").hidden = s !== "approved";
+    const c = state.chapter;
+    const held = Boolean(c && c.phased && !c.readable);
+    if (c && c.phased) {
+      const id = c.readable ? (s === "approved" ? "approved" : "ready") : c.phase;
+      chip($("chapterStatus"), id, c.readable ? (s === "approved" ? "Approved" : "Ready to listen") : c.phase_words);
+    } else {
+      chip($("chapterStatus"), s, words);
+    }
+    $("approveButton").hidden = held || s === "approved" || s === "to_write";
+    $("unapproveButton").hidden = held || s !== "approved";
+    $("workshopButton").hidden = !(c && c.phased && c.readable);
   }
+
+  /* ------------------------------------------------------- the layout step */
+
+  const when = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? "" : d.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  };
+
+  function drawPlan(c) {
+    const plan = $("layoutPlan");
+    const layout = c.layout || null;
+    // Part one, and a written chapter he may hear, keep the reader; the rest open on the layout.
+    plan.hidden = !(c.phased && !c.readable);
+    if (plan.hidden) return;
+    const approved = c.layout_status === "approved";
+    const lead = {
+      layout: "Agree this layout first. Nothing is written or read to you before you say it is right.",
+      on_hold: "A draft of this chapter was written before you asked for layouts first. It stays on hold, unread, until you approve this layout and the editor checks or rewrites the draft against it.",
+      approved_unwritten: c.write_requested_at
+        ? "You approved this layout and asked for it to be written. It opens for listening here by itself once the editor has written it."
+        : "You approved this layout. Ask for it to be written when you are ready: nothing is written until you do.",
+    }[c.phase] || "";
+    $("planLead").textContent = lead;
+    $("planIdea").textContent = layout ? layout.big_idea : "The editor has not drawn up this layout yet.";
+    const covers = $("planCovers");
+    covers.textContent = "";
+    for (const line of (layout && layout.covers) || []) {
+      const li = document.createElement("li");
+      li.textContent = line;
+      covers.appendChild(li);
+    }
+    $("planQuestionBox").hidden = !(layout && layout.question);
+    $("planQuestion").textContent = (layout && layout.question) || "";
+    $("planOutline").hidden = !c.outline;
+    $("planOutlineText").textContent = c.outline || "";
+    const notes = $("planNotes");
+    notes.textContent = "";
+    for (const note of c.layout_notes || []) {
+      const p = document.createElement("p");
+      p.className = "plan-note";
+      const small = document.createElement("small");
+      small.textContent = `Your note, ${when(note.at)}`;
+      p.appendChild(small);
+      p.appendChild(document.createTextNode(note.text || ""));
+      notes.appendChild(p);
+    }
+    notes.hidden = !notes.children.length;
+    $("layoutApprove").hidden = approved || !layout;
+    $("layoutApprovedLine").hidden = !approved;
+    $("layoutApprovedLine").textContent = approved ? `You approved this layout${c.layout_approved_at ? ` on ${when(c.layout_approved_at)}` : ""}.` : "";
+    $("writeButton").hidden = !approved || Boolean(c.write_requested_at);
+    $("writeAskedLine").hidden = !(approved && c.write_requested_at);
+    $("writeAskedLine").textContent = c.write_requested_at ? `You asked for it to be written on ${when(c.write_requested_at)}.` : "";
+    $("layoutReopen").hidden = !approved;
+  }
+
+  async function layoutWord(action, note = "") {
+    if (!state.chapter) return;
+    const n = state.chapter.n;
+    const buttons = ["layoutApprove", "layoutReopen", "writeButton"];
+    buttons.forEach((id) => { $(id).disabled = true; });
+    try {
+      await api(`/book/chapters/${n}/layout`, { method: "POST", body: JSON.stringify({ action, note }) });
+      await openChapter(n);
+      status(action === "approve" ? `The layout of ${label(state.chapter)} is approved. Press Write this chapter when you want it written.`
+        : action === "reopen" ? `The layout of ${label(state.chapter)} is open again. Add a note or talk it over with the editor.`
+          : "Your note is saved with this layout. The editor reads it before it changes the layout.", "saved");
+    } catch (error) {
+      status(`That did not save: ${error.message}`, true);
+    } finally {
+      buttons.forEach((id) => { $(id).disabled = false; });
+    }
+  }
+
+  async function askWrite() {
+    if (!state.chapter) return;
+    const n = state.chapter.n;
+    $("writeButton").disabled = true;
+    try {
+      await api(`/book/chapters/${n}/write`, { method: "POST", body: JSON.stringify({}) });
+      await openChapter(n);
+      status(`Asked the editor to write ${label(state.chapter)} from the layout you approved. It opens for listening here by itself once it is written.`, "saved");
+    } catch (error) {
+      status(`That did not save: ${error.message}`, true);
+    } finally {
+      $("writeButton").disabled = false;
+    }
+  }
+
 
   async function setStatus(s) {
     if (!state.chapter) return;
@@ -404,6 +549,15 @@
         key: "list",
         words: "the chapters page",
         line: `He is on the Book's chapters page in TCE (the list of the second book's chapters: ${fresh.length} new episodes in his layout's order, ${toWrite} still to write, and Part one folded below). He may ask what the page is, ask about an episode, or ask you to add a new chapter.`,
+      };
+    }
+    if (c.phased && !c.readable) {
+      const lay = c.layout || {};
+      const covers = (lay.covers || []).map((x, k) => `${k + 1}. ${x}`).join(" ");
+      return {
+        key: `ch${c.n}:layout`,
+        words: `the layout of ${label(c)}`,
+        line: `He is on the LAYOUT of ${label(c)} "${c.title}" in the Book in TCE (${c.phase_words}). Talk about the layout only; nothing is written or read to him before he approves it. Big idea: "${(lay.big_idea || "").slice(0, 400)}". Covers: ${covers.slice(0, 900)}${lay.question ? ` Question for him: "${lay.question}"` : ""}`,
       };
     }
     const i = Math.min(state.index, Math.max(0, c.paragraphs.length - 1));
@@ -902,6 +1056,21 @@
   });
   $("editorSignin").setAttribute("href", `/voice?return=${encodeURIComponent(window.location.pathname)}`);
   $("approveButton").addEventListener("click", () => setStatus("approved"));
+  $("layoutApprove").addEventListener("click", () => layoutWord("approve"));
+  $("layoutReopen").addEventListener("click", () => layoutWord("reopen"));
+  $("writeButton").addEventListener("click", askWrite);
+  $("planNoteForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = $("planNoteText").value.trim();
+    if (!text) return;
+    $("planNoteText").value = "";
+    layoutWord("note", text);
+  });
+  // Only when he asks: the chapter is talked through with the editor, against its layout.
+  $("workshopButton").addEventListener("click", () => {
+    if (!chat.open) talk();
+    chatSend(`Let's workshop ${state.chapter ? label(state.chapter) : "this chapter"} together, against the layout I approved.`);
+  });
   $("unapproveButton").addEventListener("click", () => setStatus("in_review"));
   $("prevChapter").addEventListener("click", () => state.chapter && state.chapter.previous != null && go(state.chapter.previous));
   $("nextChapter").addEventListener("click", () => state.chapter && state.chapter.next != null && go(state.chapter.next));

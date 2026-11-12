@@ -81,7 +81,9 @@
          folded underneath. -->
     <section id="listView" aria-label="Chapters">
       <p id="narrationNote" class="note"></p>
-      <h2 id="newHead" class="list-head" hidden>New episodes, in your layout's order</h2>
+      <!-- 12-Nov-2026 (T-20758): three steps per new chapter, layout first. -->
+      <h2 id="newHead" class="list-head" hidden>New chapters, in your layout's order</h2>
+      <p id="stepsLine" class="steps" hidden>Each one goes in three steps: you agree its layout, you ask for it to be written, then you listen and approve. Nothing is written or read to you before you agree the layout.</p>
       <p id="progressLine" class="progress" hidden></p>
       <ol id="chapterList" class="chapter-list"></ol>
       <details id="writtenFold" class="written-fold" hidden>
@@ -98,8 +100,39 @@
           <span id="chapterStatus" class="status-chip"></span>
           <button id="approveButton" class="btn approve" type="button">Approve this chapter</button>
           <button id="unapproveButton" class="btn quiet" type="button" hidden>Undo approval</button>
+          <button id="workshopButton" class="btn quiet" type="button" hidden>Workshop this chapter</button>
         </div>
       </div>
+      <!-- 12-Nov-2026 (T-20758): a new chapter opens on its layout. Its text is held on the
+           server until he says the layout is right and it is written from it. -->
+      <section id="layoutPlan" class="layout-plan" hidden aria-label="This chapter's layout">
+        <p id="planLead" class="plan-lead"></p>
+        <h2 class="plan-h">The big idea</h2>
+        <p id="planIdea" class="plan-idea"></p>
+        <h2 class="plan-h">What it covers, in order</h2>
+        <ol id="planCovers" class="plan-covers"></ol>
+        <div id="planQuestionBox" class="plan-question" hidden>
+          <h2 class="plan-h">One question for you</h2>
+          <p id="planQuestion"></p>
+        </div>
+        <div class="plan-actions">
+          <button id="layoutApprove" class="btn approve" type="button">The layout is right</button>
+          <p id="layoutApprovedLine" class="plan-approved" hidden></p>
+          <button id="writeButton" class="btn primary" type="button" hidden>Write this chapter</button>
+          <p id="writeAskedLine" class="plan-asked" hidden></p>
+          <button id="layoutReopen" class="btn quiet" type="button" hidden>Change the layout</button>
+        </div>
+        <details id="planOutline" class="plan-outline" hidden>
+          <summary>Your own outline lines</summary>
+          <div id="planOutlineText" class="layout-text"></div>
+        </details>
+        <div id="planNotes" class="plan-notes" hidden></div>
+        <form id="planNoteForm" class="plan-note-form">
+          <label for="planNoteText">A note on this layout</label>
+          <textarea id="planNoteText" rows="2" placeholder="What to change, add or drop"></textarea>
+          <button class="btn quiet" type="submit">Save note</button>
+        </form>
+      </section>
       <!-- The layout lines this episode was written from, to check it against. -->
       <details id="layoutBox" class="layout-box" open hidden>
         <summary id="layoutSummary">From your layout</summary>
