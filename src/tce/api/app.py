@@ -188,6 +188,14 @@ async def lifespan(app: FastAPI):
         if notify_service.push_available():
             notify_poller = asyncio.create_task(notify_service.poll(async_session))
 
+    # Hourly memory reading on one log line, so a leak can be told from a one-off
+    # spike without anyone reading this process from outside. Read only.
+    memory_poller = None
+    if os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
+        from tce.utils import memory_probe
+
+        memory_poller = asyncio.create_task(memory_probe.poll())
+
     if settings.scheduler_enabled and os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
         try:
             from tce.services.scheduler import scheduler
@@ -200,6 +208,8 @@ async def lifespan(app: FastAPI):
     yield
 
     media_recovery.cancel()
+    if memory_poller:
+        memory_poller.cancel()
     if notify_poller:
         notify_poller.cancel()
     if schedule_poller:
