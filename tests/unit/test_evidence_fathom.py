@@ -67,13 +67,27 @@ class FakeFathom:
                 self.rate_limited_once = True
                 return httpx.Response(429, headers={"Retry-After": "3"})
             nxt = f"c{idx + 1}" if idx + 1 < len(self.pages) else None
-            return httpx.Response(200, json={"items": self.pages[idx], "next_cursor": nxt})
+            items = self.pages[idx]
+            if request.url.params.get("include_transcript") != "true":
+                # Like the real API: no transcript in the listing unless asked for.
+                items = [{**item, "transcript": None} for item in items]
+            return httpx.Response(200, json={"items": items, "next_cursor": nxt})
         if "/recordings/" in path and path.endswith("/transcript"):
             rid = path.split("/")[-2]
             if rid in self.transcripts:
                 return httpx.Response(200, json={"transcript": self.transcripts[rid]})
+            listed = self._listed_transcript(rid)
+            if listed:
+                return httpx.Response(200, json={"transcript": listed})
             return httpx.Response(404, json={"error": "not found"})
         return httpx.Response(404)
+
+    def _listed_transcript(self, rid: str):
+        for page in self.pages:
+            for item in page:
+                if str(item["recording_id"]) == rid and item.get("transcript"):
+                    return item["transcript"]
+        return None
 
 
 def make_client(fake: FakeFathom, sleeps: list[float]) -> FathomClient:
@@ -114,7 +128,14 @@ async def test_pagination_retry_dedupe_window_and_missing_transcript(editorial_s
 
     assert 3.0 in sleeps  # Retry-After honoured
     list_calls = [c for c in fake.calls if c.url.path.endswith("/meetings")]
-    assert list_calls[0].url.params["include_transcript"] == "true"
+    # The listing carries no transcripts: holding every transcript of a three-day
+    # margin at once pinned about 460 MB in the editor app (T-20204). Each one is
+    # fetched on its own, and only for meetings inside the window.
+    assert list_calls[0].url.params["include_transcript"] == "false"
+    fetched = sorted(
+        c.url.path.split("/")[-2] for c in fake.calls if c.url.path.endswith("/transcript")
+    )
+    assert fetched == ["1", "2", "4"]  # never 3, which is outside the window
     assert list_calls[0].url.params["created_after"] < "2026-09-07"  # margin applied
     assert "created_before" not in list_calls[0].url.params  # late processing stays visible
     assert run.counts["pages"] == 2

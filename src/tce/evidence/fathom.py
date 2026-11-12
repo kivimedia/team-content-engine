@@ -108,7 +108,11 @@ class FathomClient:
         seen: set[str] = set()
         cursor: str | None = None
         base_params = {
-            "include_transcript": "true",
+            # No transcripts in the listing: with a three-day margin and no upper bound it
+            # returned every recent transcript at once, and the editor app kept about
+            # 460 MB of that after each collect (T-20204). collect fetches each in-window
+            # meeting's transcript on its own instead.
+            "include_transcript": "false",
             "include_summary": "false",
             # Lower bound only: a recording is never created before it starts (the margin
             # absorbs clock/scheduling skew), but it can be processed days or weeks after
