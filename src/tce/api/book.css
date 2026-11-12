@@ -34,7 +34,10 @@ button:focus-visible, a:focus-visible { outline: 3px solid #f0a11a; outline-offs
 }
 .identity { min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
 .identity strong { font-size: 1.1rem; }
-.identity span { color: #d9e4ef; font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 12-Nov-2026 (T-20789): on a phone the line under the title was cut to one word next to the
+   chat and Film buttons; let it take two lines instead of an ellipsis. */
+.identity span { color: #d9e4ef; font-size: .9rem; line-height: 1.25; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: anywhere; }
 .icon-button {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 46px; min-height: 46px; border-radius: 50%; background: #29405e; color: #fff;
@@ -45,6 +48,12 @@ button:focus-visible, a:focus-visible { outline: 3px solid #f0a11a; outline-offs
   background: transparent; color: #fff; font-weight: 800; font-size: .9rem;
 }
 .film-button[aria-pressed="true"] { background: var(--signal); border-color: var(--signal); }
+/* 12-Nov-2026 (T-20789): on a phone the one-line Film button took a third of the bar and left
+   the title one word wide; let its label take two lines so the title and its line can breathe. */
+@media (max-width: 480px) {
+  .film-button { max-width: 100px; padding: 4px 12px; white-space: normal; line-height: 1.15; border-radius: 16px; }
+  .topbar { padding-top: max(6px, env(safe-area-inset-top)); padding-bottom: 6px; }
+}
 
 main { width: min(100%, 760px); margin: 0 auto; padding: 16px 16px 24px; }
 
