@@ -28,7 +28,15 @@ const os=require('os'),out=process.env.TCE_SHOT_DIR||fs.mkdtempSync(path.join(os
   check(width+' approval shares player dock',await p.locator('#player #approveButton').count()===1);
   await p.locator('#talkButton').click();await p.locator('#editorText').fill('Please clarify this paragraph.');
   await p.locator('#editorForm button[type=submit]').click();await p.waitForTimeout(250);
-  check(width+' failed editor connection retains comment',await p.locator('#editorText').inputValue()==='Please clarify this paragraph.');
+   check(width+' failed editor connection retains comment',await p.locator('#editorText').inputValue()==='Please clarify this paragraph.');
+   await p.evaluate(()=>{window.fixtureSent=[];window.KmVoice={start:({on})=>{window.fixtureCall=on;setTimeout(()=>on('realtime',{}),0);return {send:text=>fixtureSent.push(text),stop:()=>on('closed',{})};}};});
+   await p.locator('#editorForm button[type=submit]').click();await p.waitForTimeout(100);
+   await p.evaluate(()=>fixtureCall('error',{text:'Fixture transport failure'}));
+   check(width+' transport failure retains draft',await p.locator('#editorText').inputValue()==='Please clarify this paragraph.');
+   await p.locator('#editorForm button[type=submit]').click();
+   check(width+' retry carries paragraph context',await p.evaluate(()=>fixtureSent.length===2&&fixtureSent.every(t=>t.startsWith('[Where I am in the Book]'))));
+   await p.evaluate(()=>fixtureCall('said',{text:fixtureSent.at(-1)}));
+   check(width+' acknowledged comment clears draft',await p.locator('#editorText').inputValue()==='');
   check(width+' no horizontal overflow',await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   await p.screenshot({path:path.join(out,'book-'+(process.argv[2]||'after')+'-'+width+'.png'),fullPage:true});
   phase='ready-v2';await p.reload();await p.locator('#paragraphs p').first().waitFor();

@@ -650,7 +650,7 @@
     }
     else if (type === "turn_end") chatLine("editor", data.text);
     else if (type === "mic") { chat.micOn = !data.muted; drawMic(); }
-    else if (type === "error") { editorPending = null; editorBusy(false); chatState(data.text || "The editor call had a problem. Your comment is still here.", true); }
+    else if (type === "error") { chat.sentPlace = ""; editorPending = null; editorBusy(false); chatState(data.text || "The editor call had a problem. Your comment is still here.", true); }
     else if (type === "closed" || type === "stopped") {
       chat.call = null; chat.ready = false; chat.micOn = false; chat.sentPlace = ""; drawMic();
       chat.queue = []; editorPending = null; editorBusy(false);
@@ -696,7 +696,7 @@
       editorPending = { key: here.key, text };
       if (chat.ready) { chat.call.send(line); chatState("Sending your comment to the editor..."); }
       else { chat.queue.push(line); chatState("Comment queued on this device while the editor connects. Not sent yet."); }
-    } catch (error) { editorPending = null; editorBusy(false); chatState(`Comment not sent: ${error.message}. Your draft is saved.`, true); }
+    } catch (error) { chat.sentPlace = ""; editorPending = null; editorBusy(false); chatState(`Comment not sent: ${error.message}. Your draft is saved.`, true); }
   }
 
   function drawMic() {
