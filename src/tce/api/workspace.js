@@ -154,7 +154,63 @@
     if (typeof detail === "string" && detail) return detail;
     if (status === 401 || status === 403) return "This workspace refused the request.";
     if (status === 503) return "The engine is not available right now.";
+    if (status === 502 || status === 504) return "TCE did not answer in time. It may be restarting.";
     return "Something went wrong (" + status + ").";
+  }
+
+  /* 13-Nov (T-21112): Today on his phone painted the browser's raw "Failed to
+   * fetch". TCE had sent the first answer; the phone lost it on the way (a
+   * mobile connection drops, or the phone sleeps mid-load) and the page gave up
+   * after one try. A read is safe to repeat, so a GET now tries three times, and
+   * a stalled one is cut after GET_TIMEOUT_MS instead of spinning for ever.
+   * Writes are never repeated here: a POST that lost its answer may have landed. */
+  var GET_RETRY_WAITS = [0, 1500, 4000];
+  var GET_TIMEOUT_MS = 30000;
+  var RETRY_STATUS = { 502: true, 503: true, 504: true };
+
+  function networkError(cause) {
+    var error = new Error("The connection to TCE dropped while this was loading.");
+    error.network = true;
+    error.cause = cause;
+    return error;
+  }
+
+  function waitMs(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
+
+  // Waits ms or, when the browser knows it is offline, until it is back (10 s at most).
+  function waitForConnection(ms) {
+    if (navigator.onLine !== false) return waitMs(ms);
+    return new Promise(function (resolve) {
+      var timer = null;
+      var done = function () {
+        window.removeEventListener("online", done);
+        clearTimeout(timer);
+        resolve();
+      };
+      timer = setTimeout(done, Math.max(ms, 10000));
+      window.addEventListener("online", done);
+    });
+  }
+
+  // One request, body included. The time limit covers reading the body too,
+  // because that is where the 13-Nov answer was lost.
+  async function fetchOnce(url, init, timeoutMs) {
+    var controller = (timeoutMs && typeof AbortController === "function") ? new AbortController() : null;
+    var timer = controller ? setTimeout(function () { controller.abort(); }, timeoutMs) : null;
+    var req = controller ? Object.assign({}, init, { signal: controller.signal }) : init;
+    try {
+      var response = await fetch(url, req);
+      var text = await response.text();
+      return { response: response, text: text };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  // Says on the loading line what is happening, so a retry never looks frozen.
+  function showRetry(attempt, total) {
+    var line = document.querySelector("#view .working");
+    if (line) line.textContent = "Connection dropped, trying again (" + attempt + " of " + total + ")";
   }
 
   async function api(path, options) {
@@ -164,9 +220,29 @@
       init.headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(opts.body);
     }
-    var response = await fetch(apiV1 + path, init);
+    var isRead = init.method === "GET" && opts.retry !== false;
+    var waits = isRead ? GET_RETRY_WAITS : [0];
+    var got = null;
+    var lastError = null;
+    for (var i = 0; i < waits.length; i++) {
+      if (i) {
+        showRetry(i + 1, waits.length);
+        await waitForConnection(waits[i]);
+      }
+      try {
+        got = await fetchOnce(apiV1 + path, init, isRead ? GET_TIMEOUT_MS : 0);
+      } catch (e) {
+        got = null;
+        lastError = e;
+        continue;
+      }
+      if (isRead && RETRY_STATUS[got.response.status] && i < waits.length - 1) continue;
+      break;
+    }
+    if (!got) throw networkError(lastError);
+    var response = got.response;
     var payload = null;
-    var text = await response.text();
+    var text = got.text;
     if (text) { try { payload = JSON.parse(text); } catch (e) { payload = null; } }
     if (!response.ok) {
       var error = new Error(errorText(payload, response.status));
@@ -3466,7 +3542,7 @@
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
     "check-again", "release-hold", "settle-hold", "note-reply", "rule-delete",
     "rename", "rename-save", "add-anyway", "pubtab", "libcount", "topic-more", "title-review", "style-pick",
-    "pictures-toggle", "picture-add", "picture-remove"
+    "pictures-toggle", "picture-add", "picture-remove", "retry-view"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -3478,6 +3554,7 @@
     var d = target.dataset;
 
     if (d.go !== undefined) { event.preventDefault(); go(d.go); return; }
+    if (d.retryView !== undefined) { render(); return; }
     if (d.videosStep !== undefined) {
       var s = state.settings;
       state.videosDraft = Math.max(s.min, Math.min(s.max, state.videosDraft + Number(d.videosStep)));
@@ -3742,7 +3819,57 @@
     return (week.primary || []).filter(toFilmNow)[0] || null;
   }
 
+  /* A page that could not load because the connection dropped (or TCE was
+   * restarting) tries again by itself: when the phone says it is back online,
+   * when he comes back to the tab, and every AUTO_RETRY_MS while he is looking.
+   * It stops the moment he goes somewhere else. */
+  var AUTO_RETRY_MS = 15000;
+  var autoRetry = null;
+
+  function stopAutoRetry() {
+    if (!autoRetry) return;
+    window.removeEventListener("online", autoRetry.fire);
+    document.removeEventListener("visibilitychange", autoRetry.fire);
+    window.removeEventListener("pageshow", autoRetry.fire);
+    clearInterval(autoRetry.timer);
+    autoRetry = null;
+  }
+
+  function armAutoRetry() {
+    stopAutoRetry();
+    var href = window.location.href;
+    var fire = function () {
+      if (document.visibilityState === "hidden") return;
+      if (window.location.href !== href || !document.querySelector("[data-retry-view]")) {
+        stopAutoRetry();
+        return;
+      }
+      stopAutoRetry();
+      render();
+    };
+    autoRetry = { fire: fire, timer: setInterval(fire, AUTO_RETRY_MS) };
+    window.addEventListener("online", fire);
+    document.addEventListener("visibilitychange", fire);
+    window.addEventListener("pageshow", fire);
+  }
+
+  function paintLoadError(route, error) {
+    var passing = !!error.network || !!RETRY_STATUS[error.status];
+    var head = error.network ? "No connection to TCE" : "Could not open this";
+    var body = error.network
+      ? "The connection dropped while this page was loading. It tries again by itself as soon as the connection is back."
+      : error.message;
+    var html = '<div class="page"><div class="empty load-error"><strong>' + esc(head) + "</strong>"
+      + esc(body) + '</div><div class="actions">'
+      + '<button class="btn primary" type="button" data-retry-view>Try again</button>';
+    if (route.name !== "today") html += '<button class="btn" type="button" data-go="/today">Back to Today</button>';
+    $("view").innerHTML = html + "</div></div>";
+    status(passing ? "Trying again by itself" : "Could not load");
+    if (passing) armAutoRetry();
+  }
+
   async function render() {
+    stopAutoRetry();
     var route = parse();
     // The notes sheet belongs to its own address: any other page puts it away, and
     // its notes stay on the server. On its own address nothing here touches it.
@@ -3764,10 +3891,7 @@
       if (route.name === "room") $("pageTitle").textContent = "Topic";
       setTalkContext(route);
     } catch (error) {
-      $("view").innerHTML = '<div class="page"><div class="empty"><strong>Could not open this</strong>'
-        + esc(error.message) + '</div><div class="actions">'
-        + '<button class="btn" type="button" data-go="/today">Back to Today</button></div></div>';
-      status("Could not load");
+      paintLoadError(route, error);
     }
   }
 

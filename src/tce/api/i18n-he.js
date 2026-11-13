@@ -380,6 +380,14 @@
     "Brought back.": "הוחזר.",
     "This workspace refused the request.": "סביבת העבודה סירבה לבקשה.",
     "Could not open this": "לא הצלחתי לפתוח את זה",
+    // 13-Nov (T-21112): a page that lost its connection tries again by itself
+    "No connection to TCE": "אין חיבור ל-TCE",
+    "The connection dropped while this page was loading. It tries again by itself as soon as the connection is back.":
+      "החיבור נפל בזמן שהעמוד נטען. הוא ינסה שוב לבד ברגע שהחיבור יחזור.",
+    "The connection to TCE dropped while this was loading.": "החיבור ל-TCE נפל בזמן הטעינה.",
+    "TCE did not answer in time. It may be restarting.": "TCE לא ענה בזמן. ייתכן שהוא עולה מחדש.",
+    "Try again": "לנסות שוב",
+    "Trying again by itself": "מנסה שוב לבד",
 
     // Topics and the topic page
     "Script written": "התסריט נכתב",
@@ -756,6 +764,7 @@
     [/^Subscription capacity: [\s\S]*; resumes at (\S+)$/, function (_, iso) { return capacityLine(iso); }],
     [/^Waiting for subscription capacity: [\s\S]*$/, "המערכת בהפסקה קצרה וחוזרת לעבוד בקרוב"],
     [/^Something went wrong \((\d+)\)\.$/, "משהו השתבש ($1)."],
+    [/^Connection dropped, trying again \((\d+) of (\d+)\)$/, "החיבור נפל, מנסה שוב ($1 מתוך $2)"],
     // 11-Nov: the card's pictures button with its count
     [/^Pictures \((\d+)\)$/, "תמונות ($1)"],
     // Today's next step (today.py)
