@@ -15,12 +15,12 @@
 :root {
   color-scheme: light;
   --ink: #10213b;
-  --paper: #f7f3e8;
+  --paper: #f4f6fa;
   --signal: #c72c2c;
-  --lake: #145e96;
+  --lake: #2455cf;
   --moss: #366346;
-  --line: #b8b09d;
-  --white: #fffefa;
+  --line: #d4dce7;
+  --white: #ffffff;
   --amber: #b07d2a;
   --amber-bg: #fff6e6;
   /* Body and helper text. Solid values, never opacity on ink. */
@@ -28,7 +28,7 @@
   --helper: #4a5a70;
   --shadow: 0 10px 28px rgba(16, 33, 59, .16);
   --nav-h: 68px;
-  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  font-family: "Segoe UI", Arial, sans-serif;
   background: var(--paper);
   color: var(--ink);
 }
@@ -596,3 +596,25 @@ body[data-reader="largest"] .msg .bubble { font-size: 1.3rem; }
 .news-progress-item { display: flex; flex-wrap: wrap; gap: .8rem; justify-content: space-between; align-items: center; border-top: 1px solid #aab5c3; padding: 1rem 0; }
 .news-progress-item > div { flex: 1 1 220px; min-width: 0; }
 .news-progress-item p { margin: .4rem 0; }
+
+/* Focus: next creative action first, supporting evidence within reach. */
+.topbar { background:#fff; color:var(--ink); border-bottom:1px solid var(--line); box-shadow:none; }
+.topbar .identity span { color:var(--body); }
+.topbar .kmbot-link { color:var(--lake); background:#eaf1ff; }
+.topbar .icon-button { background:var(--lake); color:#fff; }
+.page h1,.page h2,.next-action strong { font-family:inherit; letter-spacing:-.02em; }
+.next-action { background:#eaf1ff; border:1px solid #adc4f5; border-radius:14px; box-shadow:none; }
+.next-action:active { transform:none; box-shadow:none; }
+.next-action strong { font-size:1.35rem; line-height:1.3; }
+.card,.count { border-width:1px; box-shadow:none; }
+.card.is-dim { opacity:1; background:#f5f7fa; }
+.bottom-nav { background:#fff; border-top:1px solid var(--line); box-shadow:none; }
+.bottom-nav a { color:var(--body); }
+.bottom-nav a[aria-current="page"] { color:#fff; background:var(--lake); }
+.workflow-summary { margin:20px 16px; border:1px solid var(--line); border-radius:12px; padding:0 14px; background:#fff; }
+.workflow-summary>summary { cursor:pointer; min-height:48px; display:flex; align-items:center; font-weight:600; }
+.workflow-summary>summary::before { content:'›'; margin-right:10px; }
+.workflow-summary[open]>summary::before { content:'⌄'; }
+.workflow-summary .news-progress { margin:0 0 14px; }
+input,textarea,select { font-size:max(16px,1rem); }
+@media(prefers-reduced-motion:reduce) { * { scroll-behavior:auto!important; transition:none!important; } }

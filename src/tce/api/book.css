@@ -226,3 +226,25 @@ body.has-player.device-voice { padding-bottom: calc(var(--player-h) + 34px + env
 /* A held row's longer phase words sit under the title, so the title keeps the full width. */
 .chapter-list button.held .title, .chapter-list button.held .length { grid-column: 1 / -1; }
 .chapter-list button.held .status-chip { grid-row: auto; grid-column: 1 / -1; justify-self: start; }
+/* Focus workspace: the current paragraph, player and review action stay together. */
+:root { --paper:#f4f6fa; --white:#fff; --line:#d4dce7; --lake:#2455cf; --amber:#76500e; font-family:"Segoe UI",Arial,sans-serif; }
+body.has-player,body.has-player.device-voice { padding-bottom:var(--player-space,240px); }
+.topbar { background:#fff; color:var(--ink); border-bottom:1px solid var(--line); box-shadow:none; }
+.identity span { color:var(--body); }
+.topbar .icon-button { background:var(--lake); color:#fff; }
+.topbar .film-button { color:#a72727; background:#fff; border-color:#d7a4a4; }
+.chapter-list button { box-shadow:none; border:1px solid var(--line); border-radius:12px; background:#fff; }
+.paragraphs { background:#fff; border-radius:14px; padding:16px 20px; }
+.paragraphs p { scroll-margin-block:110px 260px; }
+.chapter-head { margin-bottom:16px; }
+.player { background:#fff; color:var(--ink); border-top:1px solid var(--line); grid-template-columns:48px 56px 48px minmax(0,1fr) 48px; min-height:0; gap:8px; }
+.player .ctl { min-height:46px; border-radius:12px; }
+.player .ctl.play { background:var(--lake); color:#fff; }
+.reading-position { grid-column:1/-1; margin:0; font:13px/1.4 "Segoe UI",sans-serif; color:var(--body); text-align:center; }
+.reading-action { grid-column:1/-1; display:flex; justify-content:center; }
+.reading-action .btn { width:min(100%,440px); min-height:44px; }
+.editor-panel { border:1px solid var(--line); background:#fff; }
+.editor-form input { font-size:16px; }
+.voice-badge { font-weight:500; font-size:12px; }
+@media(min-width:800px) { .player { padding-inline:max(20px,calc((100vw - 740px)/2)); } }
+@media(prefers-reduced-motion:reduce) { * { scroll-behavior:auto!important; transition:none!important; } }

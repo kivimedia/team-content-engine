@@ -350,7 +350,7 @@
 
     // What the voice agent changed, right where he lands after a call.
     html += voicePanel(voiceItems);
-    html += newsProgressPanel(newsProgress);
+    var progressHtml = newsProgressPanel(newsProgress);
 
     html += "<h2>This week's recording list</h2>";
     if (!primary.length) {
@@ -377,6 +377,7 @@
       }
     }
     html += "</div>";
+    if (progressHtml) html += '<details class="workflow-summary"><summary>Source mix and publication progress</summary>' + progressHtml + '</details>';
     view.innerHTML = html;
     status(counts.waiting + " " + plural(counts.waiting, "idea") + " waiting");
   }
@@ -1267,6 +1268,13 @@
   function restoreTalkFooter() {
     var foot = $("talkSheet").querySelector(".sheet-foot");
     foot.innerHTML = TALK_FOOTER;
+    var draftKey = "tce-talk-draft:" + (state.talkContext ? state.talkContext.type + ":" + state.talkContext.id : "general");
+    var draftInput = foot.querySelector("#talkInput");
+    if (draftInput) {
+      try { draftInput.value = localStorage.getItem(draftKey) || ""; } catch (e) { /**/ }
+      draftInput.dataset.draftKey = draftKey;
+      draftInput.addEventListener("input", function () { try { localStorage.setItem(draftKey, draftInput.value); } catch (e) { /**/ } });
+    }
     foot.querySelectorAll("[data-mode]").forEach(function (chip) {
       chip.setAttribute("aria-pressed", chip.dataset.mode === state.talkMode ? "true" : "false");
       chip.addEventListener("click", function () {
@@ -1397,7 +1405,10 @@
       var result = await api("/editorial/threads/" + state.thread.thread_id + "/messages", {
         method: "POST", body: { text: text, mode: state.talkMode }
       });
-      input.value = "";
+      if (input.value.trim() === text) {
+        input.value = "";
+        try { if (input.dataset.draftKey) localStorage.removeItem(input.dataset.draftKey); } catch (e) { /**/ }
+      }
       state.thread.messages = (state.thread.messages || []).concat(result.messages);
       renderTalk();
       startTalkPoll();

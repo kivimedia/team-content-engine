@@ -60,6 +60,18 @@
     chapter: null, index: 0, playing: false, mode: "", audio: null, utterance: null, token: 0,
     film: null, sending: false, retryId: null, choosing: null,
   };
+  const readLocal = (key, fallback = "") => { try { return localStorage.getItem(key) || fallback; } catch (_) { return fallback; } };
+  const saveLocal = (key, value) => { try { localStorage.setItem(key, value); } catch (_) { /* private browsing */ } };
+  const positionKey = (c) => `tce-book-position:${c.n}:v${c.version || 1}`;
+  let draftPlace = "";
+  let editorPending = null;
+  function editorDraft() {
+    const key = place().key;
+    if (draftPlace && draftPlace !== key) saveLocal(`tce-book-comment:${draftPlace}`, $("editorText").value);
+    if (draftPlace !== key) $("editorText").value = readLocal(`tce-book-comment:${key}`);
+    draftPlace = key;
+  }
+  const editorBusy = (busy) => { $("editorForm").querySelector('[type="submit"]').disabled = busy; };
 
   /* ------------------------------------------------------------------ api */
 
@@ -217,10 +229,11 @@
     stop();
     const c = await api(`/book/chapters/${n}`);
     state.chapter = c;
-    state.index = 0;
+    const saved = Number(readLocal(positionKey(c), "0"));
+    state.index = Number.isInteger(saved) ? Math.max(0, Math.min(c.paragraphs.length - 1, saved)) : 0;
     state.narration = c.narration;
     state.seat = c.editor_seat || state.seat;
-    $("chapterPart").textContent = [c.part, c.version > 1 ? `version ${c.version}` : ""].filter(Boolean).join(" - ");
+    $("chapterPart").textContent = [c.part, `version ${c.version || 1}`].filter(Boolean).join(" - ");
     $("chapterTitle").textContent = `${label(c)}: ${c.title}`;
     $("bookTitle").textContent = label(c);
     $("approveButton").textContent = isNew(c) ? "Approve this episode" : "Approve this chapter";
@@ -252,7 +265,8 @@
     state.mode = "";
     voiceBadge();
     mark();
-    window.scrollTo(0, 0);
+    if (state.index > 0) box.children[state.index]?.scrollIntoView({ block: "center" });
+    else window.scrollTo(0, 0);
   }
 
   const narrationShort = () => (state.narration && state.narration.on ? "stock ElevenLabs voice" : DEVICE_VOICE_WORDS);
@@ -349,8 +363,10 @@
       status(action === "approve" ? `The layout of ${label(state.chapter)} is approved. Press Write this chapter when you want it written.`
         : action === "reopen" ? `The layout of ${label(state.chapter)} is open again. Add a note or talk it over with the editor.`
           : "Your note is saved with this layout. The editor reads it before it changes the layout.", "saved");
+      return true;
     } catch (error) {
       status(`That did not save: ${error.message}`, true);
+      return false;
     } finally {
       buttons.forEach((id) => { $(id).disabled = false; });
     }
@@ -392,6 +408,7 @@
   }
 
   function mark() {
+    if (state.chapter) saveLocal(positionKey(state.chapter), String(state.index));
     const nodes = $("paragraphs").children;
     for (let i = 0; i < nodes.length; i += 1) {
       nodes[i].classList.toggle("now", i === state.index);
@@ -402,6 +419,7 @@
     chatWhere();
     $("playButton").innerHTML = state.playing ? "&#10074;&#10074;" : "&#9654;";
     $("playButton").setAttribute("aria-label", state.playing ? "Pause" : "Play");
+    $("readingPosition").textContent = state.chapter ? `Paragraph ${state.index + 1} of ${state.chapter.paragraphs.length} · Position saved on this device` : "";
   }
 
   /* -------------------------------------------------------------- reading */
@@ -564,8 +582,8 @@
     const text = c.paragraphs[i] || "";
     const excerpt = text.length > 600 ? `${text.slice(0, 600)}...` : text;
     return {
-      key: `ch${c.n}:p${i}`,
-      words: c.paragraphs.length ? `${label(c)}, paragraph ${i + 1}` : label(c),
+      key: `ch${c.n}:v${c.version || 1}:p${i}`,
+      words: c.paragraphs.length ? `${label(c)}, version ${c.version || 1}, paragraph ${i + 1}` : label(c),
       line: c.paragraphs.length
         ? `He is listening to ${label(c)} "${c.title}" (version ${c.version || 1}, ${c.status_words || c.status}) in the Book in TCE, paused at paragraph ${i + 1} of ${c.paragraphs.length}, which reads: "${excerpt}"`
         : `He has ${label(c)} "${c.title}" open in the Book in TCE; it is not written yet.${c.layout_text ? ` His layout for it says: "${c.layout_text.slice(0, 600)}"` : ""}`,
@@ -621,12 +639,21 @@
       chatState(chat.micOn ? "Listening. Talk, or type below." : "Ready. Type below, or tap the mic and talk.");
       const waiting = chat.queue.splice(0);
       for (const text of waiting) chat.call.send(text);
-    } else if (type === "said") chatLine("me", chatShown(data.text));
+    } else if (type === "said") {
+      chatLine("me", chatShown(data.text));
+      if (editorPending && chatShown(data.text) === editorPending.text) {
+        const pending = editorPending; editorPending = null; editorBusy(false);
+        if (readLocal(`tce-book-comment:${pending.key}`) === pending.text) saveLocal(`tce-book-comment:${pending.key}`, "");
+        if (draftPlace === pending.key && $("editorText").value.trim() === pending.text) $("editorText").value = "";
+        chatState("Comment received by the editor. Waiting for the reply.");
+      }
+    }
     else if (type === "turn_end") chatLine("editor", data.text);
     else if (type === "mic") { chat.micOn = !data.muted; drawMic(); }
-    else if (type === "error") chatState(data.text || "The editor call had a problem.", true);
+    else if (type === "error") { editorPending = null; editorBusy(false); chatState(data.text || "The editor call had a problem. Your comment is still here.", true); }
     else if (type === "closed" || type === "stopped") {
       chat.call = null; chat.ready = false; chat.micOn = false; chat.sentPlace = ""; drawMic();
+      chat.queue = []; editorPending = null; editorBusy(false);
       if (chat.open) chatState("The call ended. Type or tap the mic to start it again.");
     }
   }
@@ -653,17 +680,23 @@
     return true;
   }
 
-  function withPlace(text) {
-    const here = place();
+  function withPlace(text, here = place()) {
     if (here.key === chat.sentPlace) return text;
     chat.sentPlace = here.key;
     return `[Where I am in the Book] ${here.line}${text ? `\n\nZiv: ${text}` : ""}`;
   }
 
   async function chatSend(text) {
-    if (!(await ensureCall())) return;
-    const line = withPlace(text);
-    if (chat.ready) chat.call.send(line); else chat.queue.push(line);
+    const here = place();
+    saveLocal(`tce-book-comment:${here.key}`, text);
+    editorBusy(true);
+    try {
+      if (!(await ensureCall())) { editorBusy(false); return; }
+      const line = withPlace(text, here);
+      editorPending = { key: here.key, text };
+      if (chat.ready) { chat.call.send(line); chatState("Sending your comment to the editor..."); }
+      else { chat.queue.push(line); chatState("Comment queued on this device while the editor connects. Not sent yet."); }
+    } catch (error) { editorPending = null; editorBusy(false); chatState(`Comment not sent: ${error.message}. Your draft is saved.`, true); }
   }
 
   function drawMic() {
@@ -714,6 +747,7 @@
 
   /* The place shown on the open panel follows the reading. */
   function chatWhere() {
+    editorDraft();
     if (chat.open) $("editorWhere").textContent = `About ${place().words}`;
   }
 
@@ -1050,21 +1084,26 @@
     event.preventDefault();
     const text = $("editorText").value.trim();
     if (!text) return;
-    $("editorText").value = "";
     if (state.playing) { stop(); top("Paused for the editor"); }
     chatSend(text);
   });
   $("editorSignin").setAttribute("href", `/voice?return=${encodeURIComponent(window.location.pathname)}`);
+  $("editorText").addEventListener("input", () => saveLocal(`tce-book-comment:${draftPlace}`, $("editorText").value));
+  new ResizeObserver(() => {
+    if (!$("player").hidden) document.documentElement.style.setProperty("--player-space", `${$("player").getBoundingClientRect().height + 16}px`);
+  }).observe($("player"));
   $("approveButton").addEventListener("click", () => setStatus("approved"));
   $("layoutApprove").addEventListener("click", () => layoutWord("approve"));
   $("layoutReopen").addEventListener("click", () => layoutWord("reopen"));
   $("writeButton").addEventListener("click", askWrite);
-  $("planNoteForm").addEventListener("submit", (event) => {
+  $("planNoteForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const text = $("planNoteText").value.trim();
     if (!text) return;
-    $("planNoteText").value = "";
-    layoutWord("note", text);
+    const button = $("planNoteForm").querySelector('[type="submit"]');
+    button.disabled = true;
+    try { if (await layoutWord("note", text)) { if ($("planNoteText").value.trim() === text) $("planNoteText").value = ""; } }
+    finally { button.disabled = false; }
   });
   // Only when he asks: the chapter is talked through with the editor, against its layout.
   $("workshopButton").addEventListener("click", () => {
