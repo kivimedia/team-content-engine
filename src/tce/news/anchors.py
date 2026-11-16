@@ -251,20 +251,21 @@ async def repos_from_commit_evidence(
     """
     now = now or datetime.now(UTC).replace(tzinfo=None)
     since = now - timedelta(days=window_days)
+    # Only the repo name is read here. Selecting the whole payload loaded every
+    # commit group's full record for one key (T-21041).
     rows = (
         await session.execute(
-            select(EvidenceSource.payload_private, EvidenceSource.occurred_at).where(
+            select(EvidenceSource.payload_private["repo"].as_string()).where(
                 EvidenceSource.workspace_id == workspace_id,
                 EvidenceSource.source_kind == "github_commit_group",
                 EvidenceSource.occurred_at.is_not(None),
                 EvidenceSource.occurred_at >= since,
             )
         )
-    ).all()
+    ).scalars().all()
 
     counts: Counter[str] = Counter()
-    for payload, _occurred in rows:
-        repo = (payload or {}).get("repo") if isinstance(payload, dict) else None
+    for repo in rows:
         if isinstance(repo, str) and repo.strip():
             counts[repo.strip()] += 1
 

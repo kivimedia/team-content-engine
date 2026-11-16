@@ -546,9 +546,18 @@ async def _anchor_moments(
     demonstrated_after = False
     if repos or named:
         since = now - timedelta(days=RECENT_EVIDENCE_DAYS)
-        for moment, source in (
+        # Columns, not records: a meeting's record carries its whole transcript,
+        # and loading 200 of them per story to read one key held gigabytes at
+        # the morning appraisal (T-21041). One row carries both sides' names.
+        for row in (
             await session.execute(
-                select(EvidenceMoment, EvidenceSource)
+                select(
+                    EvidenceMoment.id, EvidenceMoment.lesson_summary,
+                    EvidenceMoment.excerpt_private, EvidenceMoment.claim_type,
+                    EvidenceMoment.source_version_hash, EvidenceSource.source_kind,
+                    EvidenceSource.occurred_at,
+                    EvidenceSource.payload_private["repo"].as_string().label("repo"),
+                )
                 .join(EvidenceSource, EvidenceMoment.source_id == EvidenceSource.id)
                 .where(
                     EvidenceMoment.workspace_id == ws,
@@ -565,7 +574,8 @@ async def _anchor_moments(
         ).all():
             if len(recent) >= 5:
                 break
-            repo = (source.payload_private or {}).get("repo")
+            moment = source = row
+            repo = row.repo
             text = " ".join(
                 str(x or "") for x in (moment.lesson_summary, moment.excerpt_private)
             ).casefold()
