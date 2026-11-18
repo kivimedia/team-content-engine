@@ -597,9 +597,10 @@
      being read, or the chapters list), and when the place changes the next line says so. */
   const VOICE_SCRIPT = "/voice-client.js";
   const EDITOR_AGENT = "book-editor";
+  const CALL_ENDED = "The call with the editor ended";
   const chat = { call: null, open: false, ready: false, loading: null, sentPlace: "", micOn: false, queue: [],
     lines: [], wanted: false, closing: false, ended: false, dropped: false, gen: 0, backAt: 0, redials: 0, note: "",
-    shown: false };
+    shown: false, topBefore: "" };
 
   /* 18-Nov-2026 (T-22867), Ziv: in the KM BOT app the call and the chat keep going when he
      switches to Waze; in the Book they did not. The call is the same voice client, so the
@@ -742,7 +743,7 @@
       }
       chat.micOn = false; chat.wanted = false; chat.dropped = false;
       // The call ended while the chat was hidden: nothing is left open behind the bar.
-      if (chat.open && !chat.shown) { chat.open = false; if (!chat.closing) top("The call with the editor ended"); }
+      if (chat.open && !chat.shown) { chat.open = false; if (!chat.closing) { chat.topBefore = $("bookState").textContent; top(CALL_ENDED); } }
       drawMic();
       if (chat.open) chatState("The call ended. Type or tap the mic to start it again.");
       keepChat();
@@ -796,6 +797,9 @@
     chat.closing = false;
     chat.ended = false;
     chat.wanted = true;
+    // A new call: the top line stops saying the last one ended (T-22863, seen on a live test call).
+    if ($("bookState").textContent === CALL_ENDED) top(chat.topBefore || "On a call with the editor");
+    chat.topBefore = "";
     // Events from a call this page already let go of (a drop it has redialed) change nothing.
     const gen = ++chat.gen;
     chat.call = window.KmVoice.start({ agent: EDITOR_AGENT, greet: false, startMuted: !chat.micOn,
