@@ -2131,6 +2131,18 @@
                  return '<button class="btn' + (on ? " primary" : " quiet") + '" type="button" aria-pressed="' + on + '"'
                       + (on ? "" : ' data-style-pick="' + esc(item.upload_id) + '" data-style="' + s[0] + '"') + ">" + s[1] + "</button>";
                }).join("") + "</div>";
+        // 18-Nov: new backgrounds, for this one video, in the Creatorz style. A paid model draws
+        // them, so the lit choice does nothing and the other one asks before it starts.
+        if (action.backdrop && action.current === "creatorz") {
+          html += '<div class="style-pick" role="group" aria-label="Backgrounds"><span class="style-pick-label">Backgrounds</span>'
+               + [["off", "Real"], ["on", "New places"]].map(function (b) {
+                   var lit = (b[0] === "on") === !!action.backdrop.on;
+                   return '<button class="btn' + (lit ? " primary" : " quiet") + '" type="button" aria-pressed="' + lit + '"'
+                        + (lit ? "" : ' data-backdrop-pick="' + esc(item.upload_id) + '" data-backdrop="' + b[0]
+                           + '" data-about="' + esc(String(action.backdrop.about_usd)) + '" data-max="' + esc(String(action.backdrop.max_usd)) + '"')
+                        + ">" + b[1] + "</button>";
+                 }).join("") + "</div>";
+        }
         html += picturesBlock(item.upload_id, action.pictures || []);
       } else if (action.key === "edit_again") {
         html += '<button class="btn quiet" type="button" data-edit-again="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
@@ -2692,6 +2704,26 @@
     try {
       await api("/production/uploads/" + encodeURIComponent(uploadId) + "/style", { method: "POST", body: { style: style } });
       toast("Making the " + name + " version. The card shows each step as it happens.");
+      renderLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  // 18-Nov: every other scene of this video redrawn in another part of the village. It costs
+  // real money, so the question names the amount before anything starts.
+  async function pickBackdrop(uploadId, choice, about, max) {
+    var on = choice === "on";
+    var ask = on
+      ? "Show other parts of the village behind you in every other scene? A paid video model draws them: about $"
+        + Number(about).toFixed(2) + " for this video, never more than $" + Number(max).toFixed(2)
+        + ". It adds about 10 minutes. The current edit is replaced when the new one is ready."
+      : "Go back to the real backgrounds in this video? It takes about 10 minutes and costs nothing.";
+    if (!window.confirm(ask)) return;
+    try {
+      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/backdrop", { method: "POST", body: { on: on } });
+      toast(on ? "Making it with new backgrounds. The card shows each scene as it is drawn."
+               : "Making it with the real backgrounds. The card shows each step as it happens.");
       renderLibrary();
     } catch (error) {
       toast(error.message, true);
@@ -3713,6 +3745,7 @@
     if (d.archive !== undefined) { archiveRecording(d.archive, true); return; }
     if (d.unarchive !== undefined) { archiveRecording(d.unarchive, false); return; }
     if (d.stylePick !== undefined) { pickStyle(d.stylePick, d.style); return; }
+    if (d.backdropPick !== undefined) { pickBackdrop(d.backdropPick, d.backdrop, d.about, d.max); return; }
     if (d.picturesToggle !== undefined) { togglePictures(target); return; }
     if (d.pictureAdd !== undefined) { addPicture(d.pictureAdd); return; }
     if (d.pictureRemove !== undefined) { removePicture(d.pictureRemove, d.picture); return; }

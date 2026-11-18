@@ -43,6 +43,7 @@ from tce.models.editorial_workspace import (
     EditSession,
 )
 from tce.production import agent_talks, autoedit
+from tce.production.backdrop import config as backdrop_config
 from tce.production.creatorz import reels as creatorz_reels
 from tce.production.retakes import edit_join, edit_length, frame_keep, map_to_edit, map_to_source
 
@@ -195,6 +196,8 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
                     # version on the card was made before the last change to them.
                     "pictures": creatorz_reels.pictures_json(upload.id, upload.edit_plan),
                     "stale": creatorz_reels.pictures_changed(upload.edit_plan),
+                    # 18-Nov: the new-backgrounds switch, only where the workspace has its looks.
+                    "backdrop": backdrop_config.card(upload.workspace_id, upload.edit_plan),
                 }
             )
     if upload.storage_path:

@@ -17,11 +17,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
 import signal
 import sys
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -33,6 +35,8 @@ from tce.production.creatorz.engine.creatorz_reel import cut as engine_cut
 from tce.production.creatorz.engine.creatorz_reel import plan as engine_plan
 from tce.production.retakes import EDIT_FPS
 from tce.settings import settings
+
+_log = logging.getLogger(__name__)
 
 PILL, CREATORZ = "pill", "creatorz"
 STYLES = (PILL, CREATORZ)
@@ -57,6 +61,7 @@ class ReelResult:
     shots: int
     checklist: list[list[str]]
     captions: list[list[Any]]
+    backdrop: dict[str, Any] | None = None  # 18-Nov: the new-backgrounds step's report, when it ran
 
 
 MAX_PICTURES = 8
@@ -585,6 +590,12 @@ _PROGRESS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^compose: frame (\d+)/(\d+)"), r"drawing the captions, text and zooms, frame \1 of \2"),
     (re.compile(r"^mix: "), "mixing your voice, the music and the sound effects"),
     (re.compile(r"^(PASS|FAIL|INFO) "), "measuring the finished video"),
+    # 18-Nov: the new-backgrounds step, between the cut and the masks.
+    (re.compile(r"^backdrop: scene (\d+)/(\d+) .*from an earlier render"), r"new backgrounds, scene \1 of \2 is already drawn"),
+    (re.compile(r"^backdrop: scene (\d+)/(\d+) .*sent \(try 1"), r"new backgrounds, drawing scene \1 of \2 (about a minute and a half each)"),
+    (re.compile(r"^backdrop: scene (\d+)/(\d+) .*sent \(try 2"), r"new backgrounds, scene \1 of \2 did not pass its check, drawing it once more"),
+    (re.compile(r"^backdrop: scene (\d+)/(\d+) kept real"), r"new backgrounds, scene \1 of \2 keeps its real background"),
+    (re.compile(r"^backdrop: joined (\d+)/(\d+)"), r"new backgrounds on \1 of \2 scenes, putting the picture back together"),
 ]
 
 
@@ -627,15 +638,17 @@ def _stop(proc: asyncio.subprocess.Process) -> None:
 
 
 def _last_error(tail: list[str]) -> str:
-    return next((t for t in reversed(tail) if not re.match(r"^(PASS|FAIL|INFO|compose:|masks:|cut:)", t)), "no output")[:200]
+    return next((t for t in reversed(tail) if not re.match(r"^(PASS|FAIL|INFO|compose:|masks:|cut:|backdrop:)", t)), "no output")[:200]
 
 
-async def _run_engine(plan_path: Path, work: Path, on_status: Status) -> list[str]:
-    python = settings.production_creatorz_python or sys.executable
-    command = [*_wrapper(), python, "-P", str(ENGINE_DIR / "reel.py"), "all", str(plan_path)]
+async def _run_stage(
+    command: list[str], work: Path, on_status: Status, timeout_s: float, env: dict[str, str] | None = None,
+) -> tuple[int | None, list[str]]:
+    """One run of the engine (or of a step beside it): its exit code and its last lines.
+    Raises TimeoutError when it runs past ``timeout_s``; the process is stopped either way."""
     proc = await asyncio.create_subprocess_exec(
         *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=str(work),
-        env=_engine_env(), start_new_session=hasattr(os, "killpg"),
+        env=env or _engine_env(), start_new_session=hasattr(os, "killpg"),
     )
     tail: list[str] = []
     last = ""
@@ -654,20 +667,74 @@ async def _run_engine(plan_path: Path, work: Path, on_status: Status) -> list[st
         await proc.wait()
 
     try:
-        await asyncio.wait_for(read(), timeout=settings.production_creatorz_timeout_s)
-    except TimeoutError as exc:
-        raise CreatorzFailed(f"the render ran past {settings.production_creatorz_timeout_s / 60:.0f} minutes") from exc
+        await asyncio.wait_for(read(), timeout=timeout_s)
     finally:
         if proc.returncode is None:
             _stop(proc)
-    if proc.returncode not in ENGINE_OK:
-        raise CreatorzFailed(f"the engine stopped (exit {proc.returncode}): {_last_error(tail)}")
+    return proc.returncode, tail
+
+
+async def _run_backdrop(plan_path: Path, work: Path, on_status: Status, backdrop: dict[str, Any]) -> None:
+    """18-Nov: every other scene of the cut redrawn in another part of the village, by a paid
+    video model, before anything is drawn on top. It runs under the engine's Python with the
+    engine's memory cap. Never a reason for the render to fail: whatever happens here, the cut's
+    picture is either changed whole or left as it was, and the render goes on."""
+    from tce.production.backdrop import config as backdrop_config
+
+    python = settings.production_creatorz_python or sys.executable
+    told = work / "backdrop.cfg.json"
+    told.write_text(json.dumps({**backdrop, "engine_dir": str(ENGINE_DIR)}), encoding="utf-8")
+    command = [*_wrapper(), python, "-P", str(backdrop_config.CLI), str(plan_path), str(told)]
+    # The key goes by the environment, never on a command line another user could read.
+    env = {**_engine_env(), "TCE_BACKDROP_KEY": settings.production_backdrop_key}
+    await on_status("Creatorz style: new backgrounds, choosing the scenes")
+    try:
+        code, tail = await _run_stage(command, work, on_status, settings.production_backdrop_timeout_s, env)
+        why = "" if code == 0 else f"exit {code}: {(tail or ['no output'])[-1][:160]}"
+    except TimeoutError:
+        why = f"it ran past {settings.production_backdrop_timeout_s / 60:.0f} minutes"
+    except OSError as exc:
+        why = str(exc)[:160]
+    if why:
+        _log.warning("backdrop step for %s did not finish (%s); the real backgrounds stay", work.name, why)
+        await on_status("Creatorz style: the new backgrounds could not be made, keeping the real ones")
+
+
+async def _run_engine(
+    plan_path: Path, work: Path, on_status: Status, backdrop: dict[str, Any] | None = None,
+) -> list[str]:
+    python = settings.production_creatorz_python or sys.executable
+    limit = settings.production_creatorz_timeout_s
+
+    async def stage(name: str, ok: tuple[int, ...], left_s: float) -> list[str]:
+        command = [*_wrapper(), python, "-P", str(ENGINE_DIR / "reel.py"), name, str(plan_path)]
+        try:
+            code, tail = await _run_stage(command, work, on_status, left_s)
+        except TimeoutError as exc:
+            raise CreatorzFailed(f"the render ran past {limit / 60:.0f} minutes") from exc
+        if code not in ok:
+            raise CreatorzFailed(f"the engine stopped (exit {code}): {_last_error(tail)}")
+        return tail
+
+    if not backdrop:
+        return await stage("all", ENGINE_OK, limit)
+    # The same stages "all" runs, one at a time, with the new backgrounds between the cut and
+    # everything that reads its picture. The step's own minutes do not count against the engine's.
+    used = 0.0
+    tail: list[str] = []
+    for name in ("cut", "masks", "compose", "mix", "measure"):
+        began = time.monotonic()
+        tail = await stage(name, ENGINE_OK if name == "measure" else (0,), max(1.0, limit - used))
+        used += time.monotonic() - began
+        if name == "cut":
+            await _run_backdrop(plan_path, work, on_status, backdrop)
     return tail
 
 
 async def render_reel(
     *, src: Path, words: list[dict[str, Any]], keep: list[list[float]], lang: str, work: Path,
     moments: list[dict[str, Any]], punchline: int | None, bed: str | None, on_status: Status,
+    backdrop: dict[str, Any] | None = None,
 ) -> ReelResult:
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -685,7 +752,7 @@ async def render_reel(
         await on_status("Creatorz style: waiting for the video ahead of this one to finish")
     async with _one_render:
         await on_status("Creatorz style: preparing the footage")
-        tail = await _run_engine(plan_path, work, on_status)
+        tail = await _run_engine(plan_path, work, on_status, backdrop)
     out, voice = work / "reel.mp4", work / "voice.wav"
     if not out.exists() or out.stat().st_size == 0 or not voice.exists():
         # exit 1 is also what a crash returns, not only a failed checklist line
@@ -694,4 +761,5 @@ async def render_reel(
     return ReelResult(
         out=out, voice=voice, shots=len(read("edit.json")["shots"]), checklist=read("checklist.json"),
         captions=[list(c) for c in read("events.json")["captions"]],
+        backdrop=read("backdrop.json") if backdrop and (work / "backdrop.json").exists() else None,
     )

@@ -71,6 +71,7 @@ from tce.production import (
 )
 from tce.production import laughs as laugh_rules
 from tce.production import rules as rule_text
+from tce.production.backdrop import config as backdrop_config
 from tce.production.creatorz import reels as creatorz_reels
 from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
@@ -1182,6 +1183,7 @@ class _Styled:
     captions: list[list[Any]]
     keep: list[list[float]]  # what the file was cut on: the edit with the air taken out
     cache: dict[str, Any]
+    backdrop: dict[str, Any] | None = None  # 18-Nov: what the new-backgrounds step did
 
     def detail(self, length: str, top_text: str | None, denoise: str | None) -> str:
         # The engine's three short-reel pacing lines (first word on frame 1, a 0.2 s tail, no
@@ -1201,6 +1203,7 @@ class _Styled:
         return (
             f"Creatorz style ready: {self.shots} shots, {length} long, checklist {passed} of {len(scored)}"
             + (f". This style leaves out {' and '.join(missing)}" if missing else "")
+            + backdrop_config.said(self.backdrop)
         )[:500]
 
 
@@ -1259,6 +1262,8 @@ async def _render_creatorz(
         made = await creatorz_reels.render_reel(
             src=src, words=words, keep=tight, lang=lang, work=work, moments=moments,
             punchline=chosen["punchline"], bed=creatorz_reels.bed_for(upload_id), on_status=report,
+            # 18-Nov: new backgrounds on every other scene, only when he switched it on for this video.
+            backdrop=backdrop_config.for_render(ws, upload_id, src, plan),
         )
         os.replace(made.voice, creatorz_voice_path(out))
         os.replace(made.out, out)
@@ -1271,7 +1276,7 @@ async def _render_creatorz(
     await media.make_light_copy(out, report)
     return _Styled(made.shots, made.checklist, made.captions, tight, {
         "key": key, "keep": tight, **chosen, "pictures": creatorz_reels.pictures_seen(pictures),
-    }), None
+    }, made.backdrop), None
 
 
 async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str) -> None:
@@ -1381,6 +1386,8 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         if styled is not None:
             sidecar["style"] = creatorz_reels.CREATORZ
             sidecar["checklist"] = styled.checklist
+            if styled.backdrop:
+                sidecar["backdrop"] = backdrop_config.summary(styled.backdrop)
             sidecar["captions"] = qc.caption_data(
                 on_edit, None, [{"start": a, "end": b, "lines": [text]} for a, b, text in styled.captions]
             )
@@ -1641,6 +1648,57 @@ async def choose_style(
     _spawn(_render_then_check(row.id, ws, attempt, "cut"))
     return upload_json(row)
 
+
+class BackdropChoice(BaseModel):
+    on: bool
+
+
+@router.post("/uploads/{upload_id}/backdrop", status_code=202)
+async def choose_backdrop(
+    upload_id: uuid.UUID,
+    body: BackdropChoice,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """18-Nov: new backgrounds for this one video, on or off. A paid video model redraws every
+    other scene, so it is never on unless he switched it on here; saved with the edit's other
+    choices like its style, then rendered like any render he starts."""
+    if not creatorz_reels.enabled_for(ws) or not backdrop_config.offered(ws):
+        raise HTTPException(status_code=404, detail="New backgrounds are not switched on for this workspace")
+    await reconcile_interrupted_uploads(db, ws)
+    row = await _upload(db, ws, upload_id)
+    if not row.edit_plan or not row.edited_path:
+        raise HTTPException(status_code=409, detail="This video has no edit yet")
+    await _refuse_while_sitting(db, ws, row.id)
+    if row.edit_plan.get("meaning_check", {}).get("status") == "blocked":
+        raise HTTPException(status_code=409, detail="The meaning check is holding this edit. Settle that first.")
+    if creatorz_reels.style_of(row.edit_plan) != creatorz_reels.CREATORZ:
+        raise HTTPException(status_code=409, detail="New backgrounds are made in the Creatorz style. Choose Creatorz first.")
+    if upload_busy(row) or backdrop_config.wanted(row.edit_plan) == body.on:
+        return upload_json(row)
+    if not row.storage_path or not Path(row.storage_path).exists():
+        raise HTTPException(status_code=409, detail="The original upload is missing from storage; upload it again")
+    plan = dict(row.edit_plan)
+    overrides = dict(plan.get("overrides") or {})
+    if body.on:
+        overrides[backdrop_config.KEY] = backdrop_config.ON
+    else:
+        overrides.pop(backdrop_config.KEY, None)
+    plan["overrides"] = overrides
+    row.edit_plan = plan
+    attempt = _claim(
+        row, "rendering",
+        "Queued: making the Creatorz version with new backgrounds" if body.on
+        else "Queued: making the Creatorz version with the real backgrounds",
+    )
+    try:
+        await db.commit()
+    except BaseException:
+        _active_attempts.discard(attempt)
+        raise
+    await db.refresh(row)
+    _spawn(_render_then_check(row.id, ws, attempt, "cut"))
+    return upload_json(row)
 
 
 # ---------------------------------------------------------------- pictures (11-Nov)

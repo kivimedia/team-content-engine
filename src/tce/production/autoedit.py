@@ -1443,6 +1443,9 @@ def merge_overrides(
     # 11-Nov: nor the pictures he attached for it.
     if old.get("pictures"):
         out["pictures"] = old["pictures"]
+    # 18-Nov: nor the new backgrounds he switched on for it.
+    if old.get("backdrop"):
+        out["backdrop"] = old["backdrop"]
     return out
 
 

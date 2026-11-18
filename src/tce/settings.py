@@ -227,6 +227,20 @@ class Settings(BaseSettings):
     # rembg's dependencies can never move what TCE imports. Empty: this Python.
     production_creatorz_python: str = ""
     production_creatorz_timeout_s: float = 3600.0
+    # 18-Nov: new backgrounds for a walking video (Creatorz style only). A PAID video model
+    # redraws every other scene so the speaker walks through other parts of their village.
+    # Off for every video until its owner switches it on, and offered only where it can
+    # work: this folder holds a set of looks per workspace (<dir>/<workspace id>/looks.json
+    # and its stills) and the key is set. No folder or no key: nobody sees the switch.
+    production_backdrop_dir: str = ""
+    production_backdrop_key: str = ""
+    production_backdrop_model: str = "gemini-omni-1.2-flash"
+    production_backdrop_judge_model: str = "gemini-flash-latest"
+    production_backdrop_resolution: str = "1080p"
+    # Dollars: the most one render may spend, and the most all renders may spend in 24 hours.
+    production_backdrop_max_usd: float = 8.0
+    production_backdrop_day_usd: float = 25.0
+    production_backdrop_timeout_s: float = 1800.0
     # 25-Sep: a finished session edits itself and editing requests run themselves,
     # on the subscription worker. Off = the old click-each-step flow.
     production_auto_edit: bool = True
