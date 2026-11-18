@@ -257,3 +257,21 @@ body.has-player,body.has-player.device-voice { padding-bottom:var(--player-space
 .voice-badge { font-weight:500; font-size:12px; }
 @media(min-width:800px) { .player { padding-inline:max(20px,calc((100vw - 740px)/2)); } }
 @media(prefers-reduced-motion:reduce) { * { scroll-behavior:auto!important; transition:none!important; } }
+/* 18-Nov-2026 (T-22863): the chat icon shows or hides the chat and never ends the call. While
+   the chat is hidden and the call is on, a row of the top bar says so, with Open chat and End
+   call. It is part of the sticky bar, so it stays in view and pushes the page, never covers it. */
+.call-bar {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 8px; padding: 6px 8px 6px 12px; border-radius: 12px;
+  background: #e8f5ec; border: 1px solid #2f7a48; color: var(--ink); font-size: 1rem;
+}
+.call-bar[hidden] { display: none; }
+.call-dot { width: 10px; height: 10px; border-radius: 50%; background: #1f8a4c; flex: none; }
+.call-bar-text { flex: 1 1 140px; min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+.call-bar-btn {
+  min-height: 44px; padding: 0 14px; border-radius: 22px; border: 2px solid var(--lake);
+  background: #fff; color: var(--lake); font-weight: 800; font-size: 1rem;
+}
+.call-bar-btn.end, .btn.end-call { background: var(--signal); border-color: var(--signal); color: #fff; }
+.editor-head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.chat-icon.on-call, .ctl.talk.on-call { box-shadow: 0 0 0 3px #1f8a4c; }

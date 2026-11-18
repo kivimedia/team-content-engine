@@ -597,7 +597,8 @@
   const VOICE_SCRIPT = "/voice-client.js";
   const EDITOR_AGENT = "book-editor";
   const chat = { call: null, open: false, ready: false, loading: null, sentPlace: "", micOn: false, queue: [],
-    lines: [], wanted: false, closing: false, ended: false, dropped: false, gen: 0, backAt: 0, redials: 0, note: "" };
+    lines: [], wanted: false, closing: false, ended: false, dropped: false, gen: 0, backAt: 0, redials: 0, note: "",
+    shown: false };
 
   /* 18-Nov-2026 (T-22867), Ziv: in the KM BOT app the call and the chat keep going when he
      switches to Waze; in the Book they did not. The call is the same voice client, so the
@@ -614,7 +615,7 @@
   function keepChat() {
     try {
       sessionStorage.setItem(CHAT_KEY, JSON.stringify({
-        at: Date.now(), open: chat.open, call: chat.wanted, mic: chat.micOn, lines: chat.lines.slice(-60),
+        at: Date.now(), open: chat.open, shown: chat.shown, call: chat.wanted, mic: chat.micOn, lines: chat.lines.slice(-60),
       }));
     } catch (_) { /* private browsing */ }
   }
@@ -734,10 +735,14 @@
         chat.dropped = true;
         if (document.visibilityState === "hidden") chatState("The call dropped while you were away. It reconnects when you come back.");
         else if (hadCall) setTimeout(() => redial("You were away and the call dropped, so it reconnected."), 600);
+        drawCall();
         keepChat();
         return;
       }
-      chat.micOn = false; chat.wanted = false; chat.dropped = false; drawMic();
+      chat.micOn = false; chat.wanted = false; chat.dropped = false;
+      // The call ended while the chat was hidden: nothing is left open behind the bar.
+      if (chat.open && !chat.shown) { chat.open = false; if (!chat.closing) top("The call with the editor ended"); }
+      drawMic();
       if (chat.open) chatState("The call ended. Type or tap the mic to start it again.");
       keepChat();
     }
@@ -794,6 +799,7 @@
     const gen = ++chat.gen;
     chat.call = window.KmVoice.start({ agent: EDITOR_AGENT, greet: false, startMuted: !chat.micOn,
       on: (type, data) => { if (gen === chat.gen) onCall(type, data); } });
+    drawCall();
     keepChat();
     return true;
   }
@@ -822,6 +828,31 @@
     mic.setAttribute("aria-pressed", chat.micOn ? "true" : "false");
     mic.setAttribute("aria-label", chat.micOn ? "Stop talking to the editor" : "Talk to the editor");
     mic.classList.toggle("on", chat.micOn);
+    drawCall();
+  }
+
+  /* 18-Nov-2026 (T-22863), Ziv on a Book call: "I clicked on the chat icon on the top, the blue
+     chat icon, to demonstrate something, and then it stopped the recording." Both chat icons
+     opened the panel, and pressed again (the panel is open during a call) they closed it, and
+     closing hung up. He wants it like the chat on a Zoom call: the chat opens and closes beside
+     a call that keeps running. Now the icons and the panel's Hide only show or hide the chat;
+     the call ends only on End call (in the panel, and in the call line the top bar keeps while
+     the chat is hidden), a goodbye, or a drop that does not come back. With no call on, Close
+     closes the chat as before. */
+  const callOn = () => Boolean(chat.call || chat.wanted || chat.dropped);
+  function drawCall() {
+    const on = callOn();
+    $("editorEnd").hidden = !on;
+    $("editorClose").textContent = on ? "Hide chat" : "Close";
+    $("editorClose").setAttribute("aria-label", on ? "Hide the chat, the call keeps going" : "Close the chat");
+    const bar = chat.open && !chat.shown && on;
+    $("callBar").hidden = !bar;
+    if (bar) {
+      $("callBarText").textContent = chat.dropped
+        ? "The call with the editor dropped. It reconnects when you are back on this page."
+        : chat.micOn ? "On a call with the editor. Your mic is on." : "On a call with the editor. Your mic is off.";
+    }
+    for (const id of ["talkButton", "listTalk"]) $(id).classList.toggle("on-call", on);
   }
 
   async function toggleMic() {
@@ -843,29 +874,50 @@
   }
 
   function talk() {
-    if (chat.open) { closeChat(); return; }
+    if (chat.open && chat.shown) { hideChat(); return; }
     if (state.playing) { stop(); top("Paused for the editor"); }
+    const already = chat.open;
     chat.open = true;
+    chat.shown = true;
     $("editorPanel").hidden = false;
     $("editorWhere").textContent = `About ${place().words}`;
     $("editorSignin").hidden = true;
     for (const id of ["talkButton", "listTalk"]) $(id).setAttribute("aria-expanded", "true");
-    chatState(chat.call ? (chat.ready ? "Ready. Type below, or tap the mic and talk." : "Connecting to the editor...") : "Type a question, or tap the mic and talk.");
+    if (!already) chatState(chat.call ? (chat.ready ? "Ready. Type below, or tap the mic and talk." : "Connecting to the editor...") : "Type a question, or tap the mic and talk.");
+    drawCall();
     $("editorPanel").scrollIntoView({ block: "nearest" });
     $("editorText").focus({ preventScroll: true });
     keepChat();
   }
 
-  function closeChat() {
-    chat.open = false;
+  /* The chat goes out of the way; a call that is on keeps going, and the top bar says so. */
+  function hideChat() {
+    if (!callOn()) { closeChat(); return; }
+    chat.shown = false;
     $("editorPanel").hidden = true;
     for (const id of ["talkButton", "listTalk"]) $(id).setAttribute("aria-expanded", "false");
+    drawCall();
+    keepChat();
+  }
+
+  /* Only this hangs up. The chat stays as it is: open with its lines, or hidden. */
+  function endCall() {
     chat.closing = true;
     chat.wanted = false; chat.dropped = false;
     if (chat.call) { try { chat.call.stop(); } catch (_) { /* gone */ } }
     chat.call = null; chat.ready = false; chat.micOn = false; chat.sentPlace = ""; chat.queue = [];
+    if (!chat.shown) chat.open = false;
+    else chatState("Call ended. Type or tap the mic to start it again.");
     drawMic();
     keepChat();
+  }
+
+  function closeChat() {
+    chat.open = false;
+    chat.shown = false;
+    $("editorPanel").hidden = true;
+    for (const id of ["talkButton", "listTalk"]) $(id).setAttribute("aria-expanded", "false");
+    endCall();
   }
 
   /* A page the phone reloaded while he was away: the lines come back, and so do the open
@@ -879,9 +931,10 @@
     talk();
     if (!kept.call) return;
     chat.micOn = Boolean(kept.mic);
-    drawMic();
     chat.wanted = true;
     chat.dropped = true;
+    if (kept.shown === false) hideChat();
+    drawMic();
     chat.backAt = Date.now();
     redial("The page reloaded while you were away, so the call reconnected.");
   }
@@ -1235,7 +1288,10 @@
   $("nextPara").addEventListener("click", () => step(1));
   $("talkButton").addEventListener("click", talk);
   $("listTalk").addEventListener("click", talk);
-  $("editorClose").addEventListener("click", closeChat);
+  $("editorClose").addEventListener("click", hideChat);
+  $("editorEnd").addEventListener("click", endCall);
+  $("callBarEnd").addEventListener("click", endCall);
+  $("callBarChat").addEventListener("click", talk);
   $("editorMic").addEventListener("click", toggleMic);
   $("editorForm").addEventListener("submit", (event) => {
     event.preventDefault();

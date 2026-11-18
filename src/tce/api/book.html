@@ -34,6 +34,15 @@
       <button id="listTalk" class="icon-button chat-icon" type="button" aria-label="Chat with the editor about this page" aria-controls="editorPanel" aria-expanded="false"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm3 6.5a1.5 1.5 0 1 0 0 .01zm5 0a1.5 1.5 0 1 0 0 .01zm5 0a1.5 1.5 0 1 0 0 .01z"/></svg></button>
       <button id="filmButton" class="film-button" type="button" aria-pressed="false" hidden>Film this session</button>
     </div>
+    <!-- 18-Nov-2026 (T-22863): while the chat is hidden and the editor call is still on, this
+         line stays in the top bar, like a Zoom call with its chat closed. It is a row of the bar,
+         so it pushes the page down and never covers it. -->
+    <div id="callBar" class="call-bar" role="status" aria-live="polite" hidden>
+      <span class="call-dot" aria-hidden="true"></span>
+      <span id="callBarText" class="call-bar-text">On a call with the editor</span>
+      <button id="callBarChat" class="call-bar-btn" type="button" aria-controls="editorPanel">Open chat</button>
+      <button id="callBarEnd" class="call-bar-btn end" type="button">End call</button>
+    </div>
   </header>
 
   <main id="bookMain">
@@ -60,7 +69,10 @@
     <section id="editorPanel" class="editor-panel" hidden aria-label="Chat with the editor">
       <div class="editor-head">
         <div class="editor-who"><strong>The editor</strong><span id="editorWhere">About the chapters page</span></div>
-        <button id="editorClose" class="btn quiet" type="button">Close</button>
+        <div class="editor-head-actions">
+          <button id="editorEnd" class="btn end-call" type="button" hidden>End call</button>
+          <button id="editorClose" class="btn quiet" type="button">Close</button>
+        </div>
       </div>
       <p id="editorState" class="editor-state" role="status" aria-live="polite">Type a question, or tap the mic and talk.</p>
       <a id="editorSignin" class="editor-signin" href="/voice" hidden>Sign in to KM BOT</a>
