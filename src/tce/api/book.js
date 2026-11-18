@@ -681,6 +681,108 @@
     line.classList.toggle("bad", Boolean(bad));
   };
 
+
+  /* 18-Nov-2026 (T-22864), Ziv chose "build the four": the Book should feel like talking to
+     the book editor in KM BOT. Read from KM BOT itself (same site, same login), nothing new
+     on the server: 1) the chat shows the editor's past exchanges from KM BOT, typed or on a
+     call; 2) replies he has not seen yet are marked New, and a new call starts by asking the
+     editor to go over them; 3) the editor's own list, split into waiting on him and working
+     on, each opening its card in KM BOT; 4) a two-line catch-up on top. Any of it failing
+     (signed out of KM BOT, no network) leaves the Book exactly as it was. */
+  const KMBOT_API = "/kmbot-api";
+  const SEEN_KEY = "tce-book-editor-seen";
+  const agentState = { history: [], tasks: [], fresh: [], loaded: false };
+  async function kmbot(path) {
+    const r = await fetch(`${KMBOT_API}${path}`, { credentials: "same-origin", cache: "no-cache" });
+    if (!r.ok) throw new Error(`${path} ${r.status}`);
+    return r.json();
+  }
+  const clip = (text, n) => { const t = String(text || "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1)}...` : t; };
+  function readSeen() { try { return Number(localStorage.getItem(SEEN_KEY) || 0); } catch (_) { return 0; } }
+  function markSeen() { try { localStorage.setItem(SEEN_KEY, String(Date.now())); } catch (_) { /* */ } }
+  async function loadAgent() {
+    const [h, t] = await Promise.all([
+      kmbot(`/history?agent=${EDITOR_AGENT}&view=chat&limit=20`).catch(() => null),
+      kmbot("/tasks?status=open").catch(() => null),
+    ]);
+    if (!h && !t) return false;
+    const seen = readSeen();
+    agentState.history = ((h && h.turns) || []).filter((x) => !x.in_flight && (x.message || x.result)).slice(-20);
+    agentState.fresh = agentState.history.filter((x) => x.result && Date.parse(x.at || 0) > seen && x.origin !== "ziv");
+    agentState.tasks = ((t && t.tasks) || []).filter((x) => x.assigned === EDITOR_AGENT && x.status !== "done");
+    agentState.loaded = true;
+    drawAgent();
+    return true;
+  }
+  const waitsOnHim = (x) => /blocked_on:\s*owner/.test(String(x.blocked_why || ""));
+  function cardLink(x) {
+    const a = document.createElement("a");
+    a.href = `/c/${encodeURIComponent(x.id)}`;
+    a.className = "agent-card";
+    a.textContent = clip(x.title, 110);
+    return a;
+  }
+  function drawAgent() {
+    if (!agentState.loaded) return;
+    const waiting = agentState.tasks.filter(waitsOnHim);
+    const working = agentState.tasks.filter((x) => !waitsOnHim(x));
+    const last = state.chapters && state.chapters.length
+      ? [...state.chapters].filter((c) => c.status_at).sort((a, b) => String(b.status_at).localeCompare(String(a.status_at)))[0]
+      : null;
+    const one = [last ? `Last worked on: ${label(last)}, "${clip(last.title, 50)}".` : "",
+      waiting.length ? `${waiting.length} ${waiting.length === 1 ? "thing waits" : "things wait"} on you.` : "Nothing waits on you."].filter(Boolean).join(" ");
+    const two = working.length ? `The editor is on: ${clip(working[0].title, 90)}`
+      : agentState.fresh.length ? `${agentState.fresh.length} new ${agentState.fresh.length === 1 ? "reply" : "replies"} from the editor.` : "";
+    for (const id of ["agentCatchup", "editorCatchup"]) {
+      const box = $(id);
+      if (!box) continue;
+      box.replaceChildren();
+      for (const t of [one, two].filter(Boolean)) { const p = document.createElement("p"); p.textContent = t; box.appendChild(p); }
+      box.hidden = !box.childNodes.length;
+    }
+    const list = $("agentList");
+    if (list) {
+      list.replaceChildren();
+      for (const [title, rows] of [["Waiting on you", waiting], ["The editor is working on", working]]) {
+        if (!rows.length) continue;
+        const h = document.createElement("h3"); h.textContent = title; list.appendChild(h);
+        for (const x of rows.slice(0, 6)) list.appendChild(cardLink(x));
+      }
+      list.hidden = !list.childNodes.length;
+    }
+  }
+  /* The shared chat: past exchanges painted once above this tab's own lines, never kept in
+     the tab's store (KM BOT is where they live). */
+  function paintHistory() {
+    if (!agentState.loaded || chat.historyPainted) return;
+    chat.historyPainted = true;
+    const kept = new Set(chat.lines.map((l) => clip(l.text, 200)));
+    const freshAt = new Set(agentState.fresh.map((x) => x.at));
+    const log = $("editorLog");
+    const frag = document.createDocumentFragment();
+    for (const x of agentState.history) {
+      for (const [who, text] of [["me", x.origin === "ziv" || !x.origin ? x.message : ""], ["editor", x.result]]) {
+        if (!text || kept.has(clip(text, 200))) continue;
+        const p = document.createElement("p");
+        p.className = `chat-line ${who} past${who === "editor" && freshAt.has(x.at) ? " fresh" : ""}`;
+        const name = document.createElement("strong");
+        name.textContent = who === "me" ? "You" : freshAt.has(x.at) ? "Editor (new)" : "Editor";
+        p.append(name, document.createTextNode(clip(text, 600)));
+        frag.appendChild(p);
+      }
+    }
+    if (!frag.childNodes.length) return;
+    log.prepend(frag);
+    log.hidden = false;
+    log.scrollTop = log.scrollHeight;
+  }
+  /* The first line of a new call asks the editor to go over what he has not seen. */
+  function followUpLine() {
+    if (!agentState.fresh.length || chat.followUpAsked) return "";
+    chat.followUpAsked = true;
+    return `(Since he last opened the Book you sent him ${agentState.fresh.length} ${agentState.fresh.length === 1 ? "reply" : "replies"} he has not seen. Before anything else, tell him in a sentence or two what they say.)`;
+  }
+
   async function loadVoice() {
     if (window.KmVoice) return true;
     if (chat.loading) return chat.loading;
@@ -812,7 +914,8 @@
   function withPlace(text, here = place()) {
     if (here.key === chat.sentPlace) return text;
     chat.sentPlace = here.key;
-    return `[Where I am in the Book] ${here.line}${text ? `\n\nZiv: ${text}` : ""}`;
+    const ask = followUpLine();
+    return `[Where I am in the Book] ${here.line}${ask ? `\n\n${ask}` : ""}${text ? `\n\nZiv: ${text}` : ""}`;
   }
 
   async function chatSend(text) {
@@ -879,6 +982,8 @@
   }
 
   function talk() {
+    paintHistory();
+    if (agentState.fresh.length) markSeen();
     if (chat.open && chat.shown) { hideChat(); return; }
     if (state.playing) { stop(); top("Paused for the editor"); }
     const already = chat.open;
@@ -1267,6 +1372,7 @@
         $("listTalk").hidden = false;
         if (push) history.pushState({}, "", `${prefix}/book`);
         await loadList();
+        drawAgent();
         chatWhere();
       } else {
         if (push) history.pushState({}, "", `${prefix}/book/${n}`);
@@ -1343,6 +1449,7 @@
 
   go(n_from_path(), false).then(() => {
     restoreChat();
+    loadAgent().then((ok) => { if (ok && chat.open) paintHistory(); }).catch(() => {});
     // A session from an earlier visit that never finished sending is finished now.
     allPieces().then((left) => allTakes().then(async (takes) => {
       // 10-Nov (T-19955): a take from an earlier visit that never got Send or Archive is
