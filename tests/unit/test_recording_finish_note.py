@@ -43,6 +43,12 @@ def test_one_finish_press_shows_the_note_then_the_list_with_progress(studio, mon
         browser, context, page = _studio_page(pw, studio["base"], LANDSCAPE_CAMERA, COUNT_FINISHES)
         assert page.viewport_size["width"] <= 430, "measured at phone width"
         _record(page, 3)
+        queue = page.request.get(f"{studio['base']}/api/v1/production/recording-queue").json()
+        current = queue["ideas"][0]
+        busy = {**current, "candidate_id": "busy-fixture", "active_session_status": "finalizing"}
+        next_script = {**current, "candidate_id": "next-fixture", "packet_id": "next-packet",
+                       "active_session_id": None, "active_session_status": None, "title": "A second script"}
+        page.route("**/production/recording-queue*", lambda route: route.fulfill(json={"ideas": [current, busy, next_script]}))
         pressed = time.monotonic()
         # The press, and an impatient second tap 200 ms later, as on 8-Oct.
         page.evaluate(
@@ -81,7 +87,12 @@ def test_one_finish_press_shows_the_note_then_the_list_with_progress(studio, mon
         assert states == ["done", "done", "now"], states
         assert page.evaluate("() => !document.getElementById('finishOpen').hidden")
         assert page.evaluate(SESSION_FINISH) == 1
+        page.wait_for_function("JSON.parse(localStorage.getItem('tce-celebrated-takes') || '[]').length === 1")
+        assert page.locator("#finishLabel").inner_text() == "Take saved"
+        assert not page.locator(".finish-details").evaluate("el => el.open")
         if shots:
             page.screenshot(path=f"{shots}/finish-card.png")
+        page.get_by_role("button", name="Record next: A second script").click()
+        assert page.locator("#hookViewIdea").inner_text() == "A second script"
         context.close()
         browser.close()

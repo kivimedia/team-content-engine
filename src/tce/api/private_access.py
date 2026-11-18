@@ -180,7 +180,7 @@ SCOPED_PAGE_PATHS = frozenset({
     "/", "/record", "/today", "/topics", "/week", "/library", "/settings",
     "/workspace.css", "/workspace.js", "/workspace-sw.js", "/workspace.webmanifest",
     "/talk-voice.js", "/talk-voice.css", "/recording.css", "/recording.js", "/recording-resume.js",
-    "/i18n-he.js", "/i18n-he.css",
+    "/i18n-he.js", "/i18n-he.css", "/take-reward.js",
 })
 SCOPED_PAGE_PREFIXES = ("/topics/", "/scripts/", "/library/")
 # Every route under these is workspace scoped (tests/unit/test_scoped_editor_access.py

@@ -49,22 +49,24 @@
            take he just sent is doing right now, until the edit is done. -->
       <section id="finishStatus" class="finish-status" hidden aria-labelledby="finishStatusTitle">
         <div class="finish-status-head">
-          <p class="kicker">The take you just sent</p>
+          <p id="finishLabel" class="kicker">The take you just sent</p>
           <button id="finishStatusClose" class="finish-status-close" type="button" aria-label="Hide this">&#215;</button>
         </div>
         <h2 id="finishStatusTitle"></h2>
         <p id="finishStatusNow" class="finish-now" aria-live="polite"></p>
-        <ol id="finishStatusSteps" class="finish-steps"></ol>
+        <details class="finish-details">
+          <summary>Editing progress</summary>
+          <ol id="finishStatusSteps" class="finish-steps"></ol>
+        </details>
         <div class="finish-status-actions">
+          <button id="finishNext" class="finish-next" type="button" hidden></button>
           <button id="finishRetry" class="finish-retry" type="button" hidden>Put it together again</button>
           <a id="finishOpen" class="finish-open" href="/library?filter=editing" hidden>See it in the Library</a>
         </div>
       </section>
       <div class="queue-intro">
-        <p class="kicker">This recording sitting</p>
         <h1 id="queueTitle">Ready to record</h1>
-        <p>Tap one and the camera opens. Each idea keeps its own clips, so you can
-          move between scripts without losing a take.</p>
+        <p>Choose a script to open the camera.</p>
         <!-- 12-Oct: just talk to the camera. On Done it is uploaded, transcribed and
              edited by Jennifer, and lands in the Library like any other take. -->
         <p class="solo-entry"><a id="soloEntry" class="secondary-button" href="/record/solo">Record without a script</a></p>
@@ -202,6 +204,7 @@
     <a href="/book"    data-route="book" class="book-entry"><span class="glyph" aria-hidden="true">&#9636;</span>Book</a>
   </nav>
 
+  <script src="take-reward.js" defer></script>
   <script src="recording-resume.js" defer></script>
   <script src="recording.js" defer></script>
 </body>

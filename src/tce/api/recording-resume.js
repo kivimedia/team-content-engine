@@ -166,7 +166,7 @@
     await api(`/recording-sessions/${intent.sessionId}/finish`, {
       method: "POST", body: JSON.stringify({ selected_clip_ids: ready.map((clip) => clip.id) }),
     });
-    const tracked = { sessionId: intent.sessionId, title: intent.title || "", at: Date.now() };
+    const tracked = { sessionId: intent.sessionId, candidateId: intent.candidateId, title: intent.title || "", at: Date.now() };
     try { localStorage.setItem(FINISH_KEY, JSON.stringify(tracked)); } catch { /* private mode */ }
     write(data);
     return { tracked };
@@ -280,12 +280,12 @@
       for (const take of takes) {
         if (left.some((piece) => piece.talkId === take.talkId)) continue;
         try {
-          await api(`/agent-talks/${encodeURIComponent(take.talkId)}/finish`, {
+          const saved = await api(`/agent-talks/${encodeURIComponent(take.talkId)}/finish`, {
             method: "POST",
             body: JSON.stringify({ ended_at: take.endedAt, duration_ms: take.durationMs, edit: true }),
           });
           await soloStore("takes", "readwrite", (s) => s.delete(take.talkId));
-          paintBar({ kind: "sent" });
+          paintBar({ kind: "sent", saved });
         } catch (error) {
           failed = error;
         }
@@ -341,6 +341,10 @@
       link.textContent = "Open the Library";
       link.style.color = "inherit";
       bar.append(link);
+      const saved = event.saved;
+      if (saved?.upload_id && !saved.already_finished && !saved.missing_pieces?.length) {
+        window.TCETakeReward?.show(saved.talk_id, bar);
+      }
       paintBar.timer = setTimeout(() => { bar.hidden = true; }, 12000);
     }
   }

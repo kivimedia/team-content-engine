@@ -80,15 +80,25 @@
          episodes come first, in his layout's order; the Part one he wrote himself is
          folded underneath. -->
     <section id="listView" aria-label="Chapters">
-      <p id="narrationNote" class="note"></p>
-      <!-- 12-Nov-2026 (T-20758): three steps per new chapter, layout first. -->
-      <h2 id="newHead" class="list-head" hidden>New chapters, in your layout's order</h2>
-      <p id="stepsLine" class="steps" hidden>Each one goes in three steps: you agree its layout, you ask for it to be written, then you listen and approve. Nothing is written or read to you before you agree the layout.</p>
-      <p id="progressLine" class="progress" hidden></p>
-      <ol id="chapterList" class="chapter-list"></ol>
+      <section id="reviewFocus" class="review-focus" aria-labelledby="reviewTitle" hidden>
+        <p id="reviewContext" class="part"></p>
+        <h1 id="reviewTitle"></h1>
+        <a id="reviewNext" class="review-link" hidden></a>
+      </section>
+      <details id="chapterDirectory" class="book-disclosure" hidden>
+        <summary id="directorySummary">Browse chapters</summary>
+        <h2 id="newHead" class="list-head" hidden>New chapters, in your layout's order</h2>
+        <ol id="chapterList" class="chapter-list"></ol>
+      </details>
       <details id="writtenFold" class="written-fold" hidden>
         <summary id="writtenSummary">Part one, already written</summary>
         <ol id="writtenList" class="chapter-list"></ol>
+      </details>
+      <details id="reviewDetails" class="book-disclosure review-details" hidden>
+        <summary>Review progress and narration</summary>
+        <p id="progressLine" class="progress" hidden></p>
+        <p id="stepsLine" class="steps" hidden>Approve a layout, ask for the chapter to be written, then read or listen and approve the chapter.</p>
+        <p id="narrationNote" class="steps"></p>
       </details>
     </section>
 
@@ -160,6 +170,7 @@
     </div>
   </nav>
 
+  <script src="take-reward.js" defer></script>
   <script src="book.js" defer></script>
 </body>
 </html>

@@ -362,11 +362,25 @@ function rebindIdeas(ideas, next) {
       const status = building
         ? "Being put together for editing"
         : idea.active_session_id ? `Continue take set ${idea.active_session_status}` : "Start a new take set";
-      card.querySelector(".idea-meta").textContent = `${index + 1} of ${state.ideas.length} · ${status}`;
+      const meta = card.querySelector(".idea-meta");
+      if (window.TCE_SCOPED) meta.textContent = `${index + 1} of ${state.ideas.length} · ${status}`;
+      else if (idea.active_session_id) meta.textContent = building ? status : "Continue your recording";
+      else meta.remove();
       card.disabled = building;
       card.addEventListener("click", () => chooseIdea(idea));
       queue.appendChild(card);
     });
+    showNextScript();
+  }
+
+  function showNextScript() {
+    const button = $("finishNext");
+    const next = !window.TCE_SCOPED && state.finishedCandidate && state.ideas.find(idea =>
+      idea.candidate_id !== state.finishedCandidate && idea.active_session_status !== "finalizing");
+    button.hidden = !next;
+    if (!next) return;
+    button.textContent = `Record next: ${next.title}`;
+    button.onclick = () => chooseIdea(next);
   }
 
   async function loadQueue() {
@@ -1502,7 +1516,9 @@ function rebindIdeas(ideas, next) {
     // A clip Stop is already ending must not be ended a second time.
     if (live && !state.finalizing.size) finishClip({ waitForServer: false });
     const title = state.idea?.title || "";
-    window.TCEResume.rememberFinish({ sessionId: session.id, title });
+    state.finishedCandidate = state.idea?.candidate_id;
+    state.rewardSession = session.id;
+    window.TCEResume.rememberFinish({ sessionId: session.id, candidateId: state.finishedCandidate, title });
     finishNote("send", "Sending the last clip in the background. You can leave this page.");
     if (!dialog.open) dialog.showModal();
     // This page's own sends first; the shared saver closes what is left and hands the take set over.
@@ -1526,6 +1542,7 @@ function rebindIdeas(ideas, next) {
     if (title !== undefined) $("finishStatusTitle").textContent = title || "Your take";
     else if (!$("finishStatusTitle").textContent) $("finishStatusTitle").textContent = "Your take";
     $("finishOpen").hidden = true;
+    $("finishLabel").textContent = "The take you just sent";
     $("finishRetry").hidden = true;
     const steps = $("finishStatusSteps");
     const now = $("finishStatusNow");
@@ -1567,6 +1584,14 @@ function rebindIdeas(ideas, next) {
     clearTimeout(state.finishPoll);
     localStorage.removeItem(FINISH_KEY);
     $("finishStatus").hidden = true;
+    state.rewardSession = null;
+    state.savedSession = null;
+  }
+
+  function celebrateSavedSession() {
+    if (!state.rewardSession || state.savedSession !== state.rewardSession || $("queueView").hidden) return;
+    window.TCETakeReward?.show(state.rewardSession, $("finishStatus"));
+    state.rewardSession = null;
   }
 
   async function trackFinish(tracked) {
@@ -1581,6 +1606,8 @@ function rebindIdeas(ideas, next) {
     const open = $("finishOpen");
     const retry = $("finishRetry");
     box.hidden = false;
+    state.finishedCandidate = tracked.candidateId;
+    showNextScript();
     $("finishStatusTitle").textContent = tracked.title || "Your take";
     open.href = `${pathPrefix}/library?filter=editing`;
     open.hidden = true;
@@ -1633,6 +1660,9 @@ function rebindIdeas(ideas, next) {
       return;
     }
     open.hidden = false;
+    if (!window.TCE_SCOPED) $("finishLabel").textContent = "Take saved";
+    state.savedSession = tracked.sessionId;
+    celebrateSavedSession();
     if (EDIT_DONE.has(upload.status)) {
       paintSteps(steps, "done");
       paintNow(now, "Edited. It is waiting for you in the Library.");
@@ -1679,6 +1709,7 @@ function rebindIdeas(ideas, next) {
     $("queueView").hidden = false;
     setStudioMode(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
+    celebrateSavedSession();
     // Take sets and packet versions change while the studio is open; the queue
     // must say what is bound now, not what it said when the page loaded.
     loadQueue();
