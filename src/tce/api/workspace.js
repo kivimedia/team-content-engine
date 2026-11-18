@@ -398,7 +398,7 @@
 
   async function refreshTodayDetails(target, data, owner) {
     var results = await Promise.all([
-      api("/news/workflow").catch(function (e) { return e.status === 403 ? null : { unavailable: true }; }),
+      window.TCE_SCOPED ? null : api("/news/workflow").catch(function (e) { return e.status === 403 ? null : { unavailable: true }; }),
       voiceActivity(), api("/editorial/notifications/config").catch(function () { return null; })
     ]);
     if (!target.isConnected || state.route !== "today") return;
@@ -795,7 +795,9 @@
     var data = await api("/editorial/weeks/current/lineup");
     state.week = data;
     var newsProgress = null;
-    try { newsProgress = await api("/news/workflow"); } catch (e) { newsProgress = null; }
+    if (!window.TCE_SCOPED) {
+      try { newsProgress = await api("/news/workflow"); } catch (e) { newsProgress = null; }
+    }
 
     var primary = data.primary || [];
     var reserve = data.reserve || [];
