@@ -1668,6 +1668,7 @@ async def restore_topic(
         "this_week": in_week,
         "discuss": "back, marked to think about",
         "later": "back in saved for later",
+        "improve": "back, waiting for more AI work",
     }.get(back_to or "", "back with the ideas waiting for a decision")
     said = f'"{candidate.title}" is {where}.'
     if inbox_service.set_aside_by_a_take(
@@ -1698,6 +1699,7 @@ _DECISION_WORDS = {
     "discuss": "marked to think about",
     "later": "saved for later",
     "away": "put away",
+    "improve": "marked as needing more AI work",
     UNDECIDED: "waiting for a decision",
 }
 
@@ -2127,6 +2129,7 @@ async def activity(db: AsyncSession, ws: uuid.UUID, *, hours: int = 24) -> dict[
             "discuss": f'Marked "{title}" to think about.',
             "later": f'Saved "{title}" for later.',
             "away": f'Put "{title}" away.',
+            "improve": f'Marked "{title}" as needing more AI work and started fresh research on it.',
             None: f'Put "{title}" back with the ideas waiting for a decision.',
         }.get(d.after, f'Decided "{title}": {d.after}.')
         if d.after is None and d.candidate_id in taken:

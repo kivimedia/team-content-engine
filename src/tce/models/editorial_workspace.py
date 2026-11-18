@@ -68,8 +68,14 @@ BRIEF_FIELDS = (
 BRIEF_ORIGINS = ("seed", "change_set", "manual", "undo")
 
 # Where a topic sits for the editor. `inbox` is undecided, and it is the only
-# state that offers the four first decisions.
-TOPIC_DECISIONS = ("this_week", "discuss", "later", "away")
+# state that offers the first decisions.
+#
+# Since 18-Nov-2026 (T-22744) the owner sorts an idea four ways: Good (this_week,
+# "keep it, this week or as soon as we can"), Bad (away, "ditch it"), Needs AI
+# work (improve: the AI does more work on it first) and Needs my thinking
+# (discuss: it waits for him). `later` is no longer offered to the owner; it stays
+# a valid value so an idea saved for later before that still reads as itself.
+TOPIC_DECISIONS = ("this_week", "discuss", "later", "away", "improve")
 
 LINEUP_SLOTS = ("primary", "reserve")
 LINEUP_STATUSES = ("draft", "active", "closed")
@@ -182,7 +188,7 @@ class TopicDecision(_PrivateWorkspaceMixin, Base):
     candidate_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("topic_candidates.id", ondelete="CASCADE"), index=True
     )
-    # this_week | discuss | later | away, or NULL once a decision was taken back
+    # this_week | discuss | later | away | improve, or NULL once a decision was taken back
     # (undo, or restoring an idea that was never decided before it was put away).
     # The row stays so the note survives; NULL reads as undecided everywhere.
     decision: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)

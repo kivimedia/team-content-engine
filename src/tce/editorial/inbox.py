@@ -55,7 +55,11 @@ from tce.models.editorial_workspace import TOPIC_DECISIONS, TopicDecision
 # `timely` is not a separate filter. The owner news category includes both AI
 # and ordinary software updates; `news_kind` keeps their publication mix apart.
 FILTERS = ("best", "calls", "code", "news", "evergreen", "later", "away")
-OWNER_FILTERS = ("all", "best", "calls", "builds", "news", "evergreen", "later", "away")
+# The owner's last three tabs are his sorting since 18-Nov-2026 (T-22744): Needs
+# AI work, Needs my thinking, Bad. Good is the week itself. "later" stays a filter
+# a saved link can still ask for, but it is no longer a tab he is offered.
+OWNER_FILTERS = ("all", "best", "calls", "builds", "news", "evergreen", "improve", "discuss", "away")
+OWNER_HIDDEN_FILTERS = ("later",)
 
 # Legacy client labels and source filtering remain unchanged. Owner labels
 # describe where an idea began, while its decision remains a separate field.
@@ -73,6 +77,9 @@ FILTER_LABELS = {
 OWNER_FILTER_LABELS = {
     **FILTER_LABELS,
     "all": "All ideas",
+    "improve": "Needs AI work",
+    "discuss": "Needs my thinking",
+    "away": "Bad",
     "calls": "From my calls",
     "builds": "From my builds",
     "code": "From my builds",  # alias for saved links
@@ -211,8 +218,13 @@ def effective_decision(candidate: TopicCandidate, decision: TopicDecision | None
     return None
 
 
+# Decisions that file a topic in a list of its own, out of every view of the ideas
+# still waiting for him. `improve` (Needs AI work, T-22744) is one of them.
+FILED_AWAY = ("away", "later", "improve")
+
 # The decisions under which a topic is still an idea waiting for him: none yet,
-# or "think about it", which has no list of its own and sits under Best matches.
+# or "think about it" (Needs my thinking, a tab of its own for the owner since
+# T-22744, and under Best matches for a client workspace).
 STILL_WAITING = (None, "discuss")
 
 
@@ -250,10 +262,17 @@ def _matches(
             return decided == "later"
         if filter_key == "away":
             return decided == "away"
+        if filter_key == "improve":
+            return decided == "improve"
+        if filter_key == "discuss":
+            # An idea saved for later before 18-Nov-2026 waits on his thinking now
+            # (T-22744): Save for later is no longer one of his four choices.
+            return decided in ("discuss", "later")
         if filter_key in ("calls", "builds", "code", "news"):
             wanted = "builds" if filter_key == "code" else filter_key
             return source_category(candidate) == wanted
-        if decided in ("away", "later", "this_week"):
+        # Needs my thinking has its own tab for him now, so it leaves Best too.
+        if decided in (*FILED_AWAY, "this_week", "discuss"):
             return False
         if filter_key == "evergreen":
             return source_category(candidate) != "news"
@@ -263,12 +282,14 @@ def _matches(
         return decided == "later"
     if filter_key == "away":
         return decided == "away"
+    if filter_key == "improve":
+        return decided == "improve"
 
     # A lane tab (lane_tab_profile) is a category like Calls: it also shows what is
     # already in the week, so a lane never hides the topics chosen from it.
     profile = lane_tab_profile(getattr(candidate, "workspace_id", None))
     if profile is not None and filter_key in profile.lane_keys:
-        if decided in ("away", "later"):
+        if decided in FILED_AWAY:
             return False
         from tce.editorial import lineup
 
@@ -278,7 +299,7 @@ def _matches(
     # (Calls, Code, AI news) also show what he already put in his week, marked
     # as such on the card, so a category is never missing the topics he chose.
     in_week = decided == "this_week"
-    if decided in ("away", "later") or (in_week and filter_key not in CATEGORY_FILTERS):
+    if decided in FILED_AWAY or (in_week and filter_key not in CATEGORY_FILTERS):
         return False
 
     kinds = {
@@ -368,7 +389,7 @@ async def list_topics(
 
     owner = news_rules.owner_policy(ws)
     tab_keys, tab_labels = filters_for(ws, owner)
-    if filter_key not in (tab_keys + ("code",) if owner else tab_keys):
+    if filter_key not in (tab_keys + ("code", *OWNER_HIDDEN_FILTERS) if owner else tab_keys):
         raise InboxError("bad_filter", f"unknown filter {filter_key}", status=400)
 
     result = await db.execute(
@@ -413,13 +434,16 @@ async def list_topics(
         taken_undecided = set_aside_by_a_take(
             effective_decision(candidate, decision), candidate.id in taken
         )
-        owner_origin_view = owner and filter_key in ("all", "calls", "builds", "code", "news")
+        owner_origin_view = owner and filter_key in (
+            "all", "calls", "builds", "code", "news", "discuss"
+        )
         if taken_undecided and not owner_origin_view:
             continue
         # A stored brief wins: he may have written the connection himself.
         brief = stored.get(candidate.id) or briefs.seed_brief(candidate)
         if not briefs.is_inbox_eligible(brief) and (
-            effective_decision(candidate, decision) not in ("later", "away")
+            effective_decision(candidate, decision) not in FILED_AWAY
+            and filter_key != "discuss"
         ):
             withheld += 1
             continue

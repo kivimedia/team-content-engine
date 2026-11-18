@@ -734,20 +734,25 @@
         : decisionSentence(topic.decision)) + "</p>";
       html += '<div class="actions">';
       html += '<button class="btn" type="button" data-open-room="' + esc(topic.candidate_id) + '">Open it</button>';
-      if (topic.decision !== "this_week") {
+      if (!window.TCE_SCOPED) {
+        /* The owner can move a sorted idea to any of the other three choices. */
+        [["this_week", "Good: keep it"], ["improve", "Needs AI work"],
+         ["discuss", "Needs my thinking"], ["away", "Bad: ditch it"]].forEach(function (choice) {
+          var current = topic.decision === choice[0] || (choice[0] === "discuss" && topic.decision === "later");
+          if (current || (choice[0] === "away" && topic.set_aside_by_engine)) return;
+          html += '<button class="btn quiet" type="button" data-decide="' + choice[0] + '" data-id="'
+               + esc(topic.candidate_id) + '">' + choice[1] + "</button>";
+        });
+      } else if (topic.decision !== "this_week") {
         html += '<button class="btn quiet" type="button" data-decide="this_week" data-id="'
              + esc(topic.candidate_id) + '">Put in this week</button>';
       }
       html += "</div>";
     } else {
-      /* Four decisions, none of which pays for anything. Asking for the script
-         lives in the topic room, after the idea is worth pursuing. */
-      html += '<div class="btn-row">';
-      html += '<button class="btn primary" type="button" data-decide="this_week" data-id="' + esc(topic.candidate_id) + '">Put in this week</button>';
-      html += '<button class="btn" type="button" data-open-room="' + esc(topic.candidate_id) + '">Discuss</button>';
-      html += '<button class="btn quiet" type="button" data-decide="later" data-id="' + esc(topic.candidate_id) + '">Save for later</button>';
-      html += '<button class="btn quiet" type="button" data-decide="away" data-id="' + esc(topic.candidate_id) + '">Put it away</button>';
-      html += "</div>";
+      /* Four decisions. Asking for the script lives in the topic room, after
+         the idea is worth pursuing. The owner sorts an idea four ways since
+         18-Nov-2026 (T-22744): Good, Needs AI work, Needs my thinking, Bad. */
+      html += decideButtons(topic.candidate_id, true);
     }
     html += "</article>";
     return html;
@@ -778,7 +783,36 @@
     }
   }
 
+  /* The undecided idea's buttons. `withRoom` is the list card, which also opens
+     the topic room (Discuss, or Open it for the owner); the room itself has none. */
+  function decideButtons(id, withRoom) {
+    var owner = !window.TCE_SCOPED;
+    var html = '<div class="btn-row">';
+    if (owner) {
+      html += '<button class="btn primary" type="button" data-decide="this_week" data-id="' + esc(id) + '">Good: keep it</button>';
+      html += '<button class="btn" type="button" data-decide="improve" data-id="' + esc(id) + '">Needs AI work</button>';
+      html += '<button class="btn" type="button" data-decide="discuss" data-id="' + esc(id) + '">Needs my thinking</button>';
+      html += '<button class="btn quiet" type="button" data-decide="away" data-id="' + esc(id) + '">Bad: ditch it</button>';
+      if (withRoom) html += '<button class="btn quiet" type="button" data-open-room="' + esc(id) + '">Open it</button>';
+    } else {
+      html += '<button class="btn primary" type="button" data-decide="this_week" data-id="' + esc(id) + '">Put in this week</button>';
+      if (withRoom) html += '<button class="btn" type="button" data-open-room="' + esc(id) + '">Discuss</button>';
+      html += '<button class="btn quiet" type="button" data-decide="later" data-id="' + esc(id) + '">Save for later</button>';
+      if (withRoom) html += '<button class="btn quiet" type="button" data-decide="away" data-id="' + esc(id) + '">Put it away</button>';
+    }
+    return html + "</div>";
+  }
+
   function decisionSentence(decision) {
+    if (!window.TCE_SCOPED) {
+      return {
+        this_week: "Good: in this week's list.",
+        improve: "Needs AI work: fresh research on it has started. It is under Needs AI work.",
+        discuss: "Needs your thinking. It is under Needs my thinking.",
+        later: "Saved for later before the four choices. It waits under Needs my thinking.",
+        away: "Bad: ditched. It will not be offered again."
+      }[decision] || "";
+    }
     return {
       this_week: "In this week's list.",
       discuss: "Marked to think about.",
@@ -985,10 +1019,7 @@
     if (data.decision) {
       html += '<p class="section-hint">' + esc(decisionSentence(data.decision)) + "</p>";
     } else {
-      html += '<div class="btn-row">';
-      html += '<button class="btn primary" type="button" data-decide="this_week" data-id="' + esc(data.candidate_id) + '">Put in this week</button>';
-      html += '<button class="btn quiet" type="button" data-decide="later" data-id="' + esc(data.candidate_id) + '">Save for later</button>';
-      html += "</div>";
+      html += decideButtons(data.candidate_id, false);
     }
 
     html += "<h2>The thinking</h2>";

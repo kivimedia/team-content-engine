@@ -265,10 +265,15 @@ async def accept_suggested_title(
 async def decide_topic(
     candidate_id: str,
     body: DecideRequest,
+    background: BackgroundTasks,
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
-    """The four first decisions. None of them asks the engine for anything.
+    """The first decisions. Only `improve` asks the engine for anything.
+
+    `improve` (Needs AI work, T-22744) files the idea out of every waiting list
+    and starts a fresh research pass on it in the background, the same pass the
+    voice call's research tool starts. Asking again while one runs reuses it.
 
     `this_week` also puts the topic in the week, because choosing it and listing
     it are the same act from his side, and every other decision takes it off the
@@ -368,12 +373,20 @@ async def decide_topic(
                 week=week,
                 status=status,
             )
+            research_id = None
+            if after == "improve" and before != "improve":
+                research, created = await voice_agent.start_research(db, ws, cid, by=body.by)
+                research_id = research.id
             await db.commit()
         except (*ServiceError, voice_agent.VoiceError) as error:
             raise _http(error) from error
+    if research_id is not None and created:
+        background.add_task(voice_agent.run_research, sm, ws, research_id)
 
     return {
         "candidate_id": str(cid),
+        # Needs AI work started (or found running) this research pass.
+        "research_id": str(research_id) if research_id is not None else None,
         # This write's own id, what the voice call's undo takes back; None when
         # the write changed nothing.
         "change_id": str(change.id) if change is not None else None,

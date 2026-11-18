@@ -182,12 +182,21 @@ const DECISIONS = {
   approve: 'this_week',
   approved: 'this_week',
   yes: 'this_week',
+  good: 'this_week',
+  keep: 'this_week',
   discuss: 'discuss',
   think: 'discuss',
+  'think about': 'discuss',
+  'needs my thinking': 'discuss',
   later: 'later',
   'save for later': 'later',
   away: 'away',
   'put away': 'away',
+  bad: 'away',
+  ditch: 'away',
+  improve: 'improve',
+  'needs ai work': 'improve',
+  'ai work': 'improve',
 };
 
 // "X is already ..." for a decision that changed nothing.
@@ -196,6 +205,7 @@ const ALREADY = {
   discuss: 'marked to think about',
   later: 'saved for later',
   away: 'put away',
+  improve: 'marked as needing more AI work',
 };
 
 const MOVES = {
@@ -602,20 +612,22 @@ export function register(server, call, { reply, failure, shortId }) {
 
   server.tool(
     'tce_decide',
-    'Decide a topic: this_week (approve it into this week\'s list), discuss, later, or away. '
+    'Decide a topic. His four choices (18-Nov-2026): good = this_week (keep it, this week or as soon '
+      + 'as we can), bad = away (ditch it), improve (needs more AI work: files it out of the week and '
+      + 'starts fresh research on it), discuss (needs his own thinking). later still works for a client. '
       + `For away, prefer tce_put_away. Returns a change id; tce_undo takes it back. ${FIND_FIRST}`,
     {
       type: 'object',
       properties: {
         topic: TOPIC_ID,
-        decision: { type: 'string', description: 'this_week, discuss, later or away. "approve" means this_week.' },
+        decision: { type: 'string', description: 'this_week, improve, discuss, away (or later). "good" or "approve" means this_week, "bad" means away.' },
         note: { type: 'string', description: 'Why, in his words, if he said.' },
       },
       required: ['topic', 'decision'],
     },
     async ({ topic, decision, note }) => {
       const wanted = DECISIONS[clean(decision)] || DECISIONS[decision];
-      if (!wanted) return reply(`"${decision}" is not a decision. Use this_week, discuss, later or away.`, { ok: false });
+      if (!wanted) return reply(`"${decision}" is not a decision. Use this_week, improve, discuss or away.`, { ok: false });
       const found = await byId(topic);
       if (found.stop) return found.stop;
       const t = found.topic;
@@ -639,8 +651,12 @@ export function register(server, call, { reply, failure, shortId }) {
         this_week: `"${t.title}" is in this week's list${result.data.placed ? `, place ${result.data.placed.rank}` : ''}.`,
         discuss: `"${t.title}" is marked to think about.`,
         later: `"${t.title}" is saved for later.`,
+        improve: `"${t.title}" is marked as needing more AI work. Fresh research on it has started; I will say when it is ready.`,
         away: `"${t.title}" is put away. It can be brought back.`,
       }[wanted];
+      if (wanted === 'improve' && d.research_id) {
+        track({ kind: 'research', title: t.title, candidate_id: t.candidate_id, research_id: d.research_id });
+      }
       const back = d.brought_back ? ' It is back from the withdrawn ideas.' : '';
       return reply(`${said}${back}${change}`, d);
     },

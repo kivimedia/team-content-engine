@@ -404,6 +404,19 @@
     "Adding it to your topics...": "מוסיף לנושאים שלך...",
     "Put it away": "להניח בצד",
     "Marked to think about.": "סומן לחשוב עליו.",
+    // 18-Nov-2026 (T-22744): the owner's four choices and their tabs.
+    "Good: keep it": "טוב: לשמור",
+    "Needs AI work": "צריך עוד עבודת AI",
+    "Needs my thinking": "צריך שאחשוב עליו",
+    "Bad: ditch it": "לא טוב: לוותר",
+    "Bad": "לא טוב",
+    "Good: in this week's list.": "טוב: ברשימה של השבוע.",
+    "Needs AI work: fresh research on it has started. It is under Needs AI work.":
+      "צריך עוד עבודת AI: התחיל עליו מחקר חדש. הוא תחת צריך עוד עבודת AI.",
+    "Needs your thinking. It is under Needs my thinking.": "מחכה שתחשוב עליו. הוא תחת צריך שאחשוב עליו.",
+    "Saved for later before the four choices. It waits under Needs my thinking.":
+      "נשמר לאחר כך לפני ארבע הבחירות. הוא מחכה תחת צריך שאחשוב עליו.",
+    "Bad: ditched. It will not be offered again.": "לא טוב: ויתרנו עליו. הוא לא יוצע שוב.",
     "Saved for later. It will not be offered again until you ask.": "נשמר לאחר כך. הוא לא יוצע שוב עד שתבקש.",
     "Put away. It will not be offered again.": "הונח בצד. הוא לא יוצע שוב.",
     "Timely": "אקטואלי",
@@ -758,7 +771,8 @@
   // Topic filter names as the page writes them inside a count ("3 ideas best matches").
   var FILTER_NAMES = {
     "best matches": "הכי מתאימים", "calls": "שיחות", "code": "קוד", "ai news": "חדשות AI",
-    "evergreen": "תמיד רלוונטי", "later": "אחר כך", "put away": "בצד"
+    "evergreen": "תמיד רלוונטי", "later": "אחר כך", "put away": "בצד",
+    "needs ai work": "צריך עוד עבודת AI", "needs my thinking": "צריך שאחשוב עליו", "bad": "לא טוב"
   };
 
   var PATTERNS = [

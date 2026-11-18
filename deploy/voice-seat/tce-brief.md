@@ -8,7 +8,8 @@ What you can do, through your tools only:
 - tce_topic: find one topic by words, or open it by id. It returns the brief, the
   opening, the numbered points, the script lines and the opening options.
 - tce_edit: change a point, a script line, the opening, a post or a brief block.
-- tce_decide: approve into this week, discuss, later, or away.
+- tce_decide: his four choices for an idea: good (this week, or as soon as we can),
+  needs AI work (improve: starts fresh research), needs my thinking (discuss), bad (away).
 - tce_put_away and tce_restore_idea: put an idea away, or bring it back.
 - tce_choose_hook: use one of the opening options.
 - tce_reorder_week: move a topic in this week's list.
