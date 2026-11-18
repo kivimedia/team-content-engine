@@ -17,6 +17,10 @@
   "use strict";
 
   var prefix = window.location.pathname.indexOf("/tce/") === 0 ? "/tce" : "";
+  if (!window.TCE_SCOPED && location.hash === "#editorial" && /\/today\/?$/.test(location.pathname)) {
+    location.replace(prefix + "/dashboard" + location.search + location.hash);
+    return;
+  }
   var apiV1 = prefix + "/api/v1";
 
   var $ = function (id) { return document.getElementById(id); };
@@ -379,39 +383,50 @@
     return html + '</section>';
   }
 
-  async function renderToday() {
-    var view = $("view");
-    view.innerHTML = '<div class="page">' + working("Reading your week") + "</div>";
-    var data = await api("/editorial/today");
-    state.today = data;
-    var newsProgress = null;
-    try { newsProgress = await api("/news/workflow"); }
-    catch (e) { newsProgress = e.status === 403 ? null : { unavailable: true }; }
-    var voiceItems = await voiceActivity();
-    // Best effort. Today must still paint if the push config cannot be read.
-    try { state.notifyConfig = await api("/editorial/notifications/config"); }
-    catch (e) { state.notifyConfig = null; }
+  function creatorHome() {
+    return '<div class="page creator-home" id="creatorHome"><section class="creator-desk" aria-labelledby="createTitle">'
+      + '<h1 id="createTitle">Record a video</h1>'
+      + '<div id="creatorScript">' + working("Finding your next script") + '</div>'
+      + '<a class="creator-solo" href="' + prefix + '/record/solo">Record without a script</a></section>'
+      + '<a class="creator-book" href="' + prefix + '/book"><span class="book-mark" aria-hidden="true">&#128214;</span>'
+      + '<strong>Review my book</strong><span class="creator-arrow" aria-hidden="true">&#8250;</span></a>'
+      + '<details class="workflow-summary creator-details" id="productionDetails"><summary>Production details</summary>'
+      + '<div id="creatorDetails">' + working("Reading your week") + '</div>'
+      + '<div id="todayConversation"></div><a class="desk-operator" href="' + prefix + '/dashboard">Operator dashboard</a>'
+      + '</details></div>';
+  }
 
+  async function refreshTodayDetails(target, data, owner) {
+    var results = await Promise.all([
+      api("/news/workflow").catch(function (e) { return e.status === 403 ? null : { unavailable: true }; }),
+      voiceActivity(), api("/editorial/notifications/config").catch(function () { return null; })
+    ]);
+    if (!target.isConnected || state.route !== "today") return;
+    state.notifyConfig = results[2];
+    target.innerHTML = todayDetails(data, results[0], results[1], owner);
+  }
+
+  function todayDetails(data, newsProgress, voiceItems, owner) {
     var week = data.week || {};
     var counts = data.attention || {};
     var action = data.next_action || {};
     var primary = week.primary || [];
 
     var html = '<div class="page">';
-    html += '<div class="page-head">';
-    html += '<p class="kicker">Editorial workspace</p>';
-    html += "<h1>Today</h1>";
-    html += '<p class="lede">Your next useful action.</p>';
-    html += "</div>";
+    if (!owner) {
+      html += '<div class="page-head"><p class="kicker">Editorial workspace</p><h1>Today</h1>'
+        + '<p class="lede">Your next useful action.</p></div>';
+    }
 
     if (!(data.worker || {}).online && (data.worker || {}).detail) {
       html += '<p class="notice">' + esc(data.worker.detail) + "</p>";
     }
 
-    html += '<button class="next-action" type="button" data-go="' + esc(action.href || "/topics") + '">';
-    html += "<strong>" + esc(action.label || "Choose this week's topics") + "</strong>";
-    html += "<span>" + esc(action.detail || "") + "</span>";
-    html += "</button>";
+    if (!owner || action.key !== "record") {
+      html += '<button class="next-action" type="button" data-go="' + esc(action.href || "/topics") + '">'
+        + "<strong>" + esc(action.label || "Choose this week's topics") + "</strong>"
+        + "<span>" + esc(action.detail || "") + "</span></button>";
+    }
 
     html += '<div class="counts">';
     html += countCard(counts.waiting, "need a decision", "/topics");
@@ -446,7 +461,7 @@
         html += "</div>";
       }
       var readyFirst = primary.filter(toFilmNow)[0];
-      if (readyFirst) {
+      if (!owner && readyFirst) {
         html += '<div class="actions"><a class="btn primary" href="' + prefix
              + "/record?candidate=" + esc(readyFirst.candidate_id)
              + '">Start recording</a></div>';
@@ -454,8 +469,57 @@
     }
     html += "</div>";
     if (progressHtml) html += '<details class="workflow-summary"><summary>Source mix and publication progress</summary>' + progressHtml + '</details>';
-    view.innerHTML = html;
-    status(counts.waiting + " " + plural(counts.waiting, "idea") + " waiting");
+    return html;
+  }
+
+  async function renderToday() {
+    var view = $("view");
+    var owner = !window.TCE_SCOPED;
+    var expanded = !!($("productionDetails") && $("productionDetails").open);
+    view.innerHTML = owner ? creatorHome() : '<div><div class="page">' + working("Reading your week") + "</div></div>";
+    var shell = view.firstElementChild;
+    var data;
+    try {
+      data = await api("/editorial/today");
+    } catch (error) {
+      if (!shell.isConnected) return;
+      if (!owner) throw error;
+      paintLoadError({ name: "today" }, error, $("creatorScript"));
+      $("creatorDetails").textContent = "Weekly details are unavailable until the connection returns.";
+      return;
+    }
+    if (!shell.isConnected) return;
+    state.today = data;
+    var counts = data.attention || {};
+    if (!owner) {
+      await refreshTodayDetails(shell, data, false);
+      if (shell.isConnected) status(counts.waiting + " " + plural(counts.waiting, "idea") + " waiting");
+      return;
+    }
+
+    var first = ((data.week || {}).primary || []).find(toFilmNow);
+    var slot = $("creatorScript");
+    if (first) {
+      slot.innerHTML = '<p class="creator-label">Next script</p><h2>' + esc(first.title) + '</h2>'
+        + '<a class="creator-primary" href="' + prefix + '/record?candidate='
+        + encodeURIComponent(first.candidate_id) + '"><span aria-hidden="true"></span>Record this script</a>';
+    } else {
+      slot.innerHTML = '<p class="creator-empty">No scripts ready to film.</p>';
+      shell.querySelector(".creator-solo").classList.add("creator-primary");
+    }
+    status("Creator home");
+    var details = $("productionDetails");
+    var target = $("creatorDetails");
+    var loaded = false;
+    function showDetails() {
+      if (!details.open || loaded) return;
+      loaded = true;
+      target.innerHTML = working("Reading production details");
+      refreshTodayDetails(target, data, true);
+    }
+    details.addEventListener("toggle", showDetails);
+    details.open = expanded || details.open;
+    showDetails();
   }
 
   function countCard(value, label, href) {
@@ -3762,7 +3826,13 @@
       ? "video:" + route.id
       : (state.talkContext ? state.talkContext.voice : "week"));
     var record = recordTarget(route);
-    var bar = $("actionBar");
+    var inDesk = route.name === "today" && !window.TCE_SCOPED;
+    if (inDesk) {
+      $("actionBar").replaceChildren();
+      record = null;
+    }
+    var bar = inDesk ? $("todayConversation") : $("actionBar");
+    if (!bar) return;
     bar.innerHTML = "";
     if (record) {
       bar.insertAdjacentHTML("beforeend",
@@ -3788,7 +3858,7 @@
     bar.classList.toggle("is-split", !!(record && state.talkContext));
     // The bar is fixed, so the page has to reserve its height or the last card
     // sits underneath it.
-    document.body.classList.toggle("has-talk", show);
+    document.body.classList.toggle("has-talk", show && !inDesk);
   }
 
   /* Where "Start recording" should go from this page, or null when there is
@@ -3853,7 +3923,7 @@
     window.addEventListener("pageshow", fire);
   }
 
-  function paintLoadError(route, error) {
+  function paintLoadError(route, error, target) {
     var passing = !!error.network || !!RETRY_STATUS[error.status];
     var head = error.network ? "No connection to TCE" : "Could not open this";
     var body = error.network
@@ -3863,7 +3933,7 @@
       + esc(body) + '</div><div class="actions">'
       + '<button class="btn primary" type="button" data-retry-view>Try again</button>';
     if (route.name !== "today") html += '<button class="btn" type="button" data-go="/today">Back to Today</button>';
-    $("view").innerHTML = html + "</div></div>";
+    (target || $("view")).innerHTML = html + "</div></div>";
     status(passing ? "Trying again by itself" : "Could not load");
     if (passing) armAutoRetry();
   }
@@ -3888,6 +3958,7 @@
       else if (route.name === "room") await renderRoom(route.id);
       else if (route.name === "workshop") await renderWorkshop(route.id);
       else if (route.name === "talk") await renderNotesRoute(route.id);
+      if (state.route !== route.name) return;
       if (route.name === "room") $("pageTitle").textContent = "Topic";
       setTalkContext(route);
     } catch (error) {

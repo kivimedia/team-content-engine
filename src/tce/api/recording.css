@@ -213,7 +213,11 @@ dialog h2 { font-family: Georgia, serif; margin-top: 0; }
 .finish-status h2 { font-family: Georgia, serif; font-size: 1.35rem; line-height: 1.2; margin: 6px 0 10px; }
 .finish-status-close { min-width: 44px; min-height: 44px; border: 2px solid var(--ink); border-radius: 10px; background: #fff; color: var(--ink); font-size: 1.4rem; font-weight: 800; }
 .finish-status-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-.finish-retry, .finish-open { min-height: 48px; display: inline-flex; align-items: center; padding: 0 16px; border: 2px solid var(--ink); border-radius: 10px; font-weight: 800; font-size: 1rem; text-decoration: none; }
+.finish-details { margin-bottom: 12px; }
+.finish-details summary { padding: 8px 0; cursor: pointer; font-weight: 700; }
+.finish-details[open] summary { margin-bottom: 6px; }
+.finish-next, .finish-retry, .finish-open { min-height: 48px; display: inline-flex; align-items: center; padding: 0 16px; border: 2px solid var(--ink); border-radius: 10px; font-weight: 800; font-size: 1rem; text-decoration: none; }
+.finish-next { background: var(--moss); color: white; text-align: start; padding-block: 8px; overflow-wrap: anywhere; }
 .finish-retry { background: var(--moss); color: #fff; }
 .finish-open { background: #fff; color: var(--ink); }
 .dialog-actions { display: grid; grid-template-columns: 1fr 1.4fr; gap: 10px; }
@@ -459,3 +463,11 @@ body.solo-page { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr
 .solo-controls .control small { font-size: .9rem; opacity: .9; }
 .solo-page .identity span { font-size: 1rem; }
 .solo-controls .control small { font-size: .95rem; }
+
+.solo-controls #soloDone:disabled, .solo-recording #soloRecord { display: none; }
+.solo-controls .control { grid-column: 1 / -1; }
+.between-takes .solo-main { align-content: start; grid-template-rows: auto; gap: 14px; width: min(100%, 42rem); margin: 0 auto; padding-top: 28px; }
+.between-takes .solo-stage { display: none; }
+.between-takes .solo-help { font: 700 1.8rem Georgia, serif; }
+.between-takes .solo-status { grid-row: 2; }
+.between-takes .solo-controls { grid-row: 3; }

@@ -263,15 +263,16 @@ def test_phone_today_counts_what_the_library_shows_and_a_filmed_topic_is_done(
 
         # ---------------------------------------------------------- Today
         page.goto(f"{workspace['base']}/today")
+        start = page.locator(".creator-primary")
+        assert start.get_attribute("href") == f"/record?candidate={workspace['next_up']}"
+        assert page.get_by_role("link", name="Record without a script").is_visible()
+        assert page.get_by_role("link", name="Review my book").is_visible()
+        assert not page.locator("#actionBar").is_visible()
+        assert not page.locator(".counts").is_visible()
+        page.get_by_text("Production details", exact=True).click()
         page.wait_for_selector(".counts .count")
         editing = page.locator(".counts .count", has_text="being edited")
         assert editing.locator("b").text_content() == "1"
-        start = page.locator(".actions a.btn.primary", has_text="Start recording")
-        assert start.get_attribute("href") == f"/record?candidate={workspace['next_up']}"
-        cards = {c["title"]: c for c in page.evaluate(CARDS_JS)}
-        assert "Filmed" in cards["Filmed on Sunday"]["tags"], cards
-        assert "Record this one" not in cards["Filmed on Sunday"]["buttons"], cards
-        assert "Record this one" in cards["Next to film"]["buttons"], cards
         overflow = "document.documentElement.scrollWidth > window.innerWidth + 1"
         assert page.evaluate(overflow) is False
         page.screenshot(path=str(shots / "today-filmed-and-editing-phone.png"), full_page=True)

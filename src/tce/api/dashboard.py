@@ -18,6 +18,7 @@ _HTML_PATH = Path(__file__).parent / "dashboard.html"
 _RECORDING_HTML_PATH = Path(__file__).parent / "recording.html"
 _RECORDING_CSS_PATH = Path(__file__).parent / "recording.css"
 _RECORDING_JS_PATH = Path(__file__).parent / "recording.js"
+_TAKE_REWARD_JS_PATH = Path(__file__).parent / "take-reward.js"
 # 15-Oct (T-11436): the save that carries on after he leaves the studio, on every page.
 _RECORDING_RESUME_JS_PATH = Path(__file__).parent / "recording-resume.js"
 # 12-Oct: Record without a script.
@@ -150,6 +151,9 @@ async def root_redirect(request: Request):
     # A client login has no operator dashboard; its home is its own Today.
     if _scoped_workspace(request) is not None:
         return RedirectResponse(url="/today")
+    if not request.url.query:
+        # A relative target also stays under the reverse proxy's /tce/ mount.
+        return RedirectResponse(url="today")
     # Keep the query (e.g. ?week=2026-09-07) so deep links survive; the page validates it.
     # The path is fixed, so the query can never redirect anywhere else.
     query = request.url.query
@@ -358,6 +362,13 @@ async def recording_resume_js():
     from fastapi.responses import Response
 
     return Response(_RECORDING_RESUME_JS_PATH.read_text(encoding="utf-8"), media_type="application/javascript")
+
+
+@router.get("/take-reward.js", include_in_schema=False)
+async def take_reward_js():
+    from fastapi.responses import Response
+
+    return Response(_TAKE_REWARD_JS_PATH.read_text(encoding="utf-8"), media_type="application/javascript")
 
 
 @router.get("/recording-solo.js", include_in_schema=False)

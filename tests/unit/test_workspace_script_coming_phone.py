@@ -277,6 +277,7 @@ def test_phone_a_script_on_its_way_says_when_and_offers_nothing_to_press(workspa
 
         # ---------------------------------------------------------- Today
         page.goto(f"{workspace['base']}/today")
+        page.get_by_text("Production details", exact=True).click()
         page.wait_for_selector("article.card h3")
         cards = {c["title"]: c for c in page.evaluate(CARDS_JS)}
         asked = cards["Asked during the limit"]

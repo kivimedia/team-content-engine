@@ -195,7 +195,7 @@ LAYOUT_JS = """
   const texts = [...document.querySelectorAll('.voice-text')];
   const talk = document.getElementById('talkFab');
   const type = document.getElementById('typeFab');
-  const bar = [...document.querySelectorAll('#actionBar .bar-btn')];
+  const bar = [...document.querySelectorAll('#actionBar .bar-btn, #todayConversation .bar-btn')];
   const pairs = [];
   for (let i = 0; i < bar.length; i++) for (let j = i + 1; j < bar.length; j++) {
     if (overlaps(bar[i], bar[j])) pairs.push([bar[i].className, bar[j].className]);
@@ -242,6 +242,7 @@ def test_phone_talk_opens_the_call_and_voice_changes_can_be_undone(workspace, tm
 
         # ---------------------------------------------------------- Today
         page.goto(f"{workspace['base']}/today")
+        page.get_by_text("Production details", exact=True).click()
         page.wait_for_selector("#voicePanel")
         page.wait_for_selector("#talkFab")
         layout = page.evaluate(LAYOUT_JS)

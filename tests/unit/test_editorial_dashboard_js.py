@@ -97,7 +97,7 @@ async def test_root_redirect_keeps_the_week_query():
         r = await c.get("/?week=2026-09-07")
         assert r.status_code == 307 and r.headers["location"] == "/dashboard?week=2026-09-07"
         bare = await c.get("/")
-        assert bare.headers["location"] == "/dashboard"
+        assert bare.headers["location"] == "today"
         evil = await c.get("/?week=//evil.example")
         assert evil.headers["location"].startswith("/dashboard?")
 

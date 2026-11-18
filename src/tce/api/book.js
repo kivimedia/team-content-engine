@@ -29,6 +29,7 @@
   const apiV1 = `${prefix}/api/v1`;
   const DB_NAME = "tce-book-v1";
   const CAMERA_FLAG = "tce-camera-active";
+  const LAST_READER = "tce-book-last-reader";
   const SLICE_MS = 3000;
   const RETRY_MS = 4000;
 
@@ -123,6 +124,36 @@
   const label = (c) => (isNew(c) ? `Episode ${c.n}` : `Chapter ${c.n}`);
   const itemsWords = (items) => (items && items.length ? (items.length === 1 ? `item ${items[0]}` : `items ${items.join(", ")}`) : "");
 
+  function reviewAction(c) {
+    if (!c.phased) {
+      return c.status !== "approved" && c.status !== "to_write" && c.paragraphs > 0 ? "Review chapter" : "";
+    }
+    if (c.phase === "ready" && c.readable) return "Review chapter";
+    if (c.phase === "approved_unwritten" && !c.write_requested_at) return "Open approved layout";
+    if ((c.phase === "layout" || c.phase === "on_hold") && c.layout_status === "proposed") return "Review layout";
+    return "";
+  }
+
+  function reviewFocus(allChapters, reviewQueue) {
+    const last = readLocal(LAST_READER);
+    const resume = allChapters.find((c) => positionKey(c) === last && reviewAction(c) === "Review chapter");
+    const readable = resume || reviewQueue.find((c) => reviewAction(c) === "Review chapter");
+    const next = readable || reviewQueue.find((c) => reviewAction(c));
+    const link = $("reviewNext");
+    $("reviewFocus").hidden = !allChapters.length;
+    $("reviewTitle").textContent = next ? next.title : "Nothing to review right now";
+    $("reviewContext").textContent = next ? [label(next), readable && next.minutes ? `${next.minutes} min read` : ""].filter(Boolean).join(" · ") : "Book review";
+    link.hidden = !next;
+    if (next) {
+      link.textContent = resume ? "Continue reading" : reviewAction(next);
+      link.href = `${prefix}/book/${next.n}`;
+      link.dataset.chapter = String(next.n);
+    } else {
+      link.removeAttribute("href");
+      delete link.dataset.chapter;
+    }
+  }
+
   function chapterButton(c) {
     const li = document.createElement("li");
     const b = document.createElement("button");
@@ -184,7 +215,12 @@
     fold.textContent = "";
     // No new episode in the record yet: everything is one list, as before.
     const grouped = fresh.length > 0;
-    for (const c of grouped ? fresh : data.chapters) list.appendChild(chapterButton(c));
+    const chapters = grouped ? fresh : data.chapters;
+    reviewFocus(data.chapters, chapters);
+    $("chapterDirectory").hidden = !data.chapters.length;
+    $("reviewDetails").hidden = !data.chapters.length;
+    $("directorySummary").textContent = grouped ? `Browse new chapters (${fresh.length})` : `Browse chapters (${chapters.length})`;
+    for (const c of chapters) list.appendChild(chapterButton(c));
     if (grouped) for (const c of written) fold.appendChild(chapterButton(c));
     $("newHead").hidden = !grouped;
     $("writtenFold").hidden = !grouped || !written.length;
@@ -196,17 +232,17 @@
     }
     if (grouped && phased) {
       const count = (p) => fresh.filter((c) => c.phase === p).length;
-      const toApprove = count("layout") + count("on_hold");
+      const toApprove = fresh.filter((c) => reviewAction(c) === "Review layout").length;
       const parts = [
         `${toApprove} layout${toApprove === 1 ? "" : "s"} to approve`,
-        count("on_hold") ? `${count("on_hold")} of them drafted earlier and on hold` : "",
+        count("on_hold") ? `${count("on_hold")} earlier drafts on hold` : "",
         count("approved_unwritten") ? `${count("approved_unwritten")} approved, not written` : "",
         `${count("ready")} ready to listen`,
         `${count("approved")} approved`,
       ].filter(Boolean);
       $("progressLine").textContent = `${parts.join(", ")}.`;
       $("progressLine").hidden = false;
-      top(`${toApprove} layouts to approve, ${count("ready")} ready to listen`);
+      top(`${fresh.length} new ${fresh.length === 1 ? "chapter" : "chapters"}`);
     } else if (grouped) {
       const toWrite = fresh.filter((c) => c.status === "to_write").length;
       const approvedN = fresh.filter((c) => c.status === "approved").length;
@@ -257,6 +293,7 @@
     $("listView").hidden = true;
     $("chapterView").hidden = false;
     const readable = c.paragraphs.length > 0;
+    if (readable) saveLocal(LAST_READER, positionKey(c));
     $("player").hidden = !readable;
     document.body.classList.toggle("has-player", readable);
     // No player on a layout (T-20758): the chat icon sits in the top bar, so he can talk the layout over.
@@ -493,6 +530,7 @@
     if (state.playing) { stop(); top("Paused"); return; }
     const token = ++state.token;
     state.playing = true;
+    saveLocal(LAST_READER, positionKey(state.chapter));
     // A paused stock-voice paragraph goes on from where it stopped.
     if (state.mode === "voice" && state.audio && state.audio.src && !state.audio.ended && state.audio.currentTime > 0 && state.audio.dataset.i === String(state.index)) {
       mark();
@@ -525,6 +563,7 @@
       state.playing = false;
       state.index = Math.max(0, state.chapter.paragraphs.length - 1);
       mark();
+      if (readLocal(LAST_READER) === positionKey(state.chapter)) saveLocal(LAST_READER, "");
       top("End of the chapter");
       status(state.chapter.status === "approved" ? "End of the chapter." : "End of the chapter. Approve it when it reads right.");
     }
@@ -536,6 +575,7 @@
     stop();
     state.mode = "";
     state.index = Math.min(Math.max(0, state.index + delta), state.chapter.paragraphs.length - 1);
+    saveLocal(LAST_READER, positionKey(state.chapter));
     mark();
     if (was) play();
   }
@@ -780,10 +820,13 @@
   const putTake = (take) => store("takes", "readwrite", (s) => s.put(take));
   const dropTake = (talkId) => store("takes", "readwrite", (s) => s.delete(talkId));
   const allTakes = () => store("takes", "readonly", (s) => s.getAll());
+  const chosenHere = new Set();
+  let sendAgain = false;
 
   async function sendAll() {
-    if (state.sending) return;
+    if (state.sending) { sendAgain = true; return; }
     state.sending = true;
+    sendAgain = false;
     clearTimeout(state.retryId);
     let failed = null;
     try {
@@ -804,15 +847,20 @@
           if (!take.done || !take.choice || left.some((p) => p.talkId === take.talkId)) continue;
           const edit = take.choice === "send";
           try {
-            await api(`/production/agent-talks/${encodeURIComponent(take.talkId)}/finish`, {
+            const result = await api(`/production/agent-talks/${encodeURIComponent(take.talkId)}/finish`, {
               method: "POST",
               body: JSON.stringify({ ended_at: take.endedAt, duration_ms: take.durationMs, transcript: take.lines || [], edit }),
             });
             await dropTake(take.talkId);
             const name = `"${take.title || "Book session"}"`;
-            status(edit ? `Saved in your Library: ${name}. Jennifer is editing it.`
+            status(result.missing_pieces?.length ? `Saved in your Library: ${name}. Part of the recording is missing.`
+              : result.already_finished ? `Already saved in your Library: ${name}.`
+              : edit ? `Saved in your Library: ${name}. ${result.edit_started ? "Jennifer is editing it." : "The edit has not started."}`
               : take.unchosen ? `Saved in your Library: ${name}, under Archived. You did not pick Send or Archive, so it was not sent for editing. To edit it, open Archived and tap Edit this now.`
                 : `Saved in your Library: ${name}, under Archived, not edited. To edit it, open Archived and tap Edit this now.`, "saved");
+            if (chosenHere.delete(take.talkId) && result.upload_id && !result.already_finished && !result.missing_pieces?.length) {
+              window.TCETakeReward?.show(take.talkId, $("bookStatus"));
+            }
           } catch (error) { failed = error; }
         }
       }
@@ -824,7 +872,7 @@
     if (failed) {
       status(`Sending paused (${failed.message}). Trying again in a few seconds; nothing is lost.`, true);
       state.retryId = setTimeout(sendAll, RETRY_MS);
-    }
+    } else if (sendAgain) sendAll();
   }
 
   /* Each paragraph read while filming becomes a narrator line, timed on the recording's clock. */
@@ -1029,7 +1077,10 @@
     $("choiceSend").disabled = true;
     $("choiceArchive").disabled = true;
     const take = (await allTakes()).find((t) => t.talkId === talkId);
-    if (take) await putTake({ ...take, choice });
+    if (take) {
+      chosenHere.add(talkId);
+      await putTake({ ...take, choice });
+    }
     state.choosing = null;
     $("choiceBox").hidden = true;
     status(choice === "send" ? "Sending it to Jennifer. You can leave this page; it finishes the next time the Book opens."
@@ -1073,6 +1124,11 @@
     if (state.chapter) { event.preventDefault(); go(null); }
   });
   $("bookBack").setAttribute("href", `${prefix}/today`);
+  $("reviewNext").addEventListener("click", (event) => {
+    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    go(Number($("reviewNext").dataset.chapter));
+  });
   $("playButton").addEventListener("click", play);
   $("backPara").addEventListener("click", () => step(-1));
   $("nextPara").addEventListener("click", () => step(1));

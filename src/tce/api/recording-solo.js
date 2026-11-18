@@ -47,7 +47,7 @@
 
   const state = {
     stream: null, recorder: null, talk: null, sequence: 0, startedAt: 0,
-    timerId: null, wakeLock: null, raw: null, paintId: 0, painting: false, sending: false, retryId: null, done: false,
+    timerId: null, wakeLock: null, raw: null, paintId: 0, painting: false, sending: false, retryId: null, starting: false,
   };
 
   const cameraFlag = (on) => {
@@ -187,6 +187,8 @@
   }
 
   function finished(row) {
+    // An earlier take can finish uploading while the next one is already rolling.
+    if (state.starting || (state.talk && state.talk.talkId !== row.talk_id && state.recorder)) return;
     const title = row.title || "your recording";
     status(`In your Library as "${title}". `
       + (row.edit_started ? "Jennifer is editing it now." : (row.detail || "")));
@@ -196,6 +198,9 @@
     link.className = "solo-library-link";
     link.textContent = "Open the Library";
     $("soloStatus").append(" ", link);
+    if (row.upload_id && !row.already_finished && !row.missing_pieces?.length) {
+      window.TCETakeReward?.show(row.talk_id, $("soloStatus"));
+    }
   }
 
   /* ----------------------------------------------------------------- camera */
@@ -268,7 +273,7 @@
     await video.play().catch(() => {});
     $("soloCameraEmpty").hidden = true;
     $("soloCameraButton").hidden = true;
-    $("soloRecord").disabled = false;
+    $("soloRecord").disabled = state.starting;
     top("Ready when you are");
     return state.stream;
   }
@@ -301,8 +306,13 @@
   }
 
   async function startRecording() {
+    if (state.starting || (state.recorder && state.recorder.state !== "inactive")) return;
     if (!supportedMime) { status("This browser cannot record video. Try Chrome or Safari.", true); return; }
+    state.starting = true;
+    document.body.classList.remove("between-takes");
+    $("soloTimer").hidden = true;
     $("soloRecord").disabled = true;
+    top(state.stream ? "Starting recording" : "Opening the camera");
     try {
       const stream = await openCamera();
       const startedAt = new Date();
@@ -323,6 +333,8 @@
         sendAll();
       };
       state.recorder.start(SLICE_MS);
+      document.body.classList.add("solo-recording");
+      $("soloRecord").textContent = "Record";
       cameraFlag(true);
       try { state.wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) { state.wakeLock = null; }
       state.timerId = setInterval(() => { $("soloTimer").textContent = clock(Date.now() - state.startedAt); }, 250);
@@ -337,6 +349,9 @@
     } catch (error) {
       $("soloRecord").disabled = false;
       status(`Recording did not start: ${error.message}`, true);
+      top(state.stream ? "Ready to try again" : "Camera off");
+    } finally {
+      state.starting = false;
     }
   }
 
@@ -364,8 +379,13 @@
     await putTake({ talkId: state.talk.talkId, done: true, startedAt: state.talk.startedAt,
                     endedAt: new Date().toISOString(), durationMs });
     releaseCamera();
-    $("soloCameraHint").textContent = "Camera off. Tap Record another to film again.";
+    document.body.classList.remove("solo-recording");
+    document.body.classList.add("between-takes");
+    $("soloCameraHint").textContent = "The camera will open when you record again.";
     $("soloCameraEmpty").hidden = false;
+    $("soloHelp").textContent = `${clock(durationMs)} recorded`;
+    $("soloHelp").hidden = false;
+    $("soloTip").hidden = false;
     $("soloRecord").disabled = false;
     $("soloRecord").textContent = "Record another";
     top("Sending");
@@ -376,17 +396,7 @@
   /* ------------------------------------------------------------------ wiring */
 
   $("soloBack").setAttribute("href", `${pathPrefix}/record`);
-  $("soloRecord").addEventListener("click", () => {
-    if ($("soloRecord").textContent === "Record another" && !state.stream) {
-      $("soloRecord").textContent = "Record";
-      $("soloHelp").hidden = false;
-      $("soloTip").hidden = false;
-      $("soloTimer").hidden = true;
-      tryCamera();
-      return;
-    }
-    startRecording();
-  });
+  $("soloRecord").addEventListener("click", startRecording);
   $("soloDone").addEventListener("click", done);
   $("soloCameraButton").addEventListener("click", tryCamera);
   window.addEventListener("online", sendAll);

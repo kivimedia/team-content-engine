@@ -618,3 +618,42 @@ body[data-reader="largest"] .msg .bubble { font-size: 1.3rem; }
 .workflow-summary .news-progress { margin:0 0 14px; }
 input,textarea,select { font-size:max(16px,1rem); }
 @media(prefers-reduced-motion:reduce) { * { scroll-behavior:auto!important; transition:none!important; } }
+
+.creator-home { max-width: 740px; margin: 0 auto; padding-top: clamp(16px, 4vw, 46px); }
+.creator-desk {
+  background: var(--white); border: 1px solid var(--line); border-top: 5px solid #bc383e;
+  border-radius: 14px; padding: clamp(20px, 4.2vw, 38px);
+}
+.creator-desk h1 { margin: 0 0 20px; font-size: clamp(1.65rem, 4vw, 2.45rem); }
+.creator-label { margin: 0 0 5px; color: var(--helper); font-weight: 650; }
+.creator-desk h2 {
+  margin: 0 0 20px; max-width: 32ch; font-size: clamp(1.32rem, 3.4vw, 1.9rem);
+  line-height: 1.18; overflow-wrap: anywhere;
+}
+.creator-primary, .creator-solo {
+  min-height: 48px; align-items: center; display: inline-flex; gap: 10px;
+  font-weight: 700; text-underline-offset: 4px;
+}
+.creator-solo { color: var(--lake); }
+.creator-primary {
+  background: #ac2935; color: white; padding: 0 20px; text-decoration: none;
+  border-radius: 9px; justify-content: center;
+}
+.creator-primary:hover { background: #8c1725; }
+.creator-primary>span { width: 13px; height: 13px; border-radius: 50%; background: white; }
+.creator-empty { margin: 0 0 14px; color: var(--body); }
+#creatorScript:has(.creator-primary) + .creator-solo { margin-top: 4px; }
+.creator-book {
+  margin: 14px 0; min-height: 74px; background: var(--white); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 12px; display: flex; gap: 14px;
+  align-items: center; padding: 12px 20px; text-decoration: none; font-size: 1.15rem;
+}
+.book-mark { font-size: 1.5rem; }
+.creator-arrow { margin-left: auto; color: var(--lake); font-size: 1.6rem; }
+.creator-book:hover { border-color: var(--lake); }
+.creator-details { margin: 0; background: transparent; }
+.creator-details .page { padding: 0; }
+.creator-details .workflow-summary { margin-inline: 0; }
+#todayConversation { display: flex; flex-wrap: wrap; gap: 8px; }
+#todayConversation .bar-btn { min-height: 46px; padding-inline: 16px; }
+.desk-operator { display: inline-flex; align-items: center; min-height: 48px; color: var(--lake); }

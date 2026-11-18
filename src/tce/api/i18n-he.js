@@ -32,6 +32,7 @@
     "Loading your scripts": "טוען את התסריטים שלך",
     "This recording sitting": "ההקלטה של עכשיו",
     "Ready to record": "מוכן להקלטה",
+    "Choose a script to open the camera.": "בוחרים תסריט כדי לפתוח את המצלמה.",
     "Tap one and the camera opens. Each idea keeps its own clips, so you can move between scripts without losing a take.":
       "בוחרים אחד והמצלמה נפתחת. לכל רעיון יש קליפים משלו, אז אפשר לעבור בין תסריטים בלי לאבד אף טייק.",
     "Nothing is ready to record yet": "עדיין אין משהו מוכן להקלטה",
@@ -107,6 +108,7 @@
     "This carries on in the background. In a moment you are back on your list, with its progress at the top.":
       "זה ממשיך ברקע. עוד רגע חוזרים לרשימה, וההתקדמות מופיעה למעלה.",
     "The take you just sent": "הטייק ששלחת עכשיו",
+    "Editing progress": "התקדמות העריכה",
     "Hide this": "להסתיר",
     "Your take": "הטייק שלך",
     "Put it together again": "לחבר שוב",

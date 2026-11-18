@@ -102,11 +102,11 @@ def test_hebrew_assets_are_served(client):
     assert ".reader-sentence" in css.text and "direction: rtl" in css.text
 
 
-def test_root_sends_a_scoped_login_to_today_and_the_owner_to_the_dashboard(client):
+def test_root_opens_today_for_clients_and_the_owner(client):
     r = client.get("/", headers={"X-TCE-Editor-Key": MATAN_KEY}, follow_redirects=False)
     assert r.status_code in (302, 307) and r.headers["location"] == "/today"
     r = client.get("/", headers={"X-TCE-Editor-Key": OWNER_KEY}, follow_redirects=False)
-    assert r.headers["location"] == "/dashboard"
+    assert r.headers["location"] == "today"
 
 
 # --- The JS: the Hebrew layer and the teleprompter's sentences (Node) ----------------
