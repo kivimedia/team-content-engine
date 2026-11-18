@@ -471,3 +471,6 @@ body.solo-page { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr
 .between-takes .solo-help { font: 700 1.8rem Georgia, serif; }
 .between-takes .solo-status { grid-row: 2; }
 .between-takes .solo-controls { grid-row: 3; }
+.batch-session .queue-intro, .batch-session #queue, .batch-session #emptyQueue { display: none; }
+#batchList { padding-inline-start: 1.6rem; }
+#batchList li { margin: .5rem 0; overflow-wrap: anywhere; }

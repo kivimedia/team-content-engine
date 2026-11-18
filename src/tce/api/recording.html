@@ -32,7 +32,7 @@
   <header class="topbar">
     <button id="homeButton" class="icon-button" type="button" aria-label="Back to Today">⌂</button>
     <div class="identity">
-      <strong>Walking studio</strong>
+      <strong id="studioName">Walking studio</strong>
       <span id="syncState">Loading your scripts</span>
     </div>
     <div class="topbar-actions">
@@ -45,6 +45,15 @@
 
   <main>
     <section id="queueView" class="queue-view" aria-labelledby="queueTitle">
+      <section id="batchPanel" class="finish-status" hidden aria-labelledby="batchProgress">
+        <h2 id="batchProgress" aria-live="polite"></h2>
+        <ol id="batchList"></ol>
+        <div class="finish-status-actions">
+          <button id="batchNext" type="button" class="finish-next" hidden></button>
+          <button id="batchRefresh" type="button" class="secondary-button" hidden>Check scripts again</button>
+          <button id="batchEnd" type="button" class="secondary-button">Finish here</button>
+        </div>
+      </section>
       <!-- 8-Oct: after Finish he lands here and keeps working; this says what the
            take he just sent is doing right now, until the edit is done. -->
       <section id="finishStatus" class="finish-status" hidden aria-labelledby="finishStatusTitle">

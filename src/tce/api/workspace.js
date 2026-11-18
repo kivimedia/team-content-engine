@@ -497,12 +497,14 @@
       return;
     }
 
-    var first = ((data.week || {}).primary || []).find(toFilmNow);
+    var ready = ((data.week || {}).primary || []).filter(toFilmNow);
+    var first = ready[0];
     var slot = $("creatorScript");
     if (first) {
       slot.innerHTML = '<p class="creator-label">Next script</p><h2>' + esc(first.title) + '</h2>'
         + '<a class="creator-primary" href="' + prefix + '/record?candidate='
         + encodeURIComponent(first.candidate_id) + '"><span aria-hidden="true"></span>Record this script</a>';
+      if (ready.length >= 2) addBatchPicker(slot, ready);
     } else {
       slot.innerHTML = '<p class="creator-empty">No scripts ready to film.</p>';
       shell.querySelector(".creator-solo").classList.add("creator-primary");
@@ -520,6 +522,37 @@
     details.addEventListener("toggle", showDetails);
     details.open = expanded || details.open;
     showDetails();
+  }
+
+  function addBatchPicker(slot, ready) {
+    var picker = document.createElement("details");
+    picker.className = "batch-picker";
+    picker.innerHTML = '<summary>Record a batch</summary><fieldset><legend>Choose scripts in filming order</legend>'
+      + ready.map(function (idea, index) {
+        return '<label><input type="checkbox" value="' + index + '"' + (index < 2 ? " checked" : "")
+          + '><span>' + esc(idea.title) + '</span></label>';
+      }).join("") + '</fieldset><button class="creator-primary" type="button">Start 2 videos</button><p role="status"></p>';
+    slot.appendChild(picker);
+    var start = picker.querySelector("button");
+    function selected() {
+      return Array.from(picker.querySelectorAll("input:checked"), function (input) {
+        var idea = ready[Number(input.value)];
+        return { id: idea.candidate_id, title: idea.title };
+      });
+    }
+    picker.addEventListener("change", function () {
+      var count = selected().length;
+      start.disabled = count < 2;
+      start.textContent = count < 2 ? "Choose at least 2 videos" : "Start " + count + " videos";
+    });
+    start.addEventListener("click", function () {
+      var items = selected();
+      if (items.length < 2) return;
+      var id = crypto.randomUUID();
+      try { sessionStorage.setItem("tce-batch" + prefix, JSON.stringify({ id: id, items: items })); }
+      catch (_) { picker.querySelector('[role="status"]').textContent = "This tab could not keep the batch. You can still record a single script."; return; }
+      location.assign(prefix + "/record?batch=" + encodeURIComponent(id) + "&start=1");
+    });
   }
 
   function countCard(value, label, href) {
