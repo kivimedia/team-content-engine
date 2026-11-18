@@ -596,7 +596,35 @@
      being read, or the chapters list), and when the place changes the next line says so. */
   const VOICE_SCRIPT = "/voice-client.js";
   const EDITOR_AGENT = "book-editor";
-  const chat = { call: null, open: false, ready: false, loading: null, sentPlace: "", micOn: false, queue: [] };
+  const chat = { call: null, open: false, ready: false, loading: null, sentPlace: "", micOn: false, queue: [],
+    lines: [], wanted: false, closing: false, ended: false, dropped: false, gen: 0, backAt: 0, redials: 0, note: "" };
+
+  /* 18-Nov-2026 (T-22867), Ziv: in the KM BOT app the call and the chat keep going when he
+     switches to Waze; in the Book they did not. The call is the same voice client, so the
+     gap was this page: a call that dropped while he was in another app stayed dead when he
+     came back, and the chat lines lived only on screen, so when the phone reloaded the page
+     in the background the panel, the lines and the call were all gone. Now the chat is kept
+     in this tab's session store (lines, panel open, call wanted, mic on), a call that drops
+     while he is away reconnects when he comes back, and a reloaded page picks up where it
+     was. Closing the chat himself, or a goodbye, ends it for good, as before. */
+  const CHAT_KEY = "tce-book-chat";
+  const CHAT_KEEP_MS = 3 * 60 * 60 * 1000;
+  const AWAY_GRACE_MS = 5000;
+  const MAX_REDIALS = 2;
+  function keepChat() {
+    try {
+      sessionStorage.setItem(CHAT_KEY, JSON.stringify({
+        at: Date.now(), open: chat.open, call: chat.wanted, mic: chat.micOn, lines: chat.lines.slice(-60),
+      }));
+    } catch (_) { /* private browsing */ }
+  }
+  function keptChat() {
+    try {
+      const kept = JSON.parse(sessionStorage.getItem(CHAT_KEY) || "null");
+      return kept && Date.now() - kept.at < CHAT_KEEP_MS ? kept : null;
+    } catch (_) { return null; }
+  }
+  const away = () => document.visibilityState === "hidden" || Date.now() - chat.backAt < AWAY_GRACE_MS;
 
   function place() {
     const c = state.chapter;
@@ -630,8 +658,9 @@
     };
   }
 
-  function chatLine(who, text) {
+  function chatLine(who, text, keep = true) {
     if (!text) return;
+    if (keep) { chat.lines.push({ who, text }); keepChat(); }
     const log = $("editorLog");
     const p = document.createElement("p");
     p.className = `chat-line ${who}`;
@@ -674,9 +703,12 @@
   function onCall(type, data) {
     data = data || {};
     if (type === "connecting") chatState("Connecting to the editor...");
+    else if (type === "reconnecting") chatState(data.text || "The line dipped. Reconnecting to the editor...");
+    else if (type === "goodbye_heard") chat.ended = true;
     else if (type === "realtime") {
       chat.ready = true;
-      chatState(chat.micOn ? "Listening. Talk, or type below." : "Ready. Type below, or tap the mic and talk.");
+      chatState(chat.note || (chat.micOn ? "Listening. Talk, or type below." : "Ready. Type below, or tap the mic and talk."));
+      chat.note = "";
       const waiting = chat.queue.splice(0);
       for (const text of waiting) chat.call.send(text);
     } else if (type === "said") {
@@ -692,10 +724,49 @@
     else if (type === "mic") { chat.micOn = !data.muted; drawMic(); }
     else if (type === "error") { chat.sentPlace = ""; editorPending = null; editorBusy(false); chatState(data.text || "The editor call had a problem. Your comment is still here.", true); }
     else if (type === "closed" || type === "stopped") {
-      chat.call = null; chat.ready = false; chat.micOn = false; chat.sentPlace = ""; drawMic();
+      if (data.goodbye) chat.ended = true;
+      const hadCall = Boolean(chat.call);
+      chat.call = null; chat.ready = false; chat.sentPlace = "";
       chat.queue = []; editorPending = null; editorBusy(false);
+      // The line went while he was in another app (or in the moment he came back): it comes
+      // back by itself, with his mic as he left it.
+      if (!chat.closing && !chat.ended && chat.open && chat.wanted && (chat.dropped || away())) {
+        chat.dropped = true;
+        if (document.visibilityState === "hidden") chatState("The call dropped while you were away. It reconnects when you come back.");
+        else if (hadCall) setTimeout(() => redial("You were away and the call dropped, so it reconnected."), 600);
+        keepChat();
+        return;
+      }
+      chat.micOn = false; chat.wanted = false; chat.dropped = false; drawMic();
       if (chat.open) chatState("The call ended. Type or tap the mic to start it again.");
+      keepChat();
     }
+  }
+
+  /* One reconnect after a drop he did not ask for. The editor is told where he is again and
+     that the line dropped, so it carries on rather than starting over. */
+  async function redial(note) {
+    if (chat.call || !chat.dropped || !chat.open || !chat.wanted || chat.closing) return;
+    if (document.visibilityState === "hidden") return;
+    if (chat.redials >= MAX_REDIALS) {
+      chat.dropped = false; chat.wanted = false; chat.micOn = false; drawMic(); keepChat();
+      chatState("The call dropped again. Type or tap the mic to start it again.", true);
+      return;
+    }
+    chat.redials += 1;
+    chat.dropped = false;
+    chat.note = note;
+    if (!(await ensureCall())) return;
+    chat.sentPlace = "";
+    const line = `${withPlace("")}\n\n(The call dropped while he was away from this page and has just reconnected. Carry on from where you were; do not greet him again.)`;
+    if (chat.ready) chat.call.send(line); else chat.queue.push(line);
+  }
+
+  function backToBook() {
+    if (document.visibilityState === "hidden") { keepChat(); return; }
+    chat.backAt = Date.now();
+    chat.redials = 0;
+    if (chat.dropped) redial("You were away and the call dropped, so it reconnected.");
   }
 
   /* What he typed, without the place line the page put in front of it. */
@@ -716,7 +787,14 @@
     }
     if (loaded !== true) { chatState("The editor's voice service did not answer. Try again in a minute.", true); return false; }
     chat.ready = false;
-    chat.call = window.KmVoice.start({ agent: EDITOR_AGENT, greet: false, startMuted: true, on: onCall });
+    chat.closing = false;
+    chat.ended = false;
+    chat.wanted = true;
+    // Events from a call this page already let go of (a drop it has redialed) change nothing.
+    const gen = ++chat.gen;
+    chat.call = window.KmVoice.start({ agent: EDITOR_AGENT, greet: false, startMuted: !chat.micOn,
+      on: (type, data) => { if (gen === chat.gen) onCall(type, data); } });
+    keepChat();
     return true;
   }
 
@@ -759,6 +837,7 @@
     }
     chat.micOn = !chat.micOn;
     drawMic();
+    keepChat();
     try { chat.call.mute(!chat.micOn); } catch (_) { /* not connected yet: muted until it is */ }
     if (chat.ready) chatState(chat.micOn ? "Listening. Talk, or type below." : "Mic off. Type below, or tap the mic.");
   }
@@ -774,15 +853,37 @@
     chatState(chat.call ? (chat.ready ? "Ready. Type below, or tap the mic and talk." : "Connecting to the editor...") : "Type a question, or tap the mic and talk.");
     $("editorPanel").scrollIntoView({ block: "nearest" });
     $("editorText").focus({ preventScroll: true });
+    keepChat();
   }
 
   function closeChat() {
     chat.open = false;
     $("editorPanel").hidden = true;
     for (const id of ["talkButton", "listTalk"]) $(id).setAttribute("aria-expanded", "false");
+    chat.closing = true;
+    chat.wanted = false; chat.dropped = false;
     if (chat.call) { try { chat.call.stop(); } catch (_) { /* gone */ } }
     chat.call = null; chat.ready = false; chat.micOn = false; chat.sentPlace = ""; chat.queue = [];
     drawMic();
+    keepChat();
+  }
+
+  /* A page the phone reloaded while he was away: the lines come back, and so do the open
+     panel and the call when they were open. */
+  function restoreChat() {
+    const kept = keptChat();
+    if (!kept) return;
+    chat.lines = Array.isArray(kept.lines) ? kept.lines.filter((l) => l && l.text) : [];
+    for (const l of chat.lines) chatLine(l.who, l.text, false);
+    if (!kept.open) { keepChat(); return; }
+    talk();
+    if (!kept.call) return;
+    chat.micOn = Boolean(kept.mic);
+    drawMic();
+    chat.wanted = true;
+    chat.dropped = true;
+    chat.backAt = Date.now();
+    redial("The page reloaded while you were away, so the call reconnected.");
   }
 
   /* The place shown on the open panel follows the reading. */
@@ -1175,10 +1276,13 @@
   $("choiceArchive").addEventListener("click", () => choose("archive"));
   window.addEventListener("popstate", () => go(n_from_path(), false));
   window.addEventListener("online", sendAll);
-  window.addEventListener("pagehide", () => { try { localStorage.removeItem(CAMERA_FLAG); } catch (_) { /* */ } });
+  window.addEventListener("pagehide", () => { try { localStorage.removeItem(CAMERA_FLAG); } catch (_) { /* */ } keepChat(); });
+  document.addEventListener("visibilitychange", backToBook);
+  window.addEventListener("pageshow", backToBook);
   $("filmButton").hidden = !supportedMime;
 
   go(n_from_path(), false).then(() => {
+    restoreChat();
     // A session from an earlier visit that never finished sending is finished now.
     allPieces().then((left) => allTakes().then(async (takes) => {
       // 10-Nov (T-19955): a take from an earlier visit that never got Send or Archive is
