@@ -289,6 +289,16 @@ async def workspace_sw():
     )
 
 
+@router.get("/workspace-icon-{size}.png", include_in_schema=False)
+async def workspace_icon(size: int):
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+
+    if size not in (192, 512):
+        raise HTTPException(status_code=404)
+    return FileResponse(Path(__file__).with_name(f"workspace-icon-{size}.png"), media_type="image/png")
+
+
 @router.get("/workspace.webmanifest", include_in_schema=False)
 async def workspace_manifest():
     """Makes the workspace installable.
@@ -303,6 +313,10 @@ async def workspace_manifest():
         {
             "name": "TCE editorial workspace",
             "short_name": "TCE",
+            "icons": [
+                {"src": f"workspace-icon-{size}.png", "sizes": f"{size}x{size}", "type": "image/png"}
+                for size in (192, 512)
+            ],
             "start_url": "today",
             "scope": "./",
             "display": "standalone",
