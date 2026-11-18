@@ -249,7 +249,7 @@ body.has-player,body.has-player.device-voice { padding-bottom:var(--player-space
 .player { background:#fff; color:var(--ink); border-top:1px solid var(--line); grid-template-columns:48px 56px 48px minmax(0,1fr) 48px; min-height:0; gap:8px; }
 .player .ctl { min-height:46px; border-radius:12px; }
 .player .ctl.play { background:var(--lake); color:#fff; }
-.reading-position { grid-column:1/-1; margin:0; font:13px/1.4 "Segoe UI",sans-serif; color:var(--body); text-align:center; }
+.reading-position { grid-column:1/-1; margin:0; font:.8rem/1.4 "Segoe UI",sans-serif; color:var(--body); text-align:center; }
 .reading-action { grid-column:1/-1; display:flex; justify-content:center; }
 .reading-action .btn { width:min(100%,440px); min-height:44px; }
 .editor-panel { border:1px solid var(--line); background:#fff; }

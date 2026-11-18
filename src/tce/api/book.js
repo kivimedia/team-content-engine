@@ -2,7 +2,7 @@
    book button. There will be an option to record a video... just like on TCE".
 
    Listening: a chapter is read one paragraph at a time. Each paragraph's narration comes
-   from /api/v1/book/.../audio/<i> (a stock ElevenLabs voice, cached on the server); when
+   from /api/v1/book/.../audio/<i> (his chosen voice, cached on the server); when
    the server says no narration may be bought yet (409, device_voice), this device's own
    voice reads it instead, which costs nothing. Pause stops at once; Play goes on from
    the same paragraph. Talk to the editor pauses and opens the book editor's call.
@@ -115,9 +115,9 @@
 
   function narrationLine(n) {
     if (!n) return "";
-    if (n.on) return "Read by a stock ElevenLabs voice. What has been read once replays free.";
+    if (n.on) return `Read in ${voiceWords(n)}. What has been read once replays free.`;
     const dollars = n.book_cost_usd ? ` (reading all ${n.book_chars.toLocaleString()} characters is about $${Number(n.book_cost_usd).toFixed(2)})` : "";
-    return `Read by this device's own voice for now: the ElevenLabs voice is switched on only after you OK its cost${dollars}.`;
+    return `Read by this device's own voice for now: ${voiceWords(n)} is switched on only after you OK its cost${dollars}.`;
   }
 
   const isNew = (c) => c.group === "new";
@@ -296,8 +296,8 @@
     if (readable) saveLocal(LAST_READER, positionKey(c));
     $("player").hidden = !readable;
     document.body.classList.toggle("has-player", readable);
-    // No player on a layout (T-20758): the chat icon sits in the top bar, so he can talk the layout over.
-    $("listTalk").hidden = readable;
+    // The chat icon stays in the top bar on every view (T-22863): he looks for it there.
+    $("listTalk").hidden = false;
     top(readable ? `${c.paragraphs.length} paragraphs, ${narrationShort()}` : c.phased ? c.phase_words : "Not written yet");
     state.mode = "";
     voiceBadge();
@@ -306,7 +306,8 @@
     else window.scrollTo(0, 0);
   }
 
-  const narrationShort = () => (state.narration && state.narration.on ? "stock ElevenLabs voice" : DEVICE_VOICE_WORDS);
+  const voiceWords = (n) => (n && n.voice_name ? `${n.voice_name}'s voice` : "your chosen voice");
+  const narrationShort = () => (state.narration && state.narration.on ? voiceWords(state.narration) : DEVICE_VOICE_WORDS);
 
   /* 10-Nov (T-19955): the device voice once passed for the paid one ("it sounds like an old
      version of ElevenLabs"). Whenever this device is the one reading, the player says so. */
@@ -1264,7 +1265,6 @@
         await loadList();
         chatWhere();
       } else {
-        $("listTalk").hidden = true;
         if (push) history.pushState({}, "", `${prefix}/book/${n}`);
         await openChapter(n);
       }
