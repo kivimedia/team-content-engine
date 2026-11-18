@@ -792,12 +792,16 @@
   async function renderWeek() {
     var view = $("view");
     view.innerHTML = '<div class="page">' + working("Reading this week's list") + "</div>";
-    var data = await api("/editorial/weeks/current/lineup");
-    state.week = data;
-    var newsProgress = null;
-    if (!window.TCE_SCOPED) {
-      try { newsProgress = await api("/news/workflow"); } catch (e) { newsProgress = null; }
+    var loading = view.firstElementChild;
+    var data;
+    try {
+      data = await api("/editorial/weeks/current/lineup");
+    } catch (error) {
+      if (loading.isConnected) throw error;
+      return;
     }
+    if (!loading.isConnected || state.route !== "week") return;
+    state.week = data;
 
     var primary = data.primary || [];
     var reserve = data.reserve || [];
@@ -814,7 +818,6 @@
     html += '<p class="lede">' + lede + (data.mix ? " " + esc(data.mix) + "." : "")
          + ' <a href="settings" data-go="/settings">Change how many a week</a></p></div>';
 
-    html += newsProgressPanel(newsProgress);
     if (!primary.length && !reserve.length) {
       html += '<div class="empty"><strong>Nothing chosen yet</strong>'
             + "Open Topics and put " + data.primary_slots + " "
@@ -848,6 +851,9 @@
         }
       }
     }
+    if (!window.TCE_SCOPED) {
+      html += '<div id="weekNewsProgress" aria-live="polite">' + working("Loading AI news progress") + '</div>';
+    }
     html += "</div>";
     view.innerHTML = html;
     // A filmed topic stays on the list but its script is used: "ready" counts
@@ -855,6 +861,12 @@
     var filmed = primary.filter(function (i) { return i.filmed; }).length;
     status(data.ready_count + " of " + (primary.length - filmed) + " scripts ready"
            + (filmed ? ", " + filmed + " filmed" : ""));
+    var news = $("weekNewsProgress");
+    if (news) {
+      api("/news/workflow").catch(function () { return {unavailable: true}; }).then(function (progress) {
+        if (news.isConnected) news.innerHTML = newsProgressPanel(progress);
+      });
+    }
   }
 
   /* A topic he can start filming now: its script is ready and he has not filmed

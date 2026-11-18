@@ -303,12 +303,21 @@ def test_phone_today_counts_what_the_library_shows_and_a_filmed_topic_is_done(
         assert page.evaluate(LIBRARY_JS, PRESSED)["pressed"] == ["Being edited"]
 
         # ------------------------------------------------------- The week
+        pending_news = []
+        news_url = "**/api/v1/news/workflow"
+        page.route(news_url, lambda route: pending_news.append(route))
         page.goto(f"{workspace['base']}/week")
-        page.wait_for_selector("article.card h3")
+        # The actual recording list must be usable while news is still in flight.
+        page.wait_for_selector("article.card h3", timeout=5000)
         cards = {c["title"]: c for c in page.evaluate(CARDS_JS)}
         assert "Filmed" in cards["Filmed on Sunday"]["tags"], cards
         assert "Record this one" not in cards["Filmed on Sunday"]["buttons"], cards
         assert page.locator("#pageStatus").text_content() == "1 of 1 scripts ready, 1 filmed"
+        page.get_by_text("Loading AI news progress").wait_for()
+        assert len(pending_news) == 1
+        pending_news[0].fulfill(json={"enabled": False})
+        page.get_by_text("Loading AI news progress").wait_for(state="detached")
+        page.unroute(news_url)
         page.screenshot(path=str(shots / "week-filmed-phone.png"), full_page=True)
 
         # --------------------------------------------- Record it again
