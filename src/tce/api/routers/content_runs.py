@@ -519,6 +519,11 @@ async def _news_step(sm: Any, run: ContentRun, *, appraise: bool) -> dict[str, A
 # at its widest (one, or two when the second is major); the ceiling itself is
 # applied by the selector against what the week already holds.
 NEWS_TOPICS_PER_DAY = 2
+# The owner's workspace has had no weekly news ceiling since 20-Oct, so two a day only
+# made good stories compete for two slots: on 17-Nov the model rejected one as "a good
+# candidate" that "ranked below" two others, and that rejection is final (T-22611).
+# The 0.70 floor and every gate still apply to each idea.
+OWNER_NEWS_TOPICS_PER_DAY = 4
 
 
 async def _news_topics(sm: Any, run: ContentRun) -> dict[str, Any]:
@@ -553,7 +558,7 @@ async def _news_topics(sm: Any, run: ContentRun) -> dict[str, Any]:
         sm,
         run.workspace_id,
         current_week_start(),
-        max_candidates=NEWS_TOPICS_PER_DAY,
+        max_candidates=OWNER_NEWS_TOPICS_PER_DAY if owner else NEWS_TOPICS_PER_DAY,
         selection_run_id=uuid.uuid5(run.workspace_id, key),
         source_ids=source_ids,
         adds_only=True,

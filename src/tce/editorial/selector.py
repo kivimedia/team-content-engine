@@ -757,6 +757,24 @@ def build_selection_prompt(
                     "Editor suggestions are directions to evaluate against the cited "
                     "facts, never evidence or permission to weaken a gate."
                 )
+                # 18-Nov (T-22611), Ziv: too few AI news topics. Nine published stories
+                # in three days made none: the GPT-6.2 launch died as "advice for people
+                # who run agents or APIs", Gemini skills as "Kivi Media's skills run in
+                # Claude Code, not Gemini".
+                context_block.append(
+                    "OWNER AI TOOLS (18-Nov): a new model, feature or plan in an AI tool "
+                    "that coaches and small service-business owners use themselves - "
+                    "ChatGPT, Claude, Gemini, Copilot, or the AI inside Google Workspace or "
+                    "Microsoft 365 - passes coach_or_event_owner_relevance when the idea "
+                    "says what an owner would notice, try or change in their own use of it "
+                    "this month. When the item is written for developers (API prices, "
+                    "tokens, SDKs, changelogs), build the owner-level angle from its "
+                    "confirmed facts instead of rejecting it, and leave the developer "
+                    "detail out. Do not reject it because Kivi Media runs a different "
+                    "vendor's tool, or because a developer would set it up: judge the "
+                    "owner-level angle. The anchor rule and the claims rules above still "
+                    "apply in full."
+                )
     # The first three lines are durable headers parsed by tce.editorial.common.
     return "\n\n".join(
         [
@@ -834,7 +852,111 @@ def _reject(
 
 # Codes that mean "good enough, just did not win this week". These rows keep their
 # citations so they can be offered later; everything else was cut for cause.
-RESERVE_CODES = frozenset({"rank_cap", "below_cut", "not_selected_globally", "shard_cap"})
+RESERVE_CODES = frozenset(
+    {"rank_cap", "below_cut", "not_selected_globally", "shard_cap", "lane_room"}
+)
+
+# 18-Nov (T-22611), Ziv: too few ideas "related to code" on his list. On the week of
+# 8 Nov, 56 build-led finalists passed all four gates and the ranking kept one of
+# them next to five call ideas. In the owner's workspace a week keeps up to this many
+# build ideas that talk about software or AI, when such finalists passed.
+OWNER_BUILD_SLOTS = 2
+_AI_WORDS = re.compile(
+    r"\b(ai|automation|automations|automate|automated|chatbot|claude|chatgpt|gemini|llm)\b",
+    re.IGNORECASE,
+)
+
+
+def _build_led(cand: dict[str, Any]) -> bool:
+    """Began in a build: commits are its evidence, or a commit is its saved starter."""
+    kinds = {
+        c.get("source_kind") for c in cand.get("citations_private") or [] if isinstance(c, dict)
+    }
+    if "github_commit_group" not in kinds or news_rules.NEWS_KIND in kinds or cand.get("news"):
+        return False
+    primary = (cand.get("gates") or {}).get("_primary_source_kind")
+    if primary:
+        return primary == "github_commit_group"
+    return "fathom_meeting" not in kinds
+
+
+def _build_topic(cand: dict[str, Any]) -> bool:
+    """A build idea that is about software or AI in its own words (18-Oct: a lesson
+    merely mined from a commit is a coaching idea, not a code one)."""
+    from tce.editorial.lineup import _CODE_WORDS
+
+    if not _build_led(cand):
+        return False
+    words = " ".join(str(cand.get(k) or "") for k in ("title", "lesson", "public_angle"))
+    return bool(_CODE_WORDS.search(words) or _AI_WORDS.search(words))
+
+
+def keep_build_lane(
+    final: list[dict[str, Any]],
+    rank_rejected: list[dict[str, Any]],
+    finalists: list[dict[str, Any]],
+    max_candidates: int,
+    *,
+    is_repeat: Any = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """The owner's net under the global ranking: up to OWNER_BUILD_SLOTS build ideas.
+
+    Only finalists the ranking set aside as not selected (or cut over the cap) are
+    eligible, never one it called a duplicate. When the week is full, each promoted
+    build takes the place of the lowest-ranked pick that began in a call; that pick
+    is recorded as `lane_room` and stays reserve, so "more ideas" can still offer it.
+    News picks are never displaced. Returns (final, rank_rejected, report).
+    """
+    have = sum(1 for c in final if _build_topic(c))
+    report: dict[str, Any] = {"slots": OWNER_BUILD_SLOTS, "had": have, "kept": 0}
+    want = OWNER_BUILD_SLOTS - have
+    if want <= 0:
+        return final, rank_rejected, report
+    by_ids = {frozenset(c["moment_ids"]): c for c in finalists}
+    waiting: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for row in rank_rejected:
+        if row.get("code") not in ("not_selected_globally", "rank_cap"):
+            continue
+        cand = by_ids.get(frozenset(row["moment_ids"]))
+        if cand is None or not _build_topic(cand):
+            continue
+        if is_repeat is not None and is_repeat(cand):
+            continue
+        waiting.append((row, cand))
+    waiting.sort(key=lambda rc: float(rc[1].get("rank_score") or 0.0), reverse=True)
+    final, rank_rejected = list(final), list(rank_rejected)
+    for row, cand in waiting[:want]:
+        if len(final) >= max_candidates:
+            spot = next(
+                (
+                    i
+                    for i in range(len(final) - 1, -1, -1)
+                    if not _build_topic(final[i]) and not final[i].get("news")
+                ),
+                None,
+            )
+            if spot is None:
+                break
+            out = final.pop(spot)
+            cut = _reject(
+                out,
+                out["moment_ids"],
+                "unspecified",
+                "lane_room",
+                f"made room for a build idea ({cand['title']}): Ziv asked for more ideas "
+                "from his builds (18-Nov)",
+            )
+            cut["job_id"] = out.get("job_id")
+            rank_rejected.append(cut)
+        rank_rejected.remove(row)
+        kept = dict(cand)
+        kept["rank_reason"] = (
+            "kept for the builds lane: it passed every gate and the week had fewer than "
+            f"{OWNER_BUILD_SLOTS} build ideas"
+        )
+        final.append(kept)
+        report["kept"] += 1
+    return final, rank_rejected, report
 
 
 def _score(value: Any) -> float:
@@ -2318,6 +2440,20 @@ async def select_candidates(
             )
             if not rank_ok:
                 return result
+            if news_rules.owner_policy(ws) and not adds_only:
+                final, rank_rejected, build_lane = keep_build_lane(
+                    final,
+                    rank_rejected,
+                    finalists_pool,
+                    max_candidates,
+                    is_repeat=lambda c: find_duplicate(c, on_the_list) is not None,
+                )
+                coverage["rank"]["build_lane"] = build_lane
+                if build_lane["kept"]:
+                    activity(
+                        f"Kept {build_lane['kept']} build idea(s) the ranking left out, so "
+                        f"the week holds up to {OWNER_BUILD_SLOTS} ideas from his builds"
+                    )
             rejected.extend(rank_rejected)
         else:
             coverage["rank"] = {
