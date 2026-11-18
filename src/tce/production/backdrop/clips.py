@@ -92,15 +92,60 @@ def has_sound(path: str | Path) -> bool:
     return bool(str(out).strip())
 
 
-def _seek(frame: int, fps: int) -> str:
-    # A quarter frame early, so the frame at `frame` is the first one kept (the engine's trick).
-    return f"{max(0.0, (frame - 0.25) / fps):.6f}"
+def frame_times(path: str | Path) -> list[float]:
+    """When each frame of the picture is shown, in order. The base picture is joined from many
+    short pieces and its clock runs a little fast (14 ms early by the end of a 74 s cut, 19-Nov),
+    so frame n is NOT at n / fps: every frame is found by its number through this list."""
+    out = str(
+        _run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "packet=pts_time",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ]
+        )
+    )
+    try:
+        return sorted(
+            float(x) for x in (line.strip().rstrip(",") for line in out.splitlines()) if x
+        )
+    except ValueError:
+        raise ClipError(f"could not read the frame times of {Path(path).name}") from None
+
+
+def _seek(times: list[float], frame: int) -> str:
+    """A seek that lands exactly on frame ``frame``: halfway between the frame before it and
+    the frame itself, by their real times."""
+    if frame <= 0:
+        return "0"
+    if frame >= len(times):
+        raise ClipError(f"frame {frame} is past the end of the picture ({len(times)} frames)")
+    return f"{(times[frame - 1] + times[frame]) / 2:.6f}"
+
+
+def _even(fps: int) -> str:
+    # The frames that come out are numbered again on an even clock, so none is dropped or doubled.
+    return f"setpts=N/({fps}*TB)"
 
 
 def scene_clip(
-    base: str | Path, voice: str | Path, a: int, b: int, fps: int, out: str | Path
+    base: str | Path,
+    voice: str | Path,
+    a: int,
+    b: int,
+    fps: int,
+    out: str | Path,
+    times: list[float],
 ) -> None:
-    """Frames a..b of the base picture with the voice that plays under them: what the model gets."""
+    """Frames a..b of the base picture with the voice that plays under them: what the model gets.
+    The voice has no drift (it is cut by the shots' own lengths), so it is taken by time."""
     _run(
         [
             "ffmpeg",
@@ -108,7 +153,7 @@ def scene_clip(
             "error",
             "-y",
             "-ss",
-            _seek(a, fps),
+            _seek(times, a),
             "-i",
             str(base),
             "-ss",
@@ -121,6 +166,8 @@ def scene_clip(
             "0:v:0",
             "-map",
             "1:a:0",
+            "-vf",
+            _even(fps),
             "-frames:v",
             str(b - a),
             "-r",
@@ -148,7 +195,9 @@ def scene_clip(
     )
 
 
-def real_piece(base: str | Path, a: int, b: int, fps: int, out: str | Path) -> None:
+def real_piece(
+    base: str | Path, a: int, b: int, fps: int, out: str | Path, times: list[float]
+) -> None:
     """Frames a..b of the base picture as their own piece, untouched in content."""
     _run(
         [
@@ -157,11 +206,13 @@ def real_piece(base: str | Path, a: int, b: int, fps: int, out: str | Path) -> N
             "error",
             "-y",
             "-ss",
-            _seek(a, fps),
+            _seek(times, a),
             "-i",
             str(base),
             "-map",
             "0:v:0",
+            "-vf",
+            _even(fps),
             "-frames:v",
             str(b - a),
             "-r",
@@ -239,24 +290,28 @@ def rebuild(
     one frame, because every later stage addresses the picture by frame number."""
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
-    total = int(info(base)["frames"])
+    times = frame_times(base)
+    total = len(times)
     pieces: list[Path] = []
+
+    def real(a: int, b: int, piece: Path) -> None:
+        real_piece(base, a, b, fps, piece, times)
+        if int(info(piece)["frames"]) != b - a:
+            raise ClipError(f"a real stretch came out with the wrong number of frames ({a}-{b})")
+        pieces.append(piece)
+
     at = 0
     for n, (a, b, clip) in enumerate(sorted(swaps)):
         if a < at or b <= a or b > total:
             raise ClipError("the scenes to replace overlap or run past the end")
         if a > at:
-            piece = work / f"real{n:03d}.mkv"
-            real_piece(base, at, a, fps, piece)
-            pieces.append(piece)
+            real(at, a, work / f"real{n:03d}.mkv")
         if int(info(clip)["frames"]) != b - a:
             raise ClipError("a redrawn scene does not have the frames of the scene it replaces")
         pieces.append(Path(clip))
         at = b
     if at < total:
-        piece = work / "real-end.mkv"
-        real_piece(base, at, total, fps, piece)
-        pieces.append(piece)
+        real(at, total, work / "real-end.mkv")
     out = work / "base.new.mp4"
     join(pieces, out)
     if int(info(out)["frames"]) != total:

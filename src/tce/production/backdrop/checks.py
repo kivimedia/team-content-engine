@@ -14,8 +14,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-# Seconds the result may be longer or shorter than the scene (the tail is trimmed or held).
-LENGTH_TOL_S = 0.2
+# Seconds the result may be shorter than the scene (its last frame is held that long) or
+# longer (the extra tail is cut off). The model often returns a few frames more than it got;
+# a result that was stretched or shifted instead is caught by the timing check.
+SHORT_TOL_S = 0.2
+LONG_TOL_S = 0.5
 # How far the speech in the result may sit from the real speech, and how far that may wander
 # between the first and the second half of the scene.
 LAG_TOL_S = 0.06
@@ -25,6 +28,13 @@ MIN_MATCH = 0.35
 # The face: how far its center may move (share of the frame width) and how much it may grow.
 FACE_MOVE = 0.10
 FACE_GROW = (0.72, 1.38)
+
+# The background: a pixel changed when its brightness moved by more than BG_DIFF (0-255);
+# in every still at least MIN_CHANGED of the background in view must have changed. A still
+# where the head fills the frame shows too little background to say (under MIN_VISIBLE).
+BG_DIFF = 30
+MIN_CHANGED = 0.12
+MIN_VISIBLE = 0.04
 
 ENV_HZ = 500  # the loudness curve is compared in 2 ms steps
 
@@ -41,11 +51,11 @@ class Finding:
 
 
 # ------------------------------------------------------------------- length
-def length(scene_s: float, result_s: float, tol_s: float = LENGTH_TOL_S) -> Finding:
+def length(scene_s: float, result_s: float) -> Finding:
     off = result_s - scene_s
     return Finding(
         "length",
-        abs(off) <= tol_s,
+        -SHORT_TOL_S <= off <= LONG_TOL_S,
         f"scene {scene_s:.2f} s, result {result_s:.2f} s ({off:+.2f} s)",
     )
 
@@ -161,6 +171,59 @@ def faces(
         ""
         if ok
         else "Important: keep the person's head at exactly the same position and size in the frame as in the source video.",
+    )
+
+
+# --------------------------------------------------------------- background
+def background_change(
+    real: list[bytes], result: list[bytes], real_faces: list[tuple[float, float, float] | None]
+) -> list[float | None]:
+    """For each pair of stills: the share of the background in view (above the chin, beside the
+    head) whose brightness changed. None where too little background shows to say."""
+    import cv2
+    import numpy as np
+
+    w, h = 135, 240
+    out: list[float | None] = []
+    for a, b, face in zip(real, result, real_faces, strict=False):
+        x = cv2.imdecode(np.frombuffer(a, np.uint8), cv2.IMREAD_GRAYSCALE)
+        y = cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_GRAYSCALE)
+        if x is None or y is None:
+            out.append(None)
+            continue
+        x = cv2.GaussianBlur(cv2.resize(x, (w, h), interpolation=cv2.INTER_AREA), (0, 0), 2)
+        y = cv2.GaussianBlur(cv2.resize(y, (w, h), interpolation=cv2.INTER_AREA), (0, 0), 2)
+        seen = np.ones((h, w), dtype=bool)
+        if face is None:
+            seen[h // 2 :, :] = False  # no face found: the lower half is taken to be the speaker
+        else:
+            cx, cy, fw = (v * w for v in face)
+            seen[max(0, int(cy + 0.5 * fw)) :, :] = False  # below the chin: the body
+            seen[:, max(0, int(cx - 0.6 * fw)) : int(cx + 0.6 * fw)] = False  # the head and hair
+        if seen.mean() < MIN_VISIBLE:
+            out.append(None)
+            continue
+        moved = np.abs(x.astype(np.int16) - y.astype(np.int16))[seen] > BG_DIFF
+        out.append(float(moved.mean()))
+    return out
+
+
+def replaced(shares: list[float | None]) -> Finding:
+    """The new place must be there in every still. On 19-Nov a result opened on the original
+    background and switched a moment in: every other check passed it."""
+    seen = [s for s in shares if s is not None]
+    if not seen:
+        return Finding("background", True, "too little background in view to compare")
+    low = min(seen)
+    ok = low >= MIN_CHANGED
+    return Finding(
+        "background",
+        ok,
+        f"{low * 100:.0f}% of the background changed in the still that changed least",
+        ""
+        if ok
+        else "Important: the background must be the new place from the very first frame to the "
+        "last. Never show the original background, not even for a moment.",
     )
 
 

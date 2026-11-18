@@ -164,6 +164,8 @@ class _Run:
         self.work = Path(plan["work"])
         self.tmp = self.work / "backdrop"
         self.tmp.mkdir(parents=True, exist_ok=True)
+        # Frames are found by number through their real times, never by n / fps (clips.frame_times).
+        self.times = clips.frame_times(self.work / "base.mp4")
         self.cache = Path(cfg["cache_dir"]) if cfg.get("cache_dir") else None
         self.model = str(cfg.get("model") or "gemini-omni-1.2-flash")
         self.judge_model = str(cfg.get("judge_model") or "")
@@ -203,12 +205,9 @@ class _Run:
         clips.conform(raw, frames, self.fps, size, fitted)
         real = _stills(clip, seconds, FACE_STILLS)
         new = _stills(fitted, seconds, FACE_STILLS)
-        found.append(
-            checks.faces(
-                checks.detect_faces(real, self.face_model),
-                checks.detect_faces(new, self.face_model),
-            )
-        )
+        real_faces = checks.detect_faces(real, self.face_model)
+        found.append(checks.faces(real_faces, checks.detect_faces(new, self.face_model)))
+        found.append(checks.replaced(checks.background_change(real, new, real_faces)))
         if not all(f.ok for f in found):
             return found
         answer = None
@@ -260,8 +259,26 @@ class _Run:
                 return {**entry, "result": "new", "cached": True, "clip": str(fitted)}
             except clips.ClipError:
                 pass  # a broken saved file is drawn again
+        # A scene that was drawn twice and refused twice is not paid for a third time: the same
+        # stretch, sent to the same place with the same words, fails the same way. It is tried
+        # again when the cut, the look or the instructions change (that changes its name).
+        refused = saved.with_suffix(".refused.json") if saved else None
+        if refused and refused.exists():
+            try:
+                before = str(json.loads(refused.read_text(encoding="utf-8")).get("why") or "")
+            except (OSError, ValueError):
+                before = ""
+            self.say(f"backdrop: scene {n}/{total} kept real (refused on an earlier render)")
+            return {
+                **entry,
+                "result": "real",
+                "refused_before": True,
+                "why": f"refused on an earlier render: {before}"[:240],
+            }
         clip = self.tmp / f"scene{scene.index:02d}-real.mp4"
-        clips.scene_clip(self.work / "base.mp4", self.work / "voice.wav", a, b, self.fps, clip)
+        clips.scene_clip(
+            self.work / "base.mp4", self.work / "voice.wav", a, b, self.fps, clip, self.times
+        )
         video_uri, fix, why = None, "", ""
         for attempt in (1, 2):
             if self.spent + omni.estimate_usd(seconds, self.resolution) > self.max_usd:
@@ -340,6 +357,22 @@ class _Run:
             )
             if last:
                 break
+        checked = [a for a in entry["attempts"] if a.get("checks")]
+        looked = all(c["name"] != "look" for a in checked for c in a["checks"])
+        if refused and len(checked) >= 2 and looked:
+            refused.parent.mkdir(parents=True, exist_ok=True)
+            refused.write_text(
+                json.dumps(
+                    {
+                        "look": look.id,
+                        "why": why,
+                        "cost_usd": entry["cost_usd"],
+                        "attempts": entry["attempts"],
+                    },
+                    indent=1,
+                ),
+                encoding="utf-8",
+            )
         return {**entry, "result": "real", "why": why or "it did not pass the checks"}
 
 

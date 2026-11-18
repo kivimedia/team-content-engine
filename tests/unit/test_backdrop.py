@@ -72,10 +72,13 @@ def test_start_look_moves_which_place_comes_first():
 
 
 # ---------------------------------------------------------------- the checks
-def test_length_check_fails_on_a_result_half_a_second_off():
+def test_length_check_allows_a_few_extra_frames_and_refuses_a_short_or_long_result():
     assert checks.length(6.0, 6.1).ok
-    assert not checks.length(6.0, 6.5).ok
-    assert not checks.length(6.0, 5.5).ok
+    assert checks.length(6.0, 6.4).ok  # the extra tail is cut off
+    assert checks.length(6.0, 5.85).ok  # the last frame is held for a moment
+    assert not checks.length(6.0, 6.6).ok
+    assert not checks.length(6.0, 5.7).ok
+    assert not checks.length(6.0, 5.0).ok
 
 
 def _speech(seed: int, n: int = 3000):
@@ -126,6 +129,39 @@ def test_face_check():
     gone = checks.faces([here, here], [here, None])
     assert not gone.ok and "no face in 1 of 2" in gone.detail
     assert checks.faces([None], [None]).ok  # nothing to compare is not a failure of the scene
+
+
+def test_background_check_fails_when_one_still_kept_the_old_place():
+    assert checks.replaced([0.5, 0.4, 0.62]).ok
+    bad = checks.replaced([0.5, 0.03, 0.62])
+    assert not bad.ok and "3% of the background" in bad.detail and "very first frame" in bad.fix
+    assert checks.replaced([None, 0.5]).ok  # a still where the head fills the frame says nothing
+    assert checks.replaced([None, None]).ok and "too little" in checks.replaced([None]).detail
+    assert not checks.replaced([None, 0.0]).ok
+
+
+def test_background_change_measures_what_is_beside_the_head():
+    np = pytest.importorskip("numpy")
+    cv2 = pytest.importorskip("cv2")
+    rng = np.random.default_rng(3)
+    scene = cv2.resize(
+        rng.integers(0, 255, (24, 14), dtype=np.uint8), (540, 960), interpolation=cv2.INTER_NEAREST
+    )
+    other = cv2.resize(
+        rng.integers(0, 255, (24, 14), dtype=np.uint8), (540, 960), interpolation=cv2.INTER_NEAREST
+    )
+    body = scene.copy()
+    body[400:, :] = 90  # the speaker fills everything from the chin down, in both
+    moved = other.copy()
+    moved[400:, :] = 90
+    jpg = lambda img: cv2.imencode(".jpg", img)[1].tobytes()  # noqa: E731
+    face = (0.5, 0.6, 0.3)
+    same, new = checks.background_change(
+        [jpg(body), jpg(body)], [jpg(body), jpg(moved)], [face, face]
+    )
+    assert same < 0.02 and new > 0.4
+    close = (0.5, 0.9, 1.4)  # the head fills the frame: nothing to compare
+    assert checks.background_change([jpg(body)], [jpg(moved)], [close]) == [None]
 
 
 GOOD = {
@@ -316,7 +352,12 @@ def _levels(path: Path) -> list[tuple[int, int]]:
 
 @pytest.fixture
 def cut(tmp_path, monkeypatch):
-    """A work folder as the engine's cut stage leaves it."""
+    """A work folder as the engine's cut stage leaves it.
+
+    The frames sit a little early on the clock, more so toward the end (16 ms by the last
+    frame), like a real cut joined from many short pieces: on 19-Nov a real cut was 14 ms
+    early by its end, cutting it by time landed one frame late, and every scene after the
+    middle came back shifted by a frame. Frames are addressed by number, never by n / 30."""
     pytest.importorskip("numpy")
     if not HAS_FFMPEG:
         pytest.skip("needs ffmpeg")
@@ -332,6 +373,12 @@ def cut(tmp_path, monkeypatch):
             "lavfi",
             "-i",
             f"color=c=gray:s={W}x{H}:r={FPS}:d={SHOT_S * SHOTS},format=yuv420p,geq=lum='40+mod(N*7,160)':cb=128:cr=128",
+            "-vf",
+            "setpts=PTS*0.9992",
+            "-fps_mode",
+            "passthrough",
+            "-video_track_timescale",
+            "16000",
             "-c:v",
             "libx264",
             "-crf",
@@ -383,6 +430,7 @@ def cut(tmp_path, monkeypatch):
     edit = {"fps": FPS, "shots": shots}
     monkeypatch.setattr(step, "engine_view", lambda plan_path, engine_dir: (plan, edit, []))
     monkeypatch.setattr(checks, "detect_faces", lambda jpegs, model: [(0.5, 0.6, 0.3)] * len(jpegs))
+    monkeypatch.setattr(checks, "background_change", lambda real, new, faces: [0.6] * len(real))
     cfg = {
         "looks_dir": str(_look_set(tmp_path / "set")),
         "cache_dir": str(tmp_path / "cache"),
@@ -502,6 +550,49 @@ def test_a_result_that_is_a_second_short_is_refused_twice_and_the_scene_stays_re
     assert _levels(work / "base.mp4")[200][0] < 215
     assert any("retry" in line for line in said) and any("kept real" in line for line in said)
     assert report["cost_usd"] > 2.0  # refused results are still paid for, and still counted
+
+
+def test_a_scene_refused_twice_is_not_paid_for_a_third_time(cut):
+    work, cfg = cut
+    first = step.run(work / "plan.json", cfg, api=FakeModel(cut_s=1.0))
+    assert first["changed"] == 0 and first["cost_usd"] > 2.0
+    again = FakeModel()  # this one would pass, but the same scenes are not sent again
+    report = step.run(work / "plan.json", cfg, api=again)
+    assert again.edits == [] and report["cost_usd"] == 0.0 and report["changed"] == 0
+    assert report["scenes"][1]["why"].startswith(
+        "refused on an earlier render: scene 5.00 s, result 4.0"
+    )
+    other = _look_set(Path(cfg["looks_dir"]))  # the look's stills change: a new try is fair
+    (other / "roof.png").write_bytes(b"a different roof")
+    (other / "pines.png").write_bytes(b"different pines")
+    report = step.run(work / "plan.json", cfg, api=again)
+    assert len(again.edits) == 2 and report["changed"] == 2
+
+
+def test_a_model_that_did_not_answer_is_asked_again_on_the_next_render(cut):
+    work, cfg = cut
+    step.run(work / "plan.json", cfg, api=FakeModel(fail_edit=2))  # scene 2 never got an answer
+    again = FakeModel()
+    report = step.run(work / "plan.json", cfg, api=again)
+    assert (
+        len(again.edits) == 1 and report["changed"] == 2
+    )  # scene 2 is drawn now, scene 4 was saved
+
+
+def test_a_result_that_opens_on_the_old_background_is_drawn_again(cut, monkeypatch):
+    work, cfg = cut
+    answers = [[0.02, 0.6, 0.6, 0.6, 0.6]]
+    monkeypatch.setattr(
+        checks,
+        "background_change",
+        lambda real, new, faces: answers.pop(0) if answers else [0.6] * 5,
+    )
+    model = FakeModel()
+    report = step.run(work / "plan.json", cfg, api=model)
+    assert report["changed"] == 2 and len(model.edits) == 3 and model.looked == 2
+    assert "from the very first frame" in model.edits[1]["prompt"]
+    first = report["scenes"][1]["attempts"][0]["checks"]
+    assert [c["name"] for c in first if not c["ok"]] == ["background"]
 
 
 def test_a_car_in_the_result_is_drawn_again_with_the_fix_in_the_instructions(cut):
