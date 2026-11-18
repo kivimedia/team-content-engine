@@ -53,14 +53,14 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-async def _seed(sessionmaker) -> dict:
+async def _seed(sessionmaker, rank=1) -> dict:
     output = good_output()
     cand = TopicCandidate(
         id=uuid.uuid4(),
         workspace_id=WS,
         week_start=datetime(2026, 9, 14),
         moment_ids=["11111111-1111-1111-1111-111111111111"],
-        title="Plan the course from the problems",
+        title="Plan the course from the problems" if rank == 1 else f"Script {rank}",
         lesson="Start from what the person can do afterward.",
         audience="coaches",
         public_angle="The outline question.",
@@ -87,12 +87,16 @@ async def _seed(sessionmaker) -> dict:
     async with sessionmaker() as s:
         s.add_all([cand, packet])
         # The studio lists this week's lineup, so a recordable idea lives in it.
-        lineup = WeeklyLineup(id=uuid.uuid4(), workspace_id=WS, week_start=week_start_for(None))
-        s.add(lineup)
+        if rank == 1:
+            lineup = WeeklyLineup(id=uuid.uuid4(), workspace_id=WS, week_start=week_start_for(None))
+            s.add(lineup)
+        else:
+            from sqlalchemy import select
+            lineup = (await s.execute(select(WeeklyLineup))).scalar_one()
         await s.flush()
         s.add(WeeklyLineupItem(
             id=uuid.uuid4(), workspace_id=WS, lineup_id=lineup.id, candidate_id=cand.id,
-            rank=1, slot="primary", lane="other",
+            rank=rank, slot="primary", lane="other",
         ))
         await s.commit()
     return {

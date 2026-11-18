@@ -142,6 +142,55 @@ function rebindIdeas(ideas, next) {
   };
   const pathPrefix = window.location.pathname.startsWith("/tce/") ? "/tce" : "";
   const apiV1 = `${pathPrefix}/api/v1`;
+  const batchKey = "tce-batch" + pathPrefix;
+  const batch = readBatch();
+  let batchQueueReady = false;
+
+  function readBatch() {
+    const id = new URLSearchParams(location.search).get("batch");
+    if (!id || window.TCE_SCOPED) return null;
+    try {
+      const plan = JSON.parse(sessionStorage.getItem(batchKey));
+      return plan?.id === id && Array.isArray(plan.items) && plan.items.length >= 2
+        && plan.items.every(item => item && typeof item.id === "string" && typeof item.title === "string") ? plan : null;
+    } catch { return null; }
+  }
+
+  function keepBatch() {
+    try { sessionStorage.setItem(batchKey, JSON.stringify(batch)); }
+    catch { showNotice("Batch progress is available while this page stays open."); }
+    renderBatch();
+  }
+
+  function batchIdea(item) {
+    return state.ideas.find(idea => idea.candidate_id === item.id && idea.active_session_status !== "finalizing");
+  }
+
+  function renderBatch() {
+    if (!batch) return;
+    const saved = batch.items.filter(item => item.saved).length;
+    const pending = batch.items.find(item => item.session && !item.saved);
+    const next = batchQueueReady && !pending && batch.items.find(item => !item.saved && batchIdea(item));
+    $("batchPanel").hidden = false;
+    $("finishNext").hidden = true;
+    $("finishStatusClose").hidden = !!pending;
+    $("batchProgress").textContent = `${saved} of ${batch.items.length} videos saved`;
+    $("batchEnd").textContent = saved === batch.items.length ? "Done" : "Finish here";
+    $("batchList").replaceChildren(...batch.items.map(item => {
+      const li = document.createElement("li");
+      const status = item.saved ? "Saved" : item.session ? "Awaiting save" :
+        (batchQueueReady && !batchIdea(item) ? "Currently unavailable" : "");
+      li.textContent = item.title + (status ? " · " + status : "");
+      return li;
+    }));
+    const button = $("batchNext");
+    $("batchRefresh").hidden = !!(next || pending || saved === batch.items.length);
+    button.hidden = !next;
+    if (next) {
+      button.textContent = "Record next: " + next.title;
+      button.onclick = () => chooseIdea(batchIdea(next));
+    }
+  }
   const PAGE_LANG = document.documentElement.lang === "he" ? "he" : "en";
   const state = {
     ideas: [], idea: null, session: null, stream: null, recorder: null, clip: null,
@@ -374,6 +423,7 @@ function rebindIdeas(ideas, next) {
   }
 
   function showNextScript() {
+    if (batch) { renderBatch(); return; }
     const button = $("finishNext");
     const next = !window.TCE_SCOPED && state.finishedCandidate && state.ideas.find(idea =>
       idea.candidate_id !== state.finishedCandidate && idea.active_session_status !== "finalizing");
@@ -391,10 +441,12 @@ function rebindIdeas(ideas, next) {
       const named = new URLSearchParams(window.location.search).get("candidate");
       const data = await earlyOrAsk("/recording-queue" + (named ? `?candidate=${encodeURIComponent(named)}` : ""));
       state.ideas = data.ideas || [];
+      batchQueueReady = true;
       renderQueue();
       $("syncState").textContent = `${state.ideas.length} ready script${state.ideas.length === 1 ? "" : "s"}`;
     } catch (error) {
       $("syncState").textContent = "Could not load scripts";
+      if (batch) { batchQueueReady = false; renderBatch(); }
       showNotice(error.message);
     }
   }
@@ -966,6 +1018,10 @@ function rebindIdeas(ideas, next) {
   }
 
   function chooseIdea(idea) {
+    if (batch) {
+      const index = batch.items.findIndex(item => item.id === idea.candidate_id);
+      $("studioName").textContent = `Video ${index + 1} of ${batch.items.length}`;
+    }
     if (state.idea?.packet_id === idea.packet_id) { openIdea(idea); return; }
     if (state.recorder && state.recorder.state !== "inactive") {
       state.pendingIdea = idea;
@@ -1518,6 +1574,8 @@ function rebindIdeas(ideas, next) {
     const title = state.idea?.title || "";
     state.finishedCandidate = state.idea?.candidate_id;
     state.rewardSession = session.id;
+    const batchItem = batch?.items.find(item => item.id === state.finishedCandidate && !item.saved);
+    if (batchItem) { batchItem.session = session.id; keepBatch(); }
     window.TCEResume.rememberFinish({ sessionId: session.id, candidateId: state.finishedCandidate, title });
     finishNote("send", "Sending the last clip in the background. You can leave this page.");
     if (!dialog.open) dialog.showModal();
@@ -1563,6 +1621,8 @@ function rebindIdeas(ideas, next) {
       if (!$("queueView").hidden) loadQueue();
       trackFinish(event.tracked);
     } else if (event.kind === "nothing") {
+      const empty = batch?.items.find(item => item.session === event.intent?.sessionId && !item.saved);
+      if (empty) { delete empty.session; keepBatch(); }
       stopTracking();
       showNotice("Nothing recorded yet, so there is nothing to send for editing.", 7000);
     } else if (!state.finishing) {
@@ -1590,11 +1650,12 @@ function rebindIdeas(ideas, next) {
 
   function celebrateSavedSession() {
     if (!state.rewardSession || state.savedSession !== state.rewardSession || $("queueView").hidden) return;
-    window.TCETakeReward?.show(state.rewardSession, $("finishStatus"));
+    window.TCETakeReward?.show(state.rewardSession, $(batch ? "batchPanel" : "finishStatus"));
     state.rewardSession = null;
   }
 
   async function trackFinish(tracked) {
+    if (batch && !batch.items.some(item => item.session === tracked.sessionId)) return;
     clearTimeout(state.finishPoll);
     const again = (ms) => {
       // An hour is longer than any edit; past it the Library is the place to look.
@@ -1662,6 +1723,8 @@ function rebindIdeas(ideas, next) {
     open.hidden = false;
     if (!window.TCE_SCOPED) $("finishLabel").textContent = "Take saved";
     state.savedSession = tracked.sessionId;
+    const savedItem = batch?.items.find(item => item.session === tracked.sessionId && !item.saved);
+    if (savedItem) { savedItem.saved = true; keepBatch(); }
     celebrateSavedSession();
     if (EDIT_DONE.has(upload.status)) {
       paintSteps(steps, "done");
@@ -1704,6 +1767,7 @@ function rebindIdeas(ideas, next) {
   }
 
   function showQueue() {
+    if (batch) $("studioName").textContent = "Recording batch";
     if (state.recorder?.state === "recording") pauseResume();
     $("studioView").hidden = true;
     $("queueView").hidden = false;
@@ -2079,6 +2143,15 @@ function rebindIdeas(ideas, next) {
      erroring - the script may not be ready yet. */
   function openFromQuery() {
     var params = new URLSearchParams(window.location.search);
+    if (batch) {
+      if (params.has("start") && batchQueueReady) {
+        params.delete("start");
+        history.replaceState({}, "", location.pathname + "?" + params.toString());
+        const first = batch.items.find(item => !item.session && batchIdea(item));
+        if (first && !batch.items.some(item => item.session)) chooseIdea(batchIdea(first));
+      }
+      return true;
+    }
     var candidateId = params.get("candidate");
     var packetId = params.get("packet");
     if (!candidateId && !packetId) return false;
@@ -2097,13 +2170,32 @@ function rebindIdeas(ideas, next) {
     return true;
   }
 
+  if (batch) {
+    document.body.classList.add("batch-session");
+    $("studioName").textContent = "Recording batch";
+    $("queueView").setAttribute("aria-labelledby", "batchProgress");
+    $("batchRefresh").onclick = async () => {
+      $("batchRefresh").disabled = true;
+      $("syncState").textContent = "Checking your scripts";
+      await loadQueue();
+      $("batchRefresh").disabled = false;
+    };
+    $("batchEnd").onclick = () => {
+      try { sessionStorage.removeItem(batchKey); } catch { /* videos are already kept separately */ }
+      location.replace(pathPrefix + "/today");
+    };
+    renderBatch();
+  }
   updateSyncLabel();
   loadQueue().then(function () {
     try { openFromQuery(); } catch (error) { /* the list still works */ }
   });
   // Back on the page after sending a take: its progress is still at the top.
   const lastSent = readTracked();
-  if (lastSent) trackFinish(lastSent);
+  const awaitingSave = batch?.items.find(item => item.session && !item.saved);
+  if (awaitingSave && !window.TCEResume.owes(awaitingSave.session)) {
+    trackFinish({ candidateId: awaitingSave.id, title: awaitingSave.title, sessionId: awaitingSave.session, at: Date.now() });
+  } else if (lastSent && !awaitingSave) trackFinish(lastSent);
   // A take left on its way from an earlier visit is sent from here too.
   window.TCEResume.drain();
 })();

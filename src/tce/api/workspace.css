@@ -642,6 +642,15 @@ input,textarea,select { font-size:max(16px,1rem); }
 .creator-primary:hover { background: #8c1725; }
 .creator-primary>span { width: 13px; height: 13px; border-radius: 50%; background: white; }
 .creator-empty { margin: 0 0 14px; color: var(--body); }
+.batch-picker { margin-top: 8px; }
+.batch-picker summary { cursor: pointer; padding: 12px 0; color: var(--lake); font-weight: 700; }
+.batch-picker fieldset { margin: 4px 0 14px; border: 1px solid var(--line); border-radius: 8px; }
+.batch-picker legend { padding: 0 5px; font-weight: 650; }
+.batch-picker label { min-height: 46px; display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.batch-picker input { width: 20px; height: 20px; flex-shrink: 0; }
+.batch-picker button { border: 0; }
+.batch-picker button:disabled { background: #556173; }
+.batch-picker p:empty { display: none; }
 #creatorScript:has(.creator-primary) + .creator-solo { margin-top: 4px; }
 .creator-book {
   margin: 14px 0; min-height: 74px; background: var(--white); color: var(--ink);
