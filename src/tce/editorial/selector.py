@@ -94,8 +94,18 @@ CLAIM_SUPPORT = {
 
 # Outcome / result language. Advice in the imperative ("reduce your admin") is fine;
 # stated results ("reduced admin by half", "doubled bookings", "30%") need a measured moment.
+# "Saved" is a result only with what was saved after it (saved time, saved him five hours,
+# saved the client money) or before it (hours saved). Bare "saved" is mostly the storage
+# word ("before anything is sent or saved", "a saved rule"): 22 of 49 outcome rejections
+# in 45 days named it, nearly all in that sense (T-22611, 18-Nov).
 _OUTCOME_LANGUAGE = re.compile(
-    r"\b(?:saved|increased|grew|doubled|tripled|boosted|reduced|cut\s+\w*\s*(?:by|in half)|"
+    r"\b(?:saved\s+(?:(?:us|them|him|her|me|you)\b|"
+    r"(?:the|a|an)\s+(?:day|deal|client|launch|event|business|project)\b|"
+    r"(?!(?:its|their|your|his|her|our|my|the|a|an)\b)(?:\w+\s+)??"
+    r"(?:\d|[$€£₪]|hours?\b|minutes?\b|days?\b|weeks?\b|weekends?\b|months?\b|time\b|"
+    r"money\b|costs?\b|conversations?\b|relationships?\b|clients?\b|customers?\b|deals?\b|"
+    r"bookings?\b|sales\b|leads?\b))|(?:time|hours|minutes|days|money)\s+saved|"
+    r"increased|grew|doubled|tripled|boosted|reduced|cut\s+\w*\s*(?:by|in half)|"
     r"halved|improved\s+\w+\s+by|more\s+(?:clients|sales|bookings|leads|revenue|inquiries)|"
     r"fewer\s+(?:errors|no-shows|complaints|cancellations)|revenue|roi|return on investment|"
     r"conversion rate|\d+(?:\.\d+)?\s*(?:%|percent|x\b|times\s+(?:more|faster)))",
