@@ -27,9 +27,11 @@
   const SLICE_MS = 3000;
   const RETRY_MS = 4000;
 
+  // 19-Nov-2026: H.264 first (hardware on a phone), VP9 last; the studio's order (recording.js).
   const supportedMime = [
-    "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
-    "video/mp4;codecs=h264,aac", "video/mp4",
+    "video/mp4;codecs=avc1,mp4a.40.2", "video/mp4;codecs=avc1", "video/mp4;codecs=h264,aac",
+    "video/webm;codecs=h264,opus", "video/webm;codecs=vp8,opus", "video/webm", "video/mp4",
+    "video/webm;codecs=vp9,opus",
   ].find((value) => window.MediaRecorder && MediaRecorder.isTypeSupported(value));
 
   // The studio's ladder (recording.js): portrait modes first, then the tallest frame on offer,

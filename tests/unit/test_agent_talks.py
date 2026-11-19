@@ -108,6 +108,9 @@ def _record(path: Path, kind: str, seconds: float = 3.0) -> bytes:
     if kind == "webm":  # Chrome's recorder: VP8 and Opus, written live (no duration, no index)
         codec = ["-c:v", "libvpx", "-deadline", "realtime", "-b:v", "200k", "-c:a", "libopus", "-ac", "1",
                  "-f", "webm", "-live", "1"]
+    elif kind == "webm-h264":  # Chrome asked for "video/webm;codecs=h264": H.264 and Opus, Matroska, live
+        codec = ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "15",
+                 "-c:a", "libopus", "-ac", "1", "-f", "matroska", "-live", "1"]
     else:  # Safari's recorder: H.264 and AAC in a fragmented MP4, a fragment a second
         codec = ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "15",
                  "-c:a", "aac", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
@@ -240,6 +243,28 @@ async def _send(client, talk: str, data: bytes, *, shuffle: bool = True) -> int:
         r = await client.put(f"{BASE}/{talk}/chunks/{seq}", headers=AUTH, content=pieces[seq])
         assert r.status_code == 200, r.text
     return len(pieces)
+
+
+@needs_ffmpeg
+async def test_finish_rewraps_h264_sent_as_webm_into_a_file_that_plays(client, editorial_sessionmaker, tmp_path):
+    # 19-Nov: the recorders ask for H.264 first. A Chrome without the MP4 recorder offers H.264
+    # only inside "video/webm", which the WebM writer refuses: the join must still give one file
+    # that plays, with the same H.264 and Opus it was recorded in (test_recorder_codec_order).
+    data = _record(tmp_path / "source.mkv", "webm-h264")
+    talk = await _new_talk(client, call_id="call-webm-h264", mime="video/webm;codecs=h264,opus")
+    await _send(client, talk, data)
+    r = await client.post(f"{BASE}/{talk}/finish", headers=AUTH,
+                          json={"ended_at": "2026-10-03T11:52:11Z", "duration_ms": 3100, "transcript": TRANSCRIPT})
+    assert r.status_code == 200, r.text
+    async with editorial_sessionmaker() as s:
+        upload = (await s.execute(select(RecordingUpload).where(
+            RecordingUpload.id == uuid.UUID(r.json()["upload_id"])))).scalar_one()
+    path = Path(upload.storage_path)
+    assert path.exists() and path.suffix in (".mp4", ".mkv"), path
+    proof = await probe_media(path)
+    assert {s["codec"] for s in proof["streams"]} == {"h264", "opus"}
+    assert _decodes(str(path)) == (True, True)
+    assert abs((upload.duration_s or 0) - 3.0) < 0.5, upload.duration_s
 
 
 @needs_ffmpeg

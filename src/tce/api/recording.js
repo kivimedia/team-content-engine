@@ -205,9 +205,13 @@ function rebindIdeas(ideas, next) {
     // Pieces the phone would not keep (a private tab), held here until the server has them.
     memoryPieces: new Map(), warnedNoPhoneCopy: false,
   };
+  // 19-Nov-2026: H.264 first, VP9 last. A phone encodes H.264 in hardware; asked for VP9 first,
+  // Chrome on a Samsung encoded it in software and kept 13 to 18 pictures a second, so the lips
+  // trailed the voice. Same order in recording-solo.js and book.js (test_recorder_codec_order).
   const supportedMime = [
-    "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
-    "video/mp4;codecs=h264,aac", "video/mp4",
+    "video/mp4;codecs=avc1,mp4a.40.2", "video/mp4;codecs=avc1", "video/mp4;codecs=h264,aac",
+    "video/webm;codecs=h264,opus", "video/webm;codecs=vp8,opus", "video/webm", "video/mp4",
+    "video/webm;codecs=vp9,opus",
   ].find((value) => window.MediaRecorder && MediaRecorder.isTypeSupported(value));
 
   function setStudioMode(active) {
