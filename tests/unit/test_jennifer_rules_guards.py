@@ -23,6 +23,7 @@ from tests.unit.test_jennifer_rules import (  # noqa: F401 - the fixtures are us
     SPOKEN,
     auth,
     client,
+    delivered_dog_cut,
     seed,
     settle,
     typed_request,
@@ -171,7 +172,7 @@ def _long_rules(n: int) -> list[str]:
     return [f"Rule {i:02d}: keep the cut tight around every pause he takes while walking the dogs here." for i in range(n)]
 
 
-async def test_every_prompt_that_lists_her_rules_is_capped_and_the_page_says_which_are_past_it(wired, client):
+async def test_every_prompt_that_lists_her_rules_is_capped_and_the_page_says_which_are_past_it(wired, client, delivered_dog_cut):
     sm = wired["sm"]
     ws, uid = await seed(sm)
     texts = _long_rules(60)
@@ -229,7 +230,7 @@ def test_the_rules_page_says_plainly_when_a_rule_is_not_used():
 # What the distilling job decided is recorded, with its reason
 
 
-async def test_a_rule_records_why_it_is_a_rule_and_a_this_video_note_why_it_is_not(wired):
+async def test_a_rule_records_why_it_is_a_rule_and_a_this_video_note_why_it_is_not(wired, delivered_dog_cut):
     sm = wired["sm"]
     ws, uid = await seed(sm)
     wired["answers"][autoedit.EDIT_REQUEST_JOB] = {
