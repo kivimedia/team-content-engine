@@ -5,6 +5,7 @@ to the workspace's looks and by nothing else; his own presses on the card always
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -61,6 +62,21 @@ def test_the_next_four_take_new_real_new_real_and_a_fifth_is_not_in(tmp_path):
     saved = json.loads((tmp_path / trial.FILE).read_text())
     assert [v["upload_id"] for v in saved["videos"]] == [A, B, C, D]
     assert saved["since"] == "2026-11-19T00:00:00+02:00" and saved["usd"] == 16
+
+
+def test_a_change_inside_one_clock_tick_is_still_read(tmp_path):
+    # 19-Nov, found on the VPS: two writes in one tick share a modified time on Linux, and the
+    # remembered copy said a video had no place yet, so the next one took place 1 again.
+    arm(tmp_path)
+    f = tmp_path / trial.FILE
+    assert trial.load(tmp_path)["videos"] == []  # now remembered
+    tick = f.stat().st_mtime_ns
+    other = tmp_path / "other.json"  # another process writes it the same way: a new file, replaced
+    other.write_text(json.dumps({**json.loads(f.read_text()), "videos": [{"upload_id": A, "slot": 1, "arm": "new"}]}))
+    os.replace(other, f)
+    os.utime(f, ns=(tick, tick))
+    assert [v["upload_id"] for v in trial.load(tmp_path)["videos"]] == [A]
+    assert trial.join(tmp_path, B, after())["slot"] == 2
 
 
 def test_a_video_already_in_keeps_its_place_and_is_not_counted_twice(tmp_path):

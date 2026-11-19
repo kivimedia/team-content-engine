@@ -26,7 +26,9 @@ from typing import Any
 FILE = "trial.json"
 NEW, REAL = "new", "real"
 
-_seen: dict[str, tuple[int, dict[str, Any] | None]] = {}
+# Remembered per file by (modified time, size, inode): two writes inside one clock tick share a
+# modified time on Linux, and each write is a new file (os.replace), so the inode tells them apart.
+_seen: dict[str, tuple[tuple[int, int, int], dict[str, Any] | None]] = {}
 
 
 def _file(folder: Path | str | None) -> Path | None:
@@ -45,9 +47,10 @@ def load(folder: Path | str | None) -> dict[str, Any] | None:
     if path is None:
         return None
     try:
-        stamp = path.stat().st_mtime_ns
+        st = path.stat()
     except OSError:
         return None
+    stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
     known = _seen.get(str(path))
     if known is not None and known[0] == stamp:
         return known[1]
@@ -81,6 +84,7 @@ def _write(path: Path, test: dict[str, Any]) -> None:
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(json.dumps(keep, indent=1), encoding="utf-8")
     os.replace(tmp, path)
+    _seen.pop(str(path), None)  # the next read is from the file just written, never from memory
 
 
 def join(folder: Path | str | None, upload_id: Any, uploaded_at: datetime | None) -> dict[str, Any] | None:
