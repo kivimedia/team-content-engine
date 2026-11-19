@@ -8,8 +8,8 @@ from tce.api.routers import production as prod
 def simulate_delivery(monkeypatch):
     rendered = {}
 
-    def capture(row):
-        row.render_ref = uuid.uuid4().hex[:16]
+    def capture(row, *, render_ref=None):
+        row.render_ref = render_ref or uuid.uuid4().hex[:16]
         row.rendered_keep = prod.frame_keep(row.edit_plan["keep"])
         words = prod.wordbox.on_edit_timeline(row.edit_plan.get("words") or [], row.rendered_keep)
         rendered[row.render_ref] = {
