@@ -512,12 +512,118 @@ def caption_data(
             {"text": wordbox.shown(word["text"]), "start": round(start, 3), "end": round(end, 3),
              "page": p_index, "word": boxed}
         )
-    return {"mode": "wordbox", "words": said, "boxes": boxes, "pages": len(pages)}
+    return {
+        "mode": "wordbox", "words": said, "boxes": boxes, "pages": len(pages),
+        "cues": [
+            {"start": p.start, "end": p.end, "text": " ".join(wordbox.shown(w["text"]) for w in p.words)}
+            for p in pages
+        ],
+    }
 
 
 def _quote(words: list[str], limit: int = 4) -> str:
     shown = ", ".join(f'"{w}"' for w in words[:limit])
     return shown + (f" and {len(words) - limit} more" if len(words) > limit else "")
+
+
+
+async def sample_caption_frames(path, data, language, *, reader=None):
+    """Check opening, middle and ending frames against the timed caption pages."""
+    if reader is None:
+        from tce.production.frame_text import read as reader
+    cues = [c for c in (data or {}).get("cues") or [] if c.get("text")
+            and float(c.get("end", 0)) - float(c.get("start", 0)) >= .20]
+    if not cues:
+        return skipped("no timed caption interval long enough to sample")
+    region = "pill" if data.get("mode") == "wordbox" else "caption"
+    indices = sorted({0, len(cues) // 2, len(cues) - 1})
+    issues = []
+    confirmed = 0
+    for index in indices:
+        cue = cues[index]
+        start, end = float(cue["start"]), float(cue["end"])
+        target = _token(cue["text"])
+        wanted = {_token(w) for w in cue["text"].split() if len(_token(w)) >= 2}
+        # Moving highlights sometimes join two words in OCR ("Sometimesia").
+        # Retry a second actual frame. Only positively identified *other* pages
+        # count as a mismatch; unreadable pixels are explicitly unverified.
+        near_pages = [_token(cues[j]["text"]) for j in (index - 1, index + 1)
+                      if 0 <= j < len(cues) and len(_token(cues[j]["text"])) >= 5]
+        wrong = 0
+        for fraction in (.50, .23):
+            at = start + (end - start) * fraction
+            crop = "caption" if region == "pill" and fraction != .50 else region
+            text = await reader(path, at, language=language, region=crop)
+            if text is None:
+                continue
+            seen = {_token(w) for w in text.split()} - {""}
+            joined = _token(text)
+            hits = sum(w in seen or (len(w) >= 4 and w in joined) for w in wanted)
+            if (target and target in joined) or (hits and hits * 2 >= len(wanted)):
+                confirmed += 1
+                break
+            wrong += int(any(page in joined and page != target for page in near_pages))
+        if wrong == 2:
+            issues.append(_problem("caption_frame_mismatch",
+                f'At {clock(start)} another caption is visible during "{cue["text"]}".',
+                edit_start=round(start, 2)))
+    detail = {"samples": len(indices), "confirmed": confirmed}
+    if not issues and confirmed < len(indices):
+        return skipped(f"confirmed {confirmed} of {len(indices)} sampled caption pages", **detail)
+    return _check(issues, **detail)
+
+
+def caption_playback(data: dict[str, Any] | None, heard: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Compare the rendered cue text to a separate transcription of the delivered sound.
+
+    An isolated ASR disagreement is weak evidence. Require a caption-only phrase
+    bounded by matching words at the same time, or a sequence consistently displaced
+    from its audible words. An ambiguous result goes to review with its edit time.
+    """
+    if not data or not heard:
+        return skipped("no independently timed audio and caption pair")
+    boxes = data.get("boxes") if data.get("mode") == "wordbox" else None
+    source = boxes or data.get("cues") or []
+    shown = [(token, float(w["start"])) for w in source if w.get("start") is not None
+             for text in str(w.get("text") or "").split() if (token := _token(text))]
+    sound = [(token, float(w["start"])) for w in heard if w.get("start") is not None
+             and (token := _token(str(w.get("text") or "")))]
+    if not shown or not sound:
+        return skipped("the delivered edit has no comparable timed words")
+    diff = SequenceMatcher(a=[w for w, _ in shown], b=[w for w, _ in sound], autojunk=False)
+    ops = diff.get_opcodes()
+    issues = []
+    for i, (op, a, b, c, d) in enumerate(ops):
+        if op == "delete" and b - a >= 2 and all(w.isalpha() for w, _ in shown[a:b]):
+            def anchored(j: int, left: bool) -> bool:
+                if j < 0 or j >= len(ops):
+                    return True
+                kind, sa, sb, ha, hb = ops[j]
+                if kind != "equal" or sb - sa < 2:
+                    return False
+                si, hi = (sb - 1, hb - 1) if left else (sa, ha)
+                return abs(shown[si][1] - sound[hi][1]) <= 0.75
+            if anchored(i - 1, True) and anchored(i + 1, False):
+                phrase = " ".join(w for w, _ in shown[a:b])
+                at = shown[a][1]
+                issues.append(_problem("caption_audio_mismatch",
+                    f'At {clock(at)} the caption shows "{phrase}" but the finished audio did not confirm it.',
+                    edit_start=at))
+        if boxes and op == "equal":
+            run = 0
+            side = 0
+            for n in range(b - a):
+                delta = shown[a + n][1] - sound[c + n][1]
+                sign = 1 if delta > .75 else -1 if delta < -.75 else 0
+                run = run + 1 if sign and sign == side else int(bool(sign))
+                side = sign
+                if run == 3:
+                    at = shown[a + n - 2][1]
+                    issues.append(_problem("caption_audio_timing",
+                        f"From {clock(at)} three consecutive highlights are over 0.75 seconds away from their words.",
+                        edit_start=at))
+                    break
+    return _check(issues, compared=len(shown))
 
 
 def check_captions(
@@ -1045,6 +1151,11 @@ def numbers_line(n: dict[str, Any], checks: dict[str, dict[str, Any]]) -> str:
     ]
     if not (checks.get("audibility") or {}).get("listened") and "audibility" in checks:
         not_made.append("not listened to again")
+    caps = checks.get("captions") or {}
+    if caps.get("playback_state") == "skipped":
+        not_made.append("agreement between captions and the finished audio")
+    if (caps.get("frames") or {}).get("state") == "skipped":
+        not_made.append("visible words in the finished frames")
     line = ", ".join(parts) or "nothing could be measured"
     if not_made:
         line += ". Not checked this time: " + ", ".join(dict.fromkeys(not_made))
@@ -1077,7 +1188,14 @@ def decide(
     n = numbers(checks)
     measured = numbers_line(n, checks)
     more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
-    if not problems:
+    caption = checks.get("captions") or {}
+    incomplete_preview = "frames" in caption and (
+        (caption.get("frames") or {}).get("state") != "pass" or caption.get("playback_state") != "pass"
+    )
+    if not problems and incomplete_preview:
+        state, fixes = "report", {}
+        line = f"Jennifer could only partly verify this preview. {measured}."
+    elif not problems:
         state = "fixed" if round_no else "passed"
         done = f", after one fix ({'; '.join(fixed)})" if round_no and fixed else ""
         line = f"Checked by Jennifer{done}: {measured}."

@@ -63,7 +63,7 @@ HOLE_MIN_S = 0.4
 HISS_HZ = 3500  # an "s" lives above this; vowels and the wind mostly below
 
 
-def levels_filter(hiss: bool = False) -> str:
+def levels_filter(hiss: bool = False, *, speech_band: bool = False) -> str:
     """ffmpeg audio filter printing one RMS level (dB) per 10 ms of mono audio: the whole
     band at 8 kHz, or with `hiss` only what is above HISS_HZ (16 kHz, so the band exists)."""
     head = (
@@ -71,6 +71,8 @@ def levels_filter(hiss: bool = False) -> str:
         if hiss
         else "aresample=8000,pan=mono|c0=c0,asetnsamples=n=80:p=0,"
     )
+    if speech_band:
+        head = head.replace("asetnsamples=", "highpass=f=1000,lowpass=f=3400,asetnsamples=")
     return (
         head
         + "astats=metadata=1:reset=1:measure_overall=RMS_level:measure_perchannel=none,"
@@ -92,11 +94,11 @@ def parse_levels(text: str) -> list[float]:
     return out
 
 
-async def measure_levels(path: str, ffmpeg: str, hiss: bool = False) -> list[float]:
+async def measure_levels(path: str, ffmpeg: str, hiss: bool = False, *, speech_band: bool = False) -> list[float]:
     """10 ms RMS levels of the whole recording (about 5 s for a 10-minute walk); with
     `hiss`, of its band above HISS_HZ only (where an "s" shows)."""
     proc = await asyncio.create_subprocess_exec(
-        ffmpeg, "-v", "error", "-i", str(path), "-vn", "-af", levels_filter(hiss), "-f", "null", "-",
+        ffmpeg, "-v", "error", "-i", str(path), "-vn", "-af", levels_filter(hiss, speech_band=speech_band), "-f", "null", "-",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

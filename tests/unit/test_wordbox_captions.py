@@ -202,3 +202,32 @@ def test_a_restored_sound_is_heard_but_never_captioned():
     words.insert(0, {"text": "[sound]", "start": 0.5, "end": 0.9})
     out = wordbox.on_edit_timeline(words, [[0.0, 3.0]])
     assert [w["text"] for w in out] == ["Bring", "people"]
+
+
+@pytest.mark.skipif(not media.ffmpeg_path(), reason="ffmpeg not installed")
+@pytest.mark.parametrize("offset_ms", [0, 150])
+async def test_burned_caption_waits_until_the_next_phrase_is_spoken(tmp_path, offset_ms):
+    size = (270, 480)
+    src = tmp_path / "source.mp4"
+    subprocess.run(
+        [media.ffmpeg_path(), "-v", "error", "-f", "lavfi", "-i", "color=black:s=270x480:d=2:r=30",
+         "-f", "lavfi", "-i", "sine=frequency=300:duration=2", "-shortest", "-c:v", "libx264", "-c:a", "aac", str(src)],
+        check=True,
+    )
+    words = [{"text": "first", "start": 0.10, "end": 0.30}, {"text": "next", "start": 0.83, "end": 1.10}]
+    anchors = ([{"text": "next", "word_s": 0.965, "at_s": 0.83 + offset_ms / 1000}] if offset_ms else [])
+    pages = wordbox.pages(wordbox.on_edit_timeline(words, [[0, 2]], anchors))
+    band = wordbox.render_band(pages, *size, tmp_path / "captions", 2)
+
+    async def status(_message):
+        pass
+
+    out = await media.render_edit(src, [[0, 2]], tmp_path / "edit.mp4", on_status=status,
+                                  caption_band=band, make_preview=False)
+    # Sample decoded H.264 frames before and during the second phrase, inside the actual caption band.
+    box = (0, band["y"], size[0], band["y"] + band["h"])
+    assert _orange_count(_frame(out, 0.18, size), size, box) > 50
+    assert _orange_count(_frame(out, 0.73, size), size, box) == 0
+    at_point = _orange_count(_frame(out, 0.90, size), size, box)
+    assert at_point == 0 if offset_ms else at_point > 50
+    assert _orange_count(_frame(out, 1.04, size), size, box) > 50

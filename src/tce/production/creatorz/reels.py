@@ -33,7 +33,7 @@ from typing import Any
 from tce.production.creatorz.engine.creatorz_reel import compose_plan
 from tce.production.creatorz.engine.creatorz_reel import cut as engine_cut
 from tce.production.creatorz.engine.creatorz_reel import plan as engine_plan
-from tce.production.retakes import EDIT_FPS
+from tce.production.retakes import CAPTION_GAP_S, EDIT_FPS
 from tce.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -250,6 +250,7 @@ def reel_plan(
     *, src: Path, words_path: Path, keep: list[list[float]], lang: str, work: Path,
     moments: list[dict[str, Any]], punchline: int | None, bed: str | Path | None,
     sound_delay_ms: int = 0,
+    caption_gap_s: float = CAPTION_GAP_S, caption_anchors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     # 19-Nov: only a recording whose lips trail its sound carries the key (media.sound_delay_for).
     late = {"sound_delay_ms": int(sound_delay_ms)} if sound_delay_ms and sound_delay_ms > 0 else {}
@@ -262,6 +263,8 @@ def reel_plan(
         "grade": "golden",
         "fps": EDIT_FPS,
         "exact": True,
+        "caption_gap_s": caption_gap_s,
+        "caption_anchors": caption_anchors or [],
         "work": str(work),
         "out": str(Path(work) / "reel.mp4"),
         "picks": [{"span": [s, e]} for s, e in keep],
@@ -739,6 +742,7 @@ async def render_reel(
     *, src: Path, words: list[dict[str, Any]], keep: list[list[float]], lang: str, work: Path,
     moments: list[dict[str, Any]], punchline: int | None, bed: str | None, on_status: Status,
     backdrop: dict[str, Any] | None = None, sound_delay_ms: int = 0,
+    caption_gap_s: float = CAPTION_GAP_S, caption_anchors: list[dict[str, Any]] | None = None,
 ) -> ReelResult:
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -750,6 +754,7 @@ async def render_reel(
             reel_plan(
                 src=src, words_path=words_path, keep=keep, lang=lang, work=work, moments=moments,
                 punchline=punchline, bed=bed, sound_delay_ms=sound_delay_ms,
+                caption_gap_s=caption_gap_s, caption_anchors=caption_anchors,
             ),
             ensure_ascii=False,
         ),
