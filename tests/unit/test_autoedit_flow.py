@@ -32,6 +32,9 @@ SPOKEN = "Getting them back is really smart. Not after you've finished your serv
 
 @pytest.fixture
 def wired(monkeypatch, editorial_sessionmaker):
+    from .render_delivery_fixture import simulate_delivery
+
+    record_delivery = simulate_delivery(monkeypatch)
     monkeypatch.setattr(prod, "session_factory", lambda: editorial_sessionmaker)
     monkeypatch.setattr(prod.settings, "production_auto_edit", True)
     asked: list[tuple[str, str]] = []
@@ -53,6 +56,7 @@ def wired(monkeypatch, editorial_sessionmaker):
             row = await prod._load(s, upload_id, ws)
             row.status = "edited"
             row.edited_path = "/tmp/edited.mp4"
+            record_delivery(row)
             row.status_detail = f"rendered {len(row.edit_plan['keep'])} ranges"
             await s.commit()
 
@@ -276,7 +280,7 @@ async def test_an_unclear_request_comes_back_as_one_question(wired):
     assert req.state == "needs_you" and "music" in req.result["question"]
 
 
-async def test_an_answer_with_nothing_to_change_is_done_and_the_next_note_sees_it(wired):
+async def test_a_report_without_a_verified_change_is_open_and_the_next_note_sees_the_reply(wired):
     # 30-Sep: "the phone cut the s off course; no cut can bring it back" is the answer,
     # not a question back to him; and his next note on the video is read with it.
     ws, uid = await seed(wired["sm"], planned=True)
@@ -292,7 +296,7 @@ async def test_an_answer_with_nothing_to_change_is_done_and_the_next_note_sees_i
     await prod.run_edit_request(first.id, ws)
     async with wired["sm"]() as s:
         first = await s.get(EditingRequest, first.id)
-        assert first.state == "done" and first.result["changed"] is False
+        assert first.state == "needs_you" and first.result["changed"] is False
         second = EditingRequest(workspace_id=ws, upload_id=uid, scope="whole",
                                 request="can you patch it", state="open")
         s.add(second)
@@ -406,3 +410,46 @@ async def test_a_late_review_on_a_posted_video_moves_no_word(wired, monkeypatch)
         row = await prod._load(s, uid, ws)
     assert row.transcript[0]["text"] == "Selling"  # indices of the posted edit stay put
     assert row.edit_plan["review"]["state"] == "done"
+
+
+async def test_a_short_pause_caption_request_updates_the_render_without_an_audio_cut(wired):
+    ws, uid = await seed(wired["sm"], planned=True)
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        original_keep = row.edit_plan["keep"]
+        req = EditingRequest(workspace_id=ws, upload_id=uid, scope="whole",
+                             request="Split the live captions at short pauses. Keep the pauses.", state="open")
+        s.add(req)
+        await s.commit()
+    wired["answers"][autoedit.EDIT_REQUEST_JOB] = {
+        "reply": "Split the caption phrases.", "needs_you": False, "caption_gap": "short_pauses",
+    }
+    await prod.run_edit_request(req.id, ws)
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        assert row.edit_plan["overrides"]["caption_gap_s"] == 0.20
+        assert row.edit_plan["keep"] == original_keep
+
+
+async def test_a_single_caption_start_survives_a_normal_edit_note_and_replan(wired):
+    ws, uid = await seed(wired["sm"], planned=True)
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        original = row.edit_plan["keep"]
+        req = EditingRequest(workspace_id=ws, upload_id=uid, scope="whole",
+                             request="Start the caption 'back' 100 milliseconds later, without moving my speech.",
+                             state="open")
+        s.add(req)
+        await s.commit()
+    wired["answers"][autoedit.EDIT_REQUEST_JOB] = {
+        "reply": "Moved the start of this caption.", "needs_you": False,
+        "caption_anchor": [{"index": 2, "word": "back", "offset_ms": 100}],
+    }
+    await prod.run_edit_request(req.id, ws)
+    async with wired["sm"]() as s:
+        row = await prod._load(s, uid, ws)
+        assert row.edit_plan["keep"] == original
+        anchors = row.edit_plan["overrides"]["caption_anchors"]
+        assert anchors[0]["text"] == "back"
+        assert any(c["lines"][0].startswith("back") and c["start"] == 1.1
+                   for c in prod.build_cues(row.edit_plan))

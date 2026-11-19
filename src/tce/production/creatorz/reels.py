@@ -31,7 +31,7 @@ from typing import Any
 from tce.production.creatorz.engine.creatorz_reel import compose_plan
 from tce.production.creatorz.engine.creatorz_reel import cut as engine_cut
 from tce.production.creatorz.engine.creatorz_reel import plan as engine_plan
-from tce.production.retakes import EDIT_FPS
+from tce.production.retakes import CAPTION_GAP_S, EDIT_FPS
 from tce.settings import settings
 
 PILL, CREATORZ = "pill", "creatorz"
@@ -244,6 +244,7 @@ def moments_key(
 def reel_plan(
     *, src: Path, words_path: Path, keep: list[list[float]], lang: str, work: Path,
     moments: list[dict[str, Any]], punchline: int | None, bed: str | Path | None,
+    caption_gap_s: float = CAPTION_GAP_S, caption_anchors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "schema": engine_plan.SCHEMA,
@@ -253,6 +254,8 @@ def reel_plan(
         "grade": "golden",
         "fps": EDIT_FPS,
         "exact": True,
+        "caption_gap_s": caption_gap_s,
+        "caption_anchors": caption_anchors or [],
         "work": str(work),
         "out": str(Path(work) / "reel.mp4"),
         "picks": [{"span": [s, e]} for s, e in keep],
@@ -668,6 +671,7 @@ async def _run_engine(plan_path: Path, work: Path, on_status: Status) -> list[st
 async def render_reel(
     *, src: Path, words: list[dict[str, Any]], keep: list[list[float]], lang: str, work: Path,
     moments: list[dict[str, Any]], punchline: int | None, bed: str | None, on_status: Status,
+    caption_gap_s: float = CAPTION_GAP_S, caption_anchors: list[dict[str, Any]] | None = None,
 ) -> ReelResult:
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -676,7 +680,8 @@ async def render_reel(
     words_path.write_text(json.dumps(words, ensure_ascii=False), encoding="utf-8")
     plan_path.write_text(
         json.dumps(
-            reel_plan(src=src, words_path=words_path, keep=keep, lang=lang, work=work, moments=moments, punchline=punchline, bed=bed),
+            reel_plan(src=src, words_path=words_path, keep=keep, lang=lang, work=work, moments=moments,
+                      punchline=punchline, bed=bed, caption_gap_s=caption_gap_s, caption_anchors=caption_anchors),
             ensure_ascii=False,
         ),
         encoding="utf-8",

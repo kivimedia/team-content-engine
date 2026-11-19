@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tce.production.retakes import CAPTION_GAP_S
+
 FONT_PATH = Path(__file__).resolve().parent / "fonts" / "Roboto-Bold.ttf"
 # A Hebrew workspace (4-Oct): Heebo (OFL, variable; drawn at its Bold instance) has
 # Hebrew, Latin and digits, so a Hebrew line with "AI" or "2026" in it still draws.
@@ -51,7 +53,6 @@ SHADOW_BLUR_EM = 0.05
 MAX_LINE_CHARS = 12
 MAX_LINE_WIDTH = 0.92  # share of the frame width; a longer line shrinks the page
 
-PAGE_GAP_S = 0.6  # a pause this long ends the page
 LINGER_S = 0.35  # the page stays this long after its last word when he pauses
 HOLD_GAP_S = 0.2  # the box stays on through a gap shorter than this
 
@@ -118,23 +119,28 @@ def _ends_sentence(text: str) -> bool:
     return str(text).rstrip().rstrip("\"')]").endswith((".", "?", "!"))
 
 
-def pages(words: list[dict[str, Any]], language: str = "en") -> list[Page]:
+def pages(words: list[dict[str, Any]], language: str = "en", *, gap_s: float = CAPTION_GAP_S) -> list[Page]:
     """Group words already on the EDITED timeline ({text, start, end}) into pages."""
     fillers = _fillers(language)
-    spoken = [
-        w for w in words
-        if str(w.get("text") or "").strip() and _BARE.sub("", str(w["text"])).lower() not in fillers
-    ]
     out: list[Page] = []
     cur: Page | None = None
-    for w in spoken:
-        text = str(w["text"]).strip()
-        item = {"text": text, "start": float(w["start"]), "end": float(w["end"])}
-        if cur is not None:
-            last = cur.lines[-1][-1]
-            if item["start"] - last["end"] > PAGE_GAP_S or _ends_sentence(last["text"]):
-                out.append(cur)
-                cur = None
+    last_spoken_end: float | None = None
+    new_phrase = False
+    for w in words:
+        text = str(w.get("text") or "").strip()
+        if not text:
+            continue
+        start, end = float(w["start"]), float(w["end"])
+        if last_spoken_end is not None and start - last_spoken_end >= gap_s - 1e-6:
+            new_phrase = True
+        last_spoken_end = end
+        if _BARE.sub("", text).lower() in fillers:
+            continue  # an uncaptioned but spoken "um" is not silence
+        item = {"text": text, "start": start, "end": end}
+        if cur is not None and (new_phrase or w.get("caption_anchor") or _ends_sentence(cur.lines[-1][-1]["text"])):
+            out.append(cur)
+            cur = None
+        new_phrase = False
         if cur is None:
             cur = Page(item["start"], item["end"], [[item]])
             continue
@@ -152,7 +158,7 @@ def pages(words: list[dict[str, Any]], language: str = "en") -> list[Page]:
     for page, nxt in zip(out, out[1:] + [None], strict=True):
         last_end = page.words[-1]["end"]
         page.end = last_end + LINGER_S
-        if nxt is not None and nxt.start - last_end <= PAGE_GAP_S:
+        if nxt is not None and nxt.start - last_end < gap_s - 1e-6:
             page.end = nxt.start  # he keeps talking: the next page replaces this one
         elif nxt is not None:
             page.end = min(page.end, nxt.start)
@@ -400,8 +406,10 @@ def render_top_caption(
     return {"png": path, "y": int(frame_h * TOP_Y), "lines": len(lines), "size": size}
 
 
-def on_edit_timeline(words: list[dict[str, Any]], keep: list[list[float]]) -> list[dict[str, Any]]:
+def on_edit_timeline(
+    words: list[dict[str, Any]], keep: list[list[float]], anchors: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Kept words moved onto the edited clock (shared with the subtitles)."""
     from tce.production.retakes import words_on_edit
 
-    return words_on_edit(words, keep)
+    return words_on_edit(words, keep, anchors)

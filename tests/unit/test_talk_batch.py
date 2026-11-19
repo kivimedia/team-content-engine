@@ -65,6 +65,9 @@ def fix(first, last, heard, replacement):
 
 @pytest.fixture
 def wired(monkeypatch, editorial_sessionmaker):
+    from .render_delivery_fixture import simulate_delivery
+
+    record_delivery = simulate_delivery(monkeypatch)
     sm = editorial_sessionmaker
     monkeypatch.setattr(prod, "session_factory", lambda: sm)
     monkeypatch.setattr(prod, "TALK_WORKER_RETRY_S", 0.0)
@@ -89,8 +92,7 @@ def wired(monkeypatch, editorial_sessionmaker):
             row = await prod._load(s, upload_id, ws)
             row.status = "edited"
             row.edited_path = "/tmp/edited.mp4"
-            row.rendered_keep = frame_keep(row.edit_plan["keep"])
-            row.render_ref = uuid.uuid4().hex[:16]
+            record_delivery(row)
             row.status_detail = f"rendered {len(row.edit_plan['keep'])} ranges"
             row.job_ids = prod._with_lease(row.job_ids, None)
             await s.commit()
@@ -213,14 +215,14 @@ async def test_a_sitting_is_one_opus_call_and_one_render(wired, tmp_path):
     assert row.edit_plan["overrides"]["cut"]
     assert not kept_word(row, "Call") and not kept_word(row, "them.") and kept_word(row, "service.")
 
-    assert sitting.state == "done" and sitting.llm_key == asked[0]["key"]
+    assert sitting.state == "needs_you" and sitting.llm_key == asked[0]["key"]
     assert sitting.render_ref == row.render_ref and sitting.keep_snapshot == row.rendered_keep
-    assert sitting.summary == "Took out the 'Not' and cut 'Call them.'"
+    assert sitting.summary == sitting.result["status"]
     assert sitting.result["read_back"].startswith("3 notes: ")
-    assert sitting.result["status"] == "New version made from your 3 notes."
+    assert sitting.result["status"] == "New version made from your 3 notes. 1 of them needs you."
     assert [w["text"] for w in sitting.before["transcript"]] == old_words
 
-    assert [notes[i].state for i in (n1, n2, n3)] == ["done", "done", "done"]
+    assert [notes[i].state for i in (n1, n2, n3)] == ["done", "done", "needs_you"]
     assert notes[n1].result["corrections"] == [{"heard": "Not after", "replacement": "After"}]
     assert notes[n1].result["file"].endswith(f"v={row.render_ref}")
     assert notes[n2].result["cut"] and notes[n2].result["reply"] == "Cut 'Call them.'"
@@ -243,7 +245,7 @@ async def test_a_later_note_wins(wired, tmp_path):
     row, sitting, notes = await state_of(sm, ws, uid, sid)
     assert kept(row, 12) and kept(row, 13)  # the later note's restore lifted the earlier cut
     assert not (row.edit_plan["overrides"].get("cut") or [])
-    assert notes[n1].state == notes[n2].state == "done"
+    assert notes[n1].state == "needs_you" and notes[n2].state == "done"
     assert len(wired["renders"]) == 1
 
 
@@ -272,10 +274,10 @@ async def test_an_overlapping_fix_is_reported_on_its_own_note(wired, tmp_path):
     assert notes[n2].state == "needs_you"
     assert 'overlaps words note 1 already fixed' in notes[n2].result["question"]
     # Note 3's cut went ahead; its skipped fix is on its own result, not dropped silently.
-    assert notes[n3].state == "done" and not kept_word(row, "Call")
+    assert notes[n3].state == "needs_you" and not kept_word(row, "Call")
     assert any("note 1 already fixed" in s for s in notes[n3].result["skipped"])
     assert sitting.state == "needs_you"
-    assert "1 of them needs you" in sitting.result["status"]
+    assert "2 of them need you" in sitting.result["status"]
 
 
 async def test_a_note_the_answer_skipped_needs_him(wired, tmp_path):
@@ -335,9 +337,9 @@ async def test_notes_that_change_nothing_do_not_render(wired, tmp_path):
     row, sitting, notes = await state_of(sm, ws, uid, sid)
     assert wired["renders"] == []
     assert row.render_ref == "0000seedrender00"
-    assert notes[n1].state == notes[n2].state == "done"
-    assert sitting.state == "done" and sitting.before is None
-    assert sitting.result["status"] == "Nothing in the video needed changing for your 2 notes."
+    assert notes[n1].state == "done" and notes[n2].state == "needs_you"
+    assert sitting.state == "needs_you" and sitting.before is None
+    assert "1 of them needs you" in sitting.result["status"]
     assert library.undo_refusal(sitting, row)[0] == "nothing"
 
 
@@ -1075,4 +1077,4 @@ def test_a_word_he_could_not_hear_is_looked_for_before_the_pause():
     rules = " ".join(autoedit.EDIT_BATCH_RULES.split())
     assert "BEFORE <note N>" in rules and "three seconds before it" in rules
     assert "never move a join after <note N> for it" in rules
-    assert autoedit.EDIT_BATCH_PROMPT_VERSION == "edit-batch-v2"
+    assert autoedit.EDIT_BATCH_PROMPT_VERSION == "edit-batch-v3"

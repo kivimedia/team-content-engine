@@ -85,7 +85,8 @@ class Window:
     first: int  # word indices covered (inclusive)
     last: int
     why: list[str] = field(default_factory=list)
-    utts: list[tuple[int, int]] = field(default_factory=list)  # its utterances, as word indices
+    utts: list[tuple[int, int]] = field(default_factory=list)
+    split_s: float | None = None  # its utterances, as word indices
 
     def as_dict(self) -> dict[str, Any]:
         return {"start": round(self.start, 3), "end": round(self.end, 3), "first": self.first,
@@ -144,6 +145,198 @@ def windows(words: list[dict[str, Any]]) -> list[Window]:
         start, end = _clip_bounds(words, first, last)
         out.append(Window(start, end, first, last, list(why), utts[a : b + 1]))
     return out[:MAX_WINDOWS]
+
+
+# A long ASR word can cover two takes separated by a real quiet gap. Hear the two
+# sides independently: hearing the whole sentence again can collapse the repeat again.
+def restart_windows(
+    words: list[dict[str, Any]], regions: list[tuple[float, float]],
+) -> list[Window]:
+    candidates: list[Window] = []
+    for i, word in enumerate(words):
+        start, end = float(word["start_s"]), float(word["end_s"])
+        if word.get("lang") or word.get("sound") or end - start < max(1.4, 2.5 * expected_s(word["text"])):
+            continue
+        speech = [(a, b) for a, b in regions if _overlap(a, b, start - .25, end) >= .07]
+        gaps = [(a2 - b1, (a2 + b1) / 2) for (_, b1), (a2, _) in zip(speech, speech[1:])
+                if start <= b1 and a2 <= end and a2 - b1 >= .22]
+        if not gaps:
+            continue
+        first = last = i
+        while first and start - float(words[first - 1]["start_s"]) <= 4.5:
+            if float(words[first]["start_s"]) - float(words[first - 1]["end_s"]) >= PAUSE_S:
+                break
+            first -= 1
+        while last + 1 < len(words) and last - i < 2:
+            if float(words[last + 1]["start_s"]) - float(words[last]["end_s"]) >= PAUSE_S:
+                break
+            last += 1
+        a, b = _clip_bounds(words, first, last)
+        if b - a <= MAX_WINDOW_S:
+            candidates.append(Window(a, b, first, last, [f'"{word["text"]}" spans separate speech'],
+                                     split_s=max(gaps)[1]))
+    # Bound the cost on the local recognizer. Keep the opening first; check additional spans
+    # in recording order. Overlapping candidates cannot rewrite each other.
+    chosen: list[Window] = []
+    for win in candidates:
+        if any(win.first <= prev.last and prev.first <= win.last for prev in chosen):
+            continue
+        chosen.append(win)
+        if len(chosen) == 6:
+            break
+    return chosen
+
+
+def _restart_flag(first: list[dict], following: list[dict], split_s: float) -> dict | None:
+    """Two independent reads repeat an opening but disagree on what can be cut."""
+    left = [_bare(w["text"]) for w in first]
+    right = [_bare(w["text"]) for w in following]
+    for start in range(len(left)):
+        shared = 0
+        for a, b in zip(left[start:], right):
+            if a != b:
+                break
+            shared += 1
+        if shared < 2 or not any(len(x) >= 4 for x in right[:shared]):
+            continue
+        # Ignore a phrase from much earlier in a sentence. We are checking a restart
+        # at this source boundary, not coincidental wording elsewhere in the recording.
+        if len(left) - start - shared > 4:
+            continue
+        left_words = first[start:start + shared]
+        right_words = following[:shared]
+        def mids(part: list[dict]) -> list[float]:
+            return [round((w["start_s"] + w["end_s"]) / 2, 3) for w in part]
+        return {"result": "restart needs review", "source_start": left_words[0]["start_s"],
+                "source_end": right_words[-1]["end_s"], "split_s": round(split_s, 3),
+                "first_take": " ".join(w["text"] for w in first[start:])[:180],
+                "following_take": " ".join(w["text"] for w in following)[:180],
+                "first_anchors": mids(left_words), "following_anchors": mids(right_words)}
+    return None
+
+
+def check_restart_flags(second_listen: dict, keep: list[list[float]]) -> dict:
+    """Only report a repeated phrase if both independently heard copies still play.
+    A prior human release is scoped to the same piece of source audio and retained joins.
+    """
+    import hashlib
+    import json
+    problems = []
+    released = second_listen.get("accepted_restart_flags") or []
+    for flag in second_listen.get("restart_flags") or []:
+        anchors = (flag.get("first_anchors") or []) + (flag.get("following_anchors") or [])
+        if not anchors or not all(any(s <= mark <= e for s, e in keep) for mark in anchors):
+            continue
+        start, end = flag["source_start"], flag["source_end"]
+        kept_part = [[round(max(s, start), 3), round(min(e, end), 3)] for s, e in keep if s < end and e > start]
+        key = hashlib.sha256(json.dumps([anchors, kept_part]).encode()).hexdigest()[:20]
+        if key in released:
+            continue
+        when = sum(max(0, min(e, anchors[0]) - s) for s, e in keep if s < anchors[0])
+        detail = (f'at {int(when) // 60}:{int(when) % 60:02d} both takes still play: '
+                  f'"{flag["first_take"]}" and "{flag["following_take"]}". Listen to choose the take')
+        problems.append({"kind": "restart_uncertain", "detail": detail[:460], "restart_key": key})
+    return {"state": "fail" if problems else "pass", "problems": problems}
+
+
+def merge_restarts(
+    words: list[dict[str, Any]], wins: list[Window],
+    heard: list[tuple[dict[str, Any] | None, dict[str, Any] | None]],
+    regions: list[tuple[float, float]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Recover both takes only when independent reads match across the quiet boundary
+    and removing the earlier duplicate would reconstruct every original word exactly.
+    The audio on both sides, including the full retained take, keeps its own source clock.
+    """
+    out = list(words)
+    changes = []
+    for win, (left, right) in reversed(list(zip(wins, heard, strict=True))):
+        if win.split_s is None or not left or not right or not english(left) or not english(right):
+            continue
+        takes = []
+        for result, a, b in ((left, win.start, win.split_s), (right, win.split_s, win.end)):
+            take = []
+            for token in result.get("words") or []:
+                raw = str(token.get("word") or token.get("text") or "").strip()
+                s, e = max(a, a + float(token["start"])), min(b, a + float(token["end"]))
+                placed = _on_speech(s, e, regions)
+                if _bare(raw) and placed:
+                    take.append({"text": raw, "start_s": round(placed[0], 3),
+                                 "end_s": round(placed[1], 3), "precision": "word", "heard_again": True})
+            takes.append(take)
+        before, after = takes
+        old = words[win.first : win.last + 1]
+        original = [_bare(w["text"]) for w in old]
+        left_tokens = [_bare(w["text"]) for w in before]
+        right_tokens = [_bare(w["text"]) for w in after]
+        n = len(left_tokens) + len(right_tokens) - len(original)
+        exact = 1 <= n <= min(len(left_tokens), len(right_tokens)) and left_tokens[:-n] + right_tokens == original
+        if exact:
+            # A single isolated repeated word may be emphasis. A partial word must be
+            # a substantial prefix of the word the speaker went on to finish.
+            old_tail, new_tail = left_tokens[-1], right_tokens[n - 1]
+            partial = len(old_tail) >= 3 and old_tail != new_tail and new_tail.startswith(old_tail)
+            exact = left_tokens[-n:-1] == right_tokens[:n - 1] and (partial or (n >= 2 and old_tail == new_tail))
+        if not exact:
+            flag = _restart_flag(before, after, win.split_s)
+            if flag:
+                changes.append(flag)
+            continue
+        repeated = before[-n:]
+        repeated[0]["confirmed_restart"] = {"tokens": left_tokens[-n:] + right_tokens[:n]}
+        restored = before[:-n] + after
+        for previous, current in zip(old, restored, strict=True):
+            current["text"] = previous["text"]
+        out[win.first : win.last + 1] = before + after
+        changes.append({**win.as_dict(), "result": "more words", "split_s": round(win.split_s, 3),
+                        "before": " ".join(str(w["text"]) for w in old),
+                        "after": " ".join(str(w["text"]) for w in before + after),
+                        "first_take": " ".join(w["text"] for w in repeated),
+                        "complete_take": " ".join(w["text"] for w in after[:n])})
+    return out, list(reversed(changes))
+
+
+def apply_confirmed_restart_choices(
+    words: list[dict[str, Any]], reasons: dict[int, Any],
+    protected: frozenset[int], overrides: dict[str, Any] | None,
+) -> None:
+    """Select the abandoned take only while its independently heard counterpart
+    is still intact. A later word correction, a protected speaker, or an explicit
+    choice of the other take invalidates that selection.
+    """
+    cuts = (overrides or {}).get("cut") or []
+    restores = (overrides or {}).get("restore") or []
+    for i, word in enumerate(words):
+        evidence = word.get("confirmed_restart") or {}
+        tokens = evidence.get("tokens") or []
+        count = len(tokens) // 2
+        if not count or len(tokens) != 2 * count:
+            continue
+        group = words[i:i + len(tokens)]
+        if [_bare(w.get("text")) for w in group] != tokens:
+            continue
+        indexes = range(i, i + len(tokens))
+        if any(n in protected for n in indexes):
+            continue
+        # Protect the full earlier take if an explicit instruction chose it or removed
+        # the later take. Otherwise one can accidentally cut both copies of a phrase.
+        mids = [(float(w["start_s"]) + float(w["end_s"])) / 2 for w in group]
+        later_cut = [any(a - .01 <= t <= b + .01 for a, b in cuts) for t in mids[count:]]
+        if any(later_cut):
+            if all(later_cut):
+                # The earlier AI decision may already have discarded the first take.
+                # Choosing the second for removal restores that first take. Explicit
+                # cuts on either take are applied by the caller after these defaults.
+                for n in range(i, i + count):
+                    if reasons.get(n) in {"retake", "false_start"}:
+                        reasons[n] = None
+            continue
+        if any(reasons.get(n) for n in range(i + count, i + 2 * count)):
+            continue
+        if any(a - .01 <= t <= b + .01 for a, b in restores for t in mids[:count]):
+            continue
+        for n in range(i, i + count):
+            reasons[n] = reasons.get(n) or "false_start"
 
 
 def _clip_bounds(words: list[dict[str, Any]], first: int, last: int) -> tuple[float, float]:

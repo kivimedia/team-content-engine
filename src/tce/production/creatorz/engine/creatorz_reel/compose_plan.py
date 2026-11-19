@@ -54,19 +54,33 @@ def chunk_words(texts, lang='en', max_words=3, max_chars=16):
     return out
 
 
-def captions(shots, lang='en'):
+def captions(shots, lang='en', gap_s=None, anchors=()):
     caps = []
+    by_word = {(round(a['from_edit_s'], 3), a['text'].casefold()): a['edit_s'] for a in anchors}
     for s in shots:
-        ws = s['owords']
-        for n, (i0, i1) in enumerate(chunk_words([w['text'] for w in ws], lang)):
-            t0 = ws[i0]['s']
-            if n == 0 and t0 - s['out_in'] <= PRE_ROLL:      # a shot opens WITH its caption: the frames between the cut
-                t0 = s['out_in']                              # and the first word used to blink empty (10-Nov)
-            caps.append({'t0': t0, 'text': ' '.join(w['text'] for w in ws[i0:i1]), 'shot_end': s['out_out']})
+        ws = []
+        for w in s['owords']:
+            target = by_word.get((round(w['s'], 3), w['text'].casefold()))
+            if target is not None and s['out_in'] <= target < w['e']:
+                w = dict(w, s=target, anchored=True)
+            ws.append(w)
+        # TCE captions follow the retained speech; a standalone reel keeps its shot-opening lead.
+        breaks = [0] + [i for i in range(1, len(ws))
+                        if ws[i].get('anchored') or (gap_s is not None and ws[i]['s'] - ws[i - 1]['e'] >= gap_s - 1e-6)] + [len(ws)]
+        for begin, end in zip(breaks, breaks[1:]):
+            part = ws[begin:end]
+            for i0, i1 in chunk_words([w['text'] for w in part], lang):
+                t0 = part[i0]['s']
+                if gap_s is None and begin + i0 == 0 and t0 - s['out_in'] <= PRE_ROLL:
+                    t0 = s['out_in']
+                stop = s['out_out']
+                if gap_s is not None and i1 == len(part):
+                    stop = min(stop, part[i1 - 1]['e'] + gap_s)
+                caps.append({'t0': t0, 'text': ' '.join(w['text'] for w in part[i0:i1]), 'shot_end': stop})
     for k, c in enumerate(caps):
         nxt = caps[k + 1]['t0'] if k + 1 < len(caps) else shots[-1]['out_out']
         c['t1'] = min(nxt, c['shot_end'])
-    if caps:
+    if caps and gap_s is None:
         caps[0]['t0'] = 0.0
     return caps
 
@@ -178,7 +192,7 @@ def build(plan, edit):
     rtl = lang == 'he'
     lines = layout.caption_lines([_face(s) for s in shots])
     spec = {'items': items, 'hide_cap': [], 'cap_lines': [(s['out_in'], s['out_out'], y) for s, y in zip(shots, lines)]}
-    caps = captions(shots, lang)
+    caps = captions(shots, lang, gap_s=plan.get('caption_gap_s'), anchors=plan.get('caption_anchors') or [])
     struck = {m.get('target') for m in plan['moments'] if m.get('type') == 'strike'}
 
     def said_with(t0, t1):

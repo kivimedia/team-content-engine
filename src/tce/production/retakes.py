@@ -48,6 +48,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from tce.production import laughs as laugh_rules
+from tce.production import relisten
 from tce.production.tightcut import (
     Activity,
     apply_holds,
@@ -1000,6 +1001,7 @@ def _plan_words(
     for i, _s, _e, text in rows:
         if re.sub(r"[^\w']+", "", text).lower() in (FILLERS | HE_WORKSPACE_FILLERS if _he() else FILLERS):
             reason[i] = reason[i] or "filler"
+    relisten.apply_confirmed_restart_choices(timings, reason, protected, overrides)
     # The agent's words are the other half of the conversation: whatever a rule or the
     # review said, they stay. A "[sound]" the second listen split off is not a word and
     # goes as before.
@@ -1371,7 +1373,20 @@ def _wrap(text: str, width: int = MAX_CAPTION_LINE) -> list[str]:
     return lines
 
 
-def words_on_edit(words: list[dict[str, Any]], keep: list[list[float]]) -> list[dict[str, Any]]:
+# A new phrase waits for its first spoken word. A caption note can request shorter breaks.
+CAPTION_GAP_S = 0.35
+SHORT_CAPTION_GAP_S = 0.20
+
+
+def caption_gap_s(overrides: dict[str, Any] | None) -> float:
+    if (overrides or {}).get("caption_gap_s") == SHORT_CAPTION_GAP_S:
+        return SHORT_CAPTION_GAP_S
+    return CAPTION_GAP_S
+
+
+def words_on_edit(
+    words: list[dict[str, Any]], keep: list[list[float]], anchors: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Kept words ({text, start, end} on the recording) moved onto the edited clock.
 
     A word goes with the kept range holding its midpoint and is clamped inside it: a
@@ -1379,6 +1394,8 @@ def words_on_edit(words: list[dict[str, Any]], keep: list[list[float]]) -> list[
     drop it), and one the recogniser starts early still shows with its speech.
     """
     out: list[dict[str, Any]] = []
+    keep = frame_keep(keep)
+    by_time = {(a["word_s"], a["text"].casefold()): a for a in anchors or []}
     offsets: list[float] = []
     acc = 0.0
     for s, e in keep:
@@ -1390,18 +1407,32 @@ def words_on_edit(words: list[dict[str, Any]], keep: list[list[float]]) -> list[
         ws, we = float(w["start"]), float(w["end"])
         mid = (ws + we) / 2
         for (rs, re_), off in zip(keep, offsets, strict=True):
-            if rs <= mid <= re_:
+            if rs <= mid < re_:
                 s, e = max(ws, rs), min(we, re_)
-                out.append({"text": w["text"], "start": off + s - rs, "end": off + max(e, s) - rs})
+                item = {"text": w["text"], "start": off + s - rs, "end": off + max(e, s) - rs}
+                anchor = by_time.get((round(mid, 3), str(w["text"]).casefold()))
+                if anchor is not None and rs <= anchor["at_s"] < re_:
+                    at = round(off + anchor["at_s"] - rs, 3)
+                    # Keep the page inside this word or its own leading silence. A stale note
+                    # cannot move the captions onto another take or cover a neighbour's speech.
+                    previous_end = out[-1]["end"] if out else 0.0
+                    if at >= min(previous_end, item["start"]) - 0.001 and at < item["end"] - 0.01:
+                        item["caption_anchor"] = {**anchor, "from_edit_s": round(item["start"], 3), "edit_s": at}
+                        item["start"] = at
+                out.append(item)
                 break
     return out
 
 
-def _cues_from_words(words: list[dict[str, Any]], keep: list[list[float]]) -> list[dict[str, Any]]:
+def _cues_from_words(
+    words: list[dict[str, Any]], keep: list[list[float]], gap_s: float, anchors: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Subtitle cues from the kept words (fillers and cut words never appear)."""
+    mapped = words_on_edit(words, keep, anchors)
+    explicit_starts = {w["start"] for w in mapped if "caption_anchor" in w}
     timed = [
         (w["start"], w["end"], str(w["text"]))
-        for w in words_on_edit(words, keep)
+        for w in mapped
         if w["end"] > w["start"]
     ]
     cues: list[dict[str, Any]] = []
@@ -1415,8 +1446,9 @@ def _cues_from_words(words: list[dict[str, Any]], keep: list[list[float]]) -> li
         if cur:
             text = " ".join(t for _s, _e, t in cur + [item])
             if (
-                len(_wrap(text)) > 2
-                or item[0] - cur[-1][1] > 0.8
+                item[0] in explicit_starts
+                or len(_wrap(text)) > 2
+                or item[0] - cur[-1][1] >= gap_s - 1e-6
                 or item[1] - cur[0][0] > 5.0
                 or (len(cur) >= 3 and cur[-1][2].rstrip()[-1:] in ".?!")
             ):
@@ -1437,7 +1469,8 @@ def _cues_from_words(words: list[dict[str, Any]], keep: list[list[float]]) -> li
 def build_cues(plan: dict[str, Any]) -> list[dict[str, Any]]:
     keep = plan.get("keep") or []
     if plan.get("words"):
-        return _cues_from_words(plan["words"], keep)
+        overrides = plan.get("overrides") or {}
+        return _cues_from_words(plan["words"], keep, caption_gap_s(overrides), overrides.get("caption_anchors") or [])
     cues: list[dict[str, Any]] = []
     for unit in plan.get("units") or []:
         if not unit.get("kept"):

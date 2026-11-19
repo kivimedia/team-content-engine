@@ -63,6 +63,7 @@ if sudo -n test -f "$SNIPPET"; then
     'auth_basic_user_file /etc/nginx/tce.htpasswd;' \
     'rewrite ^/tce(/.*)$ $1 break;' \
     'proxy_pass http://127.0.0.1:8200;' \
+    'proxy_set_header X-TCE-Reviewer $remote_user;' \
     'proxy_set_header Authorization "";' \
     'proxy_set_header X-TCE-Editor-Key' \
     'client_max_body_size 2g;' \
