@@ -2142,6 +2142,12 @@
                            + '" data-about="' + esc(String(action.backdrop.about_usd)) + '" data-max="' + esc(String(action.backdrop.max_usd)) + '"')
                         + ">" + b[1] + "</button>";
                  }).join("") + "</div>";
+          // 19-Nov: this video's place in the live test of new backgrounds (his presses still win).
+          var test = action.backdrop.trial;
+          if (test) {
+            html += '<p class="style-pick-note">Live test: video ' + esc(String(test.slot)) + " of " + esc(String(test.of))
+                 + (test.arm === "new" ? ", made with new places" : ", kept with its real backgrounds") + ".</p>";
+          }
         }
         html += picturesBlock(item.upload_id, action.pictures || []);
       } else if (action.key === "edit_again") {

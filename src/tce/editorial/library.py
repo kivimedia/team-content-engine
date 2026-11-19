@@ -197,7 +197,7 @@ def _actions(upload: RecordingUpload, open_requests: int) -> list[dict[str, str]
                     "pictures": creatorz_reels.pictures_json(upload.id, upload.edit_plan),
                     "stale": creatorz_reels.pictures_changed(upload.edit_plan),
                     # 18-Nov: the new-backgrounds switch, only where the workspace has its looks.
-                    "backdrop": backdrop_config.card(upload.workspace_id, upload.edit_plan),
+                    "backdrop": backdrop_config.card(upload.workspace_id, upload.edit_plan, upload.id),
                 }
             )
     if upload.storage_path:

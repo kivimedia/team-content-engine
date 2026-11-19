@@ -126,11 +126,14 @@ def scene_key(
     return hashlib.sha256(json.dumps(told, sort_keys=True, default=str).encode()).hexdigest()[:32]
 
 
-def spent_since(ledger: str | Path | None, hours: float = 24.0) -> float:
-    """Dollars the step spent, for every video, in the last ``hours`` (from its own ledger)."""
+def spent_since(
+    ledger: str | Path | None, hours: float | None = 24.0, labels: set[str] | None = None
+) -> float:
+    """Dollars the step spent in the last ``hours`` (None: ever), for every video or only for
+    the renders named in ``labels`` (from its own ledger)."""
     if not ledger:
         return 0.0
-    since = datetime.now(UTC).timestamp() - hours * 3600
+    since = datetime.now(UTC).timestamp() - hours * 3600 if hours is not None else None
     total = 0.0
     try:
         lines = Path(ledger).read_text(encoding="utf-8").splitlines()
@@ -139,11 +142,40 @@ def spent_since(ledger: str | Path | None, hours: float = 24.0) -> float:
     for line in lines:
         try:
             row = json.loads(line)
-            if datetime.fromisoformat(row["at"]).timestamp() >= since:
+            if labels is not None and row.get("label") not in labels:
+                continue
+            if since is None or datetime.fromisoformat(row["at"]).timestamp() >= since:
                 total += float(row["cost_usd"])
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, AttributeError):
             continue
     return total
+
+
+def limited(cfg: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """What this render may spend under the limits above it, and why it may spend nothing.
+
+    A video that is made again and again (a note, a fix, another note) must not add up without
+    anyone looking: all renders together stop at the day's limit. A video in the live test
+    (19-Nov) also stops at the test's total for all its videos. Each limit that is lower than the
+    one-render limit names itself in what the card says about a scene kept real."""
+    out = dict(cfg)
+    day = float(cfg.get("day_usd") or 0.0)
+    if day > 0:
+        left = day - spent_since(cfg.get("ledger"))
+        if left <= 0:
+            return out, f"the spend limit for one day (${day:.2f}) was reached"
+        if left < float(out.get("max_usd") or 0.0):
+            out["max_usd"], out["limit_why"] = left, f"the spend limit for one day (${day:.2f}) was reached"
+    test = cfg.get("trial") or {}
+    if test:
+        cap = float(test.get("usd") or 0.0)
+        left = cap - spent_since(cfg.get("ledger"), None, set(test.get("labels") or []))
+        why = f"the live test's limit (${cap:.2f} for its videos) was reached"
+        if left <= 0:
+            return out, why
+        if left < float(out.get("max_usd") or 0.0):
+            out["max_usd"], out["limit_why"] = left, why
+    return out, None
 
 
 def _stills(path: Path, seconds: float, count: int) -> list[bytes]:
@@ -171,6 +203,7 @@ class _Run:
         self.judge_model = str(cfg.get("judge_model") or "")
         self.resolution = str(cfg.get("resolution") or "1080p")
         self.max_usd = float(cfg.get("max_usd") or 0.0)
+        self.limit_why = str(cfg.get("limit_why") or "")
         self.face_model = str(Path(cfg["engine_dir"]) / FACE_MODEL)
         self.spent = 0.0
         self.drawn_s = 0.0
@@ -282,7 +315,7 @@ class _Run:
         video_uri, fix, why = None, "", ""
         for attempt in (1, 2):
             if self.spent + omni.estimate_usd(seconds, self.resolution) > self.max_usd:
-                why = f"the spend limit for one video (${self.max_usd:.2f}) was reached"
+                why = self.limit_why or f"the spend limit for one video (${self.max_usd:.2f}) was reached"
                 self.say(f"backdrop: scene {n}/{total} kept real (spend limit)")
                 break
             raw = self.tmp / f"scene{scene.index:02d}-try{attempt}.mp4"
@@ -446,16 +479,11 @@ def run(
     if not todo:
         report["scenes"] = [_entry(s) for s in planned]
         return close("no scene to change in this cut")
-    # A video that is made again and again (a note, a fix, another note) must not add up
-    # without anyone looking: all renders together stop at the day's limit.
-    day = float(cfg.get("day_usd") or 0.0)
-    if day > 0:
-        left = day - spent_since(cfg.get("ledger"))
-        if left <= 0:
-            report["scenes"] = [_entry(s) for s in planned]
-            say("backdrop: kept the real backgrounds (the day's spend limit was reached)")
-            return close(f"the spend limit for one day (${day:.2f}) was reached")
-        cfg = {**cfg, "max_usd": min(float(cfg.get("max_usd") or 0.0), left)}
+    cfg, stop = limited(cfg)
+    if stop:
+        report["scenes"] = [_entry(s) for s in planned]
+        say(f"backdrop: kept the real backgrounds ({stop})")
+        return close(stop)
     state = _Run(cfg, api, say, plan, edit, (int(picture["width"]), int(picture["height"])))
     swaps: list[tuple[int, int, str]] = []
     nth = 0

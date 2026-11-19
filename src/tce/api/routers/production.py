@@ -72,6 +72,7 @@ from tce.production import (
 from tce.production import laughs as laugh_rules
 from tce.production import rules as rule_text
 from tce.production.backdrop import config as backdrop_config
+from tce.production.backdrop import trial as backdrop_trial
 from tce.production.creatorz import reels as creatorz_reels
 from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
@@ -1639,15 +1640,22 @@ async def choose_style(
         raise HTTPException(status_code=409, detail="The original upload is missing from storage; upload it again")
     plan = dict(row.edit_plan)
     overrides = dict(plan.get("overrides") or {})
+    test = None
     if body.style == creatorz_reels.CREATORZ:
         overrides["style"] = body.style
+        # 19-Nov: the live test of new backgrounds. A new video turned to Creatorz takes the
+        # next place in it; on a "new places" place this same render already has them.
+        test = backdrop_config.join_trial(ws, row.id, row.created_at)
+        if test and test.get("joined") and test["arm"] == backdrop_trial.NEW:
+            overrides[backdrop_config.KEY] = backdrop_config.ON
     else:
         overrides.pop("style", None)
     plan["overrides"] = overrides
     row.edit_plan = plan
     attempt = _claim(
         row, "rendering",
-        "Queued: making the Creatorz version" if body.style == creatorz_reels.CREATORZ else "Queued: making the Pill version",
+        ("Queued: making the Creatorz version" + backdrop_trial.said(test))[:500]
+        if body.style == creatorz_reels.CREATORZ else "Queued: making the Pill version",
     )
     try:
         await db.commit()

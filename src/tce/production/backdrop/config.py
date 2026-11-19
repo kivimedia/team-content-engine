@@ -9,7 +9,7 @@ from typing import Any
 
 from tce.settings import settings
 
-from . import looks, omni
+from . import looks, omni, trial
 
 # In a video's saved choices (edit_plan["overrides"]), next to its style.
 KEY = "backdrop"
@@ -66,7 +66,10 @@ def for_render(
     """What the step is told for this render, or None when this video keeps its backgrounds."""
     if not wanted(plan) or not offered(workspace_id):
         return None
+    test = trial.money(looks_dir(workspace_id), workspace_id, upload_id)
     return {
+        # 19-Nov: a video in the live test also stops at the test's total for all its videos.
+        **({"trial": test} if test else {}),
         "looks_dir": str(looks_dir(workspace_id)),
         "cache_dir": str(cache_dir(Path(src))),
         "model": settings.production_backdrop_model,
@@ -82,7 +85,9 @@ def for_render(
 
 
 def card(
-    workspace_id: uuid.UUID | str | None, plan: dict[str, Any] | None
+    workspace_id: uuid.UUID | str | None,
+    plan: dict[str, Any] | None,
+    upload_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any] | None:
     """For the Library card's switch: None where it is not offered."""
     if not offered(workspace_id):
@@ -90,7 +95,21 @@ def card(
     kept_s = sum(float(b) - float(a) for a, b in (plan or {}).get("keep") or [])
     limit = float(settings.production_backdrop_max_usd)
     about = min(limit, omni.estimate_usd(kept_s / 2, settings.production_backdrop_resolution))
-    return {"on": wanted(plan), "about_usd": round(about * 2) / 2, "max_usd": limit}
+    out = {"on": wanted(plan), "about_usd": round(about * 2) / 2, "max_usd": limit}
+    test = trial.card(looks_dir(workspace_id), upload_id) if upload_id is not None else None
+    if test:
+        out["trial"] = test  # 19-Nov: this video's place in the live test
+    return out
+
+
+def join_trial(
+    workspace_id: uuid.UUID | str | None, upload_id: uuid.UUID | str, uploaded_at: Any
+) -> dict[str, Any] | None:
+    """19-Nov: a video turned to Creatorz joins the live test, where there is one and the switch
+    can work here (trial.py). None for every other video."""
+    if not offered(workspace_id):
+        return None
+    return trial.join(looks_dir(workspace_id), upload_id, uploaded_at)
 
 
 def summary(report: dict[str, Any] | None) -> dict[str, Any] | None:
