@@ -9,6 +9,7 @@ only; nothing here reaches a server database or a worker.
 from __future__ import annotations
 
 import asyncio
+from array import array
 import shutil
 import subprocess
 import uuid
@@ -44,7 +45,7 @@ HUM = 0.0084  # a pause that is not silent: under the pause level, over the leve
 def recording(path: Path, words: list[tuple[str, float, float]], hums: list[tuple[float, float]] = ()) -> Path:
     """A mono WAV: a tone burst for each word (text, start, end), a faint hum for each
     (start, end) in `hums`, digital silence elsewhere, and a second of silence at the end."""
-    terms = [f"{BURST}*sin(2*PI*500*t)*between(t,{s:.3f},{e:.3f})" for _t, s, e in words]
+    terms = [f"{BURST}*sin(2*PI*{WORD_HZ[t]}*t)*between(t,{s:.3f},{e:.3f})" for t, s, e in words]
     terms += [f"{HUM}*sin(2*PI*500*t)*between(t,{s:.3f},{e:.3f})" for s, e in hums]
     total = max(e for _t, _s, e in words) + 1.0
     subprocess.run(
@@ -80,6 +81,44 @@ DOG_LINE = {"first": 11, "last": 14, "heard": "Leave that shoe alone."}
 KEPT_AFTER_DOG = "It is smart to call them after the work is done. Ask them how it went and what they need next."
 # No word here ends on a hiss: a tone has no "s" in it, and the phone-cut check would be right.
 CLEAN = "It is smart. Call them after the work today."
+
+
+# The only dictionary the test recogniser knows: a separate pitch for each word.
+# It can read the audio file after a cut without consulting the edit plan or its captions.
+WORD_HZ = {word: 400 + 80 * i for i, word in enumerate(sorted(
+    set(CLEAN.split()) | {w for w, _, _ in GAP_WORDS + DOG_WORDS}
+))}
+
+
+@pytest.fixture
+def tone_recogniser(monkeypatch):
+    async def listen(path, _duration, _ws):
+        audio = subprocess.run(
+            [shutil.which("ffmpeg"), "-v", "error", "-i", str(path), "-vn", "-ar", "12000",
+             "-ac", "1", "-f", "s16le", "-"], check=True, capture_output=True,
+        )
+        samples = array("h", audio.stdout)
+        heard = []
+        previous = None
+        # Read the period of the speech-level bursts. Quiet hum and silence
+        # carry no words; a partial block at a cut has the same pitch.
+        for offset in range(0, len(samples) - 599, 600):
+            chunk = samples[offset:offset + 600]
+            word = None
+            rises = [i for i, (a, b) in enumerate(zip(chunk, chunk[1:])) if a < 2000 <= b]
+            if len(rises) >= 5:
+                hz = 12000 * (len(rises) - 1) / (rises[-1] - rises[0])
+                nearest = min(WORD_HZ, key=lambda w: abs(WORD_HZ[w] - hz))
+                if abs(WORD_HZ[nearest] - hz) <= 20:
+                    word = nearest
+            if word:
+                if previous != word:
+                    heard.append({"text": word, "start": offset / 12000})
+                heard[-1]["end"] = (offset + 600) / 12000
+            previous = word
+        return heard, None
+
+    monkeypatch.setattr(prod, "_qc_listen", listen)
 
 
 @pytest.fixture
@@ -150,7 +189,7 @@ async def checks_of(sm, uid) -> list[RenderCheck]:
 
 
 @needs_ffmpeg
-async def test_a_clean_edit_ends_checked_by_jennifer_with_its_numbers(wired, tmp_path):
+async def test_a_clean_edit_ends_checked_by_jennifer_with_its_numbers(wired, tone_recogniser, tmp_path):
     ws, uid, row = await edit(wired, tmp_path, spoken(CLEAN))
     assert row.status == "edited" and len(wired["renders"]) == 1
     found = row.qc
@@ -159,6 +198,10 @@ async def test_a_clean_edit_ends_checked_by_jennifer_with_its_numbers(wired, tmp
     assert "9 of 9 words captioned" in found["line"] and "LUFS" in found["line"]
     assert abs(found["numbers"]["lufs"] - (-14.0)) <= qc.LOUDNESS_TOLERANCE_LU
     assert found["numbers"]["longest_gap_s"] < 1.2
+    assert found["checks"]["audibility"]["heard"] == 9
+    assert found["checks"]["captions"]["playback_state"] == "pass"
+    frames = found["checks"]["captions"]["frames"]
+    assert frames["confirmed"] == frames["samples"] > 0
     # The render's own line is back on the row once the check is done, and nothing is marked.
     assert row.status_detail.startswith("Captioned MP4 ready") and prod.QC_MARK not in row.job_ids
     [check] = await checks_of(wired["sm"], uid)
@@ -178,7 +221,15 @@ async def test_a_clean_edit_ends_checked_by_jennifer_with_its_numbers(wired, tmp
 
 
 @needs_ffmpeg
-async def test_the_cut_itself_leaves_no_hum_held_pause(wired, tmp_path):
+async def test_a_clean_render_without_a_recogniser_reports_the_unchecked_audio(wired, tmp_path):
+    _, _, row = await edit(wired, tmp_path, spoken(CLEAN))
+    assert row.status == "edited" and row.qc["state"] == "report"
+    assert row.qc["checks"]["captions"]["playback_state"] == "skipped"
+    assert not row.qc["checks"]["audibility"]["listened"]
+
+
+@needs_ffmpeg
+async def test_the_cut_itself_leaves_no_hum_held_pause(wired, tone_recogniser, tmp_path):
     # 19-Oct: the hum runs on past "smart." and touches it, so the cut used to keep it
     # whole and only her check took it out. It is no longer in the first render.
     ws, uid, row = await edit(wired, tmp_path, GAP_WORDS, GAP_HUM)
@@ -188,7 +239,7 @@ async def test_the_cut_itself_leaves_no_hum_held_pause(wired, tmp_path):
 
 
 @needs_ffmpeg
-async def test_a_gap_is_cut_with_one_rerender_and_a_recheck(wired, tmp_path, monkeypatch):
+async def test_a_gap_is_cut_with_one_rerender_and_a_recheck(wired, tone_recogniser, tmp_path, monkeypatch):
     # Her fix flow, on a gap the cut lets through (the 19-Oct guard off for this one).
     monkeypatch.setattr(tightcut, "HOLE_MIN_S", 1e9)
     ws, uid, row = await edit(wired, tmp_path, GAP_WORDS, GAP_HUM)
@@ -213,7 +264,7 @@ async def test_a_gap_is_cut_with_one_rerender_and_a_recheck(wired, tmp_path, mon
 
 
 @needs_ffmpeg
-async def test_a_line_to_the_dog_left_in_is_cut_and_the_rule_she_used_is_counted(wired, tmp_path):
+async def test_a_line_to_the_dog_left_in_is_cut_and_the_rule_she_used_is_counted(wired, tone_recogniser, tmp_path):
     def reading(prompt: str) -> dict:
         if "11:Leave" not in prompt:
             return {"asides": []}
@@ -355,7 +406,7 @@ async def test_switched_off_nothing_is_checked(wired, tmp_path, monkeypatch):
 
 
 @needs_ffmpeg
-async def test_a_worker_that_is_away_leaves_the_asides_unchecked_and_says_so(wired, tmp_path):
+async def test_a_worker_that_is_away_leaves_the_asides_unchecked_and_says_so(wired, tone_recogniser, tmp_path):
     wired["answers"][qc.ASIDES_JOB] = None  # the queue has no worker
     ws, uid, row = await edit(wired, tmp_path, spoken(CLEAN))
     assert row.status == "edited" and row.qc["state"] == "passed"
@@ -430,7 +481,7 @@ async def test_a_held_video_cannot_be_posted_until_he_lets_it_through(wired, cli
 
 
 @needs_ffmpeg
-async def test_he_can_ask_for_a_check_again_and_the_card_says_what_she_is_doing(wired, client, tmp_path):
+async def test_he_can_ask_for_a_check_again_and_the_card_says_what_she_is_doing(wired, tone_recogniser, client, tmp_path):
     ws, uid, row = await edit(wired, tmp_path, spoken(CLEAN))
     assert row.qc["state"] == "passed"
     started = await client.post(f"/api/v1/production/uploads/{uid}/check", headers=auth(ws))
