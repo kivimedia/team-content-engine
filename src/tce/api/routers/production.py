@@ -3240,6 +3240,15 @@ async def _qc_asides(
     return found
 
 
+async def _qc_render_listens(edited: Path, diagnostic: Path, duration: float, ws):
+    """A voice-only stem diagnoses cuts. Only the published mix can prove caption agreement."""
+    if edited == diagnostic:
+        heard = await _qc_listen(edited, duration, ws)
+        return heard, heard
+    stem, mix = await asyncio.gather(_qc_listen(diagnostic, duration, ws), _qc_listen(edited, duration, ws))
+    return stem, mix
+
+
 async def _qc_measure(
     upload_id: uuid.UUID, ws: uuid.UUID, round_no: int, fixed: list[str] | None = None
 ) -> dict[str, dict[str, Any]] | None:
@@ -3291,19 +3300,20 @@ async def _qc_measure(
 
     # The second witness for two checks: the render transcribed again.
     heard: list[dict[str, Any]] | None = None
+    delivered_words = None
     why: str | None = "nothing was cut from this one" if uncut else "this video has no word-by-word transcript"
     if kept:
         await _qc_step(
             upload_id, ws, round_no, f"listening to it again on this server ({len(kept)} words to hear)"
         )
-        heard, why = await _qc_listen(listen_to, duration, ws)
+        (heard, why), (delivered_words, _) = await _qc_render_listens(edited, listen_to, duration, ws)
 
         # The next note-completion pass can reuse this independent listen only
         # when it checked the published MP4 itself, on the same version.
-        if heard and listen_to == edited and sidecar.get("render_ref"):
+        if delivered_words and sidecar.get("render_ref"):
             current = _read_render_sidecar(edited)
             if current.get("render_ref") == sidecar["render_ref"]:
-                _write_render_sidecar(edited, {**current, "delivered_audio_words": heard})
+                _write_render_sidecar(edited, {**current, "delivered_audio_words": delivered_words})
 
     await _qc_step(upload_id, ws, round_no, "measuring the pauses in the finished video")
     checks["gaps"] = (
@@ -3330,8 +3340,10 @@ async def _qc_measure(
         else None
     )
     checks["captions"] = qc.check_captions(sidecar.get("captions"), expected)
-    playback = qc.caption_playback(sidecar.get("captions"), heard)
+    playback = qc.caption_playback(sidecar.get("captions"), delivered_words)
     checks["captions"]["playback_state"] = playback["state"]
+    if playback.get("why"):
+        checks["captions"]["playback_why"] = playback["why"]
     if sidecar.get("render_ref"):
         await _qc_step(upload_id, ws, round_no, "reading caption frames in the delivered video")
         frames = await qc.sample_caption_frames(edited, sidecar.get("captions"), workspace_language(ws))
