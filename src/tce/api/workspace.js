@@ -2766,6 +2766,83 @@
 
   /* The player opens inside the card it belongs to, under its buttons: one
      video at a time, and Close (or tapping Watch again) puts it away. */
+  function reviewMetrics(summary, box) {
+    var counts = summary.notes || {};
+    var average = summary.corrective_per_video == null ? "No reviewed videos yet" :
+      summary.corrective_per_video + (summary.corrective_per_video === 1 ? " corrective note per reviewed video" : " corrective notes per reviewed video");
+    function count(value, one, many) {
+      var n = Number(value || 0);
+      return n + " " + (n === 1 ? one : many);
+    }
+    box.innerHTML = "<p>" + esc(average) + ". " + count(counts.corrective, "distinct corrective note", "distinct corrective notes")
+      + ", including " + count(counts.meaning_changing, "meaning-changing mistake", "meaning-changing mistakes") + ". "
+      + count(counts.creative, "creative request", "creative requests") + " and "
+      + count(counts.unclassified, "unclassified note", "unclassified notes") + ".</p>"
+      + "<p>Proposed decision after 20 reviews: at least 18 accepted as delivered, zero meaning-changing cuts or captions, "
+      + "and completed audio, caption and playback checks on every video counted as ready. Unclassified notes and changes "
+      + "without a note leave the severity unknown. " + count(summary.unexplained_changes, "reviewed video has", "reviewed videos have")
+      + " a changes decision without a linked note.</p>"
+      + "<p>If those conditions hold, the reviewer may sample one in five and review every flagged edit. "
+      + "A severe miss would return that format to full review.</p>";
+    if (!(summary.videos || []).length) return;
+    var list = document.createElement("ul");
+    summary.videos.forEach(function (video) {
+      var li = document.createElement("li");
+      li.textContent = video.title + ": " + video.corrective + " corrective (" + video.meaning_changing
+        + " meaning-changing), " + video.creative + " creative, " + video.unclassified + " unclassified.";
+      list.appendChild(li);
+    });
+    box.appendChild(list);
+  }
+
+  function mountNoteClasses(details, uid, onSaved) {
+    var list = details.querySelector(".review-notes-list");
+    var base = "/production/recordings/" + encodeURIComponent(uid) + "/cut-review-notes";
+    var options = [["unclassified", "Unclassified"], ["corrective", "Correction that keeps the meaning"],
+      ["meaning_change", "Meaning-changing cut or caption"], ["creative", "Creative request"]];
+    var generation = 0;
+    details.addEventListener("toggle", async function () {
+      var current = ++generation;
+      if (!details.open) return;
+      list.textContent = "Reading your submitted notes…";
+      try {
+        var data = await api(base);
+        if (current !== generation || !details.open) return;
+        list.textContent = data.items.length ? "" : "No submitted review notes for this video.";
+        data.items.forEach(function (note) {
+          var field = document.createElement("div");
+          var label = document.createElement("label");
+          var text = document.createElement("span");
+          var select = document.createElement("select");
+          var feedback = document.createElement("span");
+          text.textContent = note.request;
+          text.style.display = "block";
+          feedback.setAttribute("role", "status");
+          options.forEach(function (pair) { select.add(new Option(pair[1], pair[0])); });
+          select.value = note.classification;
+          select.addEventListener("change", async function () {
+            select.disabled = true;
+            feedback.textContent = " Saving…";
+            try {
+              var response = await api(base + "/" + encodeURIComponent(note.id), {
+                method: "PATCH", body: {classification: select.value}
+              });
+              note.classification = response.classification;
+              feedback.textContent = " Saved.";
+              onSaved(response.trial);
+            } catch (error) {
+              select.value = note.classification;
+              feedback.textContent = " " + error.message;
+            } finally { select.disabled = false; }
+          });
+          label.append(text, select);
+          field.append(label, feedback);
+          list.appendChild(field);
+        });
+      } catch (error) { if (current === generation) list.textContent = error.message; }
+    });
+  }
+
   async function addCutReview(container, video, uid, ref) {
     if (!uid || !ref) return;
     var status;
@@ -2775,7 +2852,10 @@
     panel.className = "cut-review";
     panel.innerHTML = '<div class="actions"><button class="btn" data-verdict="accepted" type="button">Accept this edit</button>'
       + '<button class="btn quiet" data-verdict="changes" type="button">Needs changes</button></div>'
-      + '<p class="source" role="status"></p>';
+      + '<p class="source" role="status"></p>'
+      + '<details class="review-trial"><summary>Evidence for reducing review</summary><div></div></details>'
+      + '<details class="review-note-classes"><summary>Classify your notes on this video</summary>'
+      + '<div class="review-notes-list"></div></details>';
     var line = panel.querySelector("p");
     function trial(summary) {
       return "Angel’s first-cut reviews: " + summary.reviewed + " of " + summary.target
@@ -2783,7 +2863,14 @@
         + summary.reopened_after_done + " linked follow-ups after a completed fix, "
         + summary.incomplete_checks + " with incomplete quality checks.";
     }
-    line.textContent = trial(status.trial);
+    function refreshTrial(summary, message) {
+      line.textContent = (message || "") + trial(summary);
+      reviewMetrics(summary, panel.querySelector(".review-trial div"));
+    }
+    refreshTrial(status.trial);
+    mountNoteClasses(panel.querySelector(".review-note-classes"), uid, function (summary) {
+      refreshTrial(summary, "Classification saved. ");
+    });
     panel.addEventListener("click", async function (event) {
       var choice = event.target.closest("[data-verdict]");
       if (!choice || panel.dataset.saving) return;
@@ -2793,7 +2880,7 @@
         var saved = await api("/production/recordings/" + encodeURIComponent(uid) + "/cut-review", {
           method: "POST", body: {render_ref: ref, outcome: choice.dataset.verdict}
         });
-        line.textContent = "Review saved. " + trial(saved.trial);
+        refreshTrial(saved.trial, "Review saved. ");
         if (choice.dataset.verdict === "changes" && !state.notesSheet) openNotesSheet(uid);
       } catch (error) { line.textContent = error.message; }
       finally { delete panel.dataset.saving; }

@@ -59,6 +59,7 @@ from tce.models.editorial import (
 from tce.models.jennifer import RenderCheck
 from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingClip, RecordingSession
+from tce.editorial.cut_reviews import TRIAL_RELEASE
 from tce.production import (
     agent_talks,
     autoedit,
@@ -1307,7 +1308,8 @@ async def _render_creatorz(
     }), None
 
 
-async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str) -> None:
+async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str, *,
+                      qc_retry: bool = False) -> None:
     async def report(text: str) -> None:
         await _set_status(upload_id, ws, "rendering", text, attempt)
 
@@ -1316,6 +1318,13 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             row = await _load(s, upload_id, ws)
             src, plan, duration = Path(row.storage_path), dict(row.edit_plan or {}), row.duration_s
             words = list(row.transcript or [])
+            previous_ref = row.render_ref
+            first_preview = not (row.edited_path or previous_ref)
+            if qc_retry and row.edited_path and previous_ref:
+                previous = _read_render_sidecar(row.edited_path)
+                old_stamp = previous.get("generated_cut") or {}
+                first_preview = (previous.get("render_ref") == previous_ref
+                                 and old_stamp.get("release") == TRIAL_RELEASE and old_stamp.get("first") is True)
         # 19-Oct: background-noise cleaning asked for in a note; the uncut version too.
         denoise = (plan.get("overrides") or {}).get("denoise")
         # 20-Oct: a fixed line at the top over the whole video, asked for in a note.
@@ -1407,6 +1416,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         artifact = out.stat()
         sidecar: dict[str, Any] = {
             "render_ref": delivered_ref,
+            "generated_cut": {"release": TRIAL_RELEASE, "first": first_preview and mode == "cut" and not audio_only},
             "file_size": artifact.st_size,
             "file_mtime_ns": artifact.st_mtime_ns,
             "mode": mode,
@@ -3371,6 +3381,17 @@ async def _qc_record(
             "render_detail": before.get("render_detail") or (row.status_detail if row.status == "edited" else None),
             "at": _utcnow().isoformat(),
         }
+        if row.edited_path and row.render_ref:
+            sidecar = _read_render_sidecar(row.edited_path)
+            stamp = sidecar.get("generated_cut")
+            if isinstance(stamp, dict) and sidecar.get("render_ref") == row.render_ref:
+                try:
+                    artifact = Path(row.edited_path).stat()
+                except OSError:
+                    artifact = None
+                if (artifact and artifact.st_size == sidecar.get("file_size")
+                        and artifact.st_mtime_ns == sidecar.get("file_mtime_ns")):
+                    result["generated_cut"] = stamp
         s.add(
             RenderCheck(
                 workspace_id=ws,
@@ -3436,7 +3457,7 @@ async def _qc_fix(upload_id: uuid.UUID, ws: uuid.UUID, fixes: dict[str, list[Any
         ws,
         "rendering",
         "Jennifer is rendering once more with her fixes: cutting and burning in your captions",
-        lambda attempt: _run_render(upload_id, ws, attempt, "cut"),
+        lambda attempt: _run_render(upload_id, ws, attempt, "cut", qc_retry=True),
     )
     async with session_factory()() as s:
         if row.status != "edited":
