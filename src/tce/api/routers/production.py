@@ -38,7 +38,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -128,6 +128,23 @@ class RecordingClipCreate(BaseModel):
 class RecordingClipFinish(BaseModel):
     active_duration_s: float = Field(ge=0)
     take_markers: list[dict[str, Any]] = Field(default_factory=list)
+    # What the phone measured during the take (recording.js phoneReport). A diagnosis only:
+    # anything that is not a short plain value is dropped, never a reason to refuse the clip.
+    phone: dict[str, Any] | None = None
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _plain_phone_report(cls, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        kept: dict[str, Any] = {}
+        for key, item in list(value.items())[:24]:
+            if isinstance(item, str):
+                item = item[:120]
+            elif not (item is None or isinstance(item, (bool, int, float))):
+                continue
+            kept[str(key)[:40]] = item
+        return kept or None
 
 
 class RecordingSessionFinish(BaseModel):
@@ -2512,6 +2529,7 @@ async def finish_recording_clip_route(
             _recording_root(),
             active_duration_s=body.active_duration_s,
             take_markers=body.take_markers,
+            phone=body.phone,
         )
     except recording_sessions.RecordingSessionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

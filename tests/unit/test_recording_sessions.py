@@ -154,6 +154,44 @@ async def test_finalize_clip_requires_audio_and_preserves_source_chunks(
     assert list((tmp_path / str(ws) / str(recording.id) / str(clip.id)).glob("*.part"))
 
 
+async def test_what_the_phone_measured_is_kept_beside_the_file_proof(editorial_session, tmp_path):
+    # 19-Nov-2026: his walks came out at 13 to 25 pictures a second; the phone's own counts
+    # (camera, redraws, recorder type) are kept on the clip so one walk says which step lost them.
+    ws = uuid.uuid4()
+    candidate, packet = await packet_fixture(editorial_session, ws)
+    recording = await sessions.create_session(editorial_session, ws, candidate.id, packet.id)
+
+    async def valid(_path):
+        return {"has_audio": True, "has_video": True, "duration_s": 2.0}
+
+    measured = {"type": "video/mp4;codecs=avc1,mp4a.40.2", "path": "canvas", "camera_fps": 29.8, "redraw_fps": 14.1}
+    with_report = await uploading_clip(editorial_session, ws, recording, "local-p1", tmp_path)
+    ready = await sessions.finalize_clip(
+        editorial_session, ws, with_report.id, tmp_path, active_duration_s=2.0, phone=measured, prober=valid
+    )
+    assert ready.timing_meta == {"has_audio": True, "has_video": True, "duration_s": 2.0, "phone": measured}
+    without = await uploading_clip(editorial_session, ws, recording, "local-p2", tmp_path)
+    plain = await sessions.finalize_clip(
+        editorial_session, ws, without.id, tmp_path, active_duration_s=2.0, prober=valid
+    )
+    assert "phone" not in plain.timing_meta
+
+
+def test_the_finish_call_keeps_only_short_plain_values_of_the_phone_report():
+    from tce.api.routers.production import RecordingClipFinish
+
+    body = RecordingClipFinish(active_duration_s=1.0, phone={
+        "type": "x" * 500, "camera_fps": 29.8, "ok": True, "none": None,
+        "nested": {"a": 1}, "list": [1, 2],
+    })
+    assert body.phone == {"type": "x" * 120, "camera_fps": 29.8, "ok": True, "none": None}
+    assert RecordingClipFinish(active_duration_s=1.0, phone="not a report").phone is None
+    assert RecordingClipFinish(active_duration_s=1.0, phone={"nested": {"a": 1}}).phone is None
+    assert RecordingClipFinish(active_duration_s=1.0).phone is None
+    many = RecordingClipFinish(active_duration_s=1.0, phone={f"k{i}": i for i in range(60)})
+    assert len(many.phone) == 24
+
+
 async def uploading_clip(db, ws, recording, local_id, root):
     clip = await sessions.create_clip(db, ws, recording.id, local_id, "video/webm", "webm")
     body = f"synthetic-{local_id}".encode()

@@ -205,9 +205,11 @@ function rebindIdeas(ideas, next) {
     // Pieces the phone would not keep (a private tab), held here until the server has them.
     memoryPieces: new Map(), warnedNoPhoneCopy: false,
   };
-  // 19-Nov-2026: H.264 first, VP9 last. A phone encodes H.264 in hardware; asked for VP9 first,
-  // Chrome on a Samsung encoded it in software and kept 13 to 18 pictures a second, so the lips
-  // trailed the voice. Same order in recording-solo.js and book.js (test_recorder_codec_order).
+  // 19-Nov-2026: H.264 first, VP9 last. Every phone encodes H.264 in hardware; the old order
+  // took VP9 on Chrome AND on iPhone Safari (iOS 26), and its only H.264 entry
+  // ("video/mp4;codecs=h264,aac") is one Chrome refuses, so H.264 was never chosen. His walks
+  // ran 13 to 25 pictures a second; which step loses them is measured per clip (phoneReport).
+  // Same order in recording-solo.js and book.js (test_recorder_codec_order).
   const supportedMime = [
     "video/mp4;codecs=avc1,mp4a.40.2", "video/mp4;codecs=avc1", "video/mp4;codecs=h264,aac",
     "video/webm;codecs=h264,opus", "video/webm;codecs=vp8,opus", "video/webm", "video/mp4",
@@ -1268,6 +1270,7 @@ function rebindIdeas(ideas, next) {
       if (state.portraitStopped) return;
       if (source.readyState >= 2) {
         context.drawImage(source, cropX, cropY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
+        state.draws = (state.draws || 0) + 1;
       }
       state.portraitFrame = requestAnimationFrame(draw);
     };
@@ -1283,6 +1286,52 @@ function rebindIdeas(ideas, next) {
       cancelAnimationFrame(state.portraitFrame);
     });
     return out;
+  }
+
+  /* 19-Nov-2026: his walks came out at 13 to 25 pictures a second and the file cannot say
+     which step lost them: the camera, the page redrawing it, or the recorder. At Record and
+     at Stop the studio counts the camera's own frames (MediaStreamTrack.stats, Chrome 121+),
+     the page's redraws and the recorded track's frames; the rates ride on the clip's finish
+     call. A diagnosis only: anything the browser does not offer is null, never an error. */
+  function rateSnapshot() {
+    const count = (stream) => {
+      try {
+        const stats = stream?.getVideoTracks()[0]?.stats;
+        return stats ? { delivered: stats.deliveredFrames, total: stats.totalFrames } : null;
+      } catch { return null; }
+    };
+    const canvas = state.stream && state.stream !== state.rawStream;
+    return {
+      at: performance.now(), camera: count(state.rawStream),
+      output: canvas ? count(state.stream) : null, draws: state.draws || 0,
+    };
+  }
+
+  function phoneReport(start) {
+    try {
+      if (!start) return null;
+      const end = rateSnapshot();
+      const seconds = (end.at - start.at) / 1000;
+      if (!(seconds > 0.5)) return null;
+      const rate = (a, b) => (Number.isFinite(a) && Number.isFinite(b) ? Math.round(((b - a) / seconds) * 10) / 10 : null);
+      const canvas = state.stream !== state.rawStream;
+      const camera = state.rawStream?.getVideoTracks()[0];
+      const recorded = state.stream?.getVideoTracks()[0];
+      const cameraSet = camera?.getSettings ? camera.getSettings() : {};
+      const recordedSet = recorded?.getSettings ? recorded.getSettings() : {};
+      return {
+        type: state.recorder?.mimeType || supportedMime,
+        path: canvas ? "canvas" : "direct",
+        camera_size: state.cameraReport?.chose || (cameraSet.width ? `${cameraSet.width}x${cameraSet.height}` : null),
+        recorded_size: recordedSet.width ? `${recordedSet.width}x${recordedSet.height}` : null,
+        camera_set_fps: Number.isFinite(cameraSet.frameRate) ? Math.round(cameraSet.frameRate * 10) / 10 : null,
+        seconds: Math.round(seconds * 10) / 10,
+        camera_fps: rate(start.camera?.total, end.camera?.total),
+        camera_delivered_fps: rate(start.camera?.delivered, end.camera?.delivered),
+        redraw_fps: canvas ? rate(start.draws, end.draws) : null,
+        canvas_fps: rate(start.output?.delivered, end.output?.delivered),
+      };
+    } catch { return null; }
   }
 
   async function requestWakeLock() {
@@ -1313,6 +1362,7 @@ function rebindIdeas(ideas, next) {
       state.takeMarkers = [];
       state.pendingWrites = [];
       state.recorder = new MediaRecorder(stream, { mimeType: supportedMime, videoBitsPerSecond: 8000000, audioBitsPerSecond: 128000 });
+      state.rateStart = rateSnapshot();
       state.recorder.ondataavailable = (event) => {
         if (!event.data?.size) return;
         const sequence = state.sequence++;
@@ -1427,11 +1477,11 @@ function rebindIdeas(ideas, next) {
      closing call failed (bad signal) stays on the phone in state.unfinished and
      Finish sends it before building the video. */
   async function sendClip(entry) {
-    const { clip, session, activeSeconds, takeMarkers } = entry;
+    const { clip, session, activeSeconds, takeMarkers, phone } = entry;
     const synced = await retryStoredChunks(clip.id);
     if (!synced) throw new Error("Some of the video is still on this phone. It is sent again in a few seconds, from any TCE page.");
     const response = await api(`/recording-clips/${clip.id}/finish`, {
-      method: "POST", body: JSON.stringify({ active_duration_s: activeSeconds, take_markers: takeMarkers }),
+      method: "POST", body: JSON.stringify({ active_duration_s: activeSeconds, take_markers: takeMarkers, phone: phone || null }),
     });
     // The server has the clip: clearing the phone's copy is tidying, never a reason to fail.
     await idbDeleteClip(clip.id).catch(() => {});
@@ -1460,6 +1510,8 @@ function rebindIdeas(ideas, next) {
     const clip = state.clip;
     const session = state.session;
     const takeMarkers = [...state.takeMarkers];
+    const phone = phoneReport(state.rateStart);
+    state.rateStart = null;
     // Stop is pressed: from here the clip is owed to the server even if he leaves
     // before the recorder hands over its last piece (T-11436).
     const running = state.recorder?.state === "recording" ? performance.now() - state.activeStartedAt : 0;
@@ -1480,7 +1532,7 @@ function rebindIdeas(ideas, next) {
     // A take stopped while paused left the greyed button reading "Resume".
     $("pauseButton").textContent = "Pause";
     $("finishClipButton").disabled = true;
-    const entry = { clip, session, activeSeconds, takeMarkers };
+    const entry = { clip, session, activeSeconds, takeMarkers, phone };
     const finalize = (async () => {
       if (!pieces) {
         await idbDeleteClip(clip.id).catch(() => {});

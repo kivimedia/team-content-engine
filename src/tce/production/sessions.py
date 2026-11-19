@@ -238,6 +238,7 @@ async def finalize_clip(
     *,
     active_duration_s: float,
     take_markers: list[dict[str, Any]] | None = None,
+    phone: dict[str, Any] | None = None,
     prober: Callable[[str | Path], Awaitable[dict[str, Any]]] = probe_media,
 ) -> RecordingClip:
     clip = (
@@ -279,7 +280,10 @@ async def finalize_clip(
     clip.duration_s = proof.get("duration_s")
     clip.active_duration_s = max(0.0, float(active_duration_s))
     clip.take_markers = take_markers or []
-    clip.timing_meta = proof
+    # 19-Nov-2026: what the phone measured during the take (its camera's own picture rate, how
+    # often the page redrew, the type it recorded in), next to what the file holds. His walks
+    # came out at 13 to 25 pictures a second and the file alone cannot say which step lost them.
+    clip.timing_meta = {**proof, "phone": phone} if phone else proof
     clip.status = "ready"
     clip.finished_at = utcnow()
     await db.flush()

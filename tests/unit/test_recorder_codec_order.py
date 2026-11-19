@@ -1,9 +1,11 @@
 """19-Nov-2026: the recorders ask the phone for H.264 first.
 
-A phone encodes H.264 in hardware. Asked for VP9 first, Chrome on the owner's Samsung encoded
-VP9 in software at 1080x1920 and kept only 12.7 to 17.6 pictures a second, so his lips trailed
-his voice in every video. Each recorder picks the first type its browser supports, so the order
-of the list is the fix: every H.264 type before any VP8 or VP9 type, VP9 last."""
+Every phone encodes H.264 in hardware. The old order took VP9 on Chrome for Android and on
+iPhone Safari (iOS 26, seen on a real iPhone 17), and its one H.264 entry was a type Chrome
+refuses, so H.264 was never chosen. Each recorder picks the first type its browser supports, so
+the order of the list is the change: every H.264 type before any VP8 or VP9 type, VP9 last.
+(Whether this alone brings the owner's walks from 13 to 25 pictures a second up to 30 is
+measured on his phone per clip; see test_recording_sessions, the phone report.)"""
 
 from __future__ import annotations
 
@@ -55,6 +57,18 @@ def test_recorder_asks_for_h264_first_and_vp9_last(name: str) -> None:
 def test_the_three_recorders_ask_in_the_same_order() -> None:
     orders = {n: mime_order((API / n).read_text(encoding="utf-8")) for n in RECORDERS}
     assert len({tuple(o) for o in orders.values()}) == 1, orders
+
+
+def test_the_studio_sends_what_the_phone_measured_with_each_clip() -> None:
+    text = (API / "recording.js").read_text(encoding="utf-8")
+    # Counted from the moment the recorder exists to the moment Stop is pressed...
+    assert re.search(r"state\.recorder = new MediaRecorder\([^\n]*\);\n\s*state\.rateStart = rateSnapshot\(\);", text)
+    assert "const phone = phoneReport(state.rateStart);" in text
+    # ...and carried by the clip's finish call, also when the send is retried later.
+    assert "const entry = { clip, session, activeSeconds, takeMarkers, phone };" in text
+    assert "take_markers: takeMarkers, phone: phone || null" in text
+    # The canvas path counts its redraws.
+    assert "state.draws = (state.draws || 0) + 1;" in text
 
 
 def test_the_check_fails_on_the_old_vp9_first_order() -> None:
