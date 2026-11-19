@@ -1085,6 +1085,36 @@ async def record_cut_review(upload_id: str, body: CutReviewBody,
         return {"saved": True, "trial": await cut_reviews.summary(db, ws, "team-angel")}
 
 
+class ReviewNoteClass(BaseModel):
+    classification: Literal["corrective", "creative", "meaning_change", "unclassified"]
+
+
+@production_router.get("/recordings/{upload_id}/cut-review-notes")
+async def get_cut_review_notes(upload_id: str, ws: uuid.UUID = Depends(require_private_workspace),
+                               actor: str | None = Depends(_reviewer),
+                               sm: Any = Depends(get_editorial_sessionmaker)):
+    if not actor:
+        raise HTTPException(403, "A signed-in reviewer is required.")
+    async with open_session(sm) as db:
+        return {"items": await cut_reviews.review_notes(db, ws, _uuid(upload_id, "recording"), actor)}
+
+
+@production_router.patch("/recordings/{upload_id}/cut-review-notes/{note_id}")
+async def classify_cut_review_note(upload_id: str, note_id: str, body: ReviewNoteClass,
+                                   ws: uuid.UUID = Depends(require_private_workspace),
+                                   actor: str | None = Depends(_reviewer),
+                                   sm: Any = Depends(get_editorial_sessionmaker)):
+    if not actor:
+        raise HTTPException(403, "A signed-in reviewer is required.")
+    async with open_session(sm) as db:
+        found = await cut_reviews.classify(db, ws, _uuid(upload_id, "recording"), actor,
+                                           _uuid(note_id, "note"), body.classification)
+        if not found:
+            raise HTTPException(404, "No matching note in your reviews for this recording.")
+        await db.commit()
+        return {"classification": body.classification, "trial": await cut_reviews.summary(db, ws, "team-angel")}
+
+
 @production_router.post("/recordings/{upload_id}/edit-requests")
 async def create_edit_request(
     upload_id: str,

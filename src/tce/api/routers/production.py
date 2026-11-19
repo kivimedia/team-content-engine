@@ -59,6 +59,7 @@ from tce.models.editorial import (
 from tce.models.jennifer import RenderCheck
 from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingClip, RecordingSession
+from tce.editorial.cut_reviews import TRIAL_RELEASE
 from tce.production import (
     agent_talks,
     autoedit,
@@ -1333,7 +1334,8 @@ async def _render_creatorz(
     }, made.backdrop), None
 
 
-async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str) -> None:
+async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str, *,
+                      qc_retry: bool = False) -> None:
     async def report(text: str) -> None:
         await _set_status(upload_id, ws, "rendering", text, attempt)
 
@@ -1342,6 +1344,13 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             row = await _load(s, upload_id, ws)
             src, plan, duration = Path(row.storage_path), dict(row.edit_plan or {}), row.duration_s
             words = list(row.transcript or [])
+            previous_ref = row.render_ref
+            first_preview = not (row.edited_path or previous_ref)
+            if qc_retry and row.edited_path and previous_ref:
+                previous = _read_render_sidecar(row.edited_path)
+                old_stamp = previous.get("generated_cut") or {}
+                first_preview = (previous.get("render_ref") == previous_ref
+                                 and old_stamp.get("release") == TRIAL_RELEASE and old_stamp.get("first") is True)
         # 19-Oct: background-noise cleaning asked for in a note; the uncut version too.
         denoise = (plan.get("overrides") or {}).get("denoise")
         # 20-Oct: a fixed line at the top over the whole video, asked for in a note.
@@ -1438,6 +1447,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         artifact = out.stat()
         sidecar: dict[str, Any] = {
             "render_ref": delivered_ref,
+            "generated_cut": {"release": TRIAL_RELEASE, "first": first_preview and mode == "cut" and not audio_only},
             "file_size": artifact.st_size,
             "file_mtime_ns": artifact.st_mtime_ns,
             "mode": mode,
@@ -3324,6 +3334,15 @@ async def _qc_asides(
     return found
 
 
+async def _qc_render_listens(edited: Path, diagnostic: Path, duration: float, ws):
+    """A voice-only stem diagnoses cuts. Only the published mix can prove caption agreement."""
+    if edited == diagnostic:
+        heard = await _qc_listen(edited, duration, ws)
+        return heard, heard
+    stem, mix = await asyncio.gather(_qc_listen(diagnostic, duration, ws), _qc_listen(edited, duration, ws))
+    return stem, mix
+
+
 async def _qc_measure(
     upload_id: uuid.UUID, ws: uuid.UUID, round_no: int, fixed: list[str] | None = None
 ) -> dict[str, dict[str, Any]] | None:
@@ -3375,19 +3394,20 @@ async def _qc_measure(
 
     # The second witness for two checks: the render transcribed again.
     heard: list[dict[str, Any]] | None = None
+    delivered_words = None
     why: str | None = "nothing was cut from this one" if uncut else "this video has no word-by-word transcript"
     if kept:
         await _qc_step(
             upload_id, ws, round_no, f"listening to it again on this server ({len(kept)} words to hear)"
         )
-        heard, why = await _qc_listen(listen_to, duration, ws)
+        (heard, why), (delivered_words, _) = await _qc_render_listens(edited, listen_to, duration, ws)
 
         # The next note-completion pass can reuse this independent listen only
         # when it checked the published MP4 itself, on the same version.
-        if heard and listen_to == edited and sidecar.get("render_ref"):
+        if delivered_words and sidecar.get("render_ref"):
             current = _read_render_sidecar(edited)
             if current.get("render_ref") == sidecar["render_ref"]:
-                _write_render_sidecar(edited, {**current, "delivered_audio_words": heard})
+                _write_render_sidecar(edited, {**current, "delivered_audio_words": delivered_words})
 
     await _qc_step(upload_id, ws, round_no, "measuring the pauses in the finished video")
     checks["gaps"] = (
@@ -3414,8 +3434,10 @@ async def _qc_measure(
         else None
     )
     checks["captions"] = qc.check_captions(sidecar.get("captions"), expected)
-    playback = qc.caption_playback(sidecar.get("captions"), heard)
+    playback = qc.caption_playback(sidecar.get("captions"), delivered_words)
     checks["captions"]["playback_state"] = playback["state"]
+    if playback.get("why"):
+        checks["captions"]["playback_why"] = playback["why"]
     if sidecar.get("render_ref"):
         await _qc_step(upload_id, ws, round_no, "reading caption frames in the delivered video")
         frames = await qc.sample_caption_frames(edited, sidecar.get("captions"), workspace_language(ws))
@@ -3465,6 +3487,17 @@ async def _qc_record(
             "render_detail": before.get("render_detail") or (row.status_detail if row.status == "edited" else None),
             "at": _utcnow().isoformat(),
         }
+        if row.edited_path and row.render_ref:
+            sidecar = _read_render_sidecar(row.edited_path)
+            stamp = sidecar.get("generated_cut")
+            if isinstance(stamp, dict) and sidecar.get("render_ref") == row.render_ref:
+                try:
+                    artifact = Path(row.edited_path).stat()
+                except OSError:
+                    artifact = None
+                if (artifact and artifact.st_size == sidecar.get("file_size")
+                        and artifact.st_mtime_ns == sidecar.get("file_mtime_ns")):
+                    result["generated_cut"] = stamp
         s.add(
             RenderCheck(
                 workspace_id=ws,
@@ -3530,7 +3563,7 @@ async def _qc_fix(upload_id: uuid.UUID, ws: uuid.UUID, fixes: dict[str, list[Any
         ws,
         "rendering",
         "Jennifer is rendering once more with her fixes: cutting and burning in your captions",
-        lambda attempt: _run_render(upload_id, ws, attempt, "cut"),
+        lambda attempt: _run_render(upload_id, ws, attempt, "cut", qc_retry=True),
     )
     async with session_factory()() as s:
         if row.status != "edited":
