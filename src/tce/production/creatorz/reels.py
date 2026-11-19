@@ -249,8 +249,12 @@ def moments_key(
 def reel_plan(
     *, src: Path, words_path: Path, keep: list[list[float]], lang: str, work: Path,
     moments: list[dict[str, Any]], punchline: int | None, bed: str | Path | None,
+    sound_delay_ms: int = 0,
 ) -> dict[str, Any]:
+    # 19-Nov: only a recording whose lips trail its sound carries the key (media.sound_delay_for).
+    late = {"sound_delay_ms": int(sound_delay_ms)} if sound_delay_ms and sound_delay_ms > 0 else {}
     return {
+        **late,
         "schema": engine_plan.SCHEMA,
         "source": str(src),
         "words": str(words_path),
@@ -734,7 +738,7 @@ async def _run_engine(
 async def render_reel(
     *, src: Path, words: list[dict[str, Any]], keep: list[list[float]], lang: str, work: Path,
     moments: list[dict[str, Any]], punchline: int | None, bed: str | None, on_status: Status,
-    backdrop: dict[str, Any] | None = None,
+    backdrop: dict[str, Any] | None = None, sound_delay_ms: int = 0,
 ) -> ReelResult:
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -743,7 +747,10 @@ async def render_reel(
     words_path.write_text(json.dumps(words, ensure_ascii=False), encoding="utf-8")
     plan_path.write_text(
         json.dumps(
-            reel_plan(src=src, words_path=words_path, keep=keep, lang=lang, work=work, moments=moments, punchline=punchline, bed=bed),
+            reel_plan(
+                src=src, words_path=words_path, keep=keep, lang=lang, work=work, moments=moments,
+                punchline=punchline, bed=bed, sound_delay_ms=sound_delay_ms,
+            ),
             ensure_ascii=False,
         ),
         encoding="utf-8",

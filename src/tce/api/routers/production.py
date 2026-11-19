@@ -1210,6 +1210,7 @@ class _Styled:
 async def _render_creatorz(
     upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, src: Path, plan: dict[str, Any], keep: list[list[float]],
     size: tuple[int, int], out: Path, lang: str, transcript: list[dict[str, Any]], report,
+    late_ms: int = 0,
 ) -> tuple[_Styled | None, str | None]:
     """The finished Creatorz file at `out` and what the render needs to say about it, or
     (None, why) so the same render makes the Pill version instead."""
@@ -1264,6 +1265,8 @@ async def _render_creatorz(
             punchline=chosen["punchline"], bed=creatorz_reels.bed_for(upload_id), on_status=report,
             # 18-Nov: new backgrounds on every other scene, only when he switched it on for this video.
             backdrop=backdrop_config.for_render(ws, upload_id, src, plan),
+            # 19-Nov: the sound a moment later when this recording's lips trail it.
+            **({"sound_delay_ms": late_ms} if late_ms else {}),
         )
         os.replace(made.voice, creatorz_voice_path(out))
         os.replace(made.out, out)
@@ -1300,6 +1303,9 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         cues = build_cues(plan)
         audio_only = src.suffix.lower() in media.AUDIO_EXTS
         size = media.AUDIO_ONLY_CANVAS if audio_only else await media.probe_video_size(src)
+        # 19-Nov: a recording with few pictures a second shows lips that trail the sound. The
+        # sound is then played a moment later, in both styles; 0 for a recording that keeps up.
+        late_ms = 0 if audio_only else media.sound_delay_for(await media.picture_gap_ms(src))
         if size is None:
             raise RuntimeError("could not read the video frame size with ffprobe")
         srt_text = to_srt(cues)
@@ -1326,6 +1332,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             styled, style_failure = await _render_creatorz(
                 upload_id, ws, attempt, src, plan, keep, size, out, lang,
                 [w for w in words if w.get("start_s") is not None and w.get("end_s") is not None], report,
+                late_ms=late_ms,
             )
         if styled is not None:
             # From here on this render's clock is the one it was cut on, for every reader.
@@ -1364,6 +1371,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
                     caption_band=band,
                     make_preview=not audio_only,
                     report=made,
+                    **({"sound_delay_ms": late_ms} if late_ms else {}),
                     denoise=denoise,
                     top_caption=top,
                 )
@@ -1391,6 +1399,8 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             sidecar["captions"] = qc.caption_data(
                 on_edit, None, [{"start": a, "end": b, "lines": [text]} for a, b, text in styled.captions]
             )
+        if late_ms:
+            sidecar["sound_delay_ms"] = late_ms
         _write_render_sidecar(out, sidecar)
         async with session_factory()() as s:
             row = await _load(s, upload_id, ws)

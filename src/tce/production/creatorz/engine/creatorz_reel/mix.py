@@ -8,6 +8,16 @@ import subprocess
 SFX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'sfx')
 
 
+def final_cmd(overlay, mix_wav, out, late_ms=0):
+    """The last step: the finished picture and the finished sound into one file. `late_ms` (19-Nov): a recording with
+    few pictures a second shows lips that trail the sound, so the plan may ask for the whole sound to play a moment
+    later (TCE sets it from the recording itself). -shortest keeps the file exactly as long as its picture."""
+    late = int(late_ms or 0)
+    delay = ['-af', f'adelay={late}:all=1'] if late > 0 else []
+    return ['ffmpeg', '-v', 'error', '-y', '-i', overlay, '-i', mix_wav, '-map', '0:v', '-map', '1:a', '-c:v', 'copy', *delay,
+            '-c:a', 'aac', '-b:a', '256k', '-movflags', '+faststart', '-shortest', out]
+
+
 def run(plan):
     work = plan['work']
     ev = json.load(open(os.path.join(work, 'events.json'), encoding='utf8'))
@@ -62,8 +72,6 @@ def run(plan):
        ['-c:a', 'pcm_s16le', os.path.join(work, 'mix.wav')])
     out = plan['out']
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', os.path.join(work, 'overlay.mp4'), '-i', os.path.join(work, 'mix.wav'),
-                    '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '256k', '-movflags', '+faststart',
-                    '-shortest', out], check=True)
+    subprocess.run(final_cmd(os.path.join(work, 'overlay.mp4'), os.path.join(work, 'mix.wav'), out, plan.get('sound_delay_ms')), check=True)
     print(f"mix: {len(ev['sfx'])} cues, bed {'on' if bed else 'off'} -> {out}")
     return out

@@ -299,6 +299,56 @@ async def probe_video_size(path: str | Path) -> tuple[int, int] | None:
         return None
 
 
+# 19-Nov: lips that trail the sound. A phone that cannot keep up records 12 to 17 pictures a
+# second instead of 30. Each picture then stays on screen for about 86 ms, so the mouth you see
+# is on average half of that behind the sound you hear, and more than 60 ms behind a fifth of
+# the time (measured on the owner's top video, 12.7 pictures a second). Sound that comes BEFORE
+# the lips is noticed from about 45 ms; sound that comes after is not noticed until about
+# 125 ms. So the sound is played later by a bit more than half the usual gap between pictures.
+# A recording at 25 pictures a second or more is left exactly as it was.
+SOUND_DELAY_SHARE = 0.7
+SOUND_DELAY_FROM_GAP_MS = 40.0
+SOUND_DELAY_MAX_MS = 80
+
+
+def sound_delay_for(gap_ms: float | None) -> int:
+    """How many ms later the sound of a render should play, from the usual time between two
+    pictures of its recording. 0 for a recording that keeps up."""
+    if not gap_ms or gap_ms <= SOUND_DELAY_FROM_GAP_MS:
+        return 0
+    return int(min(SOUND_DELAY_MAX_MS, round(SOUND_DELAY_SHARE * gap_ms)))
+
+
+async def picture_gap_ms(path: str | Path) -> float | None:
+    """The usual (median) time between two pictures of a recording, in ms. None when it
+    cannot be read: the render then goes out as it always did."""
+    probe = ffprobe_path()
+    if not probe:
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            probe, "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time",
+            "-of", "csv=p=0", str(path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await proc.communicate()
+    except OSError:
+        return None
+    times: list[float] = []
+    for line in out.decode(errors="replace").splitlines():
+        try:
+            times.append(float(line.strip().rstrip(",")))
+        except ValueError:
+            continue
+    if len(times) < 30:
+        return None
+    times.sort()
+    gaps = sorted(b - a for a, b in zip(times, times[1:], strict=False) if b > a)
+    if not gaps:
+        return None
+    return gaps[len(gaps) // 2] * 1000.0
+
+
 FPS = 30  # every edit is cut and encoded on this frame grid
 SAMPLE_RATE = 48000
 FADE_S = 0.006  # a click-proof edge on every cut
@@ -398,8 +448,12 @@ async def render_edit(
     report: dict[str, Any] | None = None,
     denoise: str | None = None,
     top_caption: dict[str, Any] | None = None,
+    sound_delay_ms: int = 0,
 ) -> Path:
     """Cut the kept ranges into `out_path` (MP4 when captions are given).
+
+    `sound_delay_ms` (19-Nov): the whole sound is played this much later, for a recording
+    whose lips trail its sound (sound_delay_for). The picture and the length do not change.
 
     `top_caption` (20-Oct): {"png", "y"}, one fixed image laid over the whole video
     (wordbox.render_top_caption); a single frame, which overlay repeats to the end.
@@ -514,6 +568,11 @@ async def render_edit(
                     if measured is not None
                     else {"applied": False, "why": why}
                 )
+        if sound_delay_ms > 0 and not audio_only:
+            parts.append(f"{audio_out}adelay={int(sound_delay_ms)}:all=1,atrim=end={total:.4f}[outd]")
+            audio_out = "[outd]"
+            if report is not None:
+                report["sound_delay_ms"] = int(sound_delay_ms)
         maps: list[str] = []
         if video is not None and ass_text is not None and not caption_band:
             burn.write_text(ass_text, encoding="utf-8")
