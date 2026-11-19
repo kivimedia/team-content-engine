@@ -195,6 +195,9 @@ def test_segment_timings_in_a_talk_keep_every_line():
 
 @pytest.fixture
 def wired(monkeypatch, editorial_sessionmaker):
+    from .render_delivery_fixture import simulate_delivery
+
+    capture = simulate_delivery(monkeypatch)
     monkeypatch.setattr(prod, "session_factory", lambda: editorial_sessionmaker)
     monkeypatch.setattr(prod.settings, "production_auto_edit", True)
     asked: list[tuple[str, str, str]] = []
@@ -211,6 +214,7 @@ def wired(monkeypatch, editorial_sessionmaker):
         async with editorial_sessionmaker() as s:
             row = await prod._load(s, upload_id, ws)
             row.status, row.edited_path = "edited", "/tmp/edited.mp4"
+            capture(row)
             await s.commit()
 
     monkeypatch.setattr(prod, "_ask", fake_ask)
@@ -310,6 +314,8 @@ async def test_his_typed_request_on_a_talk_reads_who_says_what_and_can_cut_the_a
         row = await prod._load(s, uid, ws)
         req = await s.get(EditingRequest, req.id)
     assert req.state == "done", req.result
+    assert req.result["delivery"]["render_ref"] == row.render_ref
+    assert "cut" in req.result["delivery"]["checks"]
     # His own request wins over the protection: the agent's line he asked about is gone.
     assert "wants to continue" not in row.edit_plan["kept_text"]
     assert "Sure. Two are waiting for you." in row.edit_plan["kept_text"]

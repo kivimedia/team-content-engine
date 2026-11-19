@@ -280,13 +280,16 @@ async def test_an_unclear_request_comes_back_as_one_question(wired):
     assert req.state == "needs_you" and "music" in req.result["question"]
 
 
-async def test_a_report_without_a_verified_change_is_open_and_the_next_note_sees_the_reply(wired):
-    # 30-Sep: "the phone cut the s off course; no cut can bring it back" is the answer,
-    # not a question back to him; and his next note on the video is read with it.
+@pytest.mark.parametrize(("message", "expected_state"), [
+    ("it sounds like cou", "needs_you"),
+    ("Why does it sound like cou?", "done"),
+])
+async def test_a_report_or_question_without_a_change_keeps_the_reply_for_the_next_note(wired, message, expected_state):
+    # A symptom needs a verified fix. An explicit question can close with an informative reply.
     ws, uid = await seed(wired["sm"], planned=True)
     async with wired["sm"]() as s:
         first = EditingRequest(workspace_id=ws, upload_id=uid, scope="whole",
-                               request="it sounds like cou", state="open")
+                               request=message, state="open")
         s.add(first)
         await s.commit()
     wired["answers"][autoedit.EDIT_REQUEST_JOB] = {
@@ -296,7 +299,7 @@ async def test_a_report_without_a_verified_change_is_open_and_the_next_note_sees
     await prod.run_edit_request(first.id, ws)
     async with wired["sm"]() as s:
         first = await s.get(EditingRequest, first.id)
-        assert first.state == "needs_you" and first.result["changed"] is False
+        assert first.state == expected_state and first.result["changed"] is False
         second = EditingRequest(workspace_id=ws, upload_id=uid, scope="whole",
                                 request="can you patch it", state="open")
         s.add(second)
@@ -304,7 +307,7 @@ async def test_a_report_without_a_verified_change_is_open_and_the_next_note_sees
     await prod.run_edit_request(second.id, ws)
     kind, prompt = wired["asked"][-1]
     assert kind == autoedit.EDIT_REQUEST_JOB
-    assert "He wrote: it sounds like cou | You answered: Your phone cut the 's'" in prompt
+    assert f"He wrote: {message} | You answered: Your phone cut the 's'" in prompt
     assert prompt.index("Earlier notes") < prompt.index("His request now:\ncan you patch it")
 
 
