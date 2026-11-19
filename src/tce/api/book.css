@@ -275,3 +275,13 @@ body.has-player,body.has-player.device-voice { padding-bottom:var(--player-space
 .call-bar-btn.end, .btn.end-call { background: var(--signal); border-color: var(--signal); color: #fff; }
 .editor-head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 .chat-icon.on-call, .ctl.talk.on-call { box-shadow: 0 0 0 3px #1f8a4c; }
+
+/* 18-Nov-2026 (T-22864): catch-up, the editor's list, past and new replies. */
+.agent-catchup { margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; background: #fff; border: 1px solid #d8dde6; font-size: 1rem; line-height: 1.4; }
+.agent-catchup p { margin: 0; }
+.agent-catchup p + p { margin-top: 4px; }
+.agent-list { margin: 0 0 16px; }
+.agent-list h3 { margin: 12px 0 6px; font-size: 1rem; }
+.agent-card { display: block; padding: 10px 12px; margin: 0 0 6px; border-radius: 10px; background: #fff; border: 1px solid #d8dde6; color: #1d4ed8; text-decoration: none; font-size: 1rem; min-height: 44px; box-sizing: border-box; }
+.chat-line.past { opacity: .85; }
+.chat-line.fresh strong { color: #1d4ed8; }

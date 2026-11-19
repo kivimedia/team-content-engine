@@ -74,6 +74,7 @@
           <button id="editorClose" class="btn quiet" type="button">Close</button>
         </div>
       </div>
+      <div id="editorCatchup" class="agent-catchup" hidden></div>
       <p id="editorState" class="editor-state" role="status" aria-live="polite">Type a question, or tap the mic and talk.</p>
       <a id="editorSignin" class="editor-signin" href="/voice" hidden>Sign in to KM BOT</a>
       <div id="editorLog" class="editor-log" hidden></div>
@@ -92,6 +93,9 @@
          episodes come first, in his layout's order; the Part one he wrote himself is
          folded underneath. -->
     <section id="listView" aria-label="Chapters">
+      <!-- 18-Nov-2026 (T-22864): the book editor as an agent, like KM BOT. -->
+      <div id="agentCatchup" class="agent-catchup" hidden></div>
+      <nav id="agentList" class="agent-list" aria-label="The editor's list" hidden></nav>
       <section id="reviewFocus" class="review-focus" aria-labelledby="reviewTitle" hidden>
         <p id="reviewContext" class="part"></p>
         <h1 id="reviewTitle"></h1>
