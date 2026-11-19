@@ -1130,10 +1130,19 @@ function rebindIdeas(ideas, next) {
      the TALLEST frame on offer - 4:3 keeps far more of him than 16:9 - and the
      crop takes its full height. Each attempt that comes back landscape is stopped
      before the next, so the camera light never stacks up. */
+  /* 19-Nov-2026: the 4:3 mode at 1920x1440, before the sensor's largest. Chrome on Android
+     reads the size the sensor's way round, so it comes back as a PORTRAIT 1440x1920 (real
+     front camera of a Galaxy S25 Ultra; asked as 1440x1920 it comes back landscape). Cropped
+     to 9:16 that is exactly 1080x1920: the same framing and the same file as the 3000x4000
+     mode, from a quarter of the pixels, and a mode the camera runs at up to 60 a second where
+     3000x4000 is held to 30 and every frame is redrawn at 12 megapixels. His walks from that
+     mode came out at 13 to 25 pictures a second. Taken only when it is that tall. */
+  const FULL_HD_4_3 = { width: { ideal: 1920 }, height: { ideal: 1440 }, aspectRatio: { ideal: 4 / 3 } };
   const CAMERA_ATTEMPTS = [
     { width: { exact: 1080 }, height: { exact: 1920 } },
     { width: { exact: 720 }, height: { exact: 1280 } },
     { aspectRatio: { exact: 9 / 16 } },
+    FULL_HD_4_3,
     // No portrait mode: take the most vertical field of view there is, to crop.
     // The sensor's largest 4:3 mode first (his reports 3056x2296): cropped to
     // 9:16 at its full height that is more than 1080x1920, so the file comes out
@@ -1195,6 +1204,11 @@ function rebindIdeas(ideas, next) {
       }
       tried.push({ attempt, got: `${opened.width}x${opened.height}` });
       const portrait = opened.width && opened.height && opened.height >= opened.width;
+      if (portrait && attempt === FULL_HD_4_3 && opened.height < 1920) {
+        // A smaller portrait 4:3 would crop to less than full HD: the next attempts do better.
+        stop(opened);
+        continue;
+      }
       if (portrait) {
         state.cameraReport = { chose: `${opened.width}x${opened.height}`, portrait: true, tried };
         return describe(opened);

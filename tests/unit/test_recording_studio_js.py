@@ -362,6 +362,24 @@ def test_the_phone_camera_mode_is_gone_and_the_browser_asks_for_full_resolution(
     assert "{ width: { ideal: 4096 }, height: { ideal: 3072 }, aspectRatio: { ideal: 4 / 3 } }" in js
     assert "canvas.height = Math.round(Math.min(1920, cropHeight) / 2) * 2;" in js
 
+def test_the_camera_asks_for_the_full_hd_4_3_mode_before_the_12_megapixel_one():
+    """19-Nov-2026: the sensor's largest mode (3000x4000) is redrawn at 12 megapixels a frame and
+    his walks from it came out at 13 to 25 pictures a second. Asked as 1920x1440, Chrome on
+    Android gives a portrait 1440x1920 that crops to exactly 1080x1920, same framing."""
+    js = JS.read_text(encoding="utf-8")
+    ladder = js.split("const CAMERA_ATTEMPTS = [", 1)[1].split("];", 1)[0]
+    entries = [line.strip().rstrip(",") for line in ladder.splitlines() if line.strip() and not line.strip().startswith("//")]
+    assert (
+        "const FULL_HD_4_3 = { width: { ideal: 1920 }, height: { ideal: 1440 }, aspectRatio: { ideal: 4 / 3 } };" in js
+    )
+    big = "{ width: { ideal: 4096 }, height: { ideal: 3072 }, aspectRatio: { ideal: 4 / 3 } }"
+    assert entries.index("FULL_HD_4_3") < entries.index(big)
+    # Taken only when tall enough to crop full HD from; a smaller portrait answer moves on.
+    loop = js[js.index("async function openCamera(") :][:2500]
+    assert "attempt === FULL_HD_4_3 && opened.height < 1920" in loop
+    assert loop.index("attempt === FULL_HD_4_3 && opened.height < 1920") < loop.index("if (portrait) {")
+
+
 def test_the_opening_and_a_first_point_that_repeat_it_are_one_line():
     """Choosing the recommended opening usually gives back the first bullet almost
     word for word ("...back on the phone." / "...back on the phone after the
