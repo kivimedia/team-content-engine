@@ -129,8 +129,13 @@ def build(detail: dict[str, Any], evidence: list[dict[str, Any]] | None = None) 
     takeaway_proposed = False
     points = [str(p).strip() for p in (script.get("points") or []) if str(p).strip()]
     if not takeaway:
-        if points:
-            takeaway = _first_sentence(points[-1])
+        # The closing point, unless it is the question to the viewer ("Your turn:
+        # which questions...?"), which is a call to action, not a takeaway.
+        statements = [
+            p for p in points if not p.rstrip().endswith("?") and not p.lower().startswith("your turn")
+        ]
+        if statements:
+            takeaway = _first_sentence(statements[-1])
         else:
             lesson = next((e.get("lesson") for e in evidence if e.get("lesson")), "")
             takeaway = _first_sentence(lesson) if lesson else ""

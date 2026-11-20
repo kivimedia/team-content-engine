@@ -153,3 +153,18 @@ def test_the_news_template_is_not_a_reason_and_a_dated_story_is():
     assert pack["ready"] is True
     assert pack["missing"] == ["the points the video would make", "your angle"]
     assert json.dumps(pack)  # it travels as JSON to the call
+
+
+def test_a_closing_question_to_the_viewer_is_not_offered_as_the_takeaway():
+    # dec839bc on 18 Nov: the script ends on "Your turn: which questions...?"
+    detail = {
+        "brief": {"values": {}},
+        "script": {"points": [
+            "Clients stop asking what they were trained not to ask.",
+            "Silence is information, so ask again.",
+            "Your turn: which questions have you trained clients not to ask?",
+        ]},
+    }
+    pack = decision_pack.build(detail, [])
+    assert pack["takeaway"] == "Silence is information, so ask again."
+    assert pack["takeaway_proposed"] is True
