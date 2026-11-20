@@ -535,7 +535,30 @@ export function register(server, call, { reply, failure, shortId }) {
       lines.push(state);
       const b = t.brief.values || {};
       if (b.big_idea) lines.push(`Big idea: ${b.big_idea}`);
-      if (b.takeaway) lines.push(`Takeaway: ${b.takeaway}`);
+      // 18 Nov call: 6 of 11 ideas could not be decided on the big idea alone.
+      // The decision pack says why now, what the source said, his angle, a
+      // takeaway and the points, and names what is still missing.
+      const p = t.decision_pack;
+      if (p) {
+        if (p.why_now) lines.push(`Why now: ${p.why_now}`);
+        if (p.evidence?.length) {
+          lines.push('What the source said:');
+          p.evidence.forEach((e) => lines.push(`  - ${e}`));
+        }
+        if (p.angle) lines.push(`Your angle: ${p.angle}`);
+        if (p.takeaway) lines.push(`${p.takeaway_proposed ? 'Proposed takeaway (not written yet, offer it)' : 'Takeaway'}: ${p.takeaway}`);
+        if (p.points?.length) {
+          lines.push('The video would make these points:');
+          p.points.forEach((x, n) => lines.push(`  ${n + 1}. ${x}`));
+        }
+        if (p.missing?.length) lines.push(`Still missing: ${p.missing.join(', ')}.`);
+        if (!p.ready) lines.push('Not ready to decide yet: say what is missing before asking him to decide.');
+        else if (!t.decision && !t.in_this_week && !isAway(t)) {
+          lines.push('Ready to decide: read him why now, what the source said and the takeaway before asking.');
+        }
+      } else if (b.takeaway) {
+        lines.push(`Takeaway: ${b.takeaway}`);
+      }
       const s = t.script;
       if (!s) {
         lines.push('No script yet. tce_write_script starts one.');

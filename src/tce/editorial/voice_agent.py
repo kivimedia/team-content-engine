@@ -595,7 +595,7 @@ async def topic_detail(
     packet = await current_packet(db, ws, candidate.id)
     research = await latest_research(db, ws, candidate.id)
     in_week = str(candidate.id) in await _week_ids(db, ws)
-    return {
+    detail = {
         **candidate_brief_json(candidate),
         "decision": decision.decision if decision else None,
         "in_this_week": in_week,
@@ -608,6 +608,17 @@ async def topic_detail(
         "script": script_json(packet),
         "research": research_to_json(research) if research else None,
     }
+    # 18 Nov call: 6 of 11 ideas could not be decided on the big idea alone. The
+    # pack puts why now, what the source said, a takeaway and the points in front
+    # of him, from what is stored; no model call, and no web search on a read.
+    from tce.editorial import decision_pack
+
+    if research is not None and research.state == "done" and research.evidence:
+        evidence = list(research.evidence or [])
+    else:
+        evidence = await gather_evidence(db, ws, candidate)
+    detail["decision_pack"] = decision_pack.build(detail, evidence)
+    return detail
 
 
 # ---------------------------------------------------------------------------
