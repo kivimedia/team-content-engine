@@ -59,6 +59,7 @@ from tce.models.editorial import RecordingUpload, TopicCandidate
 from tce.production.retakes import frame_keep
 from tce.settings import settings
 from tests.editorial_db import create_tables
+from tests.unit.render_delivery_fixture import simulate_delivery
 from tests.unit.test_talk_voice_phone import FAKE_VOICE, VOICE_STATE, WAKE_STUB
 
 API_DIR = Path(__file__).resolve().parents[2] / "src" / "tce" / "api"
@@ -163,6 +164,8 @@ def host(monkeypatch, tmp_path, clip):
             raise answer
         return LLMResult(job_id=uuid.uuid4(), text="", structured=answer, model="claude-opus-5-5")
 
+    capture_delivery = simulate_delivery(monkeypatch)
+
     async def fake_render(upload_id, ws, attempt, mode):
         renders.append(upload_id)
         await asyncio.sleep(RENDER_S)
@@ -170,8 +173,7 @@ def host(monkeypatch, tmp_path, clip):
             row = await prod._load(s, upload_id, ws)
             row.status = "edited"
             row.edited_path = str(clip)
-            row.rendered_keep = frame_keep(row.edit_plan["keep"])
-            row.render_ref = NEW_REF
+            capture_delivery(row, render_ref=NEW_REF)
             row.status_detail = f"Captioned MP4 ready: {len(row.edit_plan['keep'])} ranges"
             row.job_ids = prod._with_lease(row.job_ids, None)
             await s.commit()
@@ -546,7 +548,8 @@ def test_the_notes_sheet_from_the_card_to_one_new_version(host, tmp_path):
                                   "why": "his note"}],
                  "cut": [], "restore": [], "hold": []},
                 {"note": 2, "reply": "The pause after service stays as it is.", "needs_you": False,
-                 "question": "", "corrections": [], "cut": [], "restore": [], "hold": []},
+                 "question": "", "corrections": [], "cut": [], "restore": [],
+                 "hold": [{"index": 11, "side": "end", "extra_ms": 100, "why": "keep the pause after service"}]},
             ],
         })
         with page.expect_response(
@@ -621,6 +624,11 @@ def test_the_notes_sheet_from_the_card_to_one_new_version(host, tmp_path):
             "Removed the 'Not'.", "The pause after service stays as it is.",
         ]
         assert [n["said"] for n in made_json["notes"]] == [SAID, TYPED]
+        receipts = [n["delivery"] for n in made_json["notes"]]
+        assert [r["state"] for r in receipts] == ["verified", "verified"]
+        assert [r["render_ref"] for r in receipts] == [NEW_REF, NEW_REF]
+        assert "caption_pixels_and_audio" in receipts[0]["checks"]
+        assert "hold" in receipts[1]["checks"]
 
         # ---- more notes on the new version: a fresh sitting on it, and a fresh call
         with page.expect_response(_opened) as fresh:

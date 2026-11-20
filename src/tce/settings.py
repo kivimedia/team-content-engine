@@ -11,7 +11,7 @@ _TMPDIR = Path(tempfile.gettempdir())
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="TCE_", env_file=".env")
+    model_config = SettingsConfigDict(env_prefix="TCE_", env_file=".env", hide_input_in_errors=True)
 
     # Database
     database_url: str = "postgresql+asyncpg://tce:tce@localhost:5432/tce"

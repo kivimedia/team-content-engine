@@ -20,6 +20,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-TCE-Editor-Key "<TCE_PRIVATE_ACCESS_KEY>";
+        proxy_set_header X-TCE-Reviewer $remote_user;
         proxy_set_header Authorization "";
         proxy_read_timeout 300s;
         proxy_request_buffering off;

@@ -1407,6 +1407,7 @@ def _notes_made_json(sitting: EditSession, notes: list[EditingRequest]) -> dict[
                 "reply": str(res.get("reply") or "") or None,
                 "question": str(res.get("question") or "") or None,
                 "undone": bool(res.get("undone_at")),
+                "delivery": res.get("delivery"),
                 # 3-Oct: what Jennifer took from this note for the next videos.
                 "learned": learned_json(res.get("learned")),
             }

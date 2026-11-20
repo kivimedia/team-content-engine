@@ -24,9 +24,17 @@ import re
 from pathlib import Path
 from typing import Any
 
-from tce.production.retakes import map_to_edit
+from tce.production.retakes import (
+    CAPTION_GAP_S,
+    SHORT_CAPTION_GAP_S,
+    caption_gap_s,
+    is_word_level,
+    map_to_edit,
+    words_on_edit,
+)
 
 EDIT_REQUEST_JOB = "video_edit_request"
+EDIT_REQUEST_PROMPT_VERSION = "edit-request-v2"
 AGENT_NAME = "video_editor"
 PROMPT_VERSION = "autoedit-v1"
 MAX_CORRECTIONS = 12
@@ -815,6 +823,16 @@ EDIT_REQUEST_SYSTEM = (
     "a breath stays on both sides and no word is lost. Use it when he asks to cut a pause, "
     "dead air, or a part where nobody talks. Every pause of a second or more that is still "
     "in the edit is written /quiet Ns/ right after the word it follows; one trim per pause.\n"
+    "- caption_anchor: start a new caption and its first highlight on a specific kept occurrence. "
+    "Give its transcript index and exact word; offset_ms is the requested audible point relative to "
+    "the word start, or zero to start when the word starts. Range -600 to +600 ms. It only changes "
+    "this cue. If a phrase repeats, choose the occurrence that survives the cut. Never alter the "
+    "sound, add a word, or use a global caption change to answer this request.\n"
+    "- caption_gap: when the next phrase should start a new caption after a small pause, "
+    "choose short_pauses. This changes caption timing for this video and keeps the pause and "
+    "the audio. Choose normal to restore the usual grouping, unchanged otherwise. Only use "
+    "trim for an instruction to cut the audio. Keep captions faithful to the surviving "
+    "take: never add words for a deleted prefix or put a repeated line on its discarded take.\n"
     "- denoise: clean wind and background noise out of the whole video's sound: light, "
     "medium or strong ('off' takes it out again, 'unchanged' leaves it as it is now). "
     "Start with medium; strong thins his voice. It cannot take out a sound louder than his "
@@ -887,9 +905,17 @@ EDIT_REQUEST_SCHEMA = {
         "trim": {"type": "array", "items": _TRIM},
         "denoise": {"type": "string", "enum": ["unchanged", *DENOISE_CHOICES]},
         "top_caption": _TOP_CAPTION,
+        "caption_gap": {"type": "string", "enum": ["unchanged", "short_pauses", "normal"]},
+        "caption_anchor": {
+            "type": "array", "items": {
+                "type": "object", "properties": {
+                    "index": {"type": "integer"}, "word": {"type": "string"}, "offset_ms": {"type": "integer"},
+                }, "required": ["index", "word", "offset_ms"],
+            },
+        },
     },
     "required": [
-        "reply", "needs_you", "corrections", "cut", "restore", "hold", "trim", "denoise", "top_caption",
+        "reply", "needs_you", "corrections", "cut", "restore", "hold", "trim", "denoise", "top_caption", "caption_gap", "caption_anchor",
     ],
 }
 
@@ -909,6 +935,52 @@ def top_caption_change(now: Any, asked: Any) -> str | None:
         return None
     text = " ".join(str(asked.get("text") or "").split())[:TOP_CAPTION_MAX]
     return text if text and text != have else None
+
+
+CAPTION_WORD_TIMES_NEEDED = "This recording has only segment timestamps. Word timestamps are needed to split captions at short pauses."
+
+
+def caption_anchor_changes(
+    words: list[dict[str, Any]], requested: list[dict[str, Any]] | None,
+    keep: list[list[float]] | None, kept: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """A source midpoint identifies the same occurrence when an earlier take is cut."""
+    if not requested:
+        return [], []
+    if not keep or not is_word_level(words):
+        return [], [CAPTION_WORD_TIMES_NEEDED]
+    aligned = {w["index"]: w for w in kept or [] if "index" in w}
+    timed = [aligned.get(i) or {"start": w["start_s"], "end": w["end_s"], "text": w["text"]}
+             for i, w in enumerate(words)]
+    candidates = []
+    invalid = []
+    for spec in requested:
+        if isinstance(spec, dict):
+            i, offset = spec.get("index"), spec.get("offset_ms")
+            if (type(i) is int and 0 <= i < len(timed) and (not aligned or i in aligned)
+                    and type(offset) is int and abs(offset) <= 600
+                    and str(spec.get("word") or "").strip().casefold() == str(words[i]["text"]).casefold()):
+                w = timed[i]
+                candidates.append({"text": str(w["text"]), "word_s": round((w["start"] + w["end"]) / 2, 3),
+                                   "at_s": round(w["start"] + offset / 1000, 3)})
+                continue
+        invalid.append("the caption anchor does not identify a kept word and a valid offset")
+    landed = {
+        (a["word_s"], a["at_s"]) for w in words_on_edit(timed, keep, candidates)
+        if (a := w.get("caption_anchor"))
+    }
+    valid = [a for a in candidates if (a["word_s"], a["at_s"]) in landed]
+    if len(valid) != len(candidates):
+        invalid.append("the requested cue would land outside its retained word or leading silence")
+    return valid, invalid
+
+
+def caption_gap_change(now: Any, choice: Any) -> float | None:
+    """The new audible gap at which to split caption pages, without changing the soundtrack."""
+    if choice not in ("short_pauses", "normal"):
+        return None
+    gap = SHORT_CAPTION_GAP_S if choice == "short_pauses" else CAPTION_GAP_S
+    return gap if gap != caption_gap_s({"caption_gap_s": now}) else None
 
 
 def top_caption_line(text: Any) -> str:
@@ -1000,7 +1072,7 @@ def _earlier_block(history: list[dict[str, Any]] | None) -> str:
 # transcript, so word numbers cannot drift from one note to the next.
 
 EDIT_BATCH_JOB = "video_edit_batch"
-EDIT_BATCH_PROMPT_VERSION = "edit-batch-v2"
+EDIT_BATCH_PROMPT_VERSION = "edit-batch-v3"
 
 EDIT_BATCH_RULES = (
     "THIS TIME HE GAVE SEVERAL NOTES IN ONE SITTING. He watched the edit and paused on it "
@@ -1297,10 +1369,20 @@ def apply_batch(
         trim, bad_trim = word_trims(words, item.get("trim") or [], keep, kept)
         denoise = noise_change((merged or {}).get("denoise"), item.get("denoise"))
         top = top_caption_change((merged or {}).get("top_caption"), item.get("top_caption"))
+        gap = caption_gap_change((merged or {}).get("caption_gap_s"), item.get("caption_gap"))
+        anchors, bad_anchors = caption_anchor_changes(words, item.get("caption_anchor"), keep, kept)
+        skipped.extend(bad_anchors)
+        if gap is not None and not is_word_level(words):
+            skipped.append(CAPTION_WORD_TIMES_NEEDED)
+            gap = None
         skipped += bad_cut + bad_restore + bad_trim
         if len(hold) < len(proposed_holds):
             skipped.append("a hold that pointed outside the transcript or asked for no time")
+        from tce.production import delivery
+
         entry: dict[str, Any] = {
+            "correction_targets": delivery.correction_targets(words, valid),
+            "restore_words": delivery.restored_words(words, restore),
             "note": n,
             "reply": reply,
             "corrections": [{"heard": c["heard"], "replacement": c["replacement"]} for c in valid],
@@ -1310,16 +1392,18 @@ def apply_batch(
             "trim": trim,
             "denoise": denoise,
             "top_caption": top,
+            "caption_gap_s": gap,
+            "caption_anchors": anchors,
             "skipped": skipped,
         }
         proposed = any(item.get(k) for k in ("corrections", "cut", "restore", "hold", "trim"))
-        if valid or cut or restore or hold or trim or denoise or top is not None:
+        if valid or cut or restore or hold or trim or denoise or top is not None or gap is not None or anchors:
             fixes.extend(valid)
-            if cut or restore or hold or trim or denoise or top is not None:
-                merged = merge_overrides(merged, cut, restore, hold, trim, denoise, top)
+            if cut or restore or hold or trim or denoise or top is not None or gap is not None or anchors:
+                merged = merge_overrides(merged, cut, restore, hold, trim, denoise, top, gap, anchors)
             changed = True
             entry["outcome"] = "change"
-        elif proposed and skipped:
+        elif skipped and (proposed or item.get("caption_anchor") or item.get("caption_gap") in ("short_pauses", "normal")):
             entry["outcome"] = "refused"
             entry["question"] = (
                 "I could not make this change: " + "; ".join(skipped) + ". Say it again if it still matters."
@@ -1406,6 +1490,8 @@ def merge_overrides(
     trim: list[list[float]] | None = None,
     denoise: str | None = None,
     top_caption: str | None = None,
+    caption_gap: float | None = None,
+    caption_anchors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The newest instruction wins: restoring what an earlier request cut lifts that cut,
     and a new hold on the same word edge replaces the old one.
@@ -1437,6 +1523,12 @@ def merge_overrides(
     top = old.get("top_caption") if top_caption is None else top_caption
     if top:
         out["top_caption"] = str(top)
+    anchors = {a["word_s"]: a for a in [*(old.get("caption_anchors") or []), *(caption_anchors or [])]}
+    if anchors:
+        out["caption_anchors"] = [anchors[t] for t in sorted(anchors)]
+    gap = old.get("caption_gap_s") if caption_gap is None else caption_gap
+    if gap == SHORT_CAPTION_GAP_S:
+        out["caption_gap_s"] = gap
     # 10-Nov: his Pill or Creatorz choice is not something a note changes.
     if old.get("style"):
         out["style"] = old["style"]

@@ -17,15 +17,16 @@ handlers translate rather than re-diagnose.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from tce.api.private_access import require_private_workspace
 from tce.api.routers.editorial import get_editorial_sessionmaker
+from tce.editorial import cut_reviews
 from tce.editorial import briefs as brief_service
 from tce.editorial import changes as change_service
 from tce.editorial import conversation, notify, title_acceptance, voice_agent
@@ -36,6 +37,7 @@ from tce.editorial import today as today_service
 from tce.editorial.common import open_session
 from tce.editorial.packets import list_packets
 from tce.models.editorial_workspace import ACTORS
+from tce.settings import settings
 
 logger = structlog.get_logger()
 
@@ -163,6 +165,7 @@ class UnsubscribeRequest(BaseModel):
 
 class EditRequestBody(BaseModel):
     request: str
+    render_ref: str | None = Field(default=None, max_length=24)
     scope: str = "whole"
     start_s: float | None = None
     end_s: float | None = None
@@ -1039,12 +1042,86 @@ async def rename_recording(
         return {"upload_id": str(row.id), "title": " ".join(body.title.split())[: library_service.TITLE_MAX]}
 
 
+class CutReviewBody(BaseModel):
+    render_ref: str = Field(min_length=1, max_length=24)
+    outcome: Literal["accepted", "changes"]
+
+
+def _reviewer(ws: uuid.UUID = Depends(require_private_workspace),
+              x_tce_reviewer: str | None = Header(None),
+              x_tce_editor_key: str | None = Header(None),
+              authorization: str | None = Header(None)) -> str | None:
+    # The owner proxy overwrites the incoming header with its Basic Auth login.
+    if authorization or not x_tce_editor_key or str(ws) != str(settings.editor_default_workspace_id):
+        return None
+    if x_tce_reviewer and len(x_tce_reviewer) <= 80 and all(
+        c.isascii() and (c.isalnum() or c in "-_.@") for c in x_tce_reviewer
+    ):
+        return x_tce_reviewer
+    return None
+
+
+@production_router.get("/cut-reviews")
+async def cut_review_status(ws: uuid.UUID = Depends(require_private_workspace),
+                            actor: str | None = Depends(_reviewer),
+                            sm: Any = Depends(get_editorial_sessionmaker)):
+    if not actor:
+        return {"enabled": False}
+    async with open_session(sm) as db:
+        return {"enabled": True, "trial": await cut_reviews.summary(db, ws, "team-angel")}
+
+
+@production_router.post("/recordings/{upload_id}/cut-review")
+async def record_cut_review(upload_id: str, body: CutReviewBody,
+                            ws: uuid.UUID = Depends(require_private_workspace),
+                            actor: str | None = Depends(_reviewer),
+                            sm: Any = Depends(get_editorial_sessionmaker)):
+    if not actor:
+        raise HTTPException(403, "A signed-in reviewer is required.")
+    async with open_session(sm) as db:
+        if not await cut_reviews.record(db, ws, _uuid(upload_id, "recording"), body.render_ref, actor, body.outcome):
+            raise HTTPException(409, "Reopen the current checked edit before recording your review.")
+        await db.commit()
+        return {"saved": True, "trial": await cut_reviews.summary(db, ws, "team-angel")}
+
+
+class ReviewNoteClass(BaseModel):
+    classification: Literal["corrective", "creative", "meaning_change", "unclassified"]
+
+
+@production_router.get("/recordings/{upload_id}/cut-review-notes")
+async def get_cut_review_notes(upload_id: str, ws: uuid.UUID = Depends(require_private_workspace),
+                               actor: str | None = Depends(_reviewer),
+                               sm: Any = Depends(get_editorial_sessionmaker)):
+    if not actor:
+        raise HTTPException(403, "A signed-in reviewer is required.")
+    async with open_session(sm) as db:
+        return {"items": await cut_reviews.review_notes(db, ws, _uuid(upload_id, "recording"), actor)}
+
+
+@production_router.patch("/recordings/{upload_id}/cut-review-notes/{note_id}")
+async def classify_cut_review_note(upload_id: str, note_id: str, body: ReviewNoteClass,
+                                   ws: uuid.UUID = Depends(require_private_workspace),
+                                   actor: str | None = Depends(_reviewer),
+                                   sm: Any = Depends(get_editorial_sessionmaker)):
+    if not actor:
+        raise HTTPException(403, "A signed-in reviewer is required.")
+    async with open_session(sm) as db:
+        found = await cut_reviews.classify(db, ws, _uuid(upload_id, "recording"), actor,
+                                           _uuid(note_id, "note"), body.classification)
+        if not found:
+            raise HTTPException(404, "No matching note in your reviews for this recording.")
+        await db.commit()
+        return {"classification": body.classification, "trial": await cut_reviews.summary(db, ws, "team-angel")}
+
+
 @production_router.post("/recordings/{upload_id}/edit-requests")
 async def create_edit_request(
     upload_id: str,
     body: EditRequestBody,
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
+    reviewer: str | None = Depends(_reviewer),
 ) -> dict[str, Any]:
     uid = _uuid(upload_id, "recording")
     async with open_session(sm) as db:
@@ -1067,6 +1144,8 @@ async def create_edit_request(
             )
             payload = library_service.edit_request_to_json(row)
             payload["joined_sitting"] = str(sitting.id) if sitting is not None else None
+            if sitting is None and isinstance(reviewer, str):
+                await cut_reviews.record(db, ws, uid, body.render_ref, reviewer, "changes", [row], allow_previous=True)
             await db.commit()
         except ServiceError as error:
             raise _http(error) from error
@@ -1409,6 +1488,7 @@ async def talk_submit(
     body: TalkSubmit,
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
+    reviewer: str | None = Depends(_reviewer),
 ) -> dict[str, Any]:
     """He said yes to the read-back: one job reads every note, then one render. The
     check must be the read-back's own, so a yes never makes notes he did not hear."""
@@ -1423,6 +1503,10 @@ async def talk_submit(
             )
             payload = await _sitting_payload(db, ws, sitting)
             payload["read_back"] = preview["read_back"]
+            if isinstance(reviewer, str):
+                notes = await library_service.sitting_notes(db, ws, sitting.id)
+                await cut_reviews.record(db, ws, sitting.upload_id, sitting.render_ref, reviewer,
+                                         "changes", [n for n in notes if n.state != "rejected"])
             await db.commit()
         except ServiceError as error:
             if getattr(error, "code", "") == "changed" and body.as_of:

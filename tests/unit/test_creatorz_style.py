@@ -516,7 +516,9 @@ async def test_a_video_with_no_style_renders_exactly_as_before(wired, tmp_path, 
         "on_status", "ass_text", "srt_text", "caption_band", "make_preview", "report", "denoise", "top_caption",
     }
     side = prod._read_render_sidecar(row.edited_path)
-    assert set(side) == {"mode", "keep", "captions", "loudness", "denoise", "top_caption"}
+    assert {"mode", "keep", "captions", "loudness", "denoise", "top_caption", "caption_gap_s"} <= side.keys()
+    assert "style" not in side and "checklist" not in side
+    assert side["caption_gap_s"] == 0.35
 
 
 async def test_creatorz_is_made_by_the_engine_on_the_same_clock(wired, tmp_path, monkeypatch):

@@ -59,9 +59,11 @@ from tce.models.editorial import (
 from tce.models.jennifer import RenderCheck
 from tce.models.llm_job import LLMJob
 from tce.models.recording_session import RecordingClip, RecordingSession
+from tce.editorial.cut_reviews import TRIAL_RELEASE
 from tce.production import (
     agent_talks,
     autoedit,
+    first_cut_audio,
     media,
     publishing,
     qc,
@@ -69,6 +71,7 @@ from tce.production import (
     tightcut,
     wordbox,
 )
+from tce.production import delivery
 from tce.production import laughs as laugh_rules
 from tce.production import rules as rule_text
 from tce.production.backdrop import config as backdrop_config
@@ -78,6 +81,7 @@ from tce.production import sessions as recording_sessions
 from tce.production.export import GoogleDocsClient, GwsDocsClient, export_packet_durable
 from tce.production.retakes import (
     build_cues,
+    caption_gap_s,
     edit_join,
     fmt_ts,
     frame_keep,
@@ -1042,6 +1046,24 @@ async def _compute_plan(
     names = aside_names(await _persona(ws, db))
     # 29-Oct: laughs the detector found (read ahead by _find_laughs); none = the cut as before.
     laughs = laugh_rules.cached(row.storage_path) if word_level and laugh_rules.configured() else None
+    overrides = previous.get("overrides")
+    cleanup = previous.get("first_cut_audio")
+    # Once, before the first rendering. Notes, explicit restores and later edits win.
+    if (cleanup is None and not getattr(row, "render_ref", None) and not overrides
+            and voices is None and activity is not None and activity.levels
+            and row.storage_path and Path(row.storage_path).is_file()):
+        ff = media.ffmpeg_path()
+        if ff and (laughs is not None or not laugh_rules.configured()):
+            try:
+                band = await tightcut.measure_levels(str(row.storage_path), ff, speech_band=True)
+                cleanup = await asyncio.to_thread(first_cut_audio.cleanup, row.transcript or [],
+                                                  activity.levels, band, laughs or [])
+                if cleanup["trim"] or cleanup["denoise"]:
+                    overrides = autoedit.merge_overrides(
+                        {}, [], [], trim=cleanup["trim"], denoise=cleanup["denoise"]
+                    )
+            except (OSError, RuntimeError):
+                _log.warning("First cut speech-band measurement unavailable for %s", row.id)
     # A long walk takes a second or more to plan: off the event loop.
     plan = await asyncio.to_thread(
         plan_edit,
@@ -1051,7 +1073,7 @@ async def _compute_plan(
         duration_s=row.duration_s,
         activity=activity,
         removals=review.get("removals") if review.get("state") == "done" else None,
-        overrides=previous.get("overrides"),
+        overrides=overrides,
         aside_names=names,
         protected=voices.agent_words if voices is not None else (),
         language=workspace_language(ws),
@@ -1067,10 +1089,12 @@ async def _compute_plan(
             "offset_s": voices.offset_s,
         }
     if word_level:
-        if previous.get("overrides"):
-            plan["overrides"] = previous["overrides"]
+        if overrides:
+            plan["overrides"] = overrides
     else:
-        plan = autoedit.apply_overrides(plan, previous.get("overrides"))
+        plan = autoedit.apply_overrides(plan, overrides)
+    if cleanup is not None:
+        plan["first_cut_audio"] = cleanup
     if previous.get("proofread") is not None:
         plan["proofread"] = previous["proofread"]
     if review:
@@ -1112,6 +1136,12 @@ async def _compute_plan(
 
 
 def _caption_text(row: RecordingUpload, fmt: str) -> str:
+    # The row can already hold a later plan while the library still serves the older MP4.
+    if row.captions_path:
+        try:
+            return Path(row.captions_path).with_suffix(f".{fmt}").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            pass  # older recordings might only have the plan
     if not row.edit_plan:
         raise HTTPException(status_code=409, detail="No edit plan yet")
     cues = build_cues(row.edit_plan)
@@ -1281,6 +1311,10 @@ async def _render_creatorz(
         made = await creatorz_reels.render_reel(
             src=src, words=words, keep=tight, lang=lang, work=work, moments=moments,
             punchline=chosen["punchline"], bed=creatorz_reels.bed_for(upload_id), on_status=report,
+            caption_gap_s=caption_gap_s(plan.get("overrides")),
+            caption_anchors=[w["caption_anchor"] for w in wordbox.on_edit_timeline(
+                plan.get("words") or [], tight, (plan.get("overrides") or {}).get("caption_anchors")
+            ) if "caption_anchor" in w],
             # 18-Nov: new backgrounds on every other scene, only when he switched it on for this video.
             backdrop=backdrop_config.for_render(ws, upload_id, src, plan),
             # 19-Nov: the sound a moment later when this recording's lips trail it.
@@ -1300,7 +1334,8 @@ async def _render_creatorz(
     }, made.backdrop), None
 
 
-async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str) -> None:
+async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str, *,
+                      qc_retry: bool = False) -> None:
     async def report(text: str) -> None:
         await _set_status(upload_id, ws, "rendering", text, attempt)
 
@@ -1309,6 +1344,13 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             row = await _load(s, upload_id, ws)
             src, plan, duration = Path(row.storage_path), dict(row.edit_plan or {}), row.duration_s
             words = list(row.transcript or [])
+            previous_ref = row.render_ref
+            first_preview = not (row.edited_path or previous_ref)
+            if qc_retry and row.edited_path and previous_ref:
+                previous = _read_render_sidecar(row.edited_path)
+                old_stamp = previous.get("generated_cut") or {}
+                first_preview = (previous.get("render_ref") == previous_ref
+                                 and old_stamp.get("release") == TRIAL_RELEASE and old_stamp.get("first") is True)
         # 19-Oct: background-noise cleaning asked for in a note; the uncut version too.
         denoise = (plan.get("overrides") or {}).get("denoise")
         # 20-Oct: a fixed line at the top over the whole video, asked for in a note.
@@ -1318,7 +1360,6 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
                 duration = await media.probe_duration(src)
             plan = uncut_plan(plan, duration)
         keep = plan.get("keep") or []
-        cues = build_cues(plan)
         audio_only = src.suffix.lower() in media.AUDIO_EXTS
         size = media.AUDIO_ONLY_CANVAS if audio_only else await media.probe_video_size(src)
         # 19-Nov: a recording with few pictures a second shows lips that trail the sound. The
@@ -1326,7 +1367,6 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         late_ms = 0 if audio_only else media.sound_delay_for(await media.picture_gap_ms(src))
         if size is None:
             raise RuntimeError("could not read the video frame size with ffprobe")
-        srt_text = to_srt(cues)
         out = src.with_name(f"{src.stem}-edited.mp4")
         # TJ's look (28-Sep): the word being said on an orange box, when every caption
         # word has its own timing and Roboto can draw it; the plain captions otherwise.
@@ -1339,7 +1379,9 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             ] if is_word_level(words) else []
         else:
             spoken = list(plan.get("words") or [])
-        on_edit = wordbox.on_edit_timeline(spoken, keep)
+        cues = build_cues({**plan, "words": spoken} if spoken else plan)
+        srt_text = to_srt(cues)
+        on_edit = wordbox.on_edit_timeline(spoken, keep, (plan.get("overrides") or {}).get("caption_anchors"))
         pages = None
         lang = workspace_language(ws)
         # 10-Nov: Creatorz style, when he chose it for this video. It never decides what
@@ -1356,15 +1398,15 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             # From here on this render's clock is the one it was cut on, for every reader.
             keep = styled.keep
             plan = {**plan, "keep": keep}
-            cues = build_cues(plan)
+            cues = [{"start": a, "end": b, "lines": [text]} for a, b, text in styled.captions]
             srt_text = to_srt(cues)
-            on_edit = wordbox.on_edit_timeline(spoken, keep)
+            on_edit = wordbox.on_edit_timeline(spoken, keep, (plan.get("overrides") or {}).get("caption_anchors"))
         top = None
         made: dict[str, Any] = {}
         if styled is None:
             if not audio_only and on_edit and wordbox.usable(on_edit, lang):
                 await report(f"Drawing {len(on_edit)} caption words, each boxed while you say it")
-                pages = wordbox.pages(on_edit, lang)
+                pages = wordbox.pages(on_edit, lang, gap_s=caption_gap_s(plan.get("overrides")))
                 # Hundreds of images: drawn off the event loop so the API keeps answering.
                 band = await asyncio.to_thread(
                     wordbox.render_band,
@@ -1401,10 +1443,17 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         # 3-Oct, Jennifer's check: what this render's captions were drawn from, and what
         # the render did about loudness, kept beside the file. The check reads the
         # render's own data, never a plan that may have moved on since.
+        delivered_ref = render_ref(frame_keep(keep), srt_text, attempt)
+        artifact = out.stat()
         sidecar: dict[str, Any] = {
+            "render_ref": delivered_ref,
+            "generated_cut": {"release": TRIAL_RELEASE, "first": first_preview and mode == "cut" and not audio_only},
+            "file_size": artifact.st_size,
+            "file_mtime_ns": artifact.st_mtime_ns,
             "mode": mode,
             "keep": frame_keep(keep),
             "captions": qc.caption_data(on_edit, pages if band else None, cues),
+            "caption_gap_s": caption_gap_s(plan.get("overrides")) if on_edit else None,
             "loudness": made.get("loudness"),
             "denoise": made.get("denoise"),
             "top_caption": top_text if top else None,
@@ -1414,9 +1463,16 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             sidecar["checklist"] = styled.checklist
             if styled.backdrop:
                 sidecar["backdrop"] = backdrop_config.summary(styled.backdrop)
-            sidecar["captions"] = qc.caption_data(
-                on_edit, None, [{"start": a, "end": b, "lines": [text]} for a, b, text in styled.captions]
+            sidecar["captions"] = qc.caption_data(on_edit, None, cues)
+        # Report only anchors that started a displayed cue in the finished renderer.
+        displayed = sidecar["captions"].get("cues") or []
+        sidecar["caption_anchors"] = [
+            a for w in on_edit if (a := w.get("caption_anchor")) and any(
+                abs(c["start"] - a["edit_s"]) <= 1 / 30 and
+                wordbox.shown(str(c["text"]).split()[0]).casefold() == wordbox.shown(a["text"]).casefold()
+                for c in displayed if str(c.get("text") or "").strip()
             )
+        ]
         if late_ms:
             sidecar["sound_delay_ms"] = late_ms
         _write_render_sidecar(out, sidecar)
@@ -1433,7 +1489,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
             # clock, and a short id for it. Only here: a plan that never renders must not
             # say it is the file he watches.
             row.rendered_keep = frame_keep(keep)
-            row.render_ref = render_ref(row.rendered_keep, srt_text, attempt)
+            row.render_ref = delivered_ref
             kept_s = sum(e - b for b, e in keep)
             what = (
                 "Uncut captioned MP4 ready (nothing removed)"
@@ -2152,6 +2208,9 @@ async def edited_file(
     (about 1.5 Mbps instead of 5-6); the full edit is what gets downloaded and
     posted. An edit rendered before the preview existed plays in full."""
     row = await _upload(db, ws, upload_id)
+    review_ref = request.query_params.get("review_ref") or request.query_params.get("v")
+    if review_ref and review_ref != row.render_ref:
+        raise HTTPException(status_code=409, detail="A newer edit replaced this review clip. Open the latest edit.")
     if not row.edited_path or not Path(row.edited_path).exists():
         raise HTTPException(status_code=404, detail="No edited file yet")
     edited = Path(row.edited_path)
@@ -3275,6 +3334,15 @@ async def _qc_asides(
     return found
 
 
+async def _qc_render_listens(edited: Path, diagnostic: Path, duration: float, ws):
+    """A voice-only stem diagnoses cuts. Only the published mix can prove caption agreement."""
+    if edited == diagnostic:
+        heard = await _qc_listen(edited, duration, ws)
+        return heard, heard
+    stem, mix = await asyncio.gather(_qc_listen(diagnostic, duration, ws), _qc_listen(edited, duration, ws))
+    return stem, mix
+
+
 async def _qc_measure(
     upload_id: uuid.UUID, ws: uuid.UUID, round_no: int, fixed: list[str] | None = None
 ) -> dict[str, dict[str, Any]] | None:
@@ -3283,13 +3351,23 @@ async def _qc_measure(
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
         edited = Path(row.edited_path) if row.edited_path else None
+        render_version = row.render_ref
         keep = [list(r) for r in row.rendered_keep or []]
     ff = media.ffmpeg_path()
     if not ff or edited is None or not edited.exists() or not keep:
         return None
     sidecar = _read_render_sidecar(edited)
-    if sidecar.get("keep") != keep:
-        sidecar = {}  # left by an older render of this video: not this file's data
+    if sidecar.get("render_ref"):
+        try:
+            identity = edited.stat()
+        except OSError:
+            return None
+        if (sidecar["render_ref"] != render_version or sidecar.get("keep") != keep
+                or sidecar.get("file_size") != identity.st_size
+                or sidecar.get("file_mtime_ns") != identity.st_mtime_ns):
+            return None
+    elif sidecar.get("keep") != keep:
+        sidecar = {}  # A legacy sidecar has only its keep ranges as provenance.
     listen_to = qc_listen_source(edited, sidecar)
     try:
         levels = await tightcut.measure_levels(str(listen_to), ff)
@@ -3316,12 +3394,20 @@ async def _qc_measure(
 
     # The second witness for two checks: the render transcribed again.
     heard: list[dict[str, Any]] | None = None
+    delivered_words = None
     why: str | None = "nothing was cut from this one" if uncut else "this video has no word-by-word transcript"
     if kept:
         await _qc_step(
             upload_id, ws, round_no, f"listening to it again on this server ({len(kept)} words to hear)"
         )
-        heard, why = await _qc_listen(listen_to, duration, ws)
+        (heard, why), (delivered_words, _) = await _qc_render_listens(edited, listen_to, duration, ws)
+
+        # The next note-completion pass can reuse this independent listen only
+        # when it checked the published MP4 itself, on the same version.
+        if delivered_words and sidecar.get("render_ref"):
+            current = _read_render_sidecar(edited)
+            if current.get("render_ref") == sidecar["render_ref"]:
+                _write_render_sidecar(edited, {**current, "delivered_audio_words": delivered_words})
 
     await _qc_step(upload_id, ws, round_no, "measuring the pauses in the finished video")
     checks["gaps"] = (
@@ -3348,6 +3434,19 @@ async def _qc_measure(
         else None
     )
     checks["captions"] = qc.check_captions(sidecar.get("captions"), expected)
+    playback = qc.caption_playback(sidecar.get("captions"), delivered_words)
+    checks["captions"]["playback_state"] = playback["state"]
+    if playback.get("why"):
+        checks["captions"]["playback_why"] = playback["why"]
+    if sidecar.get("render_ref"):
+        await _qc_step(upload_id, ws, round_no, "reading caption frames in the delivered video")
+        frames = await qc.sample_caption_frames(edited, sidecar.get("captions"), workspace_language(ws))
+        checks["captions"]["frames"] = frames
+        checks["captions"]["problems"].extend(frames["problems"])
+    if playback["problems"]:
+        checks["captions"]["problems"].extend(playback["problems"])
+    if checks["captions"]["problems"]:
+        checks["captions"]["state"] = "fail"
 
     if kept:
         await _qc_step(upload_id, ws, round_no, "checking that every word is heard whole")
@@ -3368,6 +3467,9 @@ async def _qc_measure(
             "reading the words still in it for talk to the dogs or off the topic, on the subscription",
         )
         checks["asides"] = await _qc_asides(upload_id, ws, kept, context, voices, rules)
+    second = plan.get("second_listen") or {}
+    if not uncut and second.get("restart_flags"):
+        checks["retakes"] = relisten.check_restart_flags(second, keep)
     return checks
 
 
@@ -3385,6 +3487,17 @@ async def _qc_record(
             "render_detail": before.get("render_detail") or (row.status_detail if row.status == "edited" else None),
             "at": _utcnow().isoformat(),
         }
+        if row.edited_path and row.render_ref:
+            sidecar = _read_render_sidecar(row.edited_path)
+            stamp = sidecar.get("generated_cut")
+            if isinstance(stamp, dict) and sidecar.get("render_ref") == row.render_ref:
+                try:
+                    artifact = Path(row.edited_path).stat()
+                except OSError:
+                    artifact = None
+                if (artifact and artifact.st_size == sidecar.get("file_size")
+                        and artifact.st_mtime_ns == sidecar.get("file_mtime_ns")):
+                    result["generated_cut"] = stamp
         s.add(
             RenderCheck(
                 workspace_id=ws,
@@ -3450,7 +3563,7 @@ async def _qc_fix(upload_id: uuid.UUID, ws: uuid.UUID, fixes: dict[str, list[Any
         ws,
         "rendering",
         "Jennifer is rendering once more with her fixes: cutting and burning in your captions",
-        lambda attempt: _run_render(upload_id, ws, attempt, "cut"),
+        lambda attempt: _run_render(upload_id, ws, attempt, "cut", qc_retry=True),
     )
     async with session_factory()() as s:
         if row.status != "edited":
@@ -3617,6 +3730,15 @@ async def release_hold(
     reason = library_service.qc_hold(row)
     if reason is None:
         raise HTTPException(status_code=409, detail="Jennifer is not holding this video")
+    # A release accepts only the held source joins in this rendered version. A cut
+    # elsewhere on the video does not revive them; changing the disputed joins can.
+    accepted = [p["restart_key"] for p in (row.qc or {}).get("problems", [])
+                if p.get("kind") == "restart_uncertain" and p.get("restart_key")]
+    if accepted:
+        plan = dict(row.edit_plan or {})
+        second = dict(plan.get("second_listen") or {})
+        second["accepted_restart_flags"] = sorted(set(second.get("accepted_restart_flags") or []) | set(accepted))
+        row.edit_plan = {**plan, "second_listen": second}
     row.qc = {
         **(row.qc or {}),
         "state": "released",
@@ -3681,6 +3803,7 @@ async def _second_listen(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
         row = await _load(s, upload_id, ws)
         words = list(row.transcript or [])
         done = ((row.edit_plan or {}).get("second_listen") or {}).get("state") == "done"
+        single_speaker = row.source != "agent_talk"
         src = row.storage_path
     url = settings.production_transcribe_ws_url
     if done or not url or not words or not is_word_level(words) or not src or not Path(src).exists():
@@ -3737,7 +3860,26 @@ async def _second_listen(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
         regions=activity.regions if activity is not None else None,
     )
     sounds: list[dict[str, Any]] = []
+    restart_flags = []
     if activity is not None and main_language == "en":
+        restarts = relisten.restart_windows(new_words, activity.regions) if single_speaker else []
+        pairs = []
+        for n, win in enumerate(restarts, 1):
+            await _note(upload_id, ws, "proofreading",
+                        f"Listening to both takes around {qc.clock(win.split_s)} ({n} of {len(restarts)})")
+            pair = []
+            for a, b in ((win.start, win.split_s), (win.split_s, win.end)):
+                result = None
+                if failures < 3:
+                    try:
+                        result = await media.transcribe_clip(src, a, b, ws_url=url, language="en")
+                    except Exception:  # an unheard take never changes the transcript
+                        failures += 1
+                pair.append(result)
+            pairs.append((pair[0], pair[1]))
+        new_words, recovered = relisten.merge_restarts(new_words, restarts, pairs, activity.regions)
+        report.extend(row for row in recovered if row["result"] == "more words")
+        restart_flags = [row for row in recovered if row["result"] == "restart needs review"]
         leads = relisten.lead_candidates(
             new_words, activity.levels, activity.low_db, activity.high_db, activity.regions
         )
@@ -3767,6 +3909,7 @@ async def _second_listen(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
             "state": "done" if not wins or any(heard) else "unheard",
             "windows": len(wins), "heard": sum(1 for h in heard if h),
             "changes": changes, "sounds": sounds, "at": _utcnow().isoformat(),
+            "restart_flags": restart_flags,
         }
         row.edit_plan = plan
         row.status_detail = (
@@ -3856,7 +3999,7 @@ def edit_request_key(request_id: uuid.UUID, prompt: str, system: str) -> str:
     """Everything the request's job reads is in its key, like _review_key: words that
     changed while it read are read again as a new job (1-Oct review), and a changed
     skill file or history is no longer refused by the queue as a reused key."""
-    body = "\x1f".join([autoedit.PROMPT_VERSION, system, prompt])
+    body = "\x1f".join([autoedit.EDIT_REQUEST_PROMPT_VERSION, system, prompt])
     return f"edit-request:{request_id}:{hashlib.sha256(body.encode()).hexdigest()[:24]}"
 
 
@@ -3942,6 +4085,7 @@ async def _request_inputs(request_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any
             "laughs": laugh_rules.spans(row.edit_plan),
             "denoise": ((row.edit_plan or {}).get("overrides") or {}).get("denoise"),
             "top_caption": ((row.edit_plan or {}).get("overrides") or {}).get("top_caption"),
+            "caption_gap_s": ((row.edit_plan or {}).get("overrides") or {}).get("caption_gap_s"),
             "context": await _script_context(s, ws, row),
             "speakers": await _speakers(row),
             "text": req.request,
@@ -3989,12 +4133,20 @@ async def _apply_request(
             row = await _load(s, upload_id, ws)
             if fp(row.transcript) != fp(words):
                 return "changed"
+            if result is not None:
+                result["before_render_ref"] = row.render_ref
             row.transcript = fixed
             plan = dict(row.edit_plan or {})
             plan["overrides"] = autoedit.merge_overrides(
-                plan.get("overrides"), cut, restore, hold, trim, denoise, top
+                plan.get("overrides"), cut, restore, hold, trim, denoise, top,
+                (result or {}).get("caption_gap_s"), (result or {}).get("caption_anchors"),
             )
             row.edit_plan = plan
+            if result is not None and req is not None:
+                # The snapshot must survive a crash as one transaction with the changed plan.
+                req.state = "in_progress"
+                req.result = {"applied": result, "status": "Applying your changes and re-rendering"}
+                req.updated_at = _utcnow()
             await s.commit()
         await settle(
             "in_progress",
@@ -4097,6 +4249,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
                 answer = await _ask(
                     autoedit.EDIT_REQUEST_JOB, prompt, system, autoedit.EDIT_REQUEST_SCHEMA, ws,
                     edit_request_key(request_id, prompt, system),
+                    prompt_version=autoedit.EDIT_REQUEST_PROMPT_VERSION,
                 )
             except LLMUnavailable as exc:
                 await settle("in_progress", {"status": f"Waiting for the subscription worker ({exc.status})"})
@@ -4115,11 +4268,25 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             trim, _bad_trim = autoedit.word_trims(words, out.get("trim") or [], keep, got["kept"])
             denoise = autoedit.noise_change(got.get("denoise"), out.get("denoise"))
             top = autoedit.top_caption_change(got.get("top_caption"), out.get("top_caption"))
-            looks = top is not None
+            gap = autoedit.caption_gap_change(got.get("caption_gap_s"), out.get("caption_gap"))
+            if gap is not None and not is_word_level(words):
+                await settle("needs_you", {"question": autoedit.CAPTION_WORD_TIMES_NEEDED})
+                return
+            anchors, bad_anchors = autoedit.caption_anchor_changes(words, out.get("caption_anchor"), keep, got["kept"])
+            if bad_anchors:
+                await settle("needs_you", {"question": ". ".join(bad_anchors)})
+                return
+            looks = top is not None or gap is not None or bool(anchors)
             if not (applied or cut or restore or hold or trim or denoise or looks) and str(out.get("reply") or "").strip():
                 # An answer, not a change (30-Sep: "the phone cut the 's' off 'course'; no
                 # cut can bring it back" is the whole answer, not a question back to him).
-                await settle("done", {"reply": str(out["reply"]), "changed": False, "model": answer.model})
+                state, response = _reply_without_change(got["text"], str(out["reply"]), answer.model)
+                if state == "needs_you":
+                    async with session_factory()() as s:
+                        current = await _load(s, upload_id, ws)
+                        at = got.get("start_s") if got.get("start_s") is not None else delivery.request_moment(got["text"])
+                        response["delivery"] = _unmade_receipt(current, at, response["question"])
+                await settle(state, response)
                 return
             if not (applied or cut or restore or hold or trim or denoise or looks):
                 await settle(
@@ -4140,7 +4307,13 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
                 "trim": trim,
                 "denoise": denoise,
                 "top_caption": top,
+                "caption_gap_s": gap,
+                "caption_anchors": anchors,
                 "file": f"/api/v1/production/uploads/{upload_id}/edited",
+                "correction_targets": delivery.correction_targets(words, applied),
+                "restore_words": delivery.restored_words(words, restore),
+                "edit_s": got.get("start_s") if got.get("start_s") is not None else delivery.request_moment(got["text"]),
+                "caption_only": delivery.caption_only(got["text"]),
                 "model": answer.model,
             }
             row = await _apply_request(
@@ -4173,17 +4346,79 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
         _request_stopped(request_id)
 
 
+def _reply_without_change(request: str, reply: str, model: str | None):
+    result = {"reply": reply, "changed": False, "model": model}
+    if delivery.requires_change(request):
+        detail = " ".join(request.split())[:125]
+        return "needs_you", {**result, "question": f"I could not apply “{detail}”. Which part should change?"}
+    return "done", result
+
+
+def _unmade_receipt(row, edit_s, question):
+    playable = bool(row.edited_path and Path(row.edited_path).is_file())
+    duration = sum(b - a for a, b in row.rendered_keep or []) if playable else None
+    return delivery.unresolved(question, row.render_ref, delivery.clip(edit_s, duration))
+
+
+async def _delivery_evidence(row, ws, *, outcomes):
+    """Read the published MP4, joined to its rendering data by version and file identity."""
+    file = Path(row.edited_path) if row.edited_path else None
+    if file is None or not file.is_file():
+        return {}
+    try:
+        stamp = file.stat()
+        data = _read_render_sidecar(file)
+        if (not row.render_ref or row.render_ref != data.get("render_ref")
+                or data.get("keep") != row.rendered_keep or stamp.st_size != data.get("file_size")
+                or stamp.st_mtime_ns != data.get("file_mtime_ns")):
+            return {}
+        duration = await media.probe_duration(file)
+        if not duration:
+            return {}
+        heard = data.get("delivered_audio_words")
+        if not heard and any(_speech_needed(o) for o in outcomes):
+            heard, _ = await _qc_listen(file, duration, ws)
+        evidence = {**data, "duration": duration, "heard": heard}
+        if any(o.get("cut") for o in outcomes) and media.ffmpeg_path():
+            evidence["levels"] = await tightcut.measure_levels(str(file), media.ffmpeg_path())
+        evidence["visible"] = await delivery.read_samples(file, evidence, outcomes, workspace_language(ws))
+        after = file.stat()
+        if (after.st_ino, after.st_size, after.st_mtime_ns) != (stamp.st_ino, stamp.st_size, stamp.st_mtime_ns):
+            return {}
+        return evidence
+    except (OSError, RuntimeError, ValueError):
+        return {}
+
+
+def _speech_needed(outcome):
+    return bool(outcome.get("corrections") and not outcome.get("caption_only")) or any(
+        outcome.get(k) for k in ("restore", "cut", "trim", "hold")
+    )
+
+
 async def _finish_request(
     request_id: uuid.UUID, ws: uuid.UUID, upload_id: uuid.UUID, row: RecordingUpload,
     result: dict[str, Any], settle,
 ) -> None:
-    """Done when the video is edited (or Jennifer holds it); otherwise it asks him."""
+    """Close a changed note only with evidence from its newly delivered MP4."""
     held = library_service.qc_hold(row)
     if row.status == "edited" or held:
-        # 3-Oct: his change was made. When Jennifer is holding the new file, her line
-        # goes with the reply; it is her finding, not a failed request.
-        await settle("done", {**result, "held": held} if held else result)
-        start_rule_learning(ws, upload_id, [request_id])
+        evidence = await _delivery_evidence(row, ws, outcomes=[result])
+        receipt = delivery.verify(
+            result, evidence, before_ref=result.get("before_render_ref"), source_s=None, edit_s=result.get("edit_s"),
+        )
+        if "before_render_ref" not in result:
+            receipt = _unmade_receipt(row, result.get("edit_s"), "I could not verify which version preceded this change. Does this edit contain your correction?")
+        if receipt["state"] != "verified" and not receipt.get("render_ref"):
+            receipt = _unmade_receipt(row, result.get("edit_s"), receipt["question"])
+        final = {**result, "delivery": receipt}
+        if held:
+            final["held"] = held
+        if receipt["state"] == "verified":
+            await settle("done", final)
+            start_rule_learning(ws, upload_id, [request_id])
+        else:
+            await settle("needs_you", {**final, "question": receipt["question"]})
     else:
         await settle("needs_you", {**result, "question": f"The re-render stopped: {row.status_detail}"})
 
@@ -4423,7 +4658,10 @@ async def _apply_notes(
             got["words"], plan.get("overrides"), answer.structured or {}, len(got["notes"]),
             keep=got.get("keep"), kept=got.get("kept"),
         )
-        outcomes = [{**o, "id": str(nid)} for o, nid in zip(batch["notes"], got["note_ids"], strict=True)]
+        outcomes = [
+            {**o, "id": str(nid), "caption_only": delivery.caption_only(note["said"])}
+            for o, nid, note in zip(batch["notes"], got["note_ids"], got["notes"], strict=True)
+        ]
         result = {
             **(sitting.result or {}),
             "outcomes": outcomes,
@@ -4472,6 +4710,11 @@ def _note_outcome(
             "cut": o.get("cut") or [],
             "restore": o.get("restore") or [],
             "hold": o.get("hold") or [],
+            "trim": o.get("trim") or [],
+            "denoise": o.get("denoise"),
+            "top_caption": o.get("top_caption"),
+            "caption_gap_s": o.get("caption_gap_s"),
+            "caption_anchors": o.get("caption_anchors") or [],
             "file": file_url,
         }
         if stop:
@@ -4518,6 +4761,11 @@ async def _settle_talk(session_id: uuid.UUID, ws: uuid.UUID, *, stopped: str | N
                 )
             ).scalars()
         }
+        changes = [o for o in outcomes if o.get("outcome") == "change"]
+        evidence = {}
+        if rendered and changes:
+            await s.commit()  # The media check can outlast a database idle-transaction timeout.
+            evidence = await _delivery_evidence(row, ws, outcomes=changes)
         now = _utcnow()
         needs = 0
         applied: list[uuid.UUID] = []  # notes that changed the video: what she learns from
@@ -4526,6 +4774,22 @@ async def _settle_talk(session_id: uuid.UUID, ws: uuid.UUID, *, stopped: str | N
             if note is None:
                 continue
             state, res = _note_outcome(o, stop, file_url, result.get("model"))
+            if o.get("outcome") == "change" and not stop:
+                receipt = delivery.verify(o, evidence, before_ref=before.get("render_ref"),
+                                          source_s=note.source_s, edit_s=note.start_s)
+                if not receipt.get("render_ref"):
+                    at = note.start_s if note.start_s is not None else delivery.request_moment(note.request)
+                    receipt = _unmade_receipt(row, at, receipt["question"])
+                res["delivery"] = receipt
+                if receipt["state"] != "verified":
+                    state = "needs_you"
+                    res["question"] = receipt["question"]
+            elif o.get("outcome") == "answer":
+                state, reply = _reply_without_change(note.request or "", res["reply"], result.get("model"))
+                res.update(reply)
+                if state == "needs_you":
+                    at = note.start_s if note.start_s is not None else delivery.request_moment(note.request)
+                    res["delivery"] = _unmade_receipt(row, at, res["question"])
             note.state, note.result = state, res
             note.updated_at = note.resolved_at = now
             needs += state == "needs_you"
@@ -4545,7 +4809,7 @@ async def _settle_talk(session_id: uuid.UUID, ws: uuid.UUID, *, stopped: str | N
         result["read_back"] = result.get("read_back") or sitting.summary
         result["status"] = status[:500]
         result["render_ref"] = row.render_ref
-        sitting.summary = result.get("batch_summary") or status
+        sitting.summary = status if needs else result.get("batch_summary") or status
         sitting.result = result
         sitting.state = "needs_you" if needs else "done"
         sitting.finished_at = now

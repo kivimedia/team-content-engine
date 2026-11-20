@@ -182,6 +182,32 @@ def wired(monkeypatch, editorial_sessionmaker):
     return {"sm": editorial_sessionmaker, "asked": asked, "answers": answers}
 
 
+@pytest.fixture
+def delivered_dog_cut(monkeypatch):
+    """Observed output of the synthetic render, independent of the requested operations."""
+    async def measurements(row, workspace, *, outcomes):
+        # The speaker finishes "smart", skips "Maple come here", then says "Call them".
+        cues = [
+            {"text": "smart.", "start": 2.5, "end": 2.9},
+            {"text": "Call", "start": 3.1, "end": 3.5},
+            {"text": "them", "start": 3.6, "end": 4.0},
+        ]
+        return {
+            "render_ref": row.render_ref,
+            "keep": [[0.0, 3.0], [4.4, 6.9]],
+            "duration": 5.5,
+            "captions": {"cues": cues},
+            "heard": [
+                {"text": "smart", "start": 2.51, "end": 2.89},
+                {"text": "call", "start": 3.12, "end": 3.48},
+                {"text": "them", "start": 3.61, "end": 3.99},
+            ],
+            "visible": {("caption", 3.8): "them"},
+        }
+
+    monkeypatch.setattr(prod, "_delivery_evidence", measurements)
+
+
 async def seed(sm) -> tuple[uuid.UUID, uuid.UUID]:
     ws = uuid.uuid4()
     async with sm() as s:
@@ -218,7 +244,7 @@ async def typed_request(sm, ws, uid, text: str) -> uuid.UUID:
         return req.id
 
 
-async def test_a_typed_request_that_was_applied_teaches_a_rule(wired):
+async def test_a_typed_request_that_was_applied_teaches_a_rule(wired, delivered_dog_cut):
     ws, uid = await seed(wired["sm"])
     wired["answers"][autoedit.EDIT_REQUEST_JOB] = {
         "reply": "Cut \"Maple come here.\"", "needs_you": False, "corrections": [],
@@ -234,7 +260,7 @@ async def test_a_typed_request_that_was_applied_teaches_a_rule(wired):
     async with wired["sm"]() as s:
         req = await s.get(EditingRequest, rid)
         [rule] = (await s.execute(select(EditorRule).where(EditorRule.workspace_id == ws))).scalars().all()
-    assert req.state == "done"
+    assert req.state == "done" and req.result["delivery"]["checks"] == ["cut"]
     assert rule.text == "Cut any aside to the dogs, even under 2 seconds."
     assert (rule.source_upload_id, rule.source_note_id, rule.active, rule.times_applied) == (uid, rid, True, 0)
     assert req.result["learned"]["state"] == "rule" and req.result["learned"]["rule_id"] == str(rule.id)
@@ -254,7 +280,7 @@ async def _rules(sm, ws):
         return await editor_rules.prompt_rules(s, ws)
 
 
-async def test_a_note_only_about_this_video_teaches_nothing_and_says_so(wired):
+async def test_a_note_only_about_this_video_teaches_nothing_and_says_so(wired, delivered_dog_cut):
     ws, uid = await seed(wired["sm"])
     wired["answers"][autoedit.EDIT_REQUEST_JOB] = {
         "reply": "Cut it.", "needs_you": False, "corrections": [], "cut": [{"first": 6, "last": 8}],
@@ -285,7 +311,7 @@ async def test_an_answer_that_changed_nothing_teaches_nothing(wired):
     assert not [a for a in wired["asked"] if a["kind"] == rule_text.DISTILL_JOB]
 
 
-async def test_switched_off_no_rule_is_learned(wired, monkeypatch):
+async def test_switched_off_no_rule_is_learned(wired, delivered_dog_cut, monkeypatch):
     monkeypatch.setattr(settings, "production_learn_rules", False)
     ws, uid = await seed(wired["sm"])
     wired["answers"][autoedit.EDIT_REQUEST_JOB] = {
@@ -295,10 +321,30 @@ async def test_switched_off_no_rule_is_learned(wired, monkeypatch):
     rid = await typed_request(wired["sm"], ws, uid, "cut the dogs always")
     await prod.run_edit_request(rid, ws)
     await settle()
+    async with wired["sm"]() as s:
+        req = await s.get(EditingRequest, rid)
+        assert req.state == "done" and req.result["delivery"]["state"] == "verified"
     assert not [a for a in wired["asked"] if a["kind"] == rule_text.DISTILL_JOB]
 
 
-async def test_the_notes_of_a_sitting_that_changed_the_video_are_learned_from_in_one_job(wired):
+async def test_a_typed_cut_without_delivered_evidence_never_teaches_a_rule(wired):
+    ws, uid = await seed(wired["sm"])
+    wired["answers"][autoedit.EDIT_REQUEST_JOB] = {
+        "reply": "Cut the call to the dogs.", "needs_you": False, "corrections": [],
+        "cut": [{"first": 6, "last": 8}], "restore": [], "hold": [],
+    }
+    rid = await typed_request(wired["sm"], ws, uid, "always cut calls to the dogs")
+    await prod.run_edit_request(rid, ws)
+    await settle()
+    async with wired["sm"]() as s:
+        req = await s.get(EditingRequest, rid)
+        assert req.state == "needs_you" and req.result["delivery"]["state"] == "needs_review"
+        assert "learned" not in req.result
+        assert (await s.scalars(select(EditorRule))).all() == []
+    assert all(a["kind"] != rule_text.DISTILL_JOB for a in wired["asked"])
+
+
+async def test_the_notes_of_a_sitting_that_changed_the_video_are_learned_from_in_one_job(wired, delivered_dog_cut):
     ws, uid = await seed(wired["sm"])
     async with wired["sm"]() as s:
         sitting = EditSession(workspace_id=ws, upload_id=uid, state="rendering", before={"render_ref": "old"},
@@ -306,7 +352,7 @@ async def test_the_notes_of_a_sitting_that_changed_the_video_are_learned_from_in
         s.add(sitting)
         await s.flush()
         notes = []
-        for k, said in enumerate(("always cut the dogs", "this line is fine, bring it back")):
+        for k, said in enumerate(("always cut the dogs", "bring back the word them", "add a title about the dogs")):
             # In the order he gave them, to the microsecond, as the sheet pins them.
             n = EditingRequest(workspace_id=ws, upload_id=uid, session_id=sitting.id, request=said,
                                scope="moment", start_s=1.0, state="held",
@@ -315,8 +361,11 @@ async def test_the_notes_of_a_sitting_that_changed_the_video_are_learned_from_in
             notes.append(n)
         await s.flush()
         sitting.result = {"outcomes": [
-            {"note": 1, "outcome": "change", "reply": "Cut it.", "id": str(notes[0].id)},
-            {"note": 2, "outcome": "change", "reply": "Brought it back.", "id": str(notes[1].id)},
+            {"note": 1, "outcome": "change", "reply": "Cut it.", "cut": [[3.0, 4.4]], "id": str(notes[0].id)},
+            {"note": 2, "outcome": "change", "reply": "Brought it back.", "id": str(notes[1].id),
+             "restore": [[5.0, 5.4]], "restore_words": [{"text": "them", "source": [5.0, 5.4]}]},
+            {"note": 3, "outcome": "change", "reply": "Added the title.", "id": str(notes[2].id),
+             "top_caption": "Walking the dogs"},
         ]}
         row = await prod._load(s, uid, ws)
         row.render_ref = "new"
@@ -330,8 +379,13 @@ async def test_the_notes_of_a_sitting_that_changed_the_video_are_learned_from_in
     await settle()
     distills = [a for a in wired["asked"] if a["kind"] == rule_text.DISTILL_JOB]
     assert len(distills) == 1 and "note 2" in distills[0]["prompt"]
+    assert "add a title about the dogs" not in distills[0]["prompt"]
     async with wired["sm"]() as s:
-        learned = [(await s.get(EditingRequest, i)).result["learned"]["state"] for i in ids]
+        cut, restored, unverified = [await s.get(EditingRequest, i) for i in ids]
+        assert cut.result["delivery"]["checks"] == ["cut"]
+        assert restored.result["delivery"]["checks"] == ["restore", "restored_speech_and_captions"]
+        assert unverified.state == "needs_you" and "learned" not in unverified.result
+        learned = [note.result["learned"]["state"] for note in (cut, restored)]
         [rule] = (await s.execute(select(EditorRule))).scalars().all()
         made = library._notes_made_json(await s.get(EditSession, sid), [await s.get(EditingRequest, i) for i in ids])
     assert learned == ["rule", "this_video"] and rule.source_note_id == ids[0]
