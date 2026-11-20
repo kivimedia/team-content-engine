@@ -843,7 +843,11 @@
         chatState("Comment received by the editor. Waiting for the reply.");
       }
     }
-    else if (type === "turn_end") chatLine("editor", data.text);
+    else if (type === "turn_end") {
+      chatLine("editor", data.text);
+      // The reply is here: the status line stops saying it is waited for (seen on test call BF, 20-Nov).
+      if (!editorPending && /Waiting for the reply/.test($("editorState").textContent)) chatState(chat.micOn ? "Listening. Talk, or type below." : "Ready. Type below, or tap the mic and talk.");
+    }
     else if (type === "mic") { chat.micOn = !data.muted; drawMic(); }
     else if (type === "error") { chat.sentPlace = ""; editorPending = null; editorBusy(false); chatState(data.text || "The editor call had a problem. Your comment is still here.", true); }
     else if (type === "closed" || type === "stopped") {

@@ -51,12 +51,14 @@ const out=process.env.TCE_SHOT_DIR||fs.mkdtempSync(path.join(os.tmpdir(),'tce-bo
   check(width+' a quick reply with no result still paints',/bakery chapter layout is ready/.test(log));
   check(width+' a KM BOT notice is not called the editor',/KM BOT( \(new\))?\s*The "book editor write requests"/.test(log));
   check(width+' unseen replies marked new',await p.locator('#editorLog .chat-line.fresh').count()===2);
-  await p.evaluate(()=>{window.sent=[];window.KmVoice={start:({on})=>{setTimeout(()=>on('realtime',{}),0);return {send:t=>sent.push(t),stop(){},mute(){}};}};});
+  await p.evaluate(()=>{window.sent=[];window.KmVoice={start:({on})=>{window.callOn=on;setTimeout(()=>on('realtime',{}),0);return {send:t=>sent.push(t),stop(){},mute(){}};}};});
   await p.locator('#editorText').fill('Where are we?');await p.locator('#editorForm button[type=submit]').click();await p.waitForTimeout(200);
   const first=await p.evaluate(()=>window.sent[0]||'');
   check(width+' new call asks for the unseen replies first',/2 replies he has not seen/.test(first)&&/Ziv: Where are we\?/.test(first));
   check(width+' the first line carries what the unseen replies say',/bakery chapter layout is ready/.test(first)&&/switched itself off/.test(first));
   check(width+' the first line does not carry a reply he saw',!/Tightened chapter 11/.test(first));
+  await p.evaluate(()=>{window.callOn('said',{text:'Where are we?'});window.callOn('turn_end',{text:'Two things first: the bakery layout is ready, and the routine switched itself off.'});});
+  check(width+' the status line stops waiting once the reply is in',!/Waiting for the reply/.test(await p.locator('#editorState').innerText())&&/Two things first/.test(await p.locator('#editorLog').innerText()));
   await p.screenshot({path:path.join(out,`chat-${width}.png`)});
   const fontOk=await p.evaluate(()=>[...document.querySelectorAll('.agent-card,.agent-catchup p')].every(e=>parseFloat(getComputedStyle(e).fontSize)>=15));
   check(width+' text at 15px or more',fontOk);
