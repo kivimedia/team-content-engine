@@ -34,12 +34,18 @@
     "video/webm;codecs=vp9,opus",
   ].find((value) => window.MediaRecorder && MediaRecorder.isTypeSupported(value));
 
+  // 20-Nov-2026: the 4:3 mode at 1920x1440 before the sensor's largest, as the studio has done
+  // since 19-Nov (recording.js FULL_HD_4_3): Chrome on Android returns it as a portrait 1440x1920
+  // that crops to exactly 1080x1920, same framing, a quarter of the 12-megapixel redraw. His
+  // solo take of 20-Nov from the 3000x4000 mode came out at 22 pictures a second.
+  const FULL_HD_4_3 = { width: { ideal: 1920 }, height: { ideal: 1440 }, aspectRatio: { ideal: 4 / 3 } };
   // The studio's ladder (recording.js): portrait modes first, then the tallest frame on offer,
   // which is cropped to 9:16 below. The old last resort, {}, handed back a raw landscape frame.
   const CAMERA_ATTEMPTS = [
     { width: { exact: 1080 }, height: { exact: 1920 } },
     { width: { exact: 720 }, height: { exact: 1280 } },
     { aspectRatio: { exact: 9 / 16 } },
+    FULL_HD_4_3,
     { width: { ideal: 4096 }, height: { ideal: 3072 }, aspectRatio: { ideal: 4 / 3 } },
     { width: { ideal: 1440 }, height: { ideal: 1920 }, aspectRatio: { ideal: 3 / 4 } },
     { width: { ideal: 1080 }, height: { ideal: 1440 }, aspectRatio: { ideal: 3 / 4 } },
@@ -262,6 +268,8 @@
     for (const attempt of CAMERA_ATTEMPTS) {
       let opened = null;
       try { opened = await open(attempt); } catch (error) { lastError = error; continue; }
+      // The 4:3 full-HD ask counts only when tall enough to crop 1080x1920 from (as recording.js).
+      if (attempt === FULL_HD_4_3 && opened.height >= opened.width && opened.height < 1920) { stop(opened); continue; }
       if (opened.width && opened.height && opened.height >= opened.width) { chosen = opened; break; }
       if (!best || opened.height > best.height) best = { attempt, height: opened.height };
       stop(opened);

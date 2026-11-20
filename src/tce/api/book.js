@@ -45,11 +45,15 @@
      the way Record without a script does (recording-solo.js, the studio's ladder): portrait
      modes first, each answer measured and the first real portrait one kept, else the
      tallest frame on offer, centre cropped to 9:16 once. The old single ask (ideal
-     1080x1920) came back landscape on phones, and the 9:16 cover preview cropped it again. */
+     1080x1920) came back landscape on phones, and the 9:16 cover preview cropped it again.
+     20-Nov-2026: the 4:3 mode at 1920x1440 before the sensor's largest, as the studio and Record
+     without a script (FULL_HD_4_3): a portrait 1440x1920 that crops to exactly 1080x1920. */
+  const FULL_HD_4_3 = { width: { ideal: 1920 }, height: { ideal: 1440 }, aspectRatio: { ideal: 4 / 3 } };
   const CAMERA_ATTEMPTS = [
     { width: { exact: 1080 }, height: { exact: 1920 } },
     { width: { exact: 720 }, height: { exact: 1280 } },
     { aspectRatio: { exact: 9 / 16 } },
+    FULL_HD_4_3,
     { width: { ideal: 4096 }, height: { ideal: 3072 }, aspectRatio: { ideal: 4 / 3 } },
     { width: { ideal: 1440 }, height: { ideal: 1920 }, aspectRatio: { ideal: 3 / 4 } },
     { width: { ideal: 1080 }, height: { ideal: 1440 }, aspectRatio: { ideal: 3 / 4 } },
@@ -1221,6 +1225,8 @@
     for (const attempt of CAMERA_ATTEMPTS) {
       let opened = null;
       try { opened = await open(attempt); } catch (error) { lastError = error; continue; }
+      // The 4:3 full-HD ask counts only when tall enough to crop 1080x1920 from (as recording.js).
+      if (attempt === FULL_HD_4_3 && opened.height >= opened.width && opened.height < 1920) { close(opened); continue; }
       if (opened.width && opened.height && opened.height >= opened.width) { chosen = opened; break; }
       if (!best || opened.height > best.height) best = { attempt, height: opened.height };
       close(opened);

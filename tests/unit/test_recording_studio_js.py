@@ -380,6 +380,23 @@ def test_the_camera_asks_for_the_full_hd_4_3_mode_before_the_12_megapixel_one():
     assert loop.index("attempt === FULL_HD_4_3 && opened.height < 1920") < loop.index("if (portrait) {")
 
 
+@pytest.mark.parametrize("name, close", [("recording-solo.js", "stop"), ("book.js", "close")])
+def test_record_without_a_script_and_the_book_ask_for_the_full_hd_4_3_mode_first(name, close):
+    """20-Nov-2026, Ziv said "solo": his take on Record without a script came from the 3000x4000
+    mode at 22 pictures a second. Same change as the studio, same guard."""
+    js = (API / name).read_text(encoding="utf-8")
+    assert (
+        "const FULL_HD_4_3 = { width: { ideal: 1920 }, height: { ideal: 1440 }, aspectRatio: { ideal: 4 / 3 } };" in js
+    )
+    ladder = js.split("const CAMERA_ATTEMPTS = [", 1)[1].split("];", 1)[0]
+    entries = [line.strip().rstrip(",") for line in ladder.splitlines() if line.strip() and not line.strip().startswith("//")]
+    big = "{ width: { ideal: 4096 }, height: { ideal: 3072 }, aspectRatio: { ideal: 4 / 3 } }"
+    assert entries.index("FULL_HD_4_3") < entries.index(big)
+    guard = f"if (attempt === FULL_HD_4_3 && opened.height >= opened.width && opened.height < 1920) {{ {close}(opened); continue; }}"
+    loop = js[js.index("async function openCamera(") :][:2500]
+    assert guard in loop and loop.index(guard) < loop.index("{ chosen = opened; break; }")
+
+
 def test_the_opening_and_a_first_point_that_repeat_it_are_one_line():
     """Choosing the recommended opening usually gives back the first bullet almost
     word for word ("...back on the phone." / "...back on the phone after the
