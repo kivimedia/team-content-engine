@@ -8,14 +8,13 @@ from collections import Counter
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from tce.agents.engagement_scorer import CONFIDENCE_MULTIPLIERS, EngagementScorer
 from tce.db.session import get_db
 from tce.llm import get_llm_client
-from tce.models.creator_profile import CreatorProfile
 from tce.models.pattern_template import PatternTemplate
 from tce.models.post_example import PostExample
 from tce.schemas.pattern_template import PatternTemplateCreate, PatternTemplateRead

@@ -2,6 +2,7 @@
 
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -18,6 +19,9 @@ from tce.models.weekly_guide import WeeklyGuide
 from tce.settings import settings
 from tce.schemas.post_package import PostPackageRead, PostPackageUpdate
 from tce.schemas.weekly_guide import WeeklyGuideCreate, WeeklyGuideRead
+
+if TYPE_CHECKING:
+    from tce.orchestrator.engine import PipelineOrchestrator
 
 router = APIRouter(prefix="/content", tags=["content"])
 
@@ -925,7 +929,6 @@ async def _regenerate_guide_task(
 
     # Report what we found
     trend_brief = research_ctx.get("trend_brief", {})
-    story_brief = research_ctx.get("story_brief", {})
     research_brief = research_ctx.get("research_brief", {})
     trends_found = len(trend_brief.get("trends", []))
     claims_found = len(research_brief.get("verified_claims", []))
@@ -956,7 +959,6 @@ async def _regenerate_guide_task(
 
     # --- Phase 2-4: Guide builder with quality gate loop ---
     guide_steps = WORKFLOWS["guide_only"]
-    best_composite = 0.0
 
     for attempt in range(1, MAX_ITERATIONS + 1):
         logger.info("regenerate_guide.guide_attempt", attempt=attempt)
@@ -1046,7 +1048,6 @@ async def _regenerate_guide_task(
                 scores = {"error": str(ae), "composite": 0}
 
             composite = scores.get("composite", 0.0)
-            best_composite = composite
 
             # Get per-dimension breakdown for status
             dims = ["practical", "valuable", "generous", "accurate", "quick_win", "transformation"]

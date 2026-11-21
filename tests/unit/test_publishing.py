@@ -461,6 +461,25 @@ async def test_a_tap_after_a_failed_write_runs_it_again_and_the_card_says_where_
     assert item["posts_writing"] is None
 
 
+async def test_a_writer_that_breaks_still_tells_the_card_why(monkeypatch):
+    """21-Nov (T-23884): the background write's own error handler named structlog without
+    importing it, so a write that broke raised NameError there and the card never heard:
+    it kept saying "writing" until a restart. The writer breaking here must end on the
+    card as "failed", with the reason."""
+    uid, ws = uuid.uuid4(), uuid.uuid4()
+
+    async def breaks(*_a, **_k):
+        raise RuntimeError("the writer fell over")
+
+    monkeypatch.setattr(prod, "draft_posts", breaks)
+    publishing.note_write(uid, "writing")
+    await prod._draft_posts_said(uid, ws, rewrite=False)
+    said = publishing.write_state(uid)
+    publishing.clear_write(uid)
+    assert said is not None and said["state"] == "failed"
+    assert "the writer fell over" in said["detail"]
+
+
 async def test_the_tap_itself_says_writing_before_the_writer_starts(app_client, monkeypatch):
     """The card reads "Writing" from the server the moment the tap is answered, so it
     still says so when he leaves the Library and comes back."""

@@ -87,8 +87,6 @@ async def plan_month(
             from tce.agents.registry import get_agent_class
             from tce.models.creator_profile import CreatorProfile
             from tce.models.founder_voice_profile import FounderVoiceProfile
-            from tce.orchestrator.engine import PipelineOrchestrator
-            from tce.orchestrator.step import PipelineStep
             from tce.services.cost_tracker import CostTracker
             from tce.services.prompt_manager import PromptManager
 

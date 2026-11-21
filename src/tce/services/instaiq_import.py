@@ -19,10 +19,8 @@ import argparse
 import asyncio
 import json
 import re
-import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import structlog
 from sqlalchemy import select

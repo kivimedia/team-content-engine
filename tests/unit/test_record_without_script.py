@@ -26,7 +26,6 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select
 
 from tce.api import dashboard
 from tce.api.routers import agent_talks as talk_routes

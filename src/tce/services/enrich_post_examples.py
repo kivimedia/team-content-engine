@@ -31,7 +31,7 @@ import json
 from typing import Any
 
 import structlog
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 
 from tce.db.session import async_session
 from tce.db.workspace_filter import scoped_pick

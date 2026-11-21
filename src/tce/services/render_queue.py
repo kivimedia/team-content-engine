@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce.models.render_queue import RenderQueueJob

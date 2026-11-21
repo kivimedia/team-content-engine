@@ -188,7 +188,6 @@ class OpenAIImageService:
 
         if not s3_path and b64:
             try:
-                import os
                 from pathlib import Path as _P
 
                 store_dir = _P(settings.image_storage_dir)

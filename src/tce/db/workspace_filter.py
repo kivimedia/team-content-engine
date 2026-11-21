@@ -25,7 +25,6 @@ from typing import Any
 from sqlalchemy import Select, case, event, or_, select
 from sqlalchemy.orm import ORMExecuteState
 
-from tce.db.base import Base
 
 # Thread-local (actually coroutine-local) workspace context
 _workspace_id_var: contextvars.ContextVar[uuid.UUID | None] = contextvars.ContextVar(

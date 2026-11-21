@@ -5,7 +5,6 @@ key never rides on a command line, and the per-video switch is offered only wher
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 

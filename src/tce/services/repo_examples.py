@@ -8,7 +8,6 @@ into posts that aren't specifically about those repos. Respects per-repo
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from typing import Any
 
 import structlog

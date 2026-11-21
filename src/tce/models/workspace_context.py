@@ -9,7 +9,6 @@ One row per workspace per kind. Updated in place via PUT.
 """
 from __future__ import annotations
 
-import uuid
 
 from sqlalchemy import String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB

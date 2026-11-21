@@ -12,7 +12,6 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.ext.compiler import compiles
 
 from tce.db.base import Base

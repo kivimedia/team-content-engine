@@ -5533,6 +5533,8 @@ async def _draft_posts_said(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: boo
     try:
         await draft_posts(upload_id, ws, rewrite=rewrite)
     except Exception as broke:
+        import structlog
+
         structlog.get_logger().warning("production.draft_posts_failed", upload=str(upload_id), exc_info=True)
         publishing.note_write(upload_id, "failed", publishing.write_failed_detail(
             "failed", f"{type(broke).__name__}: {broke}", workspace_language(ws),

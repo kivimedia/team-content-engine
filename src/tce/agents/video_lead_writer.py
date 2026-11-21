@@ -168,7 +168,7 @@ class VideoLeadWriter(AgentBase):
         angle_type = story_brief.get("angle_type", "how_we_built_it")
 
         prompt_parts = [
-            f"Write a 5-7 minute video lead script about the following topic.",
+            "Write a 5-7 minute video lead script about the following topic.",
             f"\nTOPIC: {topic}",
             f"THESIS: {thesis}",
             f"TARGET AUDIENCE: {audience}",
@@ -180,14 +180,14 @@ class VideoLeadWriter(AgentBase):
             claims = research_brief.get("verified_claims", [])
             findings = research_brief.get("key_findings", [])
             if claims:
-                prompt_parts.append(f"\nVERIFIED CLAIMS (use these as data points):")
+                prompt_parts.append("\nVERIFIED CLAIMS (use these as data points):")
                 for c in claims[:5]:
                     if isinstance(c, dict):
                         prompt_parts.append(f"- {c.get('claim', c.get('text', str(c)))}")
                     else:
                         prompt_parts.append(f"- {c}")
             if findings:
-                prompt_parts.append(f"\nKEY FINDINGS:")
+                prompt_parts.append("\nKEY FINDINGS:")
                 for f in findings[:5]:
                     if isinstance(f, dict):
                         prompt_parts.append(f"- {f.get('finding', f.get('text', str(f)))}")
@@ -195,7 +195,7 @@ class VideoLeadWriter(AgentBase):
                         prompt_parts.append(f"- {f}")
 
         # Add title pattern guidance
-        prompt_parts.append(f"\nTITLE PATTERNS (choose the best fit):")
+        prompt_parts.append("\nTITLE PATTERNS (choose the best fit):")
         for pattern_name, pattern_formula in TITLE_PATTERNS.items():
             prompt_parts.append(f"- {pattern_name}: {pattern_formula}")
 

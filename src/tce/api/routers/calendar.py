@@ -854,7 +854,6 @@ async def regenerate_alternatives(
 
     from tce.llm import get_llm_client
 
-    settings_local = Settings()
     client = get_llm_client("calendar_planner")
 
     seen_block = (

@@ -16,7 +16,7 @@ import structlog
 
 from tce.agents.base import AgentBase
 from tce.agents.registry import register_agent
-from tce.services.video_render import TEMPLATE_COMPOSITIONS, VideoRenderService
+from tce.services.video_render import VideoRenderService
 
 logger = structlog.get_logger()
 
@@ -440,8 +440,6 @@ class VideoAgent(AgentBase):
             from tce.db.workspace_filter import scoped_pick
             from tce.models.brand_profile import BrandProfile
 
-            # Try creator-specific brand first
-            creator_name = context.get("creator_name", "")
             stmt = scoped_pick(BrandProfile)
             result = await self.db.execute(stmt)
             brand = result.scalar_one_or_none()

@@ -16,7 +16,8 @@ jobs:
         env:
           POSTGRES_USER: tce
           POSTGRES_PASSWORD: tce
-          POSTGRES_DB: tce
+          # not "tce": tests/conftest.py refuses localhost:5432/tce as the live database
+          POSTGRES_DB: tce_ci
         ports:
           - 5432:5432
         options: >-
@@ -47,6 +48,6 @@ jobs:
 
       - name: Run tests
         env:
-          TCE_DATABASE_URL: postgresql+asyncpg://tce:tce@localhost:5432/tce
+          TCE_DATABASE_URL: postgresql+asyncpg://tce:tce@localhost:5432/tce_ci
           TCE_ANTHROPIC_API_KEY: sk-ant-test-placeholder
         run: pytest tests/ -v --tb=short

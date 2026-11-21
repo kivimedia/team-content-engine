@@ -139,7 +139,8 @@ def test_seed_has_no_method_reveal_clips_and_weekly_stops_at_drafting(capsys):
 
 def test_no_derren_brown_manipulation_clips_in_matans_seed():
     """Matan rejected the Derren Brown heist ("?? ????", 5-Oct-2026); Ziv: remove the manipulation clips."""
-    import importlib.util, pathlib
+    import importlib.util
+    import pathlib
     path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "seed_matan_lanes.py"
     spec = importlib.util.spec_from_file_location("seed_matan_lanes_t", path)
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)

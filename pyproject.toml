@@ -34,7 +34,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov",
     "factory-boy>=3.3",
-    "ruff>=0.4",
+    "ruff==0.17.6",  # pinned: an unpinned ruff changes what CI fails on
     "mypy>=1.9",
     "aiosqlite>=0.19",
 ]
@@ -48,10 +48,22 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+# 21-Nov (T-23884): CI had been red on every push since March, 2,316 of its 2,597 lint
+# hits long lines, so nobody read it and a missing import reached the live box. Style the
+# code never followed is off; everything that names a real fault (undefined names, unused
+# imports and variables, redefinitions in src) stays on and CI fails on it.
+ignore = [
+    "E501",   # line length
+    "E741",   # a variable called l
+    "E702",   # two statements on one line
+    "I001",   # import order
+    "N806", "N812", "N814", "N818",  # naming style
+    "UP015", "UP017", "UP037", "UP041",  # newer spellings of the same thing
+]
 
 [tool.ruff.lint.per-file-ignores]
-"src/tce/api/dashboard.py" = ["E501"]
-"src/tce/agents/docx_guide_builder.py" = ["E501"]
+# A pytest fixture imported from another test module and then taken as an argument.
+"tests/**" = ["F811"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

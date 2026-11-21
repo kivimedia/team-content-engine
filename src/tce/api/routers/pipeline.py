@@ -2014,7 +2014,7 @@ async def brainstorm(
         if pkg.linkedin_post:
             context_parts.append(f"LINKEDIN POST:\n{pkg.linkedin_post}")
         if pkg.hook_variants:
-            context_parts.append(f"HOOK VARIANTS:\n" + "\n".join(f"- {h}" for h in pkg.hook_variants))
+            context_parts.append("HOOK VARIANTS:\n" + "\n".join(f"- {h}" for h in pkg.hook_variants))
         if pkg.cta_keyword:
             context_parts.append(f"CTA KEYWORD: {pkg.cta_keyword}")
         if pkg.image_prompts:
@@ -2026,7 +2026,7 @@ async def brainstorm(
         if pkg.brief_id:
             brief = await db.get(StoryBrief, pkg.brief_id)
             if brief:
-                brief_lines = [f"STORY BRIEF:"]
+                brief_lines = ["STORY BRIEF:"]
                 for field in ("topic", "audience", "angle_type", "thesis", "desired_belief_shift", "evidence_requirements", "cta_goal", "visual_job"):
                     val = getattr(brief, field, None)
                     if val:
@@ -2456,10 +2456,9 @@ async def run_single_agent(
             detail=f"Agent '{agent_name}' not found. Available: {list(registry.keys())}",
         )
 
-    ws_id = None
     if request.workspace_id:
         try:
-            ws_id = uuid.UUID(request.workspace_id)
+            uuid.UUID(request.workspace_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid workspace_id")
 
