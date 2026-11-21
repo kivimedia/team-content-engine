@@ -151,6 +151,7 @@ def test_jennifers_check_does_not_trim_a_kept_laugh_as_dead_air():
 
 
 def _worker():
+    pytest.importorskip("numpy")  # the worker's own env has it (scripts/setup-laughs.sh)
     path = Path(__file__).resolve().parents[2] / "scripts" / "laugh_worker.py"
     spec = importlib.util.spec_from_file_location("laugh_worker", path)
     module = importlib.util.module_from_spec(spec)

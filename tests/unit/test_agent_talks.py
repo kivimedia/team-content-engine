@@ -213,6 +213,7 @@ async def test_pieces_are_idempotent_per_sequence_number(client, tmp_path):
     assert "2 pieces here" in status["detail"]
 
 
+@needs_ffmpeg  # join() answers 503 before it looks at the pieces when there is no ffmpeg
 async def test_finish_without_piece_zero_waits_for_it(client):
     talk = await _new_talk(client)
     await client.put(f"{BASE}/{talk}/chunks/1", headers=AUTH, content=b"a later piece")

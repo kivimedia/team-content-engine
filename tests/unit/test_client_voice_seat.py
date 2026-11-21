@@ -100,6 +100,9 @@ def test_every_call_link_takes_the_seat_from_the_page():
     for name, js in (("workspace.js", workspace), ("recording.js", recording), ("talk-voice.js", sheet)):
         assert "seat=tce&" not in js, name
         assert 'seat: "tce"' not in js, name
-    assert workspace.count("window.TCE_SCOPED ?") == 0  # every Talk button asks talkOn()
+    # every Talk button asks talkOn(); an owner-only read may still skip itself in a
+    # client login (the news workflow, 8948f55), which is not a call link
+    scoped = [line for line in workspace.splitlines() if "window.TCE_SCOPED ?" in line]
+    assert not [line for line in scoped if re.search(r"talk|voice|seat|mic", line, re.I)], scoped
     assert "seat: voiceSeat()," in workspace
     assert "window.TCE_VOICE_SEAT" in recording

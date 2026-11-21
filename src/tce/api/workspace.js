@@ -2020,7 +2020,7 @@
       html += '<p class="notice is-bad">' + esc(issue) + "</p>";
     });
     // 18-Oct (T-13905): what the editor changed on its own is one tap away, not in the way.
-    var foldHead = '<details class="card-fold"><summary>What the editor changed</summary>';
+    var foldHead = '<details class="card-fold"><summary>What Jennifer changed</summary>';
     html += foldHead;
     // What the subscription changed on its own, and what it did with his last
     // request (25-Sep: TCE edits by itself). Nothing changes unseen.
@@ -3874,7 +3874,7 @@
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
     "check-again", "release-hold", "settle-hold", "note-reply", "rule-delete",
     "rename", "rename-save", "add-anyway", "pubtab", "libcount", "topic-more", "title-review", "style-pick",
-    "pictures-toggle", "picture-add", "picture-remove", "retry-view"
+    "pictures-toggle", "picture-add", "picture-remove", "retry-view", "backdrop-pick"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";

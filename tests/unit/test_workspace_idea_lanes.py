@@ -163,6 +163,7 @@ async def test_owner_request_is_byte_identical_with_profiles_configured(
     assert set(req.output_schema["properties"]["candidates"]["items"]["properties"]) == {
         "moment_ids", "title", "lesson", "audience", "reasons_to_care", "public_angle",
         "public_safety_notes", "gates", "freshness_role", "verification_note", "scores",
+        "primary_moment_id", "solution_central",  # owner fields since 597fbd1
     }
     assert res.max_candidates == 6  # the owner cap is still 6
     prompt = req.messages[0]["content"]
@@ -206,6 +207,7 @@ def test_lane_rules_in_code(lanes_on):
     class _Src:
         def __init__(self, kind):
             self.id = uuid.uuid4()
+            self.workspace_id = uuid.uuid4()  # a lane workspace, never the owner's
             self.source_kind = kind
             self.title = kind
             self.occurred_at = datetime(2026, 9, 1)

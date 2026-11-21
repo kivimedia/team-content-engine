@@ -283,6 +283,7 @@ async def test_more_than_thirty_shards_are_all_dispatched(
     ws = uuid.uuid4()
     src = SimpleNamespace(
         id=uuid.uuid4(),
+        workspace_id=ws,
         occurred_at=datetime(2026, 9, 8, 9),
         source_kind="github_commit_group",
         version_hash="a" * 64,
