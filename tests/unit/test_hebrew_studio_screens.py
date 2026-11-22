@@ -294,7 +294,8 @@ def test_hebrew_studio_and_workspace_render_rtl(server, tmp_path, size):
         assert state["record"] == "הקלטה" and state["pointsTab"] == "נקודות", state
         assert state["scriptTab"] == "תסריט מלא", state
         assert state["readerDir"] == "rtl", state
-        assert state["recordRight"] is not None and state["recordRight"] <= 24, (
+        # On a phone; a computer keeps the camera and words as two columns, mirrored.
+        assert size != "phone" or (state["recordRight"] is not None and state["recordRight"] <= 24), (
             f"Record is not at the right edge in Hebrew: {state}"
         )
         # Point 1 has two sentences, so it reads as two lines; labels are Hebrew.
