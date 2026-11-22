@@ -20,6 +20,7 @@ from tce.models.editorial import RecordingPacket, TopicCandidate
 from tce.models.news import NewsAppraisal, NewsItem
 from tce.models.recording_session import RecordingSession
 from tests.unit.test_editorial_coverage_status import real_queue  # noqa: F401 - fixture
+from tests.unit.hook_script_helpers import fill_hook_scripts
 
 WS = uuid.UUID("aaaaaaaa-1111-4111-8111-111111111111")
 MOMENT = str(uuid.uuid4())
@@ -585,6 +586,7 @@ async def test_an_opening_can_be_chosen_after_the_list_has_grown(editorial_sessi
     ]
     grown.selected_hook_id = "h1"
     await seed(sm, cand, grown)
+    await fill_hook_scripts(sm, WS, packet_id=grown.id)
 
     async with sm() as s:
         clone = await packets.choose_hook(s, WS, grown.id, "h6")

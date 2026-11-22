@@ -20,7 +20,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tce import llm as _llm
-from tce.editorial import lineup, script_check, solution_names, voice_retrieval
+from tce.editorial import hook_scripts, lineup, script_check, solution_names, voice_retrieval
 from tce.editorial.common import (
     SessionSource,
     coerce_uuid,
@@ -186,6 +186,11 @@ OUTPUT_SCHEMA: dict[str, Any] = {
 
 class PacketValidationError(ValueError):
     pass
+
+
+class HookScriptNeeded(PacketValidationError):
+    """The chosen opening has no whole script written for the current words yet
+    (T-24293). Nothing was changed; the caller writes it, then chooses again."""
 
 
 def _lane_profile_for(ws: uuid.UUID | str | None) -> Any:
@@ -1994,20 +1999,30 @@ async def choose_hook(
     selected = next((item for item in options if item.get("id") == hook_id), None)
     if selected is None:
         raise PacketValidationError("hook option not found")
-    phrases = list(original.script_phrases or [])
-    if not phrases:
+    if not list(original.script_phrases or []):
         raise PacketValidationError("packet has no script")
+    # The whole script written for that opening (T-24293), never its first line
+    # swapped in over points and lines written for another opening.
+    target = hook_scripts.ready_script(options, original.selected_hook_id, original, hook_id)
+    if target is None:
+        raise HookScriptNeeded(
+            "the whole script for this opening is not written yet; nothing was changed"
+        )
+    options = hook_scripts.switch_options(
+        options, original.selected_hook_id, original, hook_id, target
+    )
+    phrases = list(target["script_phrases"])
     phrases[0] = str(selected.get("text") or "").strip()
     clean = validate_packet_output(
         {
-            "bullets": list(original.bullets or []),
+            "bullets": list(target["bullets"]),
             "script_phrases": phrases,
             "facebook_post": original.facebook_post,
             "linkedin_post": original.linkedin_post,
             "interviewer_prompt": original.interviewer_prompt,
             "hook_options": options,
             "selected_hook_id": hook_id,
-            "beats": list(original.beats or []),
+            "beats": list(target["beats"]),
         },
         max_hooks=MAX_HOOK_OPTIONS,
         # Switching to another opening must not smuggle a news headline back in.
@@ -2048,7 +2063,7 @@ async def choose_hook(
         facebook_post=clean["facebook_post"],
         linkedin_post=clean["linkedin_post"],
         interviewer_prompt=clean["interviewer_prompt"],
-        hook_options=clean["hook_options"],
+        hook_options=hook_scripts.keep_scripts(options, clean["hook_options"]),
         selected_hook_id=clean["selected_hook_id"],
         beats=clean["beats"],
         citations_private=list(original.citations_private or []),
@@ -2065,3 +2080,309 @@ async def choose_hook(
     original.status = "superseded"
     await session.flush()
     return clone
+
+
+# ---------------------------------------------------------------------------
+# Each opening's whole script (T-24293)
+# ---------------------------------------------------------------------------
+
+
+async def _hook_script_system(session: AsyncSession, ws: uuid.UUID, cand: TopicCandidate) -> str:
+    """The rules the script was written under, then the rewrite task."""
+    if _lane_profile_for(ws) is None:
+        return SYSTEM_PROMPT + "\n\n" + hook_scripts.REWRITE_TASK
+    from tce.editorial import lane_packets
+    from tce.editorial.persona import load_persona
+
+    lane = lineup.lane_for(cand)
+    if lane not in lane_packets._LANE_RULES:
+        raise PacketValidationError(f"this idea has no lane of its own ({lane})")
+    persona = await load_persona(session, ws)
+    return lane_packets.system_prompt(lane, persona) + "\n\n" + hook_scripts.REWRITE_TASK
+
+
+async def write_hook_scripts(
+    sessionmaker_or_session: Any,
+    workspace_id: uuid.UUID | str,
+    packet_id: uuid.UUID | str,
+    *,
+    wait_timeout_s: float | None = None,
+) -> PacketOutcome:
+    """Write the whole script of every opening that has none for the words held now.
+
+    One subscription job for all of them. The same words asked for again reuse
+    the same job, so the early write made when a script is saved and a pick
+    made later share one answer. `wait_timeout_s=0` only puts the job in the
+    queue (the early write); a pick waits for it.
+    """
+    ws = coerce_uuid(workspace_id)
+    async with open_session(sessionmaker_or_session) as session:
+        packet = (
+            await session.execute(
+                select(RecordingPacket).where(
+                    RecordingPacket.id == coerce_uuid(packet_id),
+                    RecordingPacket.workspace_id == ws,
+                )
+            )
+        ).scalar_one_or_none()
+        if packet is None:
+            return PacketOutcome(status="invalid", detail="packet not found")
+        if packet.status == "superseded":
+            return PacketOutcome(
+                status="invalid",
+                detail=f"script version {packet.version} was replaced by a newer one",
+            )
+        options = list(packet.hook_options or [])
+        missing = hook_scripts.missing_hooks(options, packet.selected_hook_id, packet)
+        if not missing:
+            return PacketOutcome(
+                status="ok",
+                packet=packet_to_json(packet),
+                detail="every opening already has its whole script",
+            )
+        taking = (
+            await session.execute(
+                select(RecordingSession.packet_version).where(
+                    RecordingSession.workspace_id == ws,
+                    RecordingSession.candidate_id == packet.candidate_id,
+                    RecordingSession.status.in_(RECORDING_IN_PROGRESS_STATUSES),
+                )
+            )
+        ).first()
+        if taking is not None:
+            return PacketOutcome(
+                status="invalid",
+                detail=(
+                    f"a take set is in progress on packet version {taking[0]}; "
+                    "finish that session before changing the opening"
+                ),
+            )
+        cand = (
+            await session.execute(
+                select(TopicCandidate).where(
+                    TopicCandidate.id == packet.candidate_id, TopicCandidate.workspace_id == ws
+                )
+            )
+        ).scalar_one_or_none()
+        if cand is None:
+            return PacketOutcome(status="invalid", detail="idea not found")
+        try:
+            system = await _hook_script_system(session, ws, cand)
+        except PacketValidationError as exc:
+            return PacketOutcome(status="invalid", detail=str(exc))
+        prompt = hook_scripts.build_prompt(packet, cand, missing)
+        request = LLMRequest(
+            job_type=hook_scripts.JOB_TYPE,
+            agent_name=hook_scripts.AGENT_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            system=system,
+            output_schema=hook_scripts.SCHEMA,
+            max_tokens=min(16000, 1500 + 2000 * len(missing)),
+            prompt_version=hook_scripts.PROMPT_VERSION,
+            workspace_id=ws,
+            run_id=cand.id,
+            idempotency_key=hook_scripts.request_key(ws, system, prompt),
+        )
+        sig = hook_scripts.script_sig(packet)
+        try:
+            llm = await _llm.complete(request, wait_timeout_s=wait_timeout_s, requeue_failed=True)
+        except LLMUnavailable as exc:
+            return PacketOutcome(
+                status=exc.status, job_id=exc.job_id, detail=exc.detail, retry_at=exc.retry_at
+            )
+        return await _apply_hook_scripts(
+            session, ws, packet, llm.structured or llm.text, llm.job_id, sig=sig, asked=missing
+        )
+
+
+async def _apply_hook_scripts(
+    session: AsyncSession,
+    ws: uuid.UUID,
+    packet: RecordingPacket,
+    payload: Any,
+    job_id: uuid.UUID | None,
+    *,
+    sig: str,
+    asked: list[str],
+) -> PacketOutcome:
+    """Keep each usable script on its opening, on the version that is current now.
+
+    Stored on the version itself: the words being recorded do not change, only
+    what each opening would bring with it. A script that fails the same checks
+    a chosen script has to pass is dropped and said, never kept.
+    """
+    current = (
+        (
+            await session.execute(
+                select(RecordingPacket)
+                .where(
+                    RecordingPacket.workspace_id == ws,
+                    RecordingPacket.candidate_id == packet.candidate_id,
+                    RecordingPacket.status != "superseded",
+                )
+                .order_by(RecordingPacket.version.desc())
+                .limit(1)
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if current is None or current.id != packet.id or hook_scripts.script_sig(current) != sig:
+        return PacketOutcome(
+            status="invalid",
+            job_id=job_id,
+            detail=(
+                "the script changed while the openings' scripts were being written; "
+                "nothing was changed. Choose the opening again"
+            ),
+        )
+    lane_ws = _lane_profile_for(ws) is not None
+    lane = None
+    if lane_ws:
+        from tce.editorial import lane_packets
+
+        cand = (
+            await session.execute(
+                select(TopicCandidate).where(
+                    TopicCandidate.workspace_id == ws, TopicCandidate.id == current.candidate_id
+                )
+            )
+        ).scalar_one_or_none()
+        lane = lineup.lane_for(cand) if cand is not None else None
+    news_terms = await news_terms_for(session, ws, current.candidate_id)
+    options = list(current.hook_options or [])
+    by_id = {str(o.get("id")): o for o in options}
+    fit = hook_scripts.scripts_fit(options, current.selected_hook_id, current)
+    fresh: list[dict[str, Any]] = []
+    for option in options:
+        item = dict(option)
+        if str(item.get("id")) == str(current.selected_hook_id):
+            item[hook_scripts.SCRIPT_KEY] = {
+                **hook_scripts.script_of(current),
+                "payoff_phrase_id": item.get("payoff_phrase_id"),
+            }
+        elif not fit:
+            item.pop(hook_scripts.SCRIPT_KEY, None)
+        fresh.append(item)
+    written: dict[str, dict[str, Any]] = {}
+    dropped: list[str] = []
+    for entry in hook_scripts.parse_scripts(payload):
+        hook_id = str(entry.get("hook_id") or "")
+        option = by_id.get(hook_id)
+        if option is None or hook_id not in asked:
+            continue
+        label = str(option.get("text") or "")[:40]
+        phrases = [str(p).strip() for p in (entry.get("script_phrases") or []) if str(p).strip()]
+        if phrases:
+            # The opening is said exactly as chosen.
+            phrases[0] = str(option.get("text") or "").strip()
+        draft = {
+            "bullets": [str(b).strip() for b in (entry.get("bullets") or [])],
+            "script_phrases": phrases,
+            "beats": list(entry.get("beats") or []),
+            "payoff_phrase_id": str(entry.get("payoff_phrase_id") or ""),
+        }
+        try:
+            clean = validate_packet_output(
+                {
+                    **draft,
+                    "facebook_post": current.facebook_post,
+                    "linkedin_post": current.linkedin_post,
+                    "interviewer_prompt": current.interviewer_prompt,
+                    "hook_options": hook_scripts.switch_options(
+                        fresh, current.selected_hook_id, current, hook_id, draft
+                    ),
+                    "selected_hook_id": hook_id,
+                },
+                max_hooks=MAX_HOOK_OPTIONS,
+                news_terms=news_terms,
+                require_linkedin=not lane_ws,
+            )
+            if lane_ws:
+                from tce.editorial import lane_packets
+
+                problems = lane_packets.lane_errors(clean, lane) if lane else []
+                if problems:
+                    raise PacketValidationError("; ".join(problems))
+        except PacketValidationError as exc:
+            dropped.append(f"{label}...: {exc}")
+            continue
+        written[hook_id] = {
+            "bullets": clean["bullets"],
+            "script_phrases": clean["script_phrases"],
+            "beats": clean["beats"],
+            "payoff_phrase_id": hook_scripts._payoff_in(clean, draft["payoff_phrase_id"]),
+        }
+    if not written:
+        return PacketOutcome(
+            status="failed",
+            job_id=job_id,
+            detail="; ".join(dropped) or "no usable script came back",
+            errors=dropped,
+        )
+    for item in fresh:
+        if str(item.get("id")) in written:
+            item[hook_scripts.SCRIPT_KEY] = written[str(item.get("id"))]
+    current.hook_options = fresh
+    await session.commit()
+    return PacketOutcome(
+        status="ok",
+        job_id=job_id,
+        packet=packet_to_json(current),
+        detail=f"{len(written)} opening(s) now have their whole script",
+        errors=dropped,
+    )
+
+
+async def queue_hook_scripts(sessionmaker: Any, workspace_id: Any, packet_id: Any) -> None:
+    """The early write: put the job in the queue the moment a script is saved.
+
+    Never waits and never fails what called it; a pick later reuses the job.
+    """
+    try:
+        await write_hook_scripts(sessionmaker, workspace_id, packet_id, wait_timeout_s=0)
+    except Exception:  # noqa: BLE001 - an early write must never break a save
+        import structlog
+
+        structlog.get_logger().warning(
+            "editorial.hook_scripts_queue_failed", packet_id=str(packet_id)
+        )
+
+
+async def choose_hook_with_script(
+    sessionmaker: Any,
+    workspace_id: uuid.UUID | str,
+    packet_id: uuid.UUID | str,
+    hook_id: str,
+    *,
+    wait_timeout_s: float | None = None,
+) -> PacketOutcome:
+    """Choose an opening, writing its whole script first when it has none.
+
+    The opening is changed only once its whole script is there. Anything that
+    stops the writer leaves the version as it was, so what the recorder shows
+    still matches its own first line.
+    """
+    ws = coerce_uuid(workspace_id)
+    for attempt in range(2):
+        async with open_session(sessionmaker) as db:
+            try:
+                packet = await choose_hook(db, ws, packet_id, hook_id)
+            except HookScriptNeeded:
+                if attempt:
+                    return PacketOutcome(
+                        status="failed",
+                        detail="the script for this opening could not be written",
+                    )
+            else:
+                await db.commit()
+                return PacketOutcome(
+                    status="ok", packet=packet_to_json(packet), detail="Opening changed"
+                )
+        written = await write_hook_scripts(
+            sessionmaker, ws, packet_id, wait_timeout_s=wait_timeout_s
+        )
+        if written.status != "ok":
+            return written
+    return PacketOutcome(status="failed", detail="the opening was not changed")

@@ -335,6 +335,11 @@ async def _execute_stage(sm: Any, run: ContentRun, stage: str, attempt: int = 1)
             if len(packet_ids) >= wanted:
                 break
             outcome = await build_packet(sm, run.workspace_id, uuid.UUID(candidate_id))
+            if outcome.packet is not None:
+                # Each opening's whole script is written ahead (T-24293).
+                from tce.editorial.packets import queue_hook_scripts
+
+                await queue_hook_scripts(sm, run.workspace_id, outcome.packet["id"])
             if outcome.status == "waiting_capacity":
                 raise runs.StageWaitingError(
                     "waiting_capacity", outcome.detail or "packet waiting", outcome.retry_at

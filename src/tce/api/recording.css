@@ -133,6 +133,9 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .hook-use { min-height: 46px; margin-top: 4px; border: 2px solid var(--ink); border-radius: 10px; background: var(--white); font-weight: 900; }
 .hook-option.is-current .hook-use { background: var(--moss); color: #fff; }
 .hook-use:disabled { opacity: .55; cursor: wait; }
+/* T-24293: the pressed opening says what is happening, in full color, while its whole script is written. */
+.hook-use.is-writing, .hook-use.is-writing:disabled { opacity: 1; background: var(--white); color: var(--ink); border-style: dashed; font-size: max(1rem, 15px); line-height: 1.3; padding: 8px 12px; }
+.hook-note { margin: 10px 0 0; padding: 10px 12px; border-left: 4px solid var(--signal); background: #fff4f1; color: var(--ink); font-size: max(1rem, 15px); line-height: 1.4; }
 .reader-shell { display: grid; grid-template-columns: 52px minmax(0, 1fr) 52px; min-height: 0; background: var(--white); overflow: hidden; }
 .reader-shell > * { min-height: 0; overflow: hidden; }
 .beat-rail, .size-rail { background: #e6edf2; display: flex; flex-direction: column; align-items: center; }
@@ -174,7 +177,8 @@ body.rec-live .reader { -webkit-user-select: none; user-select: none; -webkit-to
 .hook-view-actions { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .secondary-button { min-height: 52px; padding: 0 18px; border: 2px solid var(--ink); border-radius: 12px; background: var(--white); font-weight: 900; }
 .secondary-button:disabled { opacity: .5; }
-.hook-view-state { color: #34435a; font-size: .9rem; line-height: 1.35; }
+/* T-24293: also the line that says the whole script is being written; never under the house minimum. */
+.hook-view-state { color: #34435a; font-size: max(.9rem, 15px); line-height: 1.35; }
 /* A chosen opening the scan flagged: which line and why, below the sticky header. */
 .hook-flags { margin: 14px 0 0; padding: 12px 14px; border: 2px solid var(--signal); border-radius: 12px; background: #fff4f1; color: var(--ink); line-height: 1.4; scroll-margin-top: 84px; }
 .hook-flags strong { display: block; color: #8f1d1d; }

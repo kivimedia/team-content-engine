@@ -38,13 +38,19 @@ function hookChooserModel(idea, context = {}) {
       text: hook.text,
       question: hook.question,
       rationale: hook.rationale,
-      payoff: payoffPhrase(phrases, hook.payoff_phrase_id),
+      // Each opening carries its own whole script (T-24293); its payoff is a line of that one.
+      payoff: hook.script && Array.isArray(hook.script.script_phrases) && hook.id !== currentId
+        ? payoffPhrase(hook.script.script_phrases, hook.script.payoff_phrase_id)
+        : payoffPhrase(phrases, hook.payoff_phrase_id),
       rank: index + 1,
       recommended: index === 0,
       current: hook.id === currentId,
     })),
   };
 }
+
+// What picking an opening does (T-24293): the whole script is written for it.
+const HOOK_HINT = "Pick how it opens. The whole script, points and lines, is written to follow from that opening.";
 
 function packetToIdea(idea, packet) {
   // The choose-hook response is packet_to_json (id/version); the queue speaks
@@ -815,7 +821,7 @@ function rebindIdeas(ideas, next) {
 
   function renderHookChooser(model) {
     renderHookOptions($("hookOptions"), model, (hookId) => applyHookChoice(hookId));
-    $("hookChooserHint").textContent = "Pick the first spoken line. The rest of the script stays the same.";
+    $("hookChooserHint").textContent = HOOK_HINT;
     $("hookPanel").hidden = true;
     $("hookChooser").hidden = false;
   }
@@ -911,14 +917,18 @@ function rebindIdeas(ideas, next) {
     try {
       let next = idea;
       const currentId = idea.selected_hook_id || idea.hook_options?.[0]?.id;
+      document.querySelectorAll(".hook-option .hook-note").forEach((note) => note.remove());
       if (hookId !== currentId) {
-        $("hookChooserHint").textContent = "Creating the packet version with this opening";
+        hookProgress("Switching to this opening and its whole script", hookId);
         const response = await fetch(`${apiV1}/editorial/packets/${idea.packet_id}/choose-hook`, {
           method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ hook_id: hookId }),
         });
-        const data = await response.json().catch(() => ({}));
+        let data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || `Request failed with ${response.status}`);
+        // 202: the whole script for this opening is being written. The recorder
+        // stays shut until it is there; the old script never shows under it.
+        if (response.status === 202) data = await waitForHookScript(idea);
         next = packetToIdea(idea, data);
         state.ideas = rebindIdeas(state.ideas, next);
         state.idea = next;
@@ -939,12 +949,69 @@ function rebindIdeas(ideas, next) {
         setMode(state.mode);
         showNotice(`Opening changed. Packet version ${next.packet_version} is bound to this take set.`, 6000);
       }
+      hookProgress("");
       closeHookChooser();
       await ensureSession();
     } catch (error) {
-      showNotice(error.message, 7000);
-      $("hookChooserHint").textContent = error.message;
+      // Said on the opening he tapped, where his thumb is, never as a toast over
+      // the cards (T-24293). The opening did not change.
+      hookProgress("");
       buttons.forEach((button) => { button.disabled = false; });
+      hookNote(hookId, error.message);
+      $("hookChooserHint").textContent = error.message;
+      const state = $("moreHooksState");
+      if (state && !$("hookView").hidden) state.textContent = error.message;
+    }
+  }
+
+  function hookButtons(hookId) {
+    return [...document.querySelectorAll(".hook-option")]
+      .filter((card) => card.dataset.hookId === hookId)
+      .map((card) => card.querySelector(".hook-use"))
+      .filter(Boolean);
+  }
+
+  // One plain line ON the button he pressed, so a pick never looks frozen.
+  function hookProgress(text, hookId = hookProgress.hookId) {
+    hookProgress.hookId = hookId;
+    $("hookChooserHint").textContent = text || HOOK_HINT;
+    for (const button of hookButtons(hookId || "")) {
+      if (!button.dataset.label) button.dataset.label = button.textContent;
+      button.textContent = text || button.dataset.label;
+      button.classList.toggle("is-writing", Boolean(text));
+      button.setAttribute("aria-live", "polite");
+    }
+  }
+
+  function hookNote(hookId, text) {
+    document.querySelectorAll(".hook-option .hook-note").forEach((note) => note.remove());
+    for (const button of hookButtons(hookId)) {
+      const note = document.createElement("p");
+      note.className = "hook-note";
+      note.setAttribute("role", "status");
+      note.textContent = text;
+      button.insertAdjacentElement("afterend", note);
+      if (!note.closest("[hidden]")) note.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+
+  async function waitForHookScript(idea) {
+    const started = Date.now();
+    for (;;) {
+      const seconds = Math.round((Date.now() - started) / 1000);
+      hookProgress(seconds < 5
+        ? "Writing the whole script for this opening"
+        : `Writing its whole script (${seconds}s so far)`);
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const response = await fetch(`${apiV1}/editorial/packets/${idea.packet_id}/choose-hook-status`, { credentials: "same-origin" });
+      const data = await response.json().catch(() => ({}));
+      if (data.state === "done" && data.result?.packet) return data.result.packet;
+      if (data.state === "failed" || data.state === "idle") {
+        throw new Error(data.detail || "The opening was not changed. Try again in a minute.");
+      }
+      if (Date.now() - started > 10 * 60 * 1000) {
+        throw new Error("Still writing after ten minutes, so the opening was not changed yet. Pick it again in a few minutes.");
+      }
     }
   }
 

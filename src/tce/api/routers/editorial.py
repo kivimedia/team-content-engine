@@ -39,11 +39,15 @@ from tce.editorial.feedback import (
     summarize_feedback,
 )
 from tce.editorial.packets import (
+    HookScriptNeeded,
+    PacketOutcome,
     PacketValidationError,
     build_packet,
     choose_hook,
+    choose_hook_with_script,
     list_packets,
     more_hook_options,
+    queue_hook_scripts,
     voice_pass,
 )
 from tce.editorial.selector import MAX_CANDIDATES_CAP, select_candidates
@@ -511,6 +515,9 @@ async def _run_packet(
     activity, detail = f"Packet {outcome.status}", outcome.detail
     if state == "waiting":
         activity, detail = job_status.packet_wait_words(outcome.status, outcome.retry_at)
+    if state == "done" and outcome.packet:
+        # Each opening's whole script is written ahead, so a pick is instant (T-24293).
+        await queue_hook_scripts(sm, ws, outcome.packet["id"])
     # A save the job's own answer refused (a stricter check at save time,
     # evidence from outside the idea, the idea put away) is refused the same
     # way every time, so it is marked for the tick and for what he is told.
@@ -867,17 +874,126 @@ async def get_packet(
 async def choose_packet_hook(
     packet_id: str,
     body: HookChoiceRequest,
+    background: BackgroundTasks,
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
+    """Choose an opening; its whole script comes with it (T-24293).
+
+    Instant when the opening's script was written ahead (it is, as soon as a
+    script or new openings are saved). Otherwise this answers 202 at once and
+    writes it in the background: the page polls choose-hook-status and the
+    opening changes only when the whole script is there.
+    """
+    pid = _parse_uuid(packet_id, "packet")
+    if job_status.is_running(ws, "choose_hook", str(pid)):
+        return _choose_hook_running(pid)
     async with open_session(sm) as db:
         try:
-            packet = await choose_hook(db, ws, packet_id, body.hook_id)
+            packet = await choose_hook(db, ws, pid, body.hook_id)
+        except HookScriptNeeded:
+            packet = None
         except PacketValidationError as exc:
             code = 404 if str(exc) in {"packet not found", "hook option not found"} else 409
             raise HTTPException(status_code=code, detail=str(exc)) from exc
-        await db.commit()
-    return packet_to_json(packet)
+        if packet is not None:
+            await db.commit()
+            return packet_to_json(packet)
+        # Nothing to write with: the subscription is parked on its limit, so the
+        # writer cannot run. Said plainly; the opening stays as it is.
+        parked = await job_status.capacity_park(db)
+    if parked is not None:
+        raise HTTPException(status_code=409, detail=hook_writer_parked_words(parked))
+    # A job written ahead and already finished is used at once.
+    early = await choose_hook_with_script(sm, ws, pid, body.hook_id, wait_timeout_s=0)
+    if early.status == "ok" and early.packet is not None:
+        return early.packet
+    if early.status != "timeout":
+        # The limit reached (or anything else that stops the writer) is said now,
+        # in words; only a job still queued is waited for in the background.
+        raise HTTPException(status_code=409, detail=hook_writer_words(early))
+    job_status.start(ws, "choose_hook", str(pid), "Writing the whole script for this opening")
+    background.add_task(_run_choose_hook, sm, ws, pid, body.hook_id)
+    return _choose_hook_running(pid)
+
+
+def hook_writer_parked_words(retry_at: Any) -> str:
+    when = f" until {job_status.israel_time(retry_at)}" if retry_at else ""
+    return (
+        f"The script writer is resting on your Claude limit{when}, so the whole script for "
+        "this opening cannot be written now. The opening was not changed, and the script "
+        "you have still matches its first line."
+    )
+
+
+def hook_writer_words(outcome: Any) -> str:
+    if outcome.status == "waiting_capacity":
+        return hook_writer_parked_words(outcome.retry_at)
+    if outcome.status == "invalid" and outcome.detail:
+        return f"The opening was not changed: {outcome.detail}."
+    return (
+        "The whole script for this opening could not be written, so the opening was not "
+        "changed and the script you have still matches its first line. Try again in a "
+        "minute."
+    )
+
+
+def _choose_hook_running(pid: uuid.UUID) -> Any:
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": "writing",
+            "packet_id": str(pid),
+            "message": "Writing the whole script for this opening",
+            "status_url": f"/api/v1/editorial/packets/{pid}/choose-hook-status",
+        },
+    )
+
+
+async def _run_choose_hook(sm: Any, ws: uuid.UUID, pid: uuid.UUID, hook_id: str) -> None:
+    key = str(pid)
+    try:
+        outcome = await choose_hook_with_script(sm, ws, pid, hook_id)
+    except PacketValidationError as exc:
+        job_status.update(
+            ws, "choose_hook", key, state="failed",
+            current_activity="The opening was not changed", detail=f"The opening was not changed: {exc}.",
+        )
+        return
+    except Exception as exc:
+        logger.exception("editorial.choose_hook_failed", workspace_id=str(ws), packet_id=key)
+        job_status.update(
+            ws, "choose_hook", key, state="failed",
+            current_activity="The opening was not changed",
+            detail=hook_writer_words(PacketOutcome(status="failed", detail=type(exc).__name__)),
+        )
+        return
+    if outcome.status == "ok":
+        job_status.update(
+            ws, "choose_hook", key, state="done", current_activity="Opening changed",
+            detail="Opening changed, with the whole script written for it.",
+            result={"status": "ok", "packet": outcome.packet},
+        )
+        return
+    job_status.update(
+        ws, "choose_hook", key, state="failed",
+        current_activity="The opening was not changed", detail=hook_writer_words(outcome),
+        result={"status": outcome.status},
+    )
+
+
+@router.get("/packets/{packet_id}/choose-hook-status")
+async def choose_packet_hook_status(
+    packet_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+) -> dict[str, Any]:
+    pid = _parse_uuid(packet_id, "packet")
+    entry = job_status.get(ws, "choose_hook", str(pid))
+    if entry is None:
+        return {"packet_id": str(pid), "state": "idle", "current_activity": "Nothing chosen yet"}
+    return {"packet_id": str(pid), **entry}
 
 
 async def _run_more_hooks(sm: Any, ws: uuid.UUID, packet_id: uuid.UUID) -> None:
@@ -898,6 +1014,9 @@ async def _run_more_hooks(sm: Any, ws: uuid.UUID, packet_id: uuid.UUID) -> None:
     state = {"ok": "done", "waiting_capacity": "waiting", "waiting_worker": "waiting"}.get(
         outcome.status, "failed"
     )
+    if outcome.status == "ok" and outcome.packet:
+        # The new openings get their whole scripts written ahead (T-24293).
+        await queue_hook_scripts(sm, ws, outcome.packet["id"])
     job_status.update(
         ws,
         "more_hooks",
@@ -1037,6 +1156,9 @@ async def packet_voice_pass(
     outcome = await voice_pass(sm, ws, _parse_uuid(packet_id, "packet"))
     if outcome.status == "invalid":
         raise HTTPException(status_code=409, detail=outcome.detail or "cannot run the voice pass")
+    if outcome.status == "ok" and outcome.packet:
+        # Openings it wrote get their whole scripts written ahead (T-24293).
+        await queue_hook_scripts(sm, ws, outcome.packet["id"])
     return outcome.to_dict()
 
 

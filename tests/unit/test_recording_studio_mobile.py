@@ -53,8 +53,13 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-async def _seed(sessionmaker, rank=1) -> dict:
+async def _seed(sessionmaker, rank=1, scripts=True) -> dict:
     output = good_output()
+    if scripts:
+        # Each opening with its whole script, as the early write leaves them (T-24293).
+        from tests.unit.test_recording_hook_choice import with_scripts
+
+        output["hook_options"] = with_scripts(output)
     cand = TopicCandidate(
         id=uuid.uuid4(),
         workspace_id=WS,
@@ -297,7 +302,13 @@ async def _set_hook_text(sessionmaker, packet_id: str, hook_id: str, text: str) 
     async with sessionmaker() as s:
         row = await s.get(RecordingPacket, uuid.UUID(packet_id))
         options = [dict(option) for option in row.hook_options]
-        next(option for option in options if option["id"] == hook_id)["text"] = text
+        chosen = next(option for option in options if option["id"] == hook_id)
+        chosen["text"] = text
+        if isinstance(chosen.get("script"), dict):
+            chosen["script"] = {
+                **chosen["script"],
+                "script_phrases": [text, *chosen["script"]["script_phrases"][1:]],
+            }
         row.hook_options = options
         await s.commit()
 
@@ -843,3 +854,173 @@ def test_a_huge_three_by_four_camera_is_recorded_as_full_hd_nine_by_sixteen(stud
         assert shape == [1080, 1920], f"a 3000x4000 camera was not turned into full HD 9:16: {shape}"
         context.close()
         browser.close()
+
+
+async def _drop_script(sessionmaker, packet_id: str, hook_id: str) -> None:
+    async with sessionmaker() as s:
+        row = await s.get(RecordingPacket, uuid.UUID(packet_id))
+        options = [dict(option) for option in row.hook_options]
+        next(option for option in options if option["id"] == hook_id).pop("script", None)
+        row.hook_options = options
+        await s.commit()
+
+
+def _phone(pw):
+    from playwright.sync_api import Error as PlaywrightError
+
+    try:
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+        )
+    except PlaywrightError as exc:  # pragma: no cover - environment dependent
+        pytest.skip(f"Chromium is not installed for Playwright: {exc}")
+    context = browser.new_context(
+        viewport=PHONE, device_scale_factor=2, is_mobile=True, has_touch=True,
+        permissions=["camera", "microphone"],
+    )
+    return browser, context.new_page()
+
+
+PROGRESS_JS = """
+(hookId) => {
+  const card = document.querySelector(`#hookView .hook-option[data-hook-id="${hookId}"]`);
+  const el = card.querySelector('.hook-use');
+  const note = card.querySelector('.hook-note');
+  const r = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  // What is really on top at the middle of the line: nothing may cover it.
+  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  const nav = document.getElementById('bottomNav');
+  const navTop = nav ? nav.getBoundingClientRect().top : window.innerHeight;
+  const notice = document.getElementById('notice');
+  return {
+    text: el.textContent,
+    note: note ? note.textContent : null,
+    noteFontPx: note ? parseFloat(getComputedStyle(note).fontSize) : null,
+    onScreen: r.top >= 0 && r.bottom <= Math.min(window.innerHeight, navTop) + 1,
+    uncovered: Boolean(hit && (hit === el || el.contains(hit))),
+    fits: r.left >= 0 && r.right <= window.innerWidth + 1,
+    fontPx: parseFloat(style.fontSize),
+    opacity: parseFloat(style.opacity),
+    overflowX: document.documentElement.scrollWidth > window.innerWidth + 1,
+    toastShown: Boolean(notice && !notice.hidden),
+    studioHidden: document.getElementById('studioView').hidden,
+    othersDisabled: [...document.querySelectorAll('#hookView .hook-use')].every((b) => b.disabled),
+  };
+}
+"""
+
+
+def test_a_pick_waits_for_its_whole_script_with_a_progress_line(studio, tmp_path, monkeypatch):
+    """T-24293: the third opening had no whole script yet. The page says it is
+    writing, keeps the recorder shut, and opens it on the script written for
+    that opening, so line two follows from it."""
+    from playwright.sync_api import sync_playwright
+
+    from tce.editorial import packets as packets_mod
+    from tce.llm import LLMUnavailable
+
+    asyncio.run(_drop_script(studio["sessionmaker"], studio["packet_id"], "hook-3"))
+    third = studio["hooks"][2]["text"]
+
+    class Result:
+        def __init__(self, data):
+            self.structured, self.text, self.job_id = data, "", uuid.uuid4()
+
+    async def complete(request, *, wait_timeout_s=None, **_kw):
+        if wait_timeout_s == 0:
+            raise LLMUnavailable("timeout", "queued", job_id=uuid.uuid4())
+        await asyncio.sleep(7)  # the writer takes a while
+        from tests.unit.test_recording_hook_choice import script_for
+
+        return Result({"scripts": [{"hook_id": "hook-3", **script_for(third, "hook 3")}]})
+
+    monkeypatch.setattr(packets_mod._llm, "complete", complete)
+    with sync_playwright() as pw:
+        browser, page = _phone(pw)
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(f"{studio['base']}/record")
+        page.wait_for_selector(".idea-card")
+        page.click(".idea-card")
+        page.locator("#hookView").wait_for(state="visible")
+        hint = page.locator("#hookView .hook-view-hint").text_content()
+        assert "whole script" in hint and "stays the same" not in hint, hint
+
+        page.locator("#hookView .hook-option").nth(2).locator(".hook-use").click()
+        page.wait_for_function(
+            "() => document.querySelector('#hookView .hook-option[data-hook-id=\"hook-3\"] .hook-use')"
+            ".textContent.includes('Writing')",
+            timeout=5000,
+        )
+        during = page.evaluate(PROGRESS_JS, "hook-3")
+        # On the button he pressed, on screen, uncovered, full strength, readable.
+        assert during["onScreen"] and during["uncovered"] and during["fits"], during
+        assert not during["overflowX"] and during["opacity"] == 1, during
+        assert during["fontPx"] >= 15, during
+        assert during["studioHidden"] and during["othersDisabled"], during
+        page.wait_for_function(
+            "() => /\\(\\d+s so far\\)/.test(document.querySelector("
+            "'#hookView .hook-option[data-hook-id=\"hook-3\"] .hook-use').textContent)",
+            timeout=10000,
+        )
+        page.screenshot(path=str(tmp_path / "hook-writing-phone.png"))
+
+        try:
+            page.wait_for_selector("#studioView:not([hidden])", timeout=30000)
+        except Exception:
+            raise AssertionError(page.evaluate(PROGRESS_JS, "hook-3")) from None
+        page.click("#scriptTab")
+        lines = page.locator("#reader .reader-line").all_text_contents()
+        assert lines[0].endswith(third), lines
+        assert lines[1].endswith("Here is the hook 3 part people skip."), lines
+        page.screenshot(path=str(tmp_path / "hook-written-phone.png"))
+        browser.close()
+    assert not errors, errors
+
+
+def test_no_writer_capacity_keeps_the_opening_and_says_so(studio, tmp_path, monkeypatch):
+    from playwright.sync_api import sync_playwright
+
+    from tce.editorial import status as job_status
+
+    asyncio.run(_drop_script(studio["sessionmaker"], studio["packet_id"], "hook-2"))
+
+    async def parked(_session, **_kw):
+        return datetime(2026, 11, 23, 17, 0)
+
+    monkeypatch.setattr(job_status, "capacity_park", parked)
+    with sync_playwright() as pw:
+        browser, page = _phone(pw)
+        page.goto(f"{studio['base']}/record")
+        page.wait_for_selector(".idea-card")
+        page.click(".idea-card")
+        page.locator("#hookView").wait_for(state="visible")
+        page.locator("#hookView .hook-option").nth(1).locator(".hook-use").click()
+        page.wait_for_selector("#hookView .hook-option[data-hook-id='hook-2'] .hook-note")
+        after = page.evaluate(PROGRESS_JS, "hook-2")
+        assert "Claude limit" in after["note"] and "matches its first line" in after["note"], after
+        assert after["noteFontPx"] >= 15, after
+        # Said in the card, never as a toast floating over the other openings.
+        assert not after["toastShown"], after
+        assert after["text"] == "Use this opening" and after["studioHidden"], after
+        assert not after["othersDisabled"], after
+        page.wait_for_timeout(800)  # the smooth scroll that brings the note into view
+        box = page.evaluate(
+            """() => { const n = document.querySelector('#hookView .hook-note').getBoundingClientRect();
+                       const nav = document.getElementById('bottomNav').getBoundingClientRect();
+                       return {top: n.top, bottom: n.bottom, navTop: nav.top}; }"""
+        )
+        assert box["top"] >= 0 and box["bottom"] <= box["navTop"] + 1, box
+        page.screenshot(path=str(tmp_path / "hook-no-capacity-phone.png"))
+        browser.close()
+    queue = asyncio.run(_queue_versions(studio["sessionmaker"]))
+    assert queue == [1]
+
+
+async def _queue_versions(sessionmaker) -> list[int]:
+    from sqlalchemy import select
+
+    async with sessionmaker() as s:
+        return [r.version for r in (await s.execute(select(RecordingPacket))).scalars().all()]

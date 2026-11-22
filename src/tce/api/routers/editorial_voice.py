@@ -134,9 +134,10 @@ async def voice_activity(
 @router.post("/voice/change")
 async def voice_change(
     body: VoiceChangeRequest,
+    background: BackgroundTasks,
     ws: uuid.UUID = Depends(require_private_workspace),
     sm: Any = Depends(get_editorial_sessionmaker),
-) -> dict[str, Any]:
+) -> Any:
     """Propose and apply in one call. Undo it with /change-sets/{id}/undo.
 
     The topic is named by its id only; a missing or unknown one is refused in words.
@@ -163,7 +164,37 @@ async def voice_change(
                 # Anything else writes nothing: a move that failed halfway must not
                 # leave the moves before it, or a proposal waiting for a yes or no.
                 await db.rollback()
+            if getattr(error, "code", None) == "hook_script_writing":
+                await _start_hook_script(db, background, sm, ws, error)
+                # Returned, not raised: a raised error drops the background write.
+                from fastapi.responses import JSONResponse
+
+                http = _http(error)
+                return JSONResponse(status_code=http.status_code, content={"detail": http.detail})
             raise _http(error) from error
+
+
+async def _start_hook_script(
+    db: Any, background: BackgroundTasks, sm: Any, ws: uuid.UUID, error: Exception
+) -> None:
+    """A spoken pick of an opening with no whole script yet (T-24293): write it,
+    then switch, the same way a tap on the phone does. Said plainly when the
+    writer cannot run now."""
+    from tce.api.routers import editorial as editorial_router
+    from tce.editorial import status as job_status
+
+    extra = getattr(error, "extra", {}) or {}
+    pid = uuid.UUID(str(extra["packet_id"]))
+    parked = await job_status.capacity_park(db)
+    if parked is not None:
+        error.message = editorial_router.hook_writer_parked_words(parked)  # type: ignore[attr-defined]
+        error.code = "hook_script_parked"  # type: ignore[attr-defined]
+        return
+    if not job_status.is_running(ws, "choose_hook", str(pid)):
+        job_status.start(ws, "choose_hook", str(pid), "Writing the whole script for this opening")
+        background.add_task(
+            editorial_router._run_choose_hook, sm, ws, pid, str(extra["hook_id"])
+        )
 
 
 @router.post("/change-sets/{change_set_id}/undo")

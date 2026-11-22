@@ -13,6 +13,7 @@ from tce.editorial import packets
 from tce.editorial.safety import scan_public_text
 from tce.llm import LLMResult, LLMUnavailable
 from tce.models.editorial import EvidenceSource, RecordingPacket, TopicCandidate
+from tests.unit.hook_script_helpers import fill_hook_scripts
 
 
 def good_output(**over) -> dict:
@@ -394,6 +395,7 @@ async def test_choose_hook_creates_immutable_packet_version(editorial_sessionmak
     built = await packets.build_packet(editorial_sessionmaker, ws, candidate.id)
     original_id = uuid.UUID(built.packet["id"])
     original_opening = built.packet["script_phrases"][0]
+    await fill_hook_scripts(editorial_sessionmaker, ws, packet_id=original_id)
 
     async with editorial_sessionmaker() as s:
         clone = await packets.choose_hook(s, ws, original_id, "hook-2")
@@ -428,6 +430,7 @@ def with_opening(index: int, text: str, **over) -> dict:
 
 
 async def choose(sm, ws, packet_id, hook_id):
+    await fill_hook_scripts(sm, ws, packet_id=packet_id)
     async with sm() as s:
         clone = await packets.choose_hook(s, ws, packet_id, hook_id)
         await s.commit()

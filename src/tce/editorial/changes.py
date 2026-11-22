@@ -573,6 +573,9 @@ async def apply(
             _write_path(values, op.field or "", after)
         elif op.op == "choose_hook":
             values["selected_hook_id"] = after
+            # The whole script for that opening comes with it (T-24293): the
+            # version is written in _write_packet_version, which has the openings.
+            values["_choose_hook"] = after
         elif op.op == "reorder_week":
             values["order"] = after
         elif op.op == "move_topic":
@@ -664,6 +667,27 @@ async def _write_packet_version(
     packet = result.scalar_one_or_none()
     if packet is None:
         raise ChangeError("not_found", "that script is not here", status=404)
+    chosen = values.pop("_choose_hook", None)
+    if chosen is not None and str(chosen) != str(packet.selected_hook_id):
+        # Choosing an opening takes the whole script written for it (T-24293),
+        # never only its first line under the old points and lines.
+        from tce.editorial import hook_scripts
+
+        options = list(packet.hook_options or [])
+        target = hook_scripts.ready_script(options, packet.selected_hook_id, packet, str(chosen))
+        if target is None:
+            raise ChangeError(
+                "hook_script_needed",
+                "The whole script for that opening is not written yet, so the opening "
+                "was not changed and the script still matches its first line.",
+                status=409,
+            )
+        values["bullets"] = list(target["bullets"])
+        values["script_phrases"] = list(target["script_phrases"])
+        values["beats"] = list(target["beats"])
+        values["hook_options"] = hook_scripts.switch_options(
+            options, packet.selected_hook_id, packet, str(chosen), target
+        )
 
     highest = await db.execute(
         select(RecordingPacket.version)

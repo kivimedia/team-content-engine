@@ -2,7 +2,7 @@
 
 The recorder shows the three ranked openings of a packet v2, and choosing one
 must (1) create a new immutable packet version whose first spoken phrase is the
-chosen opening, (2) leave the original's words untouched (it is superseded, as
+chosen opening and whose whole script is the one written for it (T-24293), (2) leave the original's words untouched (it is superseded, as
 after an accepted edit), (3) move the recording queue to the new version, and
 (4) be refused while a take set of that candidate has clips bound to an
 existing version.
@@ -58,8 +58,28 @@ async def client(editorial_sessionmaker, monkeypatch, tmp_path):
         yield c
 
 
-async def seed_v2(sessionmaker) -> tuple[TopicCandidate, RecordingPacket]:
+def with_scripts(output: dict) -> list[dict]:
+    """Each opening with its own whole script, as the early write leaves them (T-24293)."""
+    out = []
+    for option in output["hook_options"]:
+        item = dict(option)
+        if item["id"] == output["selected_hook_id"]:
+            item["script"] = {
+                "bullets": list(output["bullets"]),
+                "script_phrases": list(output["script_phrases"]),
+                "beats": [dict(b) for b in output["beats"]],
+                "payoff_phrase_id": item["payoff_phrase_id"],
+            }
+        else:
+            item["script"] = script_for(item["text"], item["id"].replace("-", " "))
+        out.append(item)
+    return out
+
+
+async def seed_v2(sessionmaker, *, scripts: bool = True) -> tuple[TopicCandidate, RecordingPacket]:
     output = good_output()
+    if scripts:
+        output["hook_options"] = with_scripts(output)
     cand = TopicCandidate(
         id=uuid.uuid4(),
         workspace_id=WS,
@@ -120,6 +140,33 @@ async def put_in_this_week(s, cand: TopicCandidate, *, rank: int = 1) -> None:
     )
 
 
+def script_for(text: str, word: str) -> dict:
+    """A whole script that follows from `text`: line two picks it up."""
+    phrases = [
+        text,
+        f"Here is the {word} part people skip.",
+        "Name the problems first.",
+        "Put them in order.",
+        "Then decide what each lesson is for.",
+        "The lessons come last,",
+        "because now you know what they are for.",
+    ]
+    bullets = [
+        f"Open on the {word} point",
+        "Name the problems",
+        "Order them",
+        "One lesson per problem",
+        "Lessons last",
+    ]
+    ranges = [("p001", "p002"), ("p003", "p003"), ("p004", "p004"), ("p005", "p005"), ("p006", "p007")]
+    beats = [
+        {"id": f"b{n + 1:02d}", "label": bullets[n], "bullet_index": n,
+         "start_phrase_id": a, "end_phrase_id": b}
+        for n, (a, b) in enumerate(ranges)
+    ]
+    return {"bullets": bullets, "script_phrases": phrases, "beats": beats, "payoff_phrase_id": "p003"}
+
+
 def hook_text(packet_json: dict, hook_id: str) -> str:
     return next(h["text"] for h in packet_json["hook_options"] if h["id"] == hook_id)
 
@@ -151,10 +198,11 @@ async def test_queue_exposes_ranked_hooks_and_a_choice_creates_a_new_bound_versi
     assert new["id"] != str(original.id)
     assert new["version"] == 2
     assert new["selected_hook_id"] == "hook-2"
-    # The selected opening is the first spoken phrase; everything after it is unchanged.
+    # The selected opening is the first spoken phrase, and the whole script is the
+    # one written for it (T-24293), not the old lines under a new first line.
     assert new["script_phrases"][0] == hook_text(new, "hook-2")
-    assert new["script_phrases"][1:] == idea["script_phrases"][1:]
-    assert new["bullets"] == idea["bullets"] and new["beats"] == idea["beats"]
+    assert new["script_phrases"] == script_for(hook_text(new, "hook-2"), "hook 2")["script_phrases"]
+    assert new["bullets"] == script_for(hook_text(new, "hook-2"), "hook 2")["bullets"]
 
     # The queue now hands the recorder the new version, with no session bound yet.
     queue = (await client.get("/api/v1/production/recording-queue", headers=AUTH)).json()
@@ -248,6 +296,9 @@ async def test_a_flagged_opening_cannot_open_a_take_set(client, editorial_sessio
         row = await s.get(RecordingPacket, original.id)
         options = [dict(option) for option in row.hook_options]
         options[1]["text"] = promise
+        options[1]["script"] = {**options[1]["script"], "script_phrases": [
+            promise, *options[1]["script"]["script_phrases"][1:]
+        ]}
         row.hook_options = options
         await s.commit()
 

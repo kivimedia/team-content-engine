@@ -20,6 +20,7 @@ from tce.editorial import lane_packets, packets
 from tce.llm import LLMResult
 from tce.models.editorial import EvidenceSource, RecordingPacket, TopicCandidate
 from tce.settings import settings
+from tests.unit.hook_script_helpers import fill_hook_scripts
 
 MATAN = uuid.UUID("40c0f179-7d5e-4397-b4de-b0b2f3e96fc2")
 MOMENT = "22222222-2222-2222-2222-222222222222"
@@ -209,6 +210,7 @@ async def test_choosing_another_opening_works_on_a_lane_script(editorial_session
     async with editorial_sessionmaker() as s:
         c = await make_lane_candidate(s, MATAN)
     out = await packets.build_packet(editorial_sessionmaker, MATAN, c.id)
+    await fill_hook_scripts(editorial_sessionmaker, MATAN, packet_id=uuid.UUID(out.packet["id"]))
     async with editorial_sessionmaker() as s:
         clone = await packets.choose_hook(s, MATAN, uuid.UUID(out.packet["id"]), "h2")
         await s.commit()

@@ -32,6 +32,7 @@ from tce.models.editorial import (
 from tce.models.editorial_workspace import EditorialChangeSet, IdeaResearch, TopicDecision
 from tce.models.recording_session import RecordingSession
 from tce.settings import settings
+from tests.unit.hook_script_helpers import fill_hook_scripts
 
 KEY = "synthetic-test-key"
 WEEK = datetime(2026, 9, 21)
@@ -282,6 +283,7 @@ async def test_choosing_an_opening_by_number_also_changes_the_opening_line(
     ws = uuid.uuid4()
     cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea")
     await add_packet(editorial_sessionmaker, ws, cid)
+    await fill_hook_scripts(editorial_sessionmaker, ws, candidate_id=cid)
     response = await change(
         client,
         ws,
@@ -330,6 +332,7 @@ async def test_an_opening_chosen_by_voice_takes_the_new_scripts_own_verdict(
             )
         )
         await s.commit()
+    await fill_hook_scripts(editorial_sessionmaker, ws, candidate_id=cid)
 
     response = await change(
         client, ws, cid, "script", [{"op": "choose_hook", "after": "2", "expect": promise}]
@@ -904,6 +907,7 @@ async def test_choosing_an_opening_he_never_heard_writes_nothing(client, editori
     script = (await topic(client, ws, "scripted"))["topic"]["script"]
     assert script["version"] == 2 and script["opening"] == "A brand new first opening."
 
+    await fill_hook_scripts(editorial_sessionmaker, ws, candidate_id=cid)
     agreed = await change(
         client,
         ws,

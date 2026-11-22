@@ -771,6 +771,26 @@ async def apply_change(
                     current=options_now,
                     version=packet.version,
                 )
+            from tce.editorial import hook_scripts
+
+            if str(hook["id"]) != str(packet.selected_hook_id) and (
+                hook_scripts.ready_script(
+                    list(packet.hook_options or []), packet.selected_hook_id, packet, str(hook["id"])
+                )
+                is None
+            ):
+                # The opening comes with its whole script (T-24293). Not written
+                # yet: the caller starts writing it and the opening switches when
+                # it is there. Nothing is written by this call.
+                raise VoiceError(
+                    "hook_script_writing",
+                    "The whole script for that opening is being written now. The opening "
+                    "switches by itself when it is ready, usually within two minutes. "
+                    "Nothing else changed.",
+                    status=409,
+                    packet_id=str(packet.id),
+                    hook_id=str(hook["id"]),
+                )
             ops_in.append(change_service.OperationInput(op="choose_hook", after=str(hook["id"])))
             phrases = list(packet.script_phrases or [])
             hook_text = str(hook.get("text") or "").strip()

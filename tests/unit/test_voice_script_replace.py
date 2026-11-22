@@ -33,6 +33,7 @@ from tests.unit.test_editorial_voice_agent import (
     undo,
 )
 from tests.unit.test_voice_agent_jobs_and_matching import client  # noqa: F401
+from tests.unit.hook_script_helpers import fill_hook_scripts
 
 
 @pytest.fixture
@@ -117,6 +118,7 @@ async def test_a_replaced_script_can_be_put_back_and_that_can_be_undone(
     ws = uuid.uuid4()
     cid = await add_candidate(editorial_sessionmaker, ws, "Scripted idea")
     await add_packet(editorial_sessionmaker, ws, cid)
+    await fill_hook_scripts(editorial_sessionmaker, ws, candidate_id=cid)
     # His edits on version 1, then a rewrite that replaced it.
     edited = await change(
         client,

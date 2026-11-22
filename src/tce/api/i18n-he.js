@@ -40,11 +40,19 @@
       "בוחרים נושאים בלשונית נושאים ומכינים להם תסריט מתוך השבוע.",
     "Step 1 of 2": "שלב 1 מתוך 2",
     "Choose how it opens": "בוחרים איך זה נפתח",
-    "The first spoken line. Everything after it stays the same.": "המשפט הראשון שאומרים. כל מה שאחריו נשאר אותו דבר.",
+    "How it opens. The whole script, points and lines, is written to follow from the opening you pick.":
+      "איך זה נפתח. כל התסריט, הנקודות והמשפטים, נכתב כך שימשיך מהפתיחה שבוחרים.",
     "Ask for more openings": "עוד פתיחות",
     "Choose the opening": "בוחרים פתיחה",
-    "Pick the first spoken line. The rest of the script stays the same.":
-      "בוחרים את המשפט הראשון. שאר התסריט נשאר אותו דבר.",
+    "Pick how it opens. The whole script, points and lines, is written to follow from that opening.":
+      "בוחרים איך זה נפתח. כל התסריט, הנקודות והמשפטים, נכתב כך שימשיך מהפתיחה הזאת.",
+    "Switching to this opening and its whole script": "עובר לפתיחה הזאת ולתסריט המלא שלה",
+    "Writing the whole script for this opening": "כותב את כל התסריט לפתיחה הזאת",
+    "The opening was not changed. Try again in a minute.": "הפתיחה לא הוחלפה. אפשר לנסות שוב בעוד דקה.",
+    "Still writing after ten minutes, so the opening was not changed yet. Pick it again in a few minutes.":
+      "עדיין כותב אחרי עשר דקות, אז הפתיחה עוד לא הוחלפה. בוחרים אותה שוב בעוד כמה דקות.",
+    "The whole script for this opening could not be written, so the opening was not changed and the script you have still matches its first line. Try again in a minute.":
+      "לא הצלחתי לכתוב את התסריט לפתיחה הזאת, אז הפתיחה לא הוחלפה והתסריט שיש לך עדיין מתאים למשפט הראשון שלו. אפשר לנסות שוב בעוד דקה.",
     "Choose another opening, or fix the line in the script first.": "בוחרים פתיחה אחרת, או מתקנים קודם את המשפט בתסריט.",
     "Creating the packet version with this opening": "מכין גרסה עם הפתיחה הזאת",
     "Recommended": "מומלץ",
@@ -776,6 +784,11 @@
   };
 
   var PATTERNS = [
+    // 22-Nov (T-24293): picking an opening writes its whole script.
+    [/^Writing its whole script \((\d+)s so far\)$/, "כותב את כל התסריט שלה ($1 שניות עד עכשיו)"],
+    [/^The script writer is resting on your Claude limit[\s\S]*$/,
+      "כותב התסריטים בהפסקה כרגע, אז אי אפשר לכתוב עכשיו את התסריט לפתיחה הזאת. הפתיחה לא הוחלפה, והתסריט שיש לך עדיין מתאים למשפט הראשון שלו."],
+    [/^The opening was not changed: [\s\S]*$/, "הפתיחה לא הוחלפה."],
     // 6-Oct: the capacity banner is one Hebrew line, never the provider's text or ISO.
     [/^Subscription capacity: [\s\S]*; resumes at (\S+)$/, function (_, iso) { return capacityLine(iso); }],
     [/^Waiting for subscription capacity: [\s\S]*$/, "המערכת בהפסקה קצרה וחוזרת לעבוד בקרוב"],
