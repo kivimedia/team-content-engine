@@ -173,7 +173,16 @@ async def packets_of(sm, ws) -> list[RecordingPacket]:
 async def jobs_of(sm, ws) -> list[LLMJob]:
     async with sm() as s:
         return list(
-            (await s.execute(select(LLMJob).where(LLMJob.workspace_id == ws))).scalars().all()
+            (
+                await s.execute(
+                    select(LLMJob).where(
+                        LLMJob.workspace_id == ws,
+                        # The openings' whole scripts are queued once a script is
+                        # saved (T-24293); that job is not a second script.
+                        LLMJob.job_type != "recording_packet_hook_scripts",
+                    )
+                )
+            ).scalars().all()
         )
 
 
