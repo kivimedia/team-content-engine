@@ -171,7 +171,9 @@
         <span id="uploadState"></span>
       </div>
 
-      <div class="controls" aria-label="Recording controls">
+      <!-- 22-Nov (T-24294): one Record button at the bottom right; it opens into
+           Pause, Stop and Finish while a take runs. recording.js sets data-phase. -->
+      <div class="controls" aria-label="Recording controls" data-phase="idle">
         <button id="recordButton" class="control record" type="button">Record</button>
         <button id="pauseButton" class="control" type="button" disabled>Pause</button>
         <button id="finishClipButton" class="control" type="button" disabled>Stop<small>keep this take</small></button>
@@ -201,7 +203,7 @@
 
   <!-- The same five destinations as the rest of the workspace. The studio is
        still one page of its own, but choosing what to record should not feel
-       like leaving the app. It is hidden once the studio opens, where the four
+       like leaving the app. It is hidden once the studio opens, where the
        recording controls own the bottom of the screen. Hrefs get the /tce
        prefix in JS, because this page is served under both roots. -->
   <nav class="bottom-nav" id="bottomNav" aria-label="Sections">

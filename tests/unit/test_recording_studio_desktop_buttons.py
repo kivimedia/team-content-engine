@@ -57,7 +57,9 @@ def test_every_recording_button_is_on_screen_in_a_computer_browser(studio, size)
             timeout=30000,
         )
         idle = page.evaluate(ON_SCREEN, BUTTONS)
-        assert len(idle) == 4 and all(b["reachable"] for b in idle), f"buttons off screen before Record: {idle}"
+        # 22-Nov (T-24294): before a take only Record shows; nothing dead on screen.
+        assert [b["id"] for b in idle] == ["recordButton"], f"before Record only Record shows: {idle}"
+        assert all(b["reachable"] for b in idle), f"buttons off screen before Record: {idle}"
         reader = page.evaluate("() => document.getElementById('reader').getBoundingClientRect().height")
         assert reader >= 120, f"the words have no room left: reader is {reader}px tall"
         # While recording: Pause, Stop and Finish on the foot of the camera.
@@ -67,5 +69,13 @@ def test_every_recording_button_is_on_screen_in_a_computer_browser(studio, size)
         assert all(b["reachable"] for b in live), f"buttons off screen while recording: {live}"
         page.click("#pauseButton")
         page.wait_for_function("() => document.getElementById('pauseButton').textContent.trim() === 'Resume'")
+        # Stop keeps the take: then Record and Finish, both on screen.
+        page.click("#finishClipButton")
+        page.wait_for_function(
+            "() => document.querySelector('#studioView .controls').dataset.phase === 'between'", timeout=30000
+        )
+        between = page.evaluate(ON_SCREEN, BUTTONS)
+        assert sorted(b["id"] for b in between) == ["finishSessionButton", "recordButton"], between
+        assert all(b["reachable"] for b in between), f"buttons off screen between takes: {between}"
         context.close()
         browser.close()

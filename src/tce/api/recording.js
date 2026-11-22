@@ -223,13 +223,35 @@ function rebindIdeas(ideas, next) {
   }
 
   // While the camera runs the screen is video on top and the words below: the
-  // header, the title and the full control bar go, and only Pause and Finish
-  // stay, as two small buttons. Defined long ago and never called until 22-Sep.
+  // header, the title and the idle bar go, and Pause, Stop and Finish stay on the
+  // right of the video. Defined long ago and never called until 22-Sep.
   function setRecordingChrome(active) {
     const view = document.getElementById("studioView");
     if (view) view.classList.toggle("is-recording", Boolean(active));
     document.body.classList.toggle("rec-live", Boolean(active));
+    paintControls();
     if (state.idea && state.mode === "points") renderReader();
+  }
+
+  /* 22-Nov (T-24294), his words: "we only need, like, one button on the bottom
+     right, and it's a record button. If I click on it, it changes to ... one for
+     pause ... one for finish". The bar says which buttons this moment needs, and
+     recording.css shows only those, on the right: "idle" is Record alone (nothing
+     kept yet, so Finish would have nothing to send), "live" is Pause, Stop and
+     Finish, "between" is Record and Finish once a take is kept or still on its way. */
+  function controlsPhase() {
+    if (state.recorder && state.recorder.state !== "inactive") return "live";
+    const session = state.session;
+    if (!session) return "idle";
+    const kept = (session.clips || []).some((clip) => clip.status === "ready")
+      || state.finalizing.size > 0
+      || (state.unfinished || []).some((entry) => entry.session.id === session.id);
+    return kept ? "between" : "idle";
+  }
+
+  function paintControls() {
+    const bar = document.querySelector("#studioView .controls");
+    if (bar) bar.dataset.phase = controlsPhase();
   }
 
   function showNotice(message, timeout = 4200) {
@@ -1001,6 +1023,7 @@ function rebindIdeas(ideas, next) {
     setStudioMode(true);
     // Finish leaves with the press that sends a take set; the next one has its own.
     if (!state.finishing) $("finishSessionButton").hidden = false;
+    paintControls();
     $("scriptTitle").textContent = idea.title;
     $("bigIdea").textContent = idea.big_idea;
     $("hookChooser").hidden = true;
@@ -1410,6 +1433,7 @@ function rebindIdeas(ideas, next) {
       // No "Recording started" toast: it sat over the red flag and the timer for
       // four seconds, and the red flag already says it.
     } catch (error) {
+      paintControls();
       showNotice(`Recording did not start: ${error.message}`, 7000);
     }
   }
@@ -1481,7 +1505,7 @@ function rebindIdeas(ideas, next) {
     let settle;
     const ending = new Promise((resolve) => { settle = resolve; });
     state.finalizing.add(ending);
-    ending.then(() => state.finalizing.delete(ending));
+    ending.then(() => { state.finalizing.delete(ending); paintControls(); });
     const run = finishClipNow(options, settle);
     run.catch(() => settle(false));
     return run;
@@ -1822,6 +1846,7 @@ function rebindIdeas(ideas, next) {
     // The strip only appears when something needs saying. The clip count was
     // never his problem, and "Phone copy is safe" explained our storage to him
     // rather than telling him anything he could act on.
+    paintControls();
     const pending = state.pendingSync.size;
     const offline = !navigator.onLine;
     const strip = $("sessionStrip");

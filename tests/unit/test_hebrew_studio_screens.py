@@ -224,6 +224,8 @@ STATE_JS = """
     dir: document.documentElement.dir,
     overflowX: document.documentElement.scrollWidth > vw + 1,
     record: document.getElementById('recordButton')?.firstChild?.textContent?.trim(),
+    // T-24294: Record sits on the PHYSICAL right in Hebrew too (thumb of the right hand).
+    recordRight: document.getElementById('recordButton') ? Math.round(vw - document.getElementById('recordButton').getBoundingClientRect().right) : null,
     pointsTab: document.getElementById('pointsTab')?.textContent.trim(),
     scriptTab: document.getElementById('scriptTab')?.textContent.trim(),
     readerDir: lines[0] ? getComputedStyle(lines[0]).direction : null,
@@ -292,6 +294,9 @@ def test_hebrew_studio_and_workspace_render_rtl(server, tmp_path, size):
         assert state["record"] == "הקלטה" and state["pointsTab"] == "נקודות", state
         assert state["scriptTab"] == "תסריט מלא", state
         assert state["readerDir"] == "rtl", state
+        assert state["recordRight"] is not None and state["recordRight"] <= 24, (
+            f"Record is not at the right edge in Hebrew: {state}"
+        )
         # Point 1 has two sentences, so it reads as two lines; labels are Hebrew.
         assert max(state["sentenceCounts"]) >= 2, state
         assert any(lbl.startswith("נקודה") for lbl in state["labels"]), state

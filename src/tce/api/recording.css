@@ -188,6 +188,28 @@ body.rec-live .reader { -webkit-user-select: none; user-select: none; -webkit-to
 .control.record { background: var(--signal); color: #fff; }
 .control.finish { background: var(--moss); color: #fff; }
 .control:disabled { opacity: .45; cursor: not-allowed; }
+/* ONE RECORD BUTTON, BOTTOM RIGHT (22-Nov, T-24294). He records walking, the phone
+   in his right hand and a dog's leash in the other: "I think we only need, like,
+   one button on the bottom right, and it's a record button". Before a take only
+   Record shows, in the right-hand corner; between takes Finish sits beside it;
+   while a take runs Record opens into Pause, Stop and Finish on the right edge,
+   with Stop in the corner Record was in. Nothing is on screen that cannot be
+   pressed. Right is the PHYSICAL right, in a Hebrew page too: the row is laid out
+   left to right whatever the page direction, and only the words inside a button
+   follow the page. recording.js sets the phase on the bar (data-phase). */
+.studio-view .controls { display: flex; justify-content: flex-end; align-items: stretch; gap: 10px; direction: ltr; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
+html[dir="rtl"] .studio-view .control { direction: rtl; }
+.studio-view .control { min-width: 120px; padding: 6px 14px; font-size: 1rem; }
+.studio-view .control small { font-size: .78rem; opacity: .85; }
+.studio-view #finishSessionButton { order: 1; }
+.studio-view #pauseButton { order: 2; }
+.studio-view #finishClipButton { order: 3; }
+.studio-view #recordButton { order: 4; min-width: 156px; min-height: 64px; border-radius: 999px; font-size: 1.2rem; letter-spacing: .02em; }
+.studio-view:not(.is-recording) .controls[data-phase="idle"] #pauseButton,
+.studio-view:not(.is-recording) .controls[data-phase="idle"] #finishClipButton,
+.studio-view:not(.is-recording) .controls[data-phase="idle"] #finishSessionButton,
+.studio-view:not(.is-recording) .controls[data-phase="between"] #pauseButton,
+.studio-view:not(.is-recording) .controls[data-phase="between"] #finishClipButton { display: none; }
 .notice { position: fixed; z-index: 40; left: 14px; right: 14px; bottom: calc(92px + env(safe-area-inset-bottom)); padding: 14px; background: var(--ink); color: #fff; border: 2px solid #fff; box-shadow: var(--shadow); font-weight: 800; }
 dialog { width: min(92vw, 430px); border: 3px solid var(--ink); border-radius: 18px; color: var(--ink); padding: 22px; }
 dialog::backdrop { background: rgba(7, 17, 31, .72); }
@@ -243,7 +265,7 @@ dialog h2 { font-family: Georgia, serif; margin-top: 0; }
 /* ------------------------------------------------------------- bottom nav */
 /* Same five destinations, same look, as the rest of the workspace: choosing
    what to record should not feel like leaving the app. Present on the queue and
-   the opening chooser; hidden in the studio, where the four recording controls
+   the opening chooser; hidden in the studio, where the recording controls
    own the bottom of the screen and a sixth row would push the camera up. */
 .bottom-nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
@@ -279,8 +301,8 @@ details:not([open]) > *:not(summary) { display: none !important; }
 .reader-line.opening .opening-change { margin-left: 10px; font-size: .74rem; vertical-align: middle; }
 
 /* Recording: video on top, words below, nothing else. The header, the title and
-   the four-button bar give their space to the script. Pause and Finish sit on the
-   bottom edge of the VIDEO, left and right, so they never cover a word or the
+   the idle bar give their space to the script. Pause, Stop and Finish sit on the
+   bottom right of the VIDEO (T-24294), so they never cover a word or the
    reader's own scroll buttons. */
 body.in-studio.rec-live { grid-template-rows: minmax(0, 1fr); }
 body.rec-live .topbar { display: none; }
@@ -292,10 +314,10 @@ body.rec-live .topbar { display: none; }
    zoomed the moment Record started ("it zooms in to my face. bad"). */
 .studio-view.is-recording .camera-stage video { object-fit: contain; }
 .studio-view.is-recording .controls {
-  position: absolute; left: 0; right: 0; bottom: calc(12px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between;
-  gap: 0; padding: 0 12px; background: transparent; border-top: 0; pointer-events: none;
+  position: absolute; left: auto; right: 0; bottom: calc(12px + env(safe-area-inset-bottom)); display: flex; justify-content: flex-end;
+  gap: 8px; padding: 0 12px; background: transparent; border-top: 0; pointer-events: none;
 }
-.studio-view.is-recording .control { pointer-events: auto; min-height: 48px; width: auto; padding: 6px 18px; font-size: .9rem; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
+.studio-view.is-recording .control { pointer-events: auto; min-height: 48px; min-width: 96px; width: auto; padding: 6px 18px; font-size: .95rem; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
 /* Finish means finished: the button on the right ends the take and sends it for
    editing (it saves the clip first). "Finish clip" only closed the clip, so he
    pressed it, nothing looked finished, and he could not get out - "I cant
@@ -331,6 +353,22 @@ body.rec-live .topbar { display: none; }
 /* Stop keeps the take and brings the full bar back; Finish sends it. */
 .studio-view.is-recording #finishClipButton { display: block; }
 .studio-view.is-recording #finishClipButton small { display: none; }
+/* A phone held upright: the three take buttons stack up the right edge of the
+   video, Finish on top and Stop in the bottom corner, where Record was, so the
+   thumb that started the take ends it without moving (T-24294). A short window
+   (split screen) has no room for a stack and keeps them in one row on the right. */
+@media (max-width: 759px) and (min-height: 561px) {
+  .studio-view.is-recording .controls { flex-direction: column; align-items: stretch; }
+  .studio-view.is-recording .control { min-width: 124px; min-height: 52px; }
+  /* html raises it over the seam rule further down, which places a single row. */
+  html body.layout-flipped .studio-view.is-recording .controls { top: auto; bottom: calc(55% + 12px); }
+  /* A note while recording ("Paused...") stays left of the stack, never over Resume. */
+  body.rec-live .notice { right: 150px; }
+  /* Words over the video: the timer leaves the right-hand foot to the stack and
+     sits over the recording flag on the left. */
+  body.overlay-mode.rec-live .camera-timer { right: auto; left: 14px; bottom: 124px; }
+  html[dir="rtl"] body.overlay-mode.rec-live .recording-flag { right: auto; left: 14px; }
+}
 
 /* Points / Full script go BELOW the words, so the words themselves sit right
    under the lens at the top of the phone. */
