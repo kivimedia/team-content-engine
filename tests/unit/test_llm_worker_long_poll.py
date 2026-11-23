@@ -166,16 +166,30 @@ def test_only_the_idle_lease_is_held_and_a_batch_leases_at_once(monkeypatch):
 def test_once_never_asks_to_be_held_and_starts_no_background_thread(monkeypatch):
     clock = Clock(monkeypatch)
     names: list[list[str]] = []
+    # Only a thread this run starts counts: one left by an earlier test is not this worker's.
+    before = set(threading.enumerate())
 
     class Api(LeaseApi):
         def post(self, path, body):
-            names.append([t.name for t in threading.enumerate()])
+            names.append([t.name for t in threading.enumerate() if t not in before])
             return super().post(path, body)
 
     api = Api(clock, [(200, {"job": job_n(1)}, 0.0)])
     assert make_worker(api, Runner()).run(once=True) == w.EXIT_OK
     assert all("wait_seconds" not in lease for lease in api.leases)
     assert not any("sign-in-refresh" in seen for seen in names)
+
+
+def test_once_is_not_blamed_for_a_refresh_thread_left_by_another_worker(monkeypatch):
+    # In a full run a daemon refresh thread from an earlier test can still be alive.
+    stop = threading.Event()
+    left = threading.Thread(target=stop.wait, name="sign-in-refresh", daemon=True)
+    left.start()
+    try:
+        test_once_never_asks_to_be_held_and_starts_no_background_thread(monkeypatch)
+    finally:
+        stop.set()
+        left.join(timeout=5)
 
 
 def test_lease_wait_zero_is_plain_polling(monkeypatch):
