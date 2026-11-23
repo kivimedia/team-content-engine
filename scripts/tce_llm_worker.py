@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from tce.llm.worker import (  # noqa: E402
     EXIT_PREFLIGHT_FAILED,
+    LEASE_WAIT_S,
     ApiClient,
     Worker,
     default_worker_id,
@@ -32,6 +33,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--poll-seconds", type=float, default=10.0)
     parser.add_argument("--lease-seconds", type=int, default=600)
     parser.add_argument("--job-timeout-seconds", type=float, default=540.0)
+    parser.add_argument(
+        "--lease-wait-seconds",
+        type=float,
+        default=LEASE_WAIT_S,
+        help="ask the server to hold an idle lease this long (0: plain polling)",
+    )
     args = parser.parse_args(argv)
 
     key = os.environ.get("TCE_PRIVATE_ACCESS_KEY", "")
@@ -44,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         args.worker_id or default_worker_id(),
         lease_seconds=args.lease_seconds,
         job_timeout_s=args.job_timeout_seconds,
+        lease_wait_s=args.lease_wait_seconds,
     )
     return worker.run(once=args.once, max_jobs=args.max_jobs, poll_seconds=args.poll_seconds)
 

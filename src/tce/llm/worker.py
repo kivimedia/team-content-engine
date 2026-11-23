@@ -61,6 +61,21 @@ HEARTBEAT_SECONDS = 60
 # a logout still stops the batch quickly. A failed preflight is never reused.
 PREFLIGHT_CACHE_S = 120.0
 PREFLIGHT_RECHECK_BETWEEN_JOBS_S = 60.0
+# 23-Nov-2026: the check took 10 to 18 s in the middle of a batch. It now runs in the
+# background this long before the kept result would be too old for the next use
+# (PREFLIGHT_RECHECK_BETWEEN_JOBS_S while a job runs, PREFLIGHT_CACHE_S while idle),
+# so a job does not wait for it. The windows above are unchanged: when the
+# background check fails or is late, the next use runs the blocking check as before.
+PREFLIGHT_REFRESH_LEAD_S = 25.0
+PREFLIGHT_REFRESH_POLL_S = 2.0
+
+# 23-Nov-2026: an idle worker asks the server to hold its lease until a job is queued,
+# so a job is taken the moment it is queued instead of at the next poll. The server
+# bounds the hold (25 s); a server without the wait ignores the field and answers at
+# once, and the worker then sleeps its poll interval as before.
+LEASE_WAIT_S = 25.0
+# The read timeout of a held lease: longer than the hold, so it never cuts one short.
+LEASE_WAIT_TIMEOUT_MARGIN_S = 15.0
 
 DEFAULT_ALLOWED_AUTH = frozenset({"claude.ai"})
 OPTIONAL_AUTH = frozenset({"oauth_token"})
@@ -519,8 +534,12 @@ class ApiClient:
             method="POST",
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._key}"},
         )
+        timeout = self.timeout
+        wait = body.get("wait_seconds") if isinstance(body, dict) else None
+        if wait:
+            timeout = max(timeout, float(wait) + LEASE_WAIT_TIMEOUT_MARGIN_S)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
                 raw = resp.read().decode("utf-8")
                 return resp.status, json.loads(raw) if raw else None
         except urllib.error.HTTPError as exc:
@@ -557,6 +576,7 @@ class Worker:
         job_timeout_s: float = 540.0,
         heartbeat_s: float = 60.0,
         log: Callable[[str], None] | None = None,
+        lease_wait_s: float = LEASE_WAIT_S,
     ) -> None:
         self.api = api
         self.worker_id = worker_id
@@ -566,11 +586,15 @@ class Worker:
         self.lease_seconds = lease_seconds
         self.job_timeout_s = job_timeout_s
         self.heartbeat_s = heartbeat_s
+        self.lease_wait_s = max(0.0, float(lease_wait_s))
         self.log = log or (lambda msg: print(msg, file=sys.stderr, flush=True))
         self.bin_path = resolve_claude_bin(self.env)
         self.preflight: Preflight | None = None
-        self._preflight_at = 0.0  # time.monotonic() of the last real check
+        self._preflight_at = 0.0  # time.monotonic() when the kept check started
         self._cli_version: str | None = None
+        # The kept check is read by the job loop and written by the background check.
+        self._preflight_lock = threading.Lock()
+        self._busy = False  # a job is running: the next use is the between-jobs check
         configured_outbox = self.env.get("TCE_WORKER_OUTBOX_DIR", "").strip()
         self.outbox_dir = Path(configured_outbox) if configured_outbox else None
         if self.outbox_dir is not None:
@@ -629,22 +653,73 @@ class Worker:
         every 2 s just to re-read an unchanged login. Only an OK result is reused; a
         failure is always re-checked. The environment is fixed per process (copied
         at init), so the env part of the check cannot change inside the window.
+
+        The background check (refresh_once) keeps the result fresh, so this usually
+        returns at once; when it failed or is late, this runs the check itself.
         """
         now = time.monotonic()
-        if (
-            self.preflight is not None
-            and self.preflight.ok
-            and now - self._preflight_at < max_age_s
-        ):
-            return self.preflight
-        pf = run_preflight(
-            self.bin_path, self.env, runner=self.runner, cli_version=self._cli_version
-        )
-        if pf.cli_version:
-            self._cli_version = pf.cli_version
-        self.preflight = pf
-        self._preflight_at = now
+        with self._preflight_lock:
+            kept, kept_at, version = self.preflight, self._preflight_at, self._cli_version
+        if kept is not None and kept.ok and now - kept_at < max_age_s:
+            return kept
+        pf = run_preflight(self.bin_path, self.env, runner=self.runner, cli_version=version)
+        self._keep_preflight(pf, now)
         return pf
+
+    def _keep_preflight(self, pf: Preflight, started_at: float) -> None:
+        """Keep a check's result unless a check that started later is kept already."""
+        with self._preflight_lock:
+            if pf.cli_version:
+                self._cli_version = pf.cli_version
+            if self.preflight is None or started_at >= self._preflight_at:
+                self.preflight = pf
+                self._preflight_at = started_at
+
+    def _kept_preflight(self) -> tuple[Preflight | None, float]:
+        with self._preflight_lock:
+            return self.preflight, self._preflight_at
+
+    def refresh_once(self) -> Preflight | None:
+        """Run the sign-in check now if the kept OK result is close to its expiry.
+
+        Only an OK result is refreshed: a failed or missing check stays the job
+        loop's, which runs it blocking, as before. A failed refresh replaces the OK
+        result, so the next use runs the blocking check and a bad sign-in is never
+        used.
+        """
+        now = time.monotonic()
+        kept, kept_at = self._kept_preflight()
+        if kept is None or not kept.ok:
+            return None
+        window = PREFLIGHT_RECHECK_BETWEEN_JOBS_S if self._busy else PREFLIGHT_CACHE_S
+        if now - kept_at < window - PREFLIGHT_REFRESH_LEAD_S:
+            return None
+        with self._preflight_lock:
+            version = self._cli_version
+        pf = run_preflight(self.bin_path, self.env, runner=self.runner, cli_version=version)
+        self._keep_preflight(pf, now)
+        if not pf.ok:
+            self.log(f"background sign-in check failed: {pf.reason}")
+        return pf
+
+    def _refresh_loop(self, stop: threading.Event) -> None:
+        while not stop.wait(PREFLIGHT_REFRESH_POLL_S):
+            try:
+                self.refresh_once()
+            except Exception as exc:  # the job loop's own check still runs when needed
+                self.log(f"background sign-in check could not run: {type(exc).__name__}")
+
+    def _lease_wait(self) -> float:
+        """How long the next lease may be held: never past the moment the kept check
+        would be too old to start a job on (PREFLIGHT_CACHE_S), as before."""
+        if self.lease_wait_s <= 0:
+            return 0.0
+        kept, kept_at = self._kept_preflight()
+        if kept is None or not kept.ok:
+            return 0.0
+        left = PREFLIGHT_CACHE_S - (time.monotonic() - kept_at) - 1.0
+        wait = min(self.lease_wait_s, left)
+        return wait if wait >= 1.0 else 0.0
 
     def execute(self, job: dict[str, Any], preflight: Preflight) -> JobOutcome:
         attempt_id = str(job["attempt_id"])
@@ -868,7 +943,19 @@ class Worker:
             self.log(pf.reason)
             self.report_status("refused", pf)
             return EXIT_ENV_VIOLATION
+        if once:
+            return self._serve(once=True, max_jobs=max_jobs, poll_seconds=poll_seconds)
+        stop = threading.Event()
+        refresher = threading.Thread(
+            target=self._refresh_loop, args=(stop,), name="sign-in-refresh", daemon=True
+        )
+        refresher.start()
+        try:
+            return self._serve(once=False, max_jobs=max_jobs, poll_seconds=poll_seconds)
+        finally:
+            stop.set()
 
+    def _serve(self, *, once: bool, max_jobs: int | None, poll_seconds: float) -> int:
         done = 0
         while True:
             pf = self.check()
@@ -885,26 +972,61 @@ class Worker:
             self.report_status("idle", pf)
             leased_any = False
             capacity_hit = False
+            held_s = 0.0
             while max_jobs is None or done < max_jobs:
-                status, body = self.api.post(
-                    "/lease", {"worker_id": self.worker_id, "lease_seconds": self.lease_seconds}
-                )
+                lease_body: dict[str, Any] = {
+                    "worker_id": self.worker_id,
+                    "lease_seconds": self.lease_seconds,
+                }
+                # Only an idle worker's first lease asks to be held; the next lease of
+                # a batch is answered at once, as before.
+                wait_s = 0.0 if (once or leased_any) else self._lease_wait()
+                if wait_s:
+                    lease_body["wait_seconds"] = round(wait_s, 1)
+                asked_at = time.monotonic()
+                status, body = self.api.post("/lease", lease_body)
                 if status != 200:
                     self.log(f"lease failed: HTTP {status}")
                     break
-                job = (body or {}).get("job")
+                answer = body or {}
+                job = answer.get("job") if isinstance(answer, dict) else None
+                if not isinstance(answer, dict) or not isinstance(job, (dict, type(None))):
+                    self.log("lease failed: unexpected answer")
+                    break
                 if not job:
+                    if wait_s:
+                        # The server held the request: that hold was this poll's wait.
+                        held_s = time.monotonic() - asked_at
                     break
                 leased_any = True
+                # Normally the kept result, at once. If the background check found the
+                # sign-in bad while the lease was held, or the kept result is too old,
+                # this checks again as before, and the job never starts on a bad one.
+                pf = self.check()
+                if not pf.ok:
+                    self.log(f"preflight failed: {pf.reason}; job {job['id']} handed back")
+                    self.submit(
+                        job["id"],
+                        self._fail(
+                            str(job.get("attempt_id")),
+                            "preflight",
+                            f"sign-in check failed before the job started: {pf.reason}",
+                            {},
+                        ),
+                    )
+                    self.report_status("preflight_failed", pf)
+                    return EXIT_PREFLIGHT_FAILED
                 self.log(
                     f"job {job['id']} ({job.get('job_type')}) attempt {job.get('attempt_count')}"
                 )
                 self.report_status("running", pf, job_id=job["id"])
+                self._busy = True
                 with self.heartbeat(pf, job["id"]):
                     outcome = self.execute(job, pf)
                 outbox_path = self.persist_outcome(job["id"], outcome)
                 code, _ = self.submit(job["id"], outcome)
                 self.finish_outbox_delivery(outbox_path, code)
+                self._busy = False
                 done += 1
                 self.log(
                     f"job {job['id']} -> {outcome.kind} "
@@ -924,7 +1046,8 @@ class Worker:
                 self.report_status("stopped", pf)
                 return EXIT_OK
             self.report_status("waiting_capacity" if capacity_hit else "idle", pf)
-            time.sleep(poll_seconds if (capacity_hit or not leased_any) else min(poll_seconds, 1.0))
+            pause = poll_seconds if (capacity_hit or not leased_any) else min(poll_seconds, 1.0)
+            time.sleep(max(0.0, pause - held_s))
 
 
 def default_worker_id() -> str:

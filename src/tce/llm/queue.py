@@ -8,19 +8,26 @@ and tests share one implementation. Functions flush; the caller commits.
                      -> failed            (policy/model/auth failure, or attempts exhausted)
                      -> waiting_capacity  (usage limit; leasable again at retry_at)
     leased with leased_until < now        (worker crashed) is leasable again.
+
+Two lanes decide only which leasable job goes next: a job a person is waiting on
+(INTERACTIVE_JOB_TYPES) before batch work, each lane oldest first.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, event, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from tce.llm.provider import (
     POLICY_MODEL,
@@ -47,6 +54,34 @@ CAPACITY_ERROR = "capacity"
 DEFAULT_CAPACITY_BACKOFF = timedelta(minutes=30)
 MAX_REQUEUES_OF_FAILED = 1
 WORKER_GROUP_KEY = "claude-subscription-opus-5"
+
+# Jobs a person is waiting on (23-Nov-2026: "his job must not sit behind a batch of
+# research jobs"): a conversation, a script he asked for with its voice pass, slip
+# check, openings and each opening's script, an edit he typed, a sitting of notes,
+# the editor's review and checks of his video, its Creatorz moments, the rule a note
+# teaches, the post copy. They are leased before batch work (evidence, selection,
+# news appraisal, the old pipeline agents). The lane changes ORDER only: who may
+# lease, the lease, retries and capacity parking are the same in both lanes, and
+# each lane keeps its oldest-first order. Any type not named here, a new one
+# included, is batch. No column: the lane is read from job_type at lease time.
+INTERACTIVE_JOB_TYPES = frozenset(
+    {
+        "editorial_conversation",
+        "recording_packet",
+        "recording_packet_voice",
+        "recording_packet_hooks",
+        "recording_packet_hook_scripts",
+        "recording_script_slips",
+        "video_edit_request",
+        "video_edit_batch",
+        "video_edit_review",
+        "video_qc_asides",
+        "video_creatorz_moments",
+        "video_post_copy",
+        "video_post_revise",
+        "editor_rule_distill",
+    }
+)
 
 # Receipt keys a worker may store. Anything else (emails, org ids, tokens) is dropped.
 RECEIPT_ALLOWED_KEYS = frozenset(
@@ -157,6 +192,7 @@ async def enqueue(
             async with session.begin_nested():
                 session.add(job)
                 await session.flush()
+            session.info[_QUEUED_FLAG] = True  # held lease requests wake on commit
             return job
         except IntegrityError:
             # Lost an insert race on the idempotency key: drop our pending row so
@@ -174,6 +210,7 @@ async def enqueue(
     if existing.status == "failed" and requeue_failed:
         _requeue_failed(existing)
         await session.flush()
+        session.info[_QUEUED_FLAG] = True
     elif existing.status == "failed":
         raise LLMUnavailable(
             "failed",
@@ -213,8 +250,77 @@ def _requeue_failed(job: LLMJob) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Lease wake
+# ---------------------------------------------------------------------------
+
+# A lease request held open by the router (a worker asked to wait) sleeps on one
+# of these events. A commit that queued a job (enqueue sets the flag on its
+# session) sets them all. Only this process can reach them: a job queued by a
+# script or another process is found because a held request also looks again
+# every couple of seconds.
+_QUEUED_FLAG = "tce_llm_job_queued"
+_waiters_lock = threading.Lock()
+_waiters: dict[asyncio.Event, asyncio.AbstractEventLoop] = {}
+
+
+def add_lease_waiter(limit: int) -> asyncio.Event | None:
+    """A new wake event for a held lease request, or None when ``limit`` are held."""
+    loop = asyncio.get_running_loop()
+    with _waiters_lock:
+        if len(_waiters) >= limit:
+            return None
+        waiter = asyncio.Event()
+        _waiters[waiter] = loop
+        return waiter
+
+
+def remove_lease_waiter(waiter: asyncio.Event) -> None:
+    with _waiters_lock:
+        _waiters.pop(waiter, None)
+
+
+def held_lease_count() -> int:
+    with _waiters_lock:
+        return len(_waiters)
+
+
+def wake_lease_waiters() -> int:
+    """Wake every held lease request. Safe from any thread; returns how many."""
+    with _waiters_lock:
+        items = list(_waiters.items())
+    for waiter, loop in items:
+        with contextlib.suppress(RuntimeError):  # that loop has closed
+            loop.call_soon_threadsafe(waiter.set)
+    return len(items)
+
+
+@event.listens_for(Session, "after_commit")
+def _wake_after_commit(session: Session) -> None:
+    # A savepoint released inside a longer transaction does not make the row
+    # visible to another session yet; the outer commit does.
+    if session.in_nested_transaction():
+        return
+    if session.info.pop(_QUEUED_FLAG, False):
+        wake_lease_waiters()
+
+
+@event.listens_for(Session, "after_rollback")
+def _forget_after_rollback(session: Session) -> None:
+    session.info.pop(_QUEUED_FLAG, None)
+
+
+# ---------------------------------------------------------------------------
 # Lease
 # ---------------------------------------------------------------------------
+
+
+def job_lane(job_type: str | None) -> str:
+    return "interactive" if job_type in INTERACTIVE_JOB_TYPES else "batch"
+
+
+def _lane_order() -> Any:
+    """First lease sort key: 0 for a job a person is waiting on, 1 for batch."""
+    return case((LLMJob.job_type.in_(sorted(INTERACTIVE_JOB_TYPES)), 0), else_=1)
 
 
 def _leasable_clause(now: datetime) -> Any:
@@ -242,6 +348,9 @@ async def lease_job(
 ) -> LLMJob | None:
     """Atomically lease the oldest leasable job, or return None.
 
+    A leasable interactive job goes before any leasable batch job; within a lane the
+    oldest goes first, as before. A job that is already leased is never touched.
+
     PostgreSQL: ``SELECT ... FOR UPDATE SKIP LOCKED``. Other dialects: a
     compare-and-swap UPDATE guarded by the status/attempt the candidate was read with.
     """
@@ -263,7 +372,11 @@ async def lease_job(
             await session.flush()
     dialect = session.bind.dialect.name if session.bind is not None else ""
     for _ in range(25):
-        stmt = select(LLMJob).where(_leasable_clause(now)).order_by(LLMJob.created_at, LLMJob.id)
+        stmt = (
+            select(LLMJob)
+            .where(_leasable_clause(now))
+            .order_by(_lane_order(), LLMJob.created_at, LLMJob.id)
+        )
         if dialect == "postgresql":
             stmt = stmt.limit(1).with_for_update(skip_locked=True)
         else:

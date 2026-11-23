@@ -6,6 +6,8 @@ Every route requires the private access key. State transitions live in
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import tempfile
 import threading
@@ -14,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,10 +35,22 @@ MIN_LEASE_SECONDS = 30
 MAX_LEASE_SECONDS = 3600
 WORKER_STALE_SECONDS = 180
 
+# A lease request that asks to wait (newer workers send wait_seconds) is held until
+# a job can be leased, at most this long, then answered like any lease. Without
+# wait_seconds the answer comes at once, exactly as before.
+LEASE_WAIT_MAX_S = 25.0
+# A held request wakes when this process queues a job, and also looks again this
+# often, so a job queued by another process or freed by the clock is found too.
+LEASE_LOOK_AGAIN_S = 1.5
+# Each worker process holds at most one request (the PC runs three). Beyond this
+# many held at once, a request is answered at once, as before.
+MAX_HELD_LEASES = 8
+
 
 class LeaseBody(BaseModel):
     worker_id: str = Field(min_length=1, max_length=120)
     lease_seconds: int | None = None
+    wait_seconds: float | None = None
 
 
 class HeartbeatBody(BaseModel):
@@ -62,6 +76,12 @@ class FailBody(BaseModel):
 def _lease_seconds(value: int | None) -> int:
     seconds = value or settings.llm_job_lease_seconds
     return max(MIN_LEASE_SECONDS, min(int(seconds), MAX_LEASE_SECONDS))
+
+
+def _wait_seconds(value: float | None) -> float:
+    if not value or value != value or value <= 0:  # absent, zero, negative or NaN
+        return 0.0
+    return min(float(value), LEASE_WAIT_MAX_S)
 
 
 def _map_errors(exc: queue.QueueError) -> HTTPException:
@@ -157,12 +177,74 @@ async def get_worker_status() -> dict[str, Any]:
 
 
 @router.post("/lease")
-async def lease(body: LeaseBody, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    job = await queue.lease_job(db, body.worker_id, _lease_seconds(body.lease_seconds))
+async def lease(
+    body: LeaseBody, request: Request, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    lease_seconds = _lease_seconds(body.lease_seconds)
+    wait_s = _wait_seconds(body.wait_seconds)
+    if wait_s > 0:
+        job = await _lease_or_hold(request, db, body.worker_id, lease_seconds, wait_s)
+    else:
+        job = await queue.lease_job(db, body.worker_id, lease_seconds)
     if job is None:
         return {"job": None}
     await db.commit()
     return {"job": queue.job_to_dict(job, include_request=True, include_result=False)}
+
+
+async def _lease_or_hold(
+    request: Request, db: AsyncSession, worker_id: str, lease_seconds: int, wait_s: float
+) -> Any:
+    """Lease like any request; when nothing is leasable, hold the request until a job
+    can be leased, ``wait_s`` runs out or the client goes away.
+
+    Each look is ``queue.lease_job`` in its own short transaction, so every lease
+    rule applies to every look, and no connection or transaction is held across
+    the wait. A job leased in the moment its client went away is rolled back: it
+    stays exactly as it was for the next worker.
+    """
+    waiter = queue.add_lease_waiter(MAX_HELD_LEASES)
+    if waiter is None:
+        # Enough requests are held already: answered at once, as before.
+        return await queue.lease_job(db, worker_id, lease_seconds)
+    gone = asyncio.Event()
+    watcher = asyncio.create_task(_watch_disconnect(request, gone, waiter))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wait_s
+    try:
+        while True:
+            waiter.clear()  # a job queued from here on wakes the wait below
+            job = await queue.lease_job(db, worker_id, lease_seconds)
+            if job is not None:
+                if gone.is_set():
+                    await db.rollback()
+                    return None
+                return job
+            await db.commit()  # what the look changed is saved; the connection goes back
+            db.expunge_all()  # the next look reads every row fresh
+            remaining = deadline - loop.time()
+            if gone.is_set() or remaining <= 0:
+                return None
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(waiter.wait(), timeout=min(LEASE_LOOK_AGAIN_S, remaining))
+            if gone.is_set():
+                return None
+    finally:
+        watcher.cancel()
+        queue.remove_lease_waiter(waiter)
+
+
+async def _watch_disconnect(request: Request, gone: asyncio.Event, waiter: asyncio.Event) -> None:
+    """Set ``gone`` (and wake the hold) the moment the client disconnects."""
+    try:
+        while True:
+            message = await request.receive()
+            if message.get("type") == "http.disconnect":
+                break
+    except Exception:  # noqa: BLE001 - a broken receive channel means nobody is there
+        pass
+    gone.set()
+    waiter.set()
 
 
 @router.post("/{job_id}/heartbeat")
