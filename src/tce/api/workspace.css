@@ -508,13 +508,17 @@ body.notes-open { overflow: hidden; }
   position: fixed; left: 50%; transform: translateX(-50%); z-index: 60;
   bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 76px);
   max-width: min(92vw, 520px); padding: 12px 16px;
+  /* 23-Nov: the width its sentence needs, up to the max, wrapping inside it. Shrink to
+     fit alone stopped at the half of the screen right of left: 50%, so a long sentence
+     ran six lines in half the width. */
+  width: max-content;
   border: 2px solid var(--ink); border-radius: 12px;
   background: var(--ink); color: var(--white); line-height: 1.4;
   box-shadow: var(--shadow);
 }
 .toast.is-bad { background: var(--signal); border-color: #7d1a1a; }
 /* 23-Nov (B8): Undo on the decision he just made, inside its own toast. */
-.toast.has-undo { display: flex; align-items: center; gap: 14px; width: max-content; }
+.toast.has-undo { display: flex; align-items: center; gap: 14px; }
 .toast .toast-undo { flex: none; min-height: 40px; padding: 4px 14px; }
 /* The pressed button says what is starting; locked, it stays readable. */
 .btn.is-busy[disabled] { opacity: 1; cursor: progress; }

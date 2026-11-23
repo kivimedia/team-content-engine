@@ -317,8 +317,8 @@ def browser():
 
 
 def _page(browser, size=PHONE):
-    context = browser.new_context(viewport=size, device_scale_factor=2, is_mobile=size is PHONE,
-                                  has_touch=size is PHONE)
+    phone = size["width"] < 760
+    context = browser.new_context(viewport=size, device_scale_factor=2, is_mobile=phone, has_touch=phone)
     context.set_default_timeout(30_000)
     page = context.new_page()
     page.errors = []
@@ -743,5 +743,120 @@ def test_the_new_lines_read_right_to_left_on_a_hebrew_login(server, browser, tmp
         page.screenshot(path=str(shots / f"b8-hebrew-refused-{name}.png"), full_page=False)
         overflow = page.evaluate("() => document.documentElement.scrollWidth > window.innerWidth + 1")
         assert overflow is False
+        assert page.errors == [], page.errors
+        page.context.close()
+
+
+# ------------------------------------------------------------------- toasts
+
+# A toast takes the width its sentence needs, up to min(92vw, 520px), wraps inside it
+# and stays centered on screen; the Undo button is never squeezed or pushed off. It
+# used to shrink to the half of the screen right of `left: 50%` (23-Nov review: a
+# refusal ran six lines in half a phone, over the card's buttons).
+TOAST_JS = """() => {
+  const t = document.querySelector('.toast');
+  const r = t.getBoundingClientRect();
+  const twin = t.cloneNode(true);
+  twin.style.cssText = 'position:absolute;left:0;top:0;transform:none;max-width:none;width:max-content;visibility:hidden';
+  document.body.appendChild(twin);
+  const natural = twin.getBoundingClientRect().width;
+  twin.remove();
+  const u = t.querySelector('.toast-undo');
+  const b = u ? u.getBoundingClientRect() : null;
+  return {
+    left: r.left, right: r.right, width: r.width, vw: window.innerWidth,
+    max: Math.min(window.innerWidth * 0.92, 520), natural: natural, text: t.textContent,
+    undo: b ? { left: b.left, right: b.right, height: b.height, fits: u.scrollWidth <= u.clientWidth } : null,
+    overflowX: document.documentElement.scrollWidth > window.innerWidth + 1,
+  };
+}"""
+
+
+def _check_toast(page) -> dict:
+    t = page.evaluate(TOAST_JS)
+    assert abs(t["width"] - min(t["max"], t["natural"])) <= 1.5, t
+    assert t["left"] >= 0 and t["right"] <= t["vw"] + 0.5, t
+    assert abs((t["left"] + t["right"]) / 2 - t["vw"] / 2) <= 1.5, t
+    if t["undo"]:
+        u = t["undo"]
+        assert t["left"] < u["left"] and u["right"] < t["right"], t
+        assert u["fits"] and u["height"] <= 44, t
+    assert t["overflowX"] is False, t
+    return t
+
+
+def _size(width):
+    return {"width": width, "height": 760}
+
+
+def _answer(body):
+    """A route that answers every request with `body` (one parameter: Playwright passes
+    the request too to a handler that takes two)."""
+    return lambda route: route.fulfill(json=body)
+
+
+def test_a_toast_takes_the_width_its_sentence_needs_and_stays_on_screen(server, browser, tmp_path):
+    shots = _shots(tmp_path)
+    words = ("Today's spend cap for new backgrounds is reached ($25 of $25). "
+             "Nothing was started, and nothing was spent on this video.")
+    for width in (390, 1280):
+        page = _page(browser, _size(width) if width == 1280 else PHONE)
+        item = json.loads(json.dumps(STUB_ITEM))
+        page.route("**/api/v1/production/library?*", _answer(_stub_library(item)))
+        page.goto(f"{server['base']}/library")
+        page.wait_for_selector("#view article.card h3")
+        page.route("**/api/v1/production/uploads/*/backdrop", lambda r: r.fulfill(
+            status=409, content_type="application/json", body=json.dumps({"detail": {"message": words}})))
+        _card(page, "Fire on the pier").get_by_role("button", name="New places").click()
+        page.locator(".toast.is-bad").wait_for()
+        t = _check_toast(page)
+        assert t["width"] >= t["max"] - 1.5, t   # a long refusal uses the whole width it may
+        page.screenshot(path=str(shots / f"toast-backdrop-refused-{width}.png"), full_page=False)
+        page.context.close()
+
+    # A plain toast with a long sentence, at phone width.
+    page = _page(browser)
+    page.goto(f"{server['base']}/library")
+    page.wait_for_selector("#view article.card h3")
+    page.route("**/api/v1/production/uploads/*/auto-edit", lambda r: r.fulfill(
+        json={"status_detail": "Taken out of Archived: the edit starts now."}))
+    page.locator("[data-edit-now]").click()
+    page.locator(".toast:not(.is-bad)").wait_for()
+    t = _check_toast(page)
+    assert t["text"].startswith("Editing it now. It left Archived")
+    page.screenshot(path=str(shots / "toast-plain-long-390.png"), full_page=False)
+    page.context.close()
+
+    # The longest decision sentence with its Undo, at 320 and 390.
+    for width in (320, 390):
+        page = _page(browser, PHONE if width == 390 else _size(width))
+        page.goto(f"{server['base']}/topics")
+        page.wait_for_selector("#view article.card h3")
+        cid = server["ideas"]["Idea 1"]
+        page.route("**/api/v1/editorial/topics/*/decide", _answer({
+            "candidate_id": cid, "change_id": str(uuid.uuid4()), "decision": "improve", "placed": None}))
+        _card(page, "Idea 1").get_by_role("button", name="Needs AI work").click()
+        page.locator(".toast .toast-undo").wait_for()
+        t = _check_toast(page)
+        assert t["text"].startswith("Needs AI work: fresh research on it has started.")
+        page.screenshot(path=str(shots / f"toast-undo-en-{width}.png"), full_page=False)
+        page.context.close()
+
+
+@pytest.mark.parametrize("server", ["hebrew"], indirect=True)
+def test_the_undo_toast_fits_in_hebrew_at_phone_widths(server, browser, tmp_path):
+    shots = _shots(tmp_path)
+    for width in (320, 390):
+        page = _page(browser, PHONE if width == 390 else _size(width))
+        page.goto(f"{server['base']}/topics")
+        page.wait_for_selector("#view article.card h3")
+        page.route("**/api/v1/editorial/topics/*/decide", lambda r: r.fulfill(json={
+            "candidate_id": "x", "change_id": str(uuid.uuid4()), "decision": "later", "placed": None}))
+        _card(page, "רעיון 1").locator('[data-decide="later"]').click()
+        page.locator(".toast .toast-undo").wait_for()
+        page.wait_for_timeout(200)  # the Hebrew layer writes its words
+        t = _check_toast(page)
+        assert t["text"].startswith("נשמר לאחר כך") and t["text"].endswith("ביטול"), t
+        page.screenshot(path=str(shots / f"toast-undo-he-{width}.png"), full_page=False)
         assert page.errors == [], page.errors
         page.context.close()
