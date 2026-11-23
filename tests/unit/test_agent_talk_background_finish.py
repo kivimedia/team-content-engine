@@ -341,7 +341,10 @@ async def test_a_crash_behind_the_answer_is_written_on_the_talk(client, editoria
     assert got["status"] == "failed" and got["finish"]["state"] == "failed"
     assert got["finish"]["error"]["status"] == 500
     assert got["finish"]["error"]["detail"] == got["detail"]
-    assert "could not be joined: the server ran into an error while putting it together" in got["detail"]
+    # A server error, tried again by the caller: never the words of a refused join.
+    assert got["detail"] == ("The talk with Atlas could not be put together just now: the server ran into an "
+                             "error while joining it. Finishing it again tries once more.")
+    assert "could not be joined" not in got["detail"]
     # Finished again, it is made from the file the first join left.
     monkeypatch.setattr(agent_talks, "sha256_of", real)
     assert (await client.post(f"{BASE}/{talk}/finish", headers=AUTH, json={"background": True})).status_code == 202

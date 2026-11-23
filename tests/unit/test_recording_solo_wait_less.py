@@ -73,6 +73,8 @@ class Server:
     def __call__(self, route):
         request = route.request
         path = urlsplit(request.url).path
+        if path == "/blank":  # the same site, without the page: the parts are put there first
+            return route.fulfill(body="<!doctype html><title>blank</title>", content_type="text/html")
         if path == "/record/solo":
             return route.fulfill(path=ASSETS / "recording-solo.html", content_type="text/html")
         if path in {"/recording.css", "/recording-solo.js", "/take-reward.js"}:
@@ -88,6 +90,9 @@ class Server:
             self.calls.append(("FINISH", json.loads(request.post_data or "{}")))
             status, body = self.finish()
             return route.fulfill(status=status, json=body)
+        if path.endswith("/agent-talks") and request.method == "POST":
+            self.calls.append(("CREATE", None))
+            return route.fulfill(status=201, json={"talk_id": TALK, "title": "Recording, 23 Nov", "status": "recording"})
         if path.endswith(f"/agent-talks/{TALK}") and request.method == "GET":
             self.calls.append(("GET", None))
             return route.fulfill(json=self.talk())
@@ -109,11 +114,18 @@ def _until(page, check, ms=15000):
     raise AssertionError("never happened")
 
 
-def _page(pw, server):
-    browser = pw.chromium.launch()
-    context = browser.new_context(viewport={"width": 390, "height": 844})
+def _page(pw, server, parts=0, camera=False):
+    """The page, with `parts` parts and a take whose Done was pressed already on the phone
+    (put there from a blank page of the same site, so only this page sends them)."""
+    args = ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"] if camera else []
+    browser = pw.chromium.launch(args=args)
+    context = browser.new_context(viewport={"width": 390, "height": 844},
+                                  permissions=["camera", "microphone"] if camera else [])
     page = context.new_page()
     page.route("https://studio.test/**", server)
+    if parts:
+        page.goto("https://studio.test/blank")
+        page.evaluate(SEED, parts)
     page.goto("https://studio.test/record/solo")
     return browser, page
 
@@ -136,12 +148,16 @@ def _line(page):
 def test_done_answers_at_once_and_the_page_reads_how_the_finish_ended():
     server = Server()
     with sync_playwright() as pw:
-        browser, page = _page(pw, server)
-        page.evaluate(SEED, 1)
-        page.reload()
+        browser, page = _page(pw, server, camera=True)
+        page.wait_for_function("document.getElementById('soloState').textContent === 'Ready when you are'")
+        page.click("#soloRecord")
+        page.locator("#soloFlag").wait_for()
+        page.wait_for_timeout(1500)
+        page.click("#soloDone")
         _until(page, lambda: "FINISH" in server.kinds())
-        assert server.calls[-1][1] == {"ended_at": "2026-11-23T08:01:00Z", "duration_ms": 60000, "edit": True,
-                                       "background": True}
+        body = server.calls[-1][1]
+        assert server.kinds()[:2] == ["CREATE", "PUT"] and server.kinds().index("FINISH") == server.kinds().count("PUT") + 1
+        assert body["edit"] is True and body["background"] is True and body["duration_ms"] > 0 and body["ended_at"]
         _until(page, lambda: "being put together" in _line(page))
         assert page.inner_text("#soloState") == "Putting it together"
         assert page.inner_text("#soloStatus") == (
@@ -167,9 +183,7 @@ def test_a_refused_join_shows_the_refusal_as_before_and_is_tried_again():
     server.talk = lambda: {"talk_id": TALK, "status": "failed",
                            "finish": {"state": "failed", "error": {"status": 422, "detail": REFUSED}}}
     with sync_playwright() as pw:
-        browser, page = _page(pw, server)
-        page.evaluate(SEED, 1)
-        page.reload()
+        browser, page = _page(pw, server, parts=1)
         _until(page, lambda: "could not be finished" in _line(page), 12000)
         assert page.inner_text("#soloStatus") == (
             f"Sent, but it could not be finished yet ({REFUSED}). Trying again in a few seconds.")
@@ -179,12 +193,27 @@ def test_a_refused_join_shows_the_refusal_as_before_and_is_tried_again():
         browser.close()
 
 
+def test_a_server_error_behind_the_answer_is_tried_again_and_never_reads_as_a_refusal():
+    """A 5xx in the finish's end (the join itself crashed) is what a 5xx from the finish has
+    always been: tried again in a few seconds. Only a 422 is a video that could not be made."""
+    server = Server()
+    server.talk = lambda: {"talk_id": TALK, "status": "failed", "finish": {"state": "failed", "error": {
+        "status": 500, "detail": "Your recording could not be put together just now: the server ran into an error."}}}
+    with sync_playwright() as pw:
+        browser, page = _page(pw, server, parts=1)
+        _until(page, lambda: "could not be finished" in _line(page), 12000)
+        assert page.inner_text("#soloStatus") == ("Sent, but it could not be finished yet (the server could not put "
+                                                  "it together just now). Trying again in a few seconds.")
+        assert "could not be joined" not in _line(page) and page.evaluate(LEFT) == [0, 1]
+        _shot(page, "server-error")
+        _until(page, lambda: server.kinds().count("FINISH") == 2, 12000)
+        browser.close()
+
+
 def test_an_older_tce_that_answers_with_the_video_works_as_before():
     server = Server(finish=lambda: (200, {**RESULT, "status": "uploaded"}))
     with sync_playwright() as pw:
-        browser, page = _page(pw, server)
-        page.evaluate(SEED, 1)
-        page.reload()
+        browser, page = _page(pw, server, parts=1)
         _until(page, lambda: "In your Library" in _line(page))
         assert "GET" not in server.kinds() and page.evaluate(LEFT) == [0, 0]
         browser.close()
@@ -193,9 +222,7 @@ def test_an_older_tce_that_answers_with_the_video_works_as_before():
 def test_three_parts_at_once_never_more_and_the_finish_waits_for_every_one():
     server = Server(hold_parts=True)
     with sync_playwright() as pw:
-        browser, page = _page(pw, server)
-        page.evaluate(SEED, 7)
-        page.reload()
+        browser, page = _page(pw, server, parts=7)
         _until(page, lambda: len(server.open_parts) == 3)
         page.wait_for_timeout(400)
         assert len(server.open_parts) == 3 and server.kinds() == ["PUT"] * 3  # never a fourth

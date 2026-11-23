@@ -65,6 +65,8 @@ class Book:
         request = route.request
         path = urlsplit(request.url).path
         method = request.method
+        if path == "/blank":  # the same site, without the page: a session is put there first
+            return route.fulfill(body="<!doctype html><title>blank</title>", content_type="text/html")
         if path == "/book" or re.fullmatch(r"/book/\d+", path):
             return route.fulfill(path=ASSETS / "book.html", content_type="text/html")
         if path in {"/book.js", "/book.css", "/take-reward.js"}:
@@ -124,11 +126,16 @@ def _until(page, check, ms=15000):
     raise AssertionError("never happened")
 
 
-def _open(pw, book, path):
+def _open(pw, book, path, parts=0):
+    """The page; with `parts`, a filmed session (that many parts and its Send) is on the phone
+    first, put there from a blank page of the same site, so only this page sends it."""
     browser = pw.chromium.launch()
     context = browser.new_context(viewport={"width": 390, "height": 844})
     page = context.new_page()
     page.route("https://book.test/**", book)
+    if parts:
+        page.goto("https://book.test/blank")
+        page.evaluate(SEED, [parts, TALK, TITLE])
     page.goto(f"https://book.test{path}")
     return browser, page
 
@@ -187,9 +194,7 @@ TAKES_LEFT = """() => new Promise((resolve) => {
 def test_a_session_is_put_together_in_the_background_and_then_says_what_it_always_said():
     book = Book([_view(14), _view(16, **READY_16)])
     with sync_playwright() as pw:
-        browser, page = _open(pw, book, "/book")
-        page.evaluate(SEED, [2, TALK, TITLE])
-        page.reload()
+        browser, page = _open(pw, book, "/book", parts=2)
         _until(page, lambda: "FINISH" in book.kinds())
         assert book.kinds()[:book.kinds().index("FINISH")].count("PUT") == 2
         assert book.calls[-1][1] == {"ended_at": "2026-11-23T08:04:00Z", "duration_ms": 240000, "transcript": [],
@@ -219,9 +224,7 @@ def test_three_parts_at_once_never_more_and_the_finish_waits_for_every_one():
     book = Book([_view(14)])
     book.hold_parts = True
     with sync_playwright() as pw:
-        browser, page = _open(pw, book, "/book")
-        page.evaluate(SEED, [5, TALK, TITLE])
-        page.reload()
+        browser, page = _open(pw, book, "/book", parts=5)
         _until(page, lambda: len(book.open_parts) == 3)
         page.wait_for_timeout(400)
         assert len(book.open_parts) == 3 and book.kinds().count("PUT") == 3  # never a fourth
@@ -242,13 +245,28 @@ def test_a_refused_join_pauses_the_session_as_before():
     book.talk = lambda: {"talk_id": TALK, "status": "failed",
                          "finish": {"state": "failed", "error": {"status": 422, "detail": REFUSED}}}
     with sync_playwright() as pw:
-        browser, page = _open(pw, book, "/book")
-        page.evaluate(SEED, [1, TALK, TITLE])
-        page.reload()
+        browser, page = _open(pw, book, "/book", parts=1)
         _until(page, lambda: "Sending paused" in page.inner_text("#bookStatus"), 12000)
         assert page.inner_text("#bookStatus") == (
             f"Sending paused ({REFUSED}). Trying again in a few seconds; nothing is lost.")
         assert page.evaluate(TAKES_LEFT) == 1
+        _until(page, lambda: book.kinds().count("FINISH") == 2, 12000)
+        browser.close()
+
+
+def test_a_server_error_behind_the_answer_is_tried_again_and_never_reads_as_a_refusal():
+    """A 5xx in the finish's end (the join itself crashed) is what a 5xx from the finish has
+    always been: paused and tried again. Only a 422 is a video that could not be made."""
+    book = Book([_view(14)])
+    book.talk = lambda: {"talk_id": TALK, "status": "failed", "finish": {"state": "failed", "error": {
+        "status": 500, "detail": "Your book session could not be put together just now: the server ran into an error."}}}
+    with sync_playwright() as pw:
+        browser, page = _open(pw, book, "/book", parts=1)
+        _until(page, lambda: "Sending paused" in page.inner_text("#bookStatus"), 12000)
+        assert page.inner_text("#bookStatus") == ("Sending paused (the server could not put it together just now). "
+                                                  "Trying again in a few seconds; nothing is lost.")
+        assert page.evaluate(TAKES_LEFT) == 1
+        _shot(page, "server-error", "bookStatus")
         _until(page, lambda: book.kinds().count("FINISH") == 2, 12000)
         browser.close()
 
@@ -259,9 +277,7 @@ def test_an_older_tce_that_answers_with_the_video_works_as_before():
                                  "missing_pieces": [], "edit": True, "archived": False, "edit_started": True,
                                  "already_finished": False, "choice_kept": False})
     with sync_playwright() as pw:
-        browser, page = _open(pw, book, "/book")
-        page.evaluate(SEED, [2, TALK, TITLE])
-        page.reload()
+        browser, page = _open(pw, book, "/book", parts=2)
         _until(page, lambda: "Saved in your Library" in page.inner_text("#bookStatus"))
         assert "TALK" not in book.kinds() and page.evaluate(TAKES_LEFT) == 0
         browser.close()

@@ -420,7 +420,6 @@ async def finish_talk(
     came, which archives). claimed (B9): this is the join a background finish claimed,
     its body read from the claim; how it ends is written on the talk for the GET. None
     when the claim had already ended before this one got the talk."""
-    talk_id = row.id
     edit = body.edit is not False
     if row.upload_id is not None:  # finished before: the same video, as it stands now
         return await _finished_again(db, ws, row, body)
@@ -609,10 +608,12 @@ def _finishing_line(agent: str) -> str:
 
 
 def _crash_line(agent: str) -> str:
+    """A crash behind the answer is a server error (500 on the GET), backed off and finished
+    again by the caller, never a refused join: so never "could not be joined"."""
     subject = _subject(agent)
     return (
-        f"{subject[:1].upper()}{subject[1:]} could not be joined: the server ran into an error "
-        "while putting it together. Finishing it again tries once more."
+        f"{subject[:1].upper()}{subject[1:]} could not be put together just now: the server ran "
+        "into an error while joining it. Finishing it again tries once more."
     )
 
 

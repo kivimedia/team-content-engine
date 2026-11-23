@@ -35,6 +35,8 @@
   // 23-Nov-2026 (wait-less B9): how often a finish TCE puts together in the background is
   // asked about.
   const FINISH_POLL_MS = 3000;
+  // What a failed finish says when the server itself failed behind the answer (a 5xx).
+  const NOT_NOW = "the server could not put it together just now";
   // Pieces on their way at once (wait-less B9, as recording-solo.js).
   const PIECES_AT_ONCE = 3;
 
@@ -1283,7 +1285,10 @@
       return;
     }
     if (how === "failed") {
-      paused(new Error((finish.error && finish.error.detail) || "The video could not be put together"));
+      // A 422 is the refused join, in its own words; a server error (5xx) behind the answer is
+      // tried again like any failed finish, and never reads as a video that cannot be made.
+      const code = (finish.error && finish.error.status) || 422;
+      paused(new Error(code >= 500 ? NOT_NOW : (finish.error && finish.error.detail) || "The video could not be put together"));
       clearTimeout(state.retryId);
       state.retryId = setTimeout(sendAll, RETRY_MS);
       return;

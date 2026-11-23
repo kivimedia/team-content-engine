@@ -725,7 +725,18 @@
     "Some of the video is still on this phone. It is sent again in a few seconds, from any TCE page.": "חלק מהסרטון עדיין בטלפון. הוא נשלח שוב בעוד כמה שניות, מכל עמוד ב-TCE.",
     "That take was too short to keep. Press Record again.": "הטייק היה קצר מדי. לוחצים הקלטה שוב.",
     "Finish at least one clip before finishing the session.": "צריך לסיים לפחות קליפ אחד לפני שמסיימים.",
-    "Keeping everything on this phone until you are back online": "שומר הכול בטלפון עד שתחזור לרשת"
+    "Keeping everything on this phone until you are back online": "שומר הכול בטלפון עד שתחזור לרשת",
+
+    // 23-Nov-2026 (wait-less B9): a take put together in the background, and the Book's one tap
+    // to the next review (recording-solo.js, book.js)
+    "Putting it together": "מחברים את הסרטון",
+    "Your recording is being put together into its video now. You can leave this page.":
+      "מחברים עכשיו את ההקלטה שלך לסרטון. אפשר לצאת מהעמוד.",
+    "Sent, but it could not be finished yet (the server could not put it together just now). Trying again in a few seconds.":
+      "נשלח, אבל עוד לא הסתיים (השרת לא הצליח לחבר אותו כרגע). מנסים שוב בעוד כמה שניות.",
+    "Sending paused (the server could not put it together just now). Trying again in a few seconds; nothing is lost.":
+      "השליחה הושהתה (השרת לא הצליח לחבר אותו כרגע). מנסים שוב בעוד כמה שניות; שום דבר לא אבד.",
+    "Next to review": "הבא לבדיקה"
   };
 
   // The weekday letters an Israeli reads in a date ("ביום ה' 8.10"), Sunday first.
@@ -965,7 +976,10 @@
     [/^Recording did not start: ([\s\S]*)$/, "ההקלטה לא התחילה: $1"],
     [/^The camera did not come back: ([\s\S]*)$/, "המצלמה לא חזרה: $1"],
     [/^Lost contact while waiting: ([\s\S]*)$/, "הקשר נותק בזמן ההמתנה: $1"],
-    [/^Opening changed\. Packet version (\d+) is bound to this take set\.$/, "הפתיחה הוחלפה. גרסה $1 מחוברת להקלטה הזאת."]
+    [/^Opening changed\. Packet version (\d+) is bound to this take set\.$/, "הפתיחה הוחלפה. גרסה $1 מחוברת להקלטה הזאת."],
+    // 23-Nov-2026 (wait-less B9): a Book session put together in the background (book.js)
+    [/^"([^"]*)" is being put together into its video now\. You can leave this page\.$/,
+      "מחברים עכשיו את \"$1\" לסרטון. אפשר לצאת מהעמוד."]
   ];
 
   function translate(text) {
