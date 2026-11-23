@@ -71,6 +71,7 @@
     chapters: [], narration: null, seat: "tce",
     chapter: null, index: 0, playing: false, mode: "", audio: null, utterance: null, token: 0,
     film: null, sending: false, retryId: null, choosing: null, held: new Set(),
+    listing: null,
   };
   const readLocal = (key, fallback = "") => { try { return localStorage.getItem(key) || fallback; } catch (_) { return fallback; } };
   const saveLocal = (key, value) => { try { localStorage.setItem(key, value); } catch (_) { /* private browsing */ } };
@@ -274,8 +275,59 @@
 
   async function openChapter(n) {
     stop();
-    const c = await api(`/book/chapters/${n}`);
+    showChapter(await api(`/book/chapters/${n}`));
+  }
+
+  /* 23-Nov-2026 (wait-less B9): his layout, write and approve taps answer with the chapter
+     as the GET draws it, so the page redraws from that answer and remembers it in the
+     chapter list, instead of fetching the chapter again. */
+  const LIST_FIELDS = ["status", "status_words", "phase", "phase_words", "readable", "layout_status", "write_requested_at", "version"];
+  function remember(c) {
+    const entry = c && state.chapters.find((x) => x.n === c.n);
+    if (!entry) return;
+    for (const key of LIST_FIELDS) if (key in c) entry[key] = c[key];
+    if (Array.isArray(c.paragraphs)) entry.paragraphs = c.paragraphs.length;
+  }
+
+  /* One tap to what waits on him next, the chapter the list's review link would open. It
+     took two before: Back to the chapters, then that link. Shown once this chapter needs
+     nothing more from him (approved, or its layout agreed and asked to be written). */
+  function nextToReview() {
+    const all = state.chapters || [];
+    const fresh = all.filter(isNew);
+    const here = state.chapter ? state.chapter.n : null;
+    const queue = (fresh.length ? fresh : all).filter((c) => c.n !== here);
+    return queue.find((c) => reviewAction(c) === "Review chapter") || queue.find((c) => reviewAction(c)) || null;
+  }
+
+  function drawNextReview() {
+    const c = state.chapter;
+    const entry = c && state.chapters.find((x) => x.n === c.n);
+    const next = entry && !reviewAction(entry) ? nextToReview() : null;
+    for (const id of ["nextReview", "planNextReview"]) {
+      const button = $(id);
+      if (!button) continue;
+      button.hidden = !next;
+      button.querySelector("small").textContent = next ? `${label(next)}: ${next.title}` : "";
+      if (next) button.dataset.chapter = String(next.n);
+      else delete button.dataset.chapter;
+    }
+  }
+
+  /* A chapter opened straight from its address has no list yet: it is read once, behind
+     the page, so the one tap knows where to go. */
+  function listForNext() {
+    if (state.chapters.length || state.listing) return;
+    state.listing = api("/book/chapters").then((data) => {
+      if (!state.chapters.length) state.chapters = data.chapters || [];
+      remember(state.chapter);
+      drawNextReview();
+    }).catch(() => {}).finally(() => { state.listing = null; });
+  }
+
+  function showChapter(c) {
     state.chapter = c;
+    remember(c);
     const saved = Number(readLocal(positionKey(c), "0"));
     state.index = Number.isInteger(saved) ? Math.max(0, Math.min(c.paragraphs.length - 1, saved)) : 0;
     state.narration = c.narration;
@@ -315,6 +367,8 @@
     mark();
     if (state.index > 0) box.children[state.index]?.scrollIntoView({ block: "center" });
     else window.scrollTo(0, 0);
+    drawNextReview();
+    listForNext();
   }
 
   const voiceWords = (n) => (n && n.voice_name ? `${n.voice_name}'s voice` : "your chosen voice");
@@ -407,8 +461,8 @@
     const buttons = ["layoutApprove", "layoutReopen", "writeButton"];
     buttons.forEach((id) => { $(id).disabled = true; });
     try {
-      await api(`/book/chapters/${n}/layout`, { method: "POST", body: JSON.stringify({ action, note }) });
-      await openChapter(n);
+      const answer = await api(`/book/chapters/${n}/layout`, { method: "POST", body: JSON.stringify({ action, note }) });
+      if (answer.chapter && answer.chapter.n === n) { stop(); showChapter(answer.chapter); } else await openChapter(n);
       status(action === "approve" ? `The layout of ${label(state.chapter)} is approved. Press Write this chapter when you want it written.`
         : action === "reopen" ? `The layout of ${label(state.chapter)} is open again. Add a note or talk it over with the editor.`
           : "Your note is saved with this layout. The editor reads it before it changes the layout.", "saved");
@@ -426,8 +480,8 @@
     const n = state.chapter.n;
     $("writeButton").disabled = true;
     try {
-      await api(`/book/chapters/${n}/write`, { method: "POST", body: JSON.stringify({}) });
-      await openChapter(n);
+      const answer = await api(`/book/chapters/${n}/write`, { method: "POST", body: JSON.stringify({}) });
+      if (answer.chapter && answer.chapter.n === n) { stop(); showChapter(answer.chapter); } else await openChapter(n);
       status(`Asked the editor to write ${label(state.chapter)} from the layout you approved. It opens for listening here by itself once it is written.`, "saved");
     } catch (error) {
       status(`That did not save: ${error.message}`, true);
@@ -445,7 +499,9 @@
     try {
       const row = await api(`/book/chapters/${n}/status`, { method: "POST", body: JSON.stringify({ status: s }) });
       state.chapter.status = row.status;
+      remember(row.chapter && row.chapter.n === n ? row.chapter : { n, status: row.status, status_words: row.status_words });
       showStatus(row.status, row.status_words);
+      drawNextReview();
       const name = label(state.chapter);
       status(row.status === "approved" ? `${name} is approved.` : `${name} is back in review.`);
     } catch (error) {
@@ -1532,6 +1588,9 @@
     chatSend(`Let's workshop ${state.chapter ? label(state.chapter) : "this chapter"} together, against the layout I approved.`);
   });
   $("unapproveButton").addEventListener("click", () => setStatus("in_review"));
+  for (const id of ["nextReview", "planNextReview"]) {
+    $(id).addEventListener("click", () => { const n = Number($(id).dataset.chapter); if (n) go(n); });
+  }
   $("prevChapter").addEventListener("click", () => state.chapter && state.chapter.previous != null && go(state.chapter.previous));
   $("nextChapter").addEventListener("click", () => state.chapter && state.chapter.next != null && go(state.chapter.next));
   $("filmButton").addEventListener("click", () => (state.film ? doneFilm() : startFilm()));

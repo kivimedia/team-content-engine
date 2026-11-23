@@ -138,7 +138,12 @@ async def list_chapters(ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any
 
 @router.get("/chapters/{n}")
 async def get_chapter(n: int, ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
-    book = store()
+    return _chapter_view(store(), n)
+
+
+def _chapter_view(book: BookStore, n: int) -> dict[str, Any]:
+    """One chapter as the page draws it. 23-Nov (wait-less B9): his status, layout and write
+    taps answer with it too, so the page redraws from the answer instead of fetching it again."""
     chapter = _chapter(book, n)
     entry = book.status_of(n)
     numbers = [c["n"] for c in book.chapters()]
@@ -183,7 +188,8 @@ async def set_status(n: int, body: StatusBody, ws: uuid.UUID = Depends(require_o
         logger.warning("book.status_not_written", chapter=n, error=str(exc)[:300])
         raise HTTPException(status_code=503, detail="The editor's record could not be written, so nothing changed") from exc
     logger.info("book.status", chapter=n, status=body.status, by=body.by)
-    return {"n": n, "status": entry["status"], "status_words": STATUS_WORDS[entry["status"]], "at": entry["at"]}
+    return {"n": n, "status": entry["status"], "status_words": STATUS_WORDS[entry["status"]], "at": entry["at"],
+            "chapter": _chapter_view(store(), n)}
 
 
 _generating: dict[str, asyncio.Lock] = {}
@@ -400,8 +406,9 @@ async def layout_word(n: int, body: LayoutBody, ws: uuid.UUID = Depends(require_
         logger.warning("book.layout_not_written", chapter=n, action=body.action, error=str(exc)[:300])
         raise HTTPException(status_code=503, detail="The editor's record could not be written, so nothing changed") from exc
     logger.info("book.layout", chapter=n, action=body.action, by=by)
-    chapter = _chapter(store(), n)
-    return {"n": n, "action": body.action, "result": out, "phase": chapter.get("phase"), "phase_words": chapter.get("phase_words")}
+    chapter = _chapter_view(store(), n)
+    return {"n": n, "action": body.action, "result": out, "phase": chapter.get("phase"), "phase_words": chapter.get("phase_words"),
+            "chapter": chapter}
 
 
 class WriteBody(BaseModel):
@@ -422,4 +429,4 @@ async def ask_to_write(n: int, body: WriteBody | None = None, ws: uuid.UUID = De
         logger.warning("book.write_not_asked", chapter=n, error=str(exc)[:300])
         raise HTTPException(status_code=503, detail="The editor's record could not be written, so nothing changed") from exc
     logger.info("book.write_requested", chapter=n, by=by, already=out.get("already"))
-    return {"n": n, **out}
+    return {"n": n, **out, "chapter": _chapter_view(store(), n)}

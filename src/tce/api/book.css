@@ -252,6 +252,11 @@ body.has-player,body.has-player.device-voice { padding-bottom:var(--player-space
 .reading-position { grid-column:1/-1; margin:0; font:.8rem/1.4 "Segoe UI",sans-serif; color:var(--body); text-align:center; }
 .reading-action { grid-column:1/-1; display:flex; justify-content:center; }
 .reading-action .btn { width:min(100%,440px); min-height:44px; }
+/* 23-Nov-2026 (wait-less B9): Next to review sits beside Undo approval in the dock, and after
+   the layout's own buttons; its second line names the chapter it opens, cut to one line. */
+.reading-action { gap:8px; }
+.next-review { min-width:0; max-width:100%; }
+.next-review small { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .editor-panel { border:1px solid var(--line); background:#fff; }
 .editor-form input { font-size:16px; }
 .voice-badge { font-weight:500; font-size:12px; }
