@@ -1273,6 +1273,40 @@ function rebindIdeas(ideas, next) {
      his phone the 720x1280 and exact-9:16 portrait modes were never tried at all
      (camera report, 22-Sep). Each attempt is now measured and CLOSED, and only the
      winner is opened again at the end. */
+  /* 23-Nov-2026 (wait-less F12): the rung of the ladder this device's camera took last time is
+     asked for first, so the camera opens in one ask instead of walking the ladder again. One
+     record for the studio, Record without a script and the Book (the same ladder in each). It is
+     kept only for this ladder, this browser and this camera, and used only when the same camera
+     answers at the same size; anything else, or no storage (private browsing), walks the whole
+     ladder as before. */
+  const CAMERA_PICK = "tce-camera-pick";
+  function ladderKey() {
+    const text = `${JSON.stringify(CAMERA_ATTEMPTS)}|${navigator.userAgent}`;
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) hash = (Math.imul(hash, 31) + text.charCodeAt(i)) | 0;
+    return String(hash);
+  }
+  const cameraOf = (opened) => { try { return opened.stream.getVideoTracks()[0].getSettings().deviceId || ""; } catch (_) { return ""; } };
+  function keepCamera(attempt, opened) {
+    const camera = cameraOf(opened);
+    const index = CAMERA_ATTEMPTS.indexOf(attempt);
+    if (!camera || index < 0 || !opened.width || !opened.height) return;
+    try {
+      localStorage.setItem(CAMERA_PICK, JSON.stringify({ ladder: ladderKey(), index, camera, size: `${opened.width}x${opened.height}` }));
+    } catch (_) { /* private browsing: the whole ladder next time */ }
+  }
+  async function rememberedCamera(open, close) {
+    let pick = null;
+    try { pick = JSON.parse(localStorage.getItem(CAMERA_PICK) || "null"); } catch (_) { return null; }
+    if (!pick || pick.ladder !== ladderKey() || !Number.isInteger(pick.index) || !CAMERA_ATTEMPTS[pick.index]) return null;
+    let opened = null;
+    try { opened = await open(CAMERA_ATTEMPTS[pick.index]); } catch (_) { return null; }
+    if (cameraOf(opened) === pick.camera && `${opened.width}x${opened.height}` === pick.size) return opened;
+    close(opened);
+    try { localStorage.removeItem(CAMERA_PICK); } catch (_) { /* private browsing */ }
+    return null;
+  }
+
   async function openCamera() {
     // 29-Sep, his pick: no echo cancellation. Nothing plays from the speaker while he
     // records, and on Android it put the mic in call mode, which cut it to digital
@@ -1282,6 +1316,12 @@ function rebindIdeas(ideas, next) {
       video: { facingMode: "user", ...attempt }, audio,
     }).then(measure);
     const stop = (opened) => opened.stream.getTracks().forEach((track) => track.stop());
+    const remembered = await rememberedCamera(open, stop);
+    if (remembered) {
+      state.cameraReport = { chose: `${remembered.width}x${remembered.height}`, portrait: remembered.height >= remembered.width,
+        tried: [], remembered: true };
+      return describe(remembered);
+    }
     const tried = [];
     let best = null;
     for (const attempt of CAMERA_ATTEMPTS) {
@@ -1300,6 +1340,7 @@ function rebindIdeas(ideas, next) {
         continue;
       }
       if (portrait) {
+        keepCamera(attempt, opened);
         state.cameraReport = { chose: `${opened.width}x${opened.height}`, portrait: true, tried };
         return describe(opened);
       }
@@ -1310,6 +1351,7 @@ function rebindIdeas(ideas, next) {
     }
     if (!best) throw new Error("The camera did not open.");
     const chosen = await open(best.attempt);
+    keepCamera(best.attempt, chosen);
     state.cameraReport = {
       chose: `${chosen.width}x${chosen.height}`,
       portrait: chosen.height >= chosen.width,
