@@ -419,14 +419,9 @@ def _concatenate(paths: list[Path], target: Path) -> int:
     return total
 
 
-async def join(folder: Path, extension: str, *, prober: Prober = probe_media) -> Joined:
-    """Join every piece that arrived into one file, remuxed, never re-encoded.
-
-    Piece 0 carries the stream's header, so it must be there. A piece missing further on
-    (it never arrived) leaves a skip in the video; the join goes ahead without it and
-    says which numbers were missing. On success the pieces and the raw join are removed
-    (the joined file holds every byte of them); on failure they stay for another try.
-    """
+async def _before_join(folder: Path, prober: Prober) -> tuple[str, list[tuple[int, Path]], Joined | None]:
+    """What join() checks before it writes a byte: ffmpeg, the pieces (or the joined file
+    an earlier try left), piece 0 and room on the disk. Raises join()'s own refusals."""
     exe = ffmpeg_path()
     if not exe:
         raise TalkError("ffmpeg is not installed on this server", status=503)
@@ -439,8 +434,8 @@ async def join(folder: Path, extension: str, *, prober: Prober = probe_media) ->
             if done.exists() and done.stat().st_size:
                 proof = await prober(done)
                 if proof.get("has_audio"):
-                    return Joined(path=done, container=container, proof=proof, pieces=0,
-                                  bytes=done.stat().st_size)
+                    return exe, items, Joined(path=done, container=container, proof=proof, pieces=0,
+                                              bytes=done.stat().st_size)
         raise TalkError("No piece of this talk arrived, so there is nothing to join", status=409)
     numbers = [n for n, _ in items]
     if numbers[0] != 0:
@@ -449,7 +444,6 @@ async def join(folder: Path, extension: str, *, prober: Prober = probe_media) ->
             "cannot be made without it",
             status=409,
         )
-    missing, missing_count = _missing(numbers)
     # The join writes the pieces once more (the raw join) and once again (the remux)
     # before it removes them: room for both, over the floor, or nothing is written.
     size = sum(path.stat().st_size for _n, path in items)
@@ -461,6 +455,28 @@ async def join(folder: Path, extension: str, *, prober: Prober = probe_media) ->
             "again once space is freed.",
             status=507,
         )
+    return exe, items, None
+
+
+async def check_joinable(folder: Path, *, prober: Prober = probe_media) -> None:
+    """23-Nov (wait-less B9): what join() would refuse before it writes anything (no
+    ffmpeg, no piece, piece 0 missing, too little disk), refused now. A finish answered
+    before its join still hears those at once, in the same words and status."""
+    await _before_join(folder, prober)
+
+
+async def join(folder: Path, extension: str, *, prober: Prober = probe_media) -> Joined:
+    """Join every piece that arrived into one file, remuxed, never re-encoded.
+
+    Piece 0 carries the stream's header, so it must be there. A piece missing further on
+    (it never arrived) leaves a skip in the video; the join goes ahead without it and
+    says which numbers were missing. On success the pieces and the raw join are removed
+    (the joined file holds every byte of them); on failure they stay for another try.
+    """
+    exe, items, done = await _before_join(folder, prober)
+    if done is not None:
+        return done
+    missing, missing_count = _missing([n for n, _ in items])
     raw = folder / f"talk.raw.{extension}"
     # A long talk is gigabytes: written off the event loop, so the server keeps answering.
     total = await asyncio.to_thread(_concatenate, [path for _n, path in items], raw)

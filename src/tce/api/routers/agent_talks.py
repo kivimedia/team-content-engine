@@ -19,12 +19,17 @@ the workspace explicitly.
    don't edit") the video is stored archived: no edit, no check by Jennifer, not in
    Still to do; the Library's Archived list offers "Edit this now". Finishing again
    returns the same video and keeps the first choice, and says so.
+   With "background": true (23-Nov, wait-less B9; the contract is in claim_finish) the
+   finish is written down on the talk and answered 202 at once, the join runs behind
+   the answer, and GET /production/agent-talks/{talk_id} says in "finish" how it ended.
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -48,6 +53,14 @@ from tce.settings import settings
 router = APIRouter(prefix="/production/agent-talks", tags=["production"])
 
 _finish_locks: dict[uuid.UUID, asyncio.Lock] = {}
+# 23-Nov (wait-less B9): a finish answered before its join. The talk's status says it is
+# claimed, and its join_meta["claim"] holds what that finish carried (written whole, the
+# transcript too, before the 202), so a restart loses none of it; resume_claimed_talks
+# joins it after a restart. A plain string in a String(20) column: no migration.
+FINISHING = "finishing"
+_claim_locks: dict[uuid.UUID, asyncio.Lock] = {}
+_claim_tasks: dict[uuid.UUID, asyncio.Task] = {}
+_CLAIM_WAITS = 3
 
 
 def _finish_lock(talk_id: uuid.UUID) -> asyncio.Lock:
@@ -56,6 +69,15 @@ def _finish_lock(talk_id: uuid.UUID) -> asyncio.Lock:
     lock = _finish_locks.get(talk_id)
     if lock is None:
         lock = _finish_locks[talk_id] = asyncio.Lock()
+    return lock
+
+
+def _claim_lock(talk_id: uuid.UUID) -> asyncio.Lock:
+    """Held for a moment by whoever writes a claim's end, or adds to a claim: a later
+    finish's transcript is never written over by the join's own last write (B9)."""
+    lock = _claim_locks.get(talk_id)
+    if lock is None:
+        lock = _claim_locks[talk_id] = asyncio.Lock()
     return lock
 
 
@@ -87,6 +109,9 @@ class AgentTalkFinish(BaseModel):
     # 4-Oct (C4.1): his choice after Stop. False keeps the video archived and unedited.
     # Missing means True, so a caller from before the choice is edited as it always was.
     edit: bool | None = None
+    # 23-Nov (wait-less B9): true answers 202 at once and joins behind the answer (see
+    # claim_finish). Missing or false is the finish as it always was: held for the join.
+    background: bool | None = None
 
 
 def _subject(agent: str) -> str:
@@ -215,11 +240,14 @@ async def get_agent_talk(
     ws: uuid.UUID = Depends(require_private_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    """Where a talk stands: the pieces that arrived, and the video once there is one."""
-    return talk_json(await _talk(db, ws, talk_id))
+    """Where a talk stands: the pieces that arrived, and the video once there is one.
+    "finish" (B9) says how a finish answered before its join is going, or how it ended."""
+    row = await _talk(db, ws, talk_id)
+    return {**talk_json(row), "finish": await _finish_state(db, ws, row)}
 
 
 _TOO_BIG = f"The piece is larger than {agent_talks.MAX_CHUNK_BYTES // (1024 * 1024)} MB"
+_BEING_JOINED = "This talk is being joined into its video right now; a piece sent now would not be in it"
 
 
 async def _read_piece(request: Request) -> bytes:
@@ -248,11 +276,10 @@ async def put_agent_talk_chunk(
             status_code=409,
             detail="This talk is finished and its video is made; a piece sent now would not be in it",
         )
-    if _finish_lock(talk_id).locked():
-        raise HTTPException(
-            status_code=409,
-            detail="This talk is being joined into its video right now; a piece sent now would not be in it",
-        )
+    # B9: a finish claimed in the background holds the talk from its claim, through any
+    # wait for the lock and across a restart, until its join ends.
+    if _finish_lock(talk_id).locked() or row.status == FINISHING:
+        raise HTTPException(status_code=409, detail=_BEING_JOINED)
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > agent_talks.MAX_CHUNK_BYTES:
         raise HTTPException(status_code=413, detail=_TOO_BIG)
@@ -363,7 +390,10 @@ async def finish_agent_talk(
     db: AsyncSession = Depends(get_db),
 ):
     row = await _talk(db, ws, talk_id)
-    return await finish_talk(db, ws, row, body or AgentTalkFinish())
+    body = body or AgentTalkFinish()
+    if body.background is True:
+        return await claim_finish(db, ws, row, body)
+    return await finish_talk(db, ws, row, body)
 
 
 ARCHIVED_BY_CHOICE = (
@@ -383,18 +413,22 @@ async def finish_talk(
     body: AgentTalkFinish,
     *,
     archived_line: str = ARCHIVED_BY_CHOICE,
-) -> dict[str, Any]:
+    claimed: bool = False,
+) -> dict[str, Any] | None:
     """Join the talk's pieces into its library video and, when he chose to (C4.1), start
     the edit (the finish route, and TCE's own backstop for a talk whose finish never
-    came, which archives)."""
+    came, which archives). claimed (B9): this is the join a background finish claimed,
+    its body read from the claim; how it ends is written on the talk for the GET. None
+    when the claim had already ended before this one got the talk."""
     talk_id = row.id
     edit = body.edit is not False
     if row.upload_id is not None:  # finished before: the same video, as it stands now
         return await _finished_again(db, ws, row, body)
-    async with _finish_lock(talk_id):
-        await db.refresh(row)
+    async with _turn(db, row, claimed=claimed) as turn:
         if row.upload_id is not None:  # another finish made it while this one waited
             return await _finished_again(db, ws, row, body)
+        if claimed and _claim_of(row) is None:
+            return None
         try:
             ended = agent_talks.parse_instant(body.ended_at) or _utcnow()
         except TalkError as exc:
@@ -403,12 +437,21 @@ async def finish_talk(
         try:
             joined = await agent_talks.join(_folder(row), row.file_extension)
         except TalkError as exc:
+            held = claimed and await turn.hold() is not None
             if exc.status == 422:  # the pieces are here and do not make a video
                 row.status = "failed"
                 row.status_detail = f"{_subject(row.agent)[:1].upper()}{_subject(row.agent)[1:]} could not be joined: {exc}"[:500]
+                if held:
+                    row.join_meta = _failed_meta(row, 422, str(exc))
+                await db.commit()
+            elif held:  # refused before it wrote anything: the talk is as such a refusal leaves it
+                _let_go(row)
                 await db.commit()
             raise _http(exc) from exc
         sha = await asyncio.to_thread(agent_talks.sha256_of, joined.path)
+        if claimed:  # the claim as it stands now: a later finish may have brought the transcript
+            claim = await turn.hold()
+            body = _claim_body(claim) if claim is not None else body
         lines = [line.model_dump() for line in body.transcript or []]
         duration = joined.proof.get("duration_s") or (
             body.duration_ms / 1000.0 if body.duration_ms else None
@@ -489,6 +532,9 @@ async def finish_talk(
             + ("" if edit else " It is archived, not edited.")
             + _missing_line(joined.missing, joined.missing_count)
         )[:500]
+        if claimed:  # how it ended, for the GET of whoever finished it in the background
+            row.join_meta = {**row.join_meta, "finish": {
+                "state": "finished", "edit_started": bool(created and edit and settings.production_auto_edit)}}
         await db.commit()
         upload_id = upload.id
         result = _finished(row, upload)
@@ -502,6 +548,296 @@ async def finish_talk(
     result["already_finished"] = False
     result["choice_kept"] = False
     return result
+
+
+# ---------------------------------------------------------------------------
+# A finish answered before its join (23-Nov, wait-less B9)
+#
+# The KM BOT relay and the pages that finish a talk from the browser may send
+# "background": true. Refusals that need no join are answered at once as before; a
+# talk with its video answers 200 as before. Otherwise the finish is CLAIMED: the talk's
+# status becomes "finishing" and join_meta["claim"] holds what this finish carried
+# (ended_at, duration_ms, edit, the whole transcript), committed before the 202. The
+# join is then finish_talk itself, under the same per-talk lock, in its own database
+# session (finish_claimed). The first claim's choice stands (C4.1). A piece is refused
+# 409 for as long as the talk is claimed. At startup resume_claimed_talks joins every
+# talk still claimed, so a deploy mid-join costs a retry, never the recording. A finish
+# without the field on a claimed talk waits for that join (_turn) and answers as a
+# second finish does today; TCE's idle backstop only ever takes talks still recording.
+
+
+def _without_claim(row: AgentTalk) -> dict[str, Any]:
+    return {k: v for k, v in (row.join_meta or {}).items() if k != "claim"}
+
+
+def _claim_of(row: AgentTalk) -> dict[str, Any] | None:
+    """What the background finish that claimed this talk carried, while it is claimed."""
+    if row.status != FINISHING:
+        return None
+    claim = (row.join_meta or {}).get("claim")
+    return dict(claim) if isinstance(claim, dict) else {}
+
+
+def _claim_body(claim: dict[str, Any]) -> AgentTalkFinish:
+    return AgentTalkFinish(
+        ended_at=claim.get("ended_at"),
+        duration_ms=claim.get("duration_ms"),
+        transcript=claim.get("transcript") or None,
+        edit=claim.get("edit", True) is not False,
+    )
+
+
+def _failed_meta(row: AgentTalk, status: int, detail: str) -> dict[str, Any]:
+    """The claim ends in a refused join: the GET says so with the refusal's own words,
+    for as long as the talk's line is the one written with it."""
+    return {**_without_claim(row), "finish": {
+        "state": "failed", "error": {"status": status, "detail": detail}, "on_row": row.status_detail}}
+
+
+def _let_go(row: AgentTalk) -> None:
+    """The claim ends without a join (no ffmpeg, the disk, no piece): the talk is as that
+    refusal leaves it when it comes straight back, and the next finish is refused at once."""
+    claim = _claim_of(row) or {}
+    row.status = claim.get("status_before") or "recording"
+    row.status_detail = claim.get("detail_before")
+    row.join_meta = _without_claim(row)
+
+
+def _finishing_line(agent: str) -> str:
+    subject = _subject(agent)
+    return f"{subject[:1].upper()}{subject[1:]} is being put together into its video now."
+
+
+def _crash_line(agent: str) -> str:
+    subject = _subject(agent)
+    return (
+        f"{subject[:1].upper()}{subject[1:]} could not be joined: the server ran into an error "
+        "while putting it together. Finishing it again tries once more."
+    )
+
+
+class _Turn:
+    """One finish's hold on a talk (see _turn)."""
+
+    def __init__(self, db: AsyncSession, row: AgentTalk) -> None:
+        self.db, self.row, self.held = db, row, None
+
+    async def hold(self) -> dict[str, Any] | None:
+        """The claim lock until the turn ends, and the row read afresh: the claim as it
+        stands now, or None when it is no longer claimed."""
+        if self.held is None:
+            lock = _claim_lock(self.row.id)
+            await lock.acquire()
+            self.held = lock
+        await self.db.refresh(self.row)
+        return _claim_of(self.row)
+
+
+@asynccontextmanager
+async def _turn(db: AsyncSession, row: AgentTalk, *, claimed: bool) -> AsyncIterator[_Turn]:
+    """The talk's finish lock, with the row read afresh. A finish that is not the claimed
+    one first waits for the join of a background finish that claimed the talk: that join
+    is the one, and this finish then answers as a second finish does."""
+    lock = _finish_lock(row.id)
+    for _ in range(_CLAIM_WAITS):
+        if not claimed and _claim_of(row) is not None:
+            await asyncio.wait({_start_claimed(row.id, row.workspace_id)})
+        await lock.acquire()
+        try:
+            await db.refresh(row)
+        except BaseException:
+            lock.release()
+            raise
+        if claimed or _claim_of(row) is None:
+            break
+        lock.release()
+    else:
+        raise HTTPException(
+            status_code=503,
+            detail="This talk is still being joined in the background; finish it again in a minute",
+        )
+    turn = _Turn(db, row)
+    try:
+        yield turn
+    finally:
+        if turn.held is not None:
+            turn.held.release()
+        lock.release()
+
+
+def _claim_answer(row: AgentTalk, edit: bool, choice_kept: bool) -> JSONResponse:
+    return JSONResponse(status_code=202, content={
+        "talk_id": str(row.id),
+        "state": FINISHING,
+        "status": FINISHING,
+        "upload_id": None,
+        "edit": edit,
+        "choice_kept": choice_kept,
+        "detail": _finishing_line(row.agent),
+    })
+
+
+async def claim_finish(db: AsyncSession, ws: uuid.UUID, row: AgentTalk, body: AgentTalkFinish) -> Any:
+    """POST .../finish with "background": true (contract B9)."""
+    if row.upload_id is not None:  # finished before: today's answer, at once
+        return await _finished_again(db, ws, row, body)
+    try:
+        agent_talks.parse_instant(body.ended_at)
+    except TalkError as exc:
+        raise _http(exc) from exc
+    lock = _finish_lock(row.id)
+    while True:
+        await db.refresh(row)
+        if row.upload_id is not None:
+            return await _finished_again(db, ws, row, body)
+        if _claim_of(row) is not None:
+            return await _claimed_again(db, ws, row, body)
+        if not lock.locked():
+            break
+        # A finish without a claim (an older caller, or TCE's own backstop) is joining it
+        # now: this one waits for it, as a second finish always has.
+        async with lock:
+            pass
+    edit = body.edit is not False
+    async with lock:
+        await db.refresh(row)
+        if row.upload_id is not None:
+            return await _finished_again(db, ws, row, body)
+        if _claim_of(row) is not None:
+            return await _claimed_again(db, ws, row, body)
+        try:
+            await agent_talks.check_joinable(_folder(row))
+        except TalkError as exc:
+            raise _http(exc) from exc
+        row.join_meta = {**{k: v for k, v in _without_claim(row).items() if k != "finish"}, "claim": {
+            "ended_at": body.ended_at,
+            "duration_ms": body.duration_ms,
+            "edit": edit,
+            "transcript": [line.model_dump() for line in body.transcript or []],
+            "claimed_at": _utcnow().isoformat(),
+            "status_before": row.status,
+            "detail_before": row.status_detail,
+        }}
+        row.status = FINISHING
+        row.status_detail = _finishing_line(row.agent)
+        await db.commit()
+    _start_claimed(row.id, ws)
+    return _claim_answer(row, edit, choice_kept=False)
+
+
+async def _claimed_again(db: AsyncSession, ws: uuid.UUID, row: AgentTalk, body: AgentTalkFinish) -> Any:
+    """A finish while a background finish holds the talk (the page and the sweeper both
+    finish): the same 202, no second join, the first choice kept. A transcript the claim
+    lacks is kept with it, so the video gets it, as _finished_again does once it is made."""
+    lines = [line.model_dump() for line in body.transcript or []]
+    async with _claim_lock(row.id):
+        await db.refresh(row)
+        claim = _claim_of(row)
+        if claim is not None and lines and not claim.get("transcript"):
+            claim["transcript"] = lines
+            row.join_meta = {**(row.join_meta or {}), "claim": claim}
+            await db.commit()
+    if claim is None:  # the claimed join ended between the two reads: answer as it ended
+        return await claim_finish(db, ws, row, body)
+    _start_claimed(row.id, ws)  # after a restart this process may not be joining it yet
+    first = claim.get("edit", True) is not False
+    asked = None if body.edit is None else body.edit is not False
+    return _claim_answer(row, first, choice_kept=asked is not None and asked != first)
+
+
+def _start_claimed(talk_id: uuid.UUID, ws: uuid.UUID) -> asyncio.Task:
+    """The one task in this process that joins a claimed talk."""
+    task = _claim_tasks.get(talk_id)
+    if task is None or task.done():
+        task = asyncio.get_running_loop().create_task(finish_claimed(talk_id, ws))
+        _claim_tasks[talk_id] = task
+
+        def forget(done: asyncio.Task, key: uuid.UUID = talk_id) -> None:
+            if _claim_tasks.get(key) is done:
+                del _claim_tasks[key]
+
+        task.add_done_callback(forget)
+    return task
+
+
+async def finish_claimed(talk_id: uuid.UUID, ws: uuid.UUID) -> dict[str, Any] | None:
+    """Join a claimed talk behind the answer: finish_talk with the claim's body, in this
+    task's own database session. Never raises. A refusal is on the talk as finish_talk
+    writes it; a crash is written there too (failed, in plain words), never lost."""
+    import structlog
+
+    from tce.api.routers import production as production_routes
+
+    log = structlog.get_logger()
+    try:
+        async with production_routes.session_factory()() as db:
+            row = (
+                await db.execute(select(AgentTalk).where(AgentTalk.id == talk_id, AgentTalk.workspace_id == ws))
+            ).scalar_one_or_none()
+            claim = _claim_of(row) if row is not None else None
+            if claim is None:
+                return None
+            try:
+                result = await finish_talk(db, ws, row, _claim_body(claim), claimed=True)
+            except HTTPException as exc:
+                log.warning("agent_talks.background_finish_refused", talk=str(talk_id), status=exc.status_code,
+                            detail=str(exc.detail)[:300])
+                return None
+            if result is not None:
+                log.info("agent_talks.background_finished", talk=str(talk_id), upload=result.get("upload_id"))
+            return result
+    except Exception:  # noqa: BLE001 - written on the talk below
+        log.warning("agent_talks.background_finish_failed", talk=str(talk_id), exc_info=True)
+    try:
+        async with production_routes.session_factory()() as db:
+            row = await _talk(db, ws, talk_id)
+            async with _claim_lock(talk_id):
+                await db.refresh(row)
+                if _claim_of(row) is not None:
+                    row.status = "failed"
+                    row.status_detail = _crash_line(row.agent)[:500]
+                    row.join_meta = _failed_meta(row, 500, row.status_detail)
+                    await db.commit()
+    except Exception:  # noqa: BLE001
+        log.warning("agent_talks.background_crash_not_written", talk=str(talk_id), exc_info=True)
+    return None
+
+
+async def resume_claimed_talks() -> list[uuid.UUID]:
+    """After a restart: join every talk a background finish claimed and the restart cut
+    short. Called with the other boot-time resumes (production.resume_auto_work)."""
+    import structlog
+
+    from tce.api.routers import production as production_routes
+
+    try:
+        async with production_routes.session_factory()() as db:
+            claimed = (
+                await db.execute(select(AgentTalk.id, AgentTalk.workspace_id).where(AgentTalk.status == FINISHING))
+            ).all()
+    except Exception:  # noqa: BLE001 - a resume never stops what called it
+        structlog.get_logger().warning("agent_talks.claimed_scan_failed", exc_info=True)
+        return []
+    for talk_id, ws in claimed:
+        _start_claimed(talk_id, ws)
+    return [talk_id for talk_id, _ws in claimed]
+
+
+async def _finish_state(db: AsyncSession, ws: uuid.UUID, row: AgentTalk) -> dict[str, Any]:
+    """The GET's "finish": none, finishing, finished (with the finish's own fields) or
+    failed (with the refusal's status and words)."""
+    mark = (row.join_meta or {}).get("finish")
+    mark = mark if isinstance(mark, dict) else {}
+    if row.upload_id is not None:
+        result = _finished(row, await _upload_of(db, ws, row.upload_id))
+        result.update(edit_started=bool(mark.get("edit_started")), already_finished=False, choice_kept=False)
+        return {"state": "finished", "result": result}
+    if row.status == FINISHING:
+        return {"state": FINISHING}
+    if row.status == "failed":
+        error = mark.get("error") if mark.get("state") == "failed" and mark.get("on_row") == row.status_detail else None
+        return {"state": "failed", "error": error or {"status": 422, "detail": row.status_detail or ""}}
+    return {"state": "none"}
 
 
 # ---------------------------------------------------------------------------

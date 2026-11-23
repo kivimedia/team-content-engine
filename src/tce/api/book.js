@@ -32,6 +32,9 @@
   const LAST_READER = "tce-book-last-reader";
   const SLICE_MS = 3000;
   const RETRY_MS = 4000;
+  // 23-Nov-2026 (wait-less B9): how often a finish TCE puts together in the background is
+  // asked about.
+  const FINISH_POLL_MS = 3000;
 
   // 19-Nov-2026: H.264 first (hardware on a phone), VP9 last; the studio's order (recording.js).
   const supportedMime = [
@@ -65,7 +68,7 @@
   const state = {
     chapters: [], narration: null, seat: "tce",
     chapter: null, index: 0, playing: false, mode: "", audio: null, utterance: null, token: 0,
-    film: null, sending: false, retryId: null, choosing: null,
+    film: null, sending: false, retryId: null, choosing: null, held: new Set(),
   };
   const readLocal = (key, fallback = "") => { try { return localStorage.getItem(key) || fallback; } catch (_) { return fallback; } };
   const saveLocal = (key, value) => { try { localStorage.setItem(key, value); } catch (_) { /* private browsing */ } };
@@ -1113,6 +1116,21 @@
   const chosenHere = new Set();
   let sendAgain = false;
 
+  function savedLine(take, result) {
+    const name = `"${take.title || "Book session"}"`;
+    const edit = take.choice ? take.choice === "send" : result.edit !== false;
+    status(result.missing_pieces?.length ? `Saved in your Library: ${name}. Part of the recording is missing.`
+      : result.already_finished ? `Already saved in your Library: ${name}.`
+      : edit ? `Saved in your Library: ${name}. ${result.edit_started ? "Jennifer is editing it." : "The edit has not started."}`
+      : take.unchosen ? `Saved in your Library: ${name}, under Archived. You did not pick Send or Archive, so it was not sent for editing. To edit it, open Archived and tap Edit this now.`
+        : `Saved in your Library: ${name}, under Archived, not edited. To edit it, open Archived and tap Edit this now.`, "saved");
+    if (chosenHere.delete(take.talkId) && result.upload_id && !result.already_finished && !result.missing_pieces?.length) {
+      window.TCETakeReward?.show(take.talkId, $("bookStatus"));
+    }
+  }
+
+  const paused = (error) => status(`Sending paused (${error.message}). Trying again in a few seconds; nothing is lost.`, true);
+
   async function sendAll() {
     if (state.sending) { sendAgain = true; return; }
     state.sending = true;
@@ -1134,23 +1152,19 @@
         const left = await allPieces();
         for (const take of await allTakes()) {
           // 10-Nov (T-19955): nothing is finished until he chose Send or Archive.
-          if (!take.done || !take.choice || left.some((p) => p.talkId === take.talkId)) continue;
+          if (!take.done || !take.choice || left.some((p) => p.talkId === take.talkId) || state.held.has(take.talkId)) continue;
           const edit = take.choice === "send";
           try {
+            /* 23-Nov-2026 (wait-less B9): TCE puts it together in the background and answers
+               202 "finishing" at once; readFinish then asks how it ended. An older TCE
+               ignores "background" and answers with the video, as before. */
             const result = await api(`/production/agent-talks/${encodeURIComponent(take.talkId)}/finish`, {
               method: "POST",
-              body: JSON.stringify({ ended_at: take.endedAt, duration_ms: take.durationMs, transcript: take.lines || [], edit }),
+              body: JSON.stringify({ ended_at: take.endedAt, duration_ms: take.durationMs, transcript: take.lines || [], edit, background: true }),
             });
+            if (result.state === "finishing" && !result.upload_id) { holdFinish(take); continue; }
             await dropTake(take.talkId);
-            const name = `"${take.title || "Book session"}"`;
-            status(result.missing_pieces?.length ? `Saved in your Library: ${name}. Part of the recording is missing.`
-              : result.already_finished ? `Already saved in your Library: ${name}.`
-              : edit ? `Saved in your Library: ${name}. ${result.edit_started ? "Jennifer is editing it." : "The edit has not started."}`
-              : take.unchosen ? `Saved in your Library: ${name}, under Archived. You did not pick Send or Archive, so it was not sent for editing. To edit it, open Archived and tap Edit this now.`
-                : `Saved in your Library: ${name}, under Archived, not edited. To edit it, open Archived and tap Edit this now.`, "saved");
-            if (chosenHere.delete(take.talkId) && result.upload_id && !result.already_finished && !result.missing_pieces?.length) {
-              window.TCETakeReward?.show(take.talkId, $("bookStatus"));
-            }
+            savedLine(take, result);
           } catch (error) { failed = error; }
         }
       }
@@ -1160,9 +1174,46 @@
       state.sending = false;
     }
     if (failed) {
-      status(`Sending paused (${failed.message}). Trying again in a few seconds; nothing is lost.`, true);
+      paused(failed);
       state.retryId = setTimeout(sendAll, RETRY_MS);
     } else if (sendAgain) sendAll();
+  }
+
+  function holdFinish(take) {
+    if (state.held.has(take.talkId)) return;
+    state.held.add(take.talkId);
+    status(`"${take.title || "Book session"}" is being put together into its video now. You can leave this page.`);
+    setTimeout(() => readFinish(take.talkId), FINISH_POLL_MS);
+  }
+
+  /* How the finish TCE holds is going: finished shows what a finish has always shown,
+     failed is the refusal a finish has always given (tried again in a few seconds), and
+     none means TCE holds no finish for it, so it is asked again. */
+  async function readFinish(talkId) {
+    let talk;
+    try {
+      talk = await api(`/production/agent-talks/${encodeURIComponent(talkId)}`);
+    } catch (error) {
+      if (error.status !== 404) { setTimeout(() => readFinish(talkId), RETRY_MS); return; }
+      talk = null;
+    }
+    const finish = talk && talk.finish;
+    const how = finish && finish.state;
+    if (how === "finishing") { setTimeout(() => readFinish(talkId), FINISH_POLL_MS); return; }
+    state.held.delete(talkId);
+    if (how === "finished" && finish.result && finish.result.upload_id) {
+      const take = (await allTakes().catch(() => [])).find((t) => t.talkId === talkId);
+      try { await dropTake(talkId); } catch (_) { /* the next visit asks, and hears it is finished */ }
+      savedLine(take || { talkId }, finish.result);
+      return;
+    }
+    if (how === "failed") {
+      paused(new Error((finish.error && finish.error.detail) || "The video could not be put together"));
+      clearTimeout(state.retryId);
+      state.retryId = setTimeout(sendAll, RETRY_MS);
+      return;
+    }
+    sendAll();
   }
 
   /* Each paragraph read while filming becomes a narrator line, timed on the recording's clock. */

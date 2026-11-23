@@ -26,6 +26,9 @@
   const CAMERA_FLAG = "tce-camera-active";
   const SLICE_MS = 3000;
   const RETRY_MS = 4000;
+  // 23-Nov-2026 (wait-less B9): how often the page asks how a finish TCE took in the
+  // background is going.
+  const FINISH_POLL_MS = 3000;
 
   // 19-Nov-2026: H.264 first (hardware on a phone), VP9 last; the studio's order (recording.js).
   const supportedMime = [
@@ -56,6 +59,7 @@
   const state = {
     stream: null, recorder: null, talk: null, sequence: 0, startedAt: 0,
     timerId: null, wakeLock: null, raw: null, paintId: 0, painting: false, sending: false, retryId: null, starting: false,
+    held: new Set(),
   };
 
   const cameraFlag = (on) => {
@@ -154,12 +158,10 @@
       if (!failed) {
         const left = await allPieces();
         for (const take of await allTakes()) {
-          if (!take.done || left.some((p) => p.talkId === take.talkId)) continue;
+          if (!take.done || left.some((p) => p.talkId === take.talkId) || state.held.has(take.talkId)) continue;
           try {
-            const row = await api(`/agent-talks/${encodeURIComponent(take.talkId)}/finish`, {
-              method: "POST",
-              body: JSON.stringify({ ended_at: take.endedAt, duration_ms: take.durationMs, edit: true }),
-            });
+            const row = await finishTake(take);
+            if (!row) continue; // TCE holds its finish: readFinish says how it ends
             await dropTake(take.talkId);
             if (state.talk && state.talk.talkId === take.talkId) state.talk = null;
             finished(row);
@@ -175,6 +177,60 @@
     }
     await showProgress(failed);
     if (failed) state.retryId = setTimeout(sendAll, RETRY_MS);
+  }
+
+  /* 23-Nov-2026 (wait-less B9): Done answers at once. The finish asks TCE to put the take
+     together in the background; TCE writes the finish down, answers 202 "finishing", and
+     this page reads the talk every few seconds until it says how it ended. An older TCE
+     ignores "background" and answers with the video, as before. Returns the finished row,
+     or null while TCE holds the finish. */
+  async function finishTake(take) {
+    const row = await api(`/agent-talks/${encodeURIComponent(take.talkId)}/finish`, {
+      method: "POST",
+      body: JSON.stringify({ ended_at: take.endedAt, duration_ms: take.durationMs, edit: true, background: true }),
+    });
+    if (row.state !== "finishing" || row.upload_id) return row;
+    if (!state.held.has(take.talkId)) {
+      state.held.add(take.talkId);
+      if (!state.starting && !state.recorder) {
+        top("Putting it together");
+        status("Your recording is being put together into its video now. You can leave this page.");
+      }
+      setTimeout(() => readFinish(take.talkId), FINISH_POLL_MS);
+    }
+    return null;
+  }
+
+  /* How the finish TCE holds is going: finished shows what a finish has always shown,
+     failed is the refusal a finish has always given (tried again in a few seconds), and
+     none means TCE holds no finish for it, so it is asked again. */
+  async function readFinish(talkId) {
+    let talk;
+    try {
+      talk = await api(`/agent-talks/${encodeURIComponent(talkId)}`);
+    } catch (error) {
+      if (error.status !== 404) { setTimeout(() => readFinish(talkId), RETRY_MS); return; }
+      talk = null;
+    }
+    const finish = talk && talk.finish;
+    const how = finish && finish.state;
+    if (how === "finishing") { setTimeout(() => readFinish(talkId), FINISH_POLL_MS); return; }
+    state.held.delete(talkId);
+    if (how === "finished" && finish.result && finish.result.upload_id) {
+      try { await dropTake(talkId); } catch (_) { /* the next visit asks, and hears it is finished */ }
+      if (state.talk && state.talk.talkId === talkId) state.talk = null;
+      finished(finish.result);
+      return;
+    }
+    if (how === "failed") {
+      const refused = new Error((finish.error && finish.error.detail) || "The video could not be put together");
+      refused.status = (finish.error && finish.error.status) || 422;
+      await showProgress(refused);
+      clearTimeout(state.retryId);
+      state.retryId = setTimeout(sendAll, RETRY_MS);
+      return;
+    }
+    sendAll();
   }
 
   async function showProgress(failed) {

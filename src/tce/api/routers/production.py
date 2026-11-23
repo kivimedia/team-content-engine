@@ -5315,6 +5315,16 @@ async def resume_auto_work() -> None:
             log.info("production.idle_talks_finishing", talks=len(idle_talks))
     except Exception:
         log.warning("production.idle_talks_failed", exc_info=True)
+    # 23-Nov (wait-less B9): a finish answered 202 before its join, cut short by the
+    # restart, is joined now from what its claim wrote on the talk.
+    try:
+        from tce.api.routers import agent_talks as agent_talk_routes
+
+        claimed_talks = await agent_talk_routes.resume_claimed_talks()
+        if claimed_talks:
+            log.info("production.claimed_talks_resumed", talks=len(claimed_talks))
+    except Exception:
+        log.warning("production.claimed_talks_failed", exc_info=True)
     if not settings.production_auto_edit:
         return
     try:
