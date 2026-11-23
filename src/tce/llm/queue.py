@@ -53,7 +53,16 @@ SUBSCRIPTION_AUTH_METHODS = frozenset({"claude.ai", "oauth_token"})
 CAPACITY_ERROR = "capacity"
 DEFAULT_CAPACITY_BACKOFF = timedelta(minutes=30)
 MAX_REQUEUES_OF_FAILED = 1
+# The desktop workers on the owner's PC share one Claude login, so they park and
+# resume together. Their key is unchanged so a parked row from before survives.
 WORKER_GROUP_KEY = "claude-subscription-opus-5"
+# 23-Nov-2026 (T-24600): the server's own worker writes through the team's pool of
+# subscriptions and moves to the next one with room, like the KM BOT agents. It is
+# its own group: one login reaching its limit never stops the other.
+POOL_GROUP_KEY = "claude-subscription-pool"
+POOL_WORKER_PREFIX = "vps-pool"
+# A group counts as present while its workers asked for work this recently.
+GROUP_LIVE_SECONDS = 180
 
 # Jobs a person is waiting on (23-Nov-2026: "his job must not sit behind a batch of
 # research jobs"): a conversation, a script he asked for with its voice pass, slip
@@ -129,6 +138,73 @@ class StaleAttemptError(QueueError):
 def utcnow() -> datetime:
     """Naive UTC, matching the DateTime columns."""
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def group_for_worker(worker_id: str | None) -> str:
+    """Which subscription group a worker belongs to: the pool worker on the server,
+    or the desktop group every other worker id has always been part of."""
+    if (worker_id or "").startswith(POOL_WORKER_PREFIX):
+        return POOL_GROUP_KEY
+    return WORKER_GROUP_KEY
+
+
+async def _group_row(session: AsyncSession, key: str, *, create: bool) -> WorkerGroupState | None:
+    row = (
+        await session.execute(select(WorkerGroupState).where(WorkerGroupState.group_key == key))
+    ).scalar_one_or_none()
+    if row is None and create:
+        row = WorkerGroupState(group_key=key, state="available")
+        session.add(row)
+    return row
+
+
+def group_has_room(row: WorkerGroupState, now: datetime) -> bool:
+    """Not parked on a limit and not refused."""
+    if row.state == "refused_policy":
+        return False
+    return not (row.state == "waiting_capacity" and row.retry_at and row.retry_at > now)
+
+
+def group_is_live(row: WorkerGroupState, now: datetime) -> bool:
+    return bool(row.heartbeat_at and row.heartbeat_at >= now - timedelta(seconds=GROUP_LIVE_SECONDS))
+
+
+async def _another_group_has_room(session: AsyncSession, key: str, now: datetime) -> bool:
+    rows = {
+        r.group_key: r for r in (await session.execute(select(WorkerGroupState))).scalars().all()
+    }
+    for other, row in rows.items():
+        if other == key:
+            continue
+        present = other == WORKER_GROUP_KEY or group_is_live(row, now)
+        if present and group_has_room(row, now):
+            return True
+    # The desktop group has no row until it first parks: no row is a group with room.
+    return key != WORKER_GROUP_KEY and WORKER_GROUP_KEY not in rows
+
+
+async def capacity_park_until(session: AsyncSession, *, now: datetime | None = None) -> datetime | None:
+    """Until when no subscription group can write, or None while one can.
+
+    The desktop group always counts (it is the original writer and its row is what
+    a park was always read from); any other group counts while its worker is live.
+    Parked means every counted group is parked; the earliest of them resumes first.
+    """
+    now = now or utcnow()
+    rows = list((await session.execute(select(WorkerGroupState))).scalars().all())
+    if not any(r.group_key == WORKER_GROUP_KEY for r in rows):
+        return None  # the desktop group has never parked: it has room
+    counted = [
+        r for r in rows if r.group_key == WORKER_GROUP_KEY or group_is_live(r, now)
+    ]
+    if any(group_has_room(r, now) for r in counted):
+        return None
+    parked = [
+        r.retry_at
+        for r in counted
+        if r.state == "waiting_capacity" and r.retry_at and r.retry_at > now
+    ]
+    return min(parked) if parked else None
 
 
 def _as_uuid(value: uuid.UUID | str) -> uuid.UUID:
@@ -323,12 +399,25 @@ def _lane_order() -> Any:
     return case((LLMJob.job_type.in_(sorted(INTERACTIVE_JOB_TYPES)), 0), else_=1)
 
 
-def _leasable_clause(now: datetime) -> Any:
+def _parked_by_other_group(group_key: str) -> Any:
+    pool_owned = LLMJob.lease_owner.like(f"{POOL_WORKER_PREFIX}%")
+    if group_key == POOL_GROUP_KEY:
+        return or_(LLMJob.lease_owner.is_(None), ~pool_owned)
+    return and_(LLMJob.lease_owner.is_not(None), pool_owned)
+
+
+def _leasable_clause(now: datetime, group_key: str = WORKER_GROUP_KEY) -> Any:
     return or_(
         and_(LLMJob.status == "queued", or_(LLMJob.retry_at.is_(None), LLMJob.retry_at <= now)),
         and_(
             LLMJob.status == "waiting_capacity",
-            or_(LLMJob.retry_at.is_(None), LLMJob.retry_at <= now),
+            or_(
+                LLMJob.retry_at.is_(None),
+                LLMJob.retry_at <= now,
+                # A job parked on one group's limit waits for its time in THAT group
+                # only; a group that did not hit the limit takes it at once (T-24600).
+                _parked_by_other_group(group_key),
+            ),
         ),
         and_(LLMJob.status == "leased", LLMJob.leased_until < now),
     )
@@ -355,11 +444,13 @@ async def lease_job(
     compare-and-swap UPDATE guarded by the status/attempt the candidate was read with.
     """
     now = now or utcnow()
-    group = (
-        await session.execute(
-            select(WorkerGroupState).where(WorkerGroupState.group_key == WORKER_GROUP_KEY)
-        )
-    ).scalar_one_or_none()
+    key = group_for_worker(worker_id)
+    group = await _group_row(session, key, create=key != WORKER_GROUP_KEY)
+    if group is not None and key != WORKER_GROUP_KEY:
+        # The pool group says it is present on every ask, parked or not, so a reader
+        # can tell "parked" from "gone" without a separate status feed.
+        group.heartbeat_at = now
+        await session.flush()
     if group is not None:
         if group.state == "refused_policy":
             return None
@@ -374,7 +465,7 @@ async def lease_job(
     for _ in range(25):
         stmt = (
             select(LLMJob)
-            .where(_leasable_clause(now))
+            .where(_leasable_clause(now, key))
             .order_by(_lane_order(), LLMJob.created_at, LLMJob.id)
         )
         if dialect == "postgresql":
@@ -633,32 +724,26 @@ async def fail_job(
         job.leased_until = None
         # Capacity is not the job's fault: do not spend one of its attempts.
         job.attempt_count = max(0, (job.attempt_count or 0) - 1)
-        group = (
-            await session.execute(
-                select(WorkerGroupState).where(WorkerGroupState.group_key == WORKER_GROUP_KEY)
-            )
-        ).scalar_one_or_none()
-        if group is None:
-            group = WorkerGroupState(group_key=WORKER_GROUP_KEY)
-            session.add(group)
+        key = group_for_worker(job.lease_owner)
+        group = await _group_row(session, key, create=True)
         group.state = "waiting_capacity"
         group.retry_at = job.retry_at
         group.reason = detail
         group.receipt = sanitize_receipt(receipt)
+        await session.flush()
+        # Only this group is parked. When another live group has room the job is
+        # plain queued work again, so whoever waits on it keeps waiting for an
+        # answer instead of being told to come back after this limit resets.
+        if await _another_group_has_room(session, key, now):
+            job.status = "queued"
+            job.retry_at = None
     elif error_code in NON_RETRYABLE_ERRORS:
         job.status = "failed"
         job.error_code = error_code
         job.error_detail = detail
         job.leased_until = None
         job.completed_at = now
-        group = (
-            await session.execute(
-                select(WorkerGroupState).where(WorkerGroupState.group_key == WORKER_GROUP_KEY)
-            )
-        ).scalar_one_or_none()
-        if group is None:
-            group = WorkerGroupState(group_key=WORKER_GROUP_KEY)
-            session.add(group)
+        group = await _group_row(session, group_for_worker(job.lease_owner), create=True)
         group.state = "refused_policy"
         group.retry_at = None
         group.reason = f"{error_code}: {detail}"

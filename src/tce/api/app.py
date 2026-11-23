@@ -196,6 +196,20 @@ async def lifespan(app: FastAPI):
 
         memory_poller = asyncio.create_task(memory_probe.poll())
 
+    # T-24600: the server's own writer on the team's subscription pool, so one
+    # login at its limit never stops TCE. Off in tests and with TCE_POOL_WORKER=0.
+    try:
+        from tce.llm import pool_worker
+
+        pool_worker.start_pool_worker(
+            f"http://127.0.0.1:{os.environ.get('TCE_PORT', '8200')}",
+            settings.private_access_key.get_secret_value(),
+        )
+    except Exception:
+        import structlog
+
+        structlog.get_logger().warning("pool_worker.start_failed", exc_info=True)
+
     if settings.scheduler_enabled and os.environ.get("TCE_DISABLE_SCHEDULER") != "1":
         try:
             from tce.services.scheduler import scheduler
@@ -207,6 +221,12 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    try:
+        from tce.llm import pool_worker
+
+        pool_worker.stop_pool_worker()
+    except Exception:
+        pass
     media_recovery.cancel()
     if memory_poller:
         memory_poller.cancel()

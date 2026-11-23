@@ -370,25 +370,16 @@ def packet_wait_words(outcome_status: str, retry_at: datetime | None) -> tuple[s
 
 
 async def capacity_park(session: Any, *, now: datetime | None = None) -> datetime | None:
-    """When the subscription worker group is parked on its usage limit, until when.
+    """When every subscription worker group is parked on its usage limit, until when.
 
-    While it is parked no new job is leased, so a job can sit "queued" for days
-    without being at fault: it is waiting for capacity like its parked sibling.
+    While all are parked no new job is leased, so a job can sit "queued" for days
+    without being at fault: it is waiting for capacity like its parked sibling. One
+    group at its limit while another has room is not a park (T-24600): the job goes
+    to the group with room.
     """
-    from sqlalchemy import select
+    from tce.llm.queue import capacity_park_until
 
-    from tce.llm.queue import WORKER_GROUP_KEY, utcnow
-    from tce.models.content_run import WorkerGroupState
-
-    group = (
-        await session.execute(
-            select(WorkerGroupState).where(WorkerGroupState.group_key == WORKER_GROUP_KEY)
-        )
-    ).scalar_one_or_none()
-    now = now or utcnow()
-    if group is None or group.state != "waiting_capacity" or not group.retry_at:
-        return None
-    return group.retry_at if group.retry_at > now else None
+    return await capacity_park_until(session, now=now)
 
 
 def _moved_since(job: Any, since: datetime) -> bool:

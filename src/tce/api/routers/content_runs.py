@@ -127,20 +127,35 @@ async def worker_availability(sm: Any) -> dict[str, Any]:
                 )
             )
         ).scalar_one_or_none()
+        now = runs.utcnow()
+        # T-24600: the desktop group at its limit is not a stop while the server's
+        # pool worker has room; capped means no group can write.
+        park_until = await llm_queue.capacity_park_until(db, now=now)
+        pool = (
+            await db.execute(
+                select(WorkerGroupState).where(
+                    WorkerGroupState.group_key == llm_queue.POOL_GROUP_KEY
+                )
+            )
+        ).scalar_one_or_none()
+        pool_room = bool(
+            pool and llm_queue.group_is_live(pool, now) and llm_queue.group_has_room(pool, now)
+        )
         capacity = {
             "state": group.state if group else "available",
             "retry_at": group.retry_at.isoformat() + "Z" if group and group.retry_at else None,
             "reason": group.reason if group else None,
+            "pool_state": (
+                ("available" if pool_room else pool.state) if pool else "absent"
+            ),
+            "pool_retry_at": pool.retry_at.isoformat() + "Z" if pool and pool.retry_at else None,
         }
-    now = runs.utcnow()
-    capped = bool(
-        group and group.state == "waiting_capacity" and group.retry_at and group.retry_at > now
-    )
-    refused = bool(group and group.state == "refused_policy")
+    capped = park_until is not None
+    refused = bool(group and group.state == "refused_policy") and not pool_room
     if capped:
         detail = (
-            f"Subscription capacity: {group.reason or 'limit reached'}; "
-            f"resumes at {group.retry_at.isoformat()}Z"
+            f"Subscription capacity: {(group.reason if group else None) or 'limit reached'}; "
+            f"resumes at {park_until.isoformat()}Z"
         )
     elif refused:
         detail = f"Worker refused by policy: {group.reason or 'see worker log'}"
@@ -159,7 +174,7 @@ async def worker_availability(sm: Any) -> dict[str, Any]:
         "capped": capped,
         "refused": refused,
         "detail": detail,
-        "retry_at": group.retry_at if capped else None,
+        "retry_at": park_until if capped else None,
     }
 
 
