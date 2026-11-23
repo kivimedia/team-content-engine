@@ -35,6 +35,8 @@
   // 23-Nov-2026 (wait-less B9): how often a finish TCE puts together in the background is
   // asked about.
   const FINISH_POLL_MS = 3000;
+  // Pieces on their way at once (wait-less B9, as recording-solo.js).
+  const PIECES_AT_ONCE = 3;
 
   // 19-Nov-2026: H.264 first (hardware on a phone), VP9 last; the studio's order (recording.js).
   const supportedMime = [
@@ -1116,6 +1118,31 @@
   const chosenHere = new Set();
   let sendAgain = false;
 
+  /* 23-Nov-2026 (wait-less B9): up to PIECES_AT_ONCE pieces on their way at once, oldest
+     first (as recording-solo.js). A piece that fails stops new ones from starting this
+     round (those on their way finish) and the round is tried again, as before. Resolves
+     only when every piece it started has its answer, so nothing is finished early. */
+  async function sendPieces(pieces) {
+    let failed = null;
+    let next = 0;
+    const lane = async () => {
+      while (!failed && next < pieces.length) {
+        const piece = pieces[next];
+        next += 1;
+        try {
+          await api(`/production/agent-talks/${encodeURIComponent(piece.talkId)}/chunks/${piece.sequence}`, { method: "PUT", body: piece.blob });
+          await dropPiece(piece.key);
+        } catch (error) {
+          if (error.status === 409 || error.status === 404) {
+            try { await dropPiece(piece.key); } catch (dropError) { failed = failed || dropError; }
+          } else failed = failed || error;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(PIECES_AT_ONCE, pieces.length) }, lane));
+    return failed;
+  }
+
   function savedLine(take, result) {
     const name = `"${take.title || "Book session"}"`;
     const edit = take.choice ? take.choice === "send" : result.edit !== false;
@@ -1139,15 +1166,7 @@
     let failed = null;
     try {
       const pieces = (await allPieces()).sort((a, b) => (a.talkId === b.talkId ? a.sequence - b.sequence : a.at - b.at));
-      for (const piece of pieces) {
-        try {
-          await api(`/production/agent-talks/${encodeURIComponent(piece.talkId)}/chunks/${piece.sequence}`, { method: "PUT", body: piece.blob });
-          await dropPiece(piece.key);
-        } catch (error) {
-          if (error.status === 409 || error.status === 404) await dropPiece(piece.key);
-          else { failed = error; break; }
-        }
-      }
+      failed = await sendPieces(pieces);
       if (!failed) {
         const left = await allPieces();
         for (const take of await allTakes()) {

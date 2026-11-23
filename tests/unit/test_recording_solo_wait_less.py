@@ -189,3 +189,37 @@ def test_an_older_tce_that_answers_with_the_video_works_as_before():
         assert "GET" not in server.kinds() and page.evaluate(LEFT) == [0, 0]
         browser.close()
 
+
+def test_three_parts_at_once_never_more_and_the_finish_waits_for_every_one():
+    server = Server(hold_parts=True)
+    with sync_playwright() as pw:
+        browser, page = _page(pw, server)
+        page.evaluate(SEED, 7)
+        page.reload()
+        _until(page, lambda: len(server.open_parts) == 3)
+        page.wait_for_timeout(400)
+        assert len(server.open_parts) == 3 and server.kinds() == ["PUT"] * 3  # never a fourth
+        assert sorted(c[1] for c in server.calls) == [0, 1, 2]  # oldest first
+        # The first part fails: the two on their way finish, no new one starts this round.
+        server.answer_part(503)
+        page.wait_for_timeout(300)
+        assert server.kinds() == ["PUT"] * 3
+        server.answer_part()
+        server.answer_part()
+        _until(page, lambda: "Not sent yet" in _line(page))
+        assert "FINISH" not in server.kinds()
+        assert page.evaluate(LEFT) == [5, 1]  # what the status says is what waits
+        assert page.inner_text("#soloStatus").startswith("Not sent yet: 5 parts wait on this phone")
+        # Tried again as before: the failed part first, three at a time, and the finish
+        # only once the last part has its answer.
+        while True:
+            _until(page, lambda: server.open_parts or "FINISH" in server.kinds(), 12000)
+            if "FINISH" in server.kinds():
+                break
+            assert len(server.open_parts) <= 3
+            assert "FINISH" not in server.kinds()
+            server.answer_part()
+        puts = [c[1] for c in server.calls if c[0] == "PUT"]
+        assert sorted(puts) == [0, 0, 1, 2, 3, 4, 5, 6] and server.most_at_once == 3
+        assert server.kinds().index("FINISH") == len(puts)
+        browser.close()

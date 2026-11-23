@@ -29,6 +29,9 @@
   // 23-Nov-2026 (wait-less B9): how often the page asks how a finish TCE took in the
   // background is going.
   const FINISH_POLL_MS = 3000;
+  // Up to this many pieces on their way at once (wait-less B9). The server keeps each piece
+  // under its own number, so the order they land in does not matter.
+  const PIECES_AT_ONCE = 3;
 
   // 19-Nov-2026: H.264 first (hardware on a phone), VP9 last; the studio's order (recording.js).
   const supportedMime = [
@@ -59,7 +62,7 @@
   const state = {
     stream: null, recorder: null, talk: null, sequence: 0, startedAt: 0,
     timerId: null, wakeLock: null, raw: null, paintId: 0, painting: false, sending: false, retryId: null, starting: false,
-    held: new Set(),
+    held: new Set(), again: false,
   };
 
   const cameraFlag = (on) => {
@@ -137,24 +140,42 @@
     await dropPiece(piece.key);
   }
 
-  /* Everything this phone still holds, oldest first; then every take whose Done was
-     pressed and whose pieces are all in is finished. Runs again after a failure. */
-  async function sendAll() {
-    if (state.sending) return;
-    state.sending = true;
-    clearTimeout(state.retryId);
+  /* 23-Nov-2026 (wait-less B9): up to PIECES_AT_ONCE pieces on their way at once, oldest
+     first. A piece that fails stops new ones from starting this round (those already on
+     their way finish) and the round is tried again in a few seconds, as before. Resolves
+     only when every piece it started has its answer, so nothing is finished early. */
+  async function sendPieces(pieces) {
     let failed = null;
-    try {
-      const pieces = (await allPieces()).sort((a, b) => (a.talkId === b.talkId ? a.sequence - b.sequence : a.at - b.at));
-      for (const piece of pieces) {
+    let next = 0;
+    const lane = async () => {
+      while (!failed && next < pieces.length) {
+        const piece = pieces[next];
+        next += 1;
         try {
           await sendPiece(piece);
         } catch (error) {
           // 409: that take was already joined, so this piece can never be in it.
-          if (error.status === 409 || error.status === 404) await dropPiece(piece.key);
-          else { failed = error; break; }
+          if (error.status === 409 || error.status === 404) {
+            try { await dropPiece(piece.key); } catch (dropError) { failed = failed || dropError; }
+          } else failed = failed || error;
         }
       }
+    };
+    await Promise.all(Array.from({ length: Math.min(PIECES_AT_ONCE, pieces.length) }, lane));
+    return failed;
+  }
+
+  /* Everything this phone still holds, oldest first; then every take whose Done was
+     pressed and whose pieces are all in is finished. Runs again after a failure. */
+  async function sendAll() {
+    if (state.sending) { state.again = true; return; }
+    state.sending = true;
+    state.again = false;
+    clearTimeout(state.retryId);
+    let failed = null;
+    try {
+      const pieces = (await allPieces()).sort((a, b) => (a.talkId === b.talkId ? a.sequence - b.sequence : a.at - b.at));
+      failed = await sendPieces(pieces);
       if (!failed) {
         const left = await allPieces();
         for (const take of await allTakes()) {
@@ -177,6 +198,7 @@
     }
     await showProgress(failed);
     if (failed) state.retryId = setTimeout(sendAll, RETRY_MS);
+    else if (state.again) sendAll();
   }
 
   /* 23-Nov-2026 (wait-less B9): Done answers at once. The finish asks TCE to put the take

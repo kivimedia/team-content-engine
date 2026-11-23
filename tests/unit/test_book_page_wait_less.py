@@ -215,6 +215,28 @@ def test_a_session_is_put_together_in_the_background_and_then_says_what_it_alway
         browser.close()
 
 
+def test_three_parts_at_once_never_more_and_the_finish_waits_for_every_one():
+    book = Book([_view(14)])
+    book.hold_parts = True
+    with sync_playwright() as pw:
+        browser, page = _open(pw, book, "/book")
+        page.evaluate(SEED, [5, TALK, TITLE])
+        page.reload()
+        _until(page, lambda: len(book.open_parts) == 3)
+        page.wait_for_timeout(400)
+        assert len(book.open_parts) == 3 and book.kinds().count("PUT") == 3  # never a fourth
+        assert sorted(c[1] for c in book.calls if c[0] == "PUT") == [0, 1, 2]  # oldest first
+        while True:  # the finish comes only once the last part has its answer
+            _until(page, lambda: book.open_parts or "FINISH" in book.kinds())
+            if "FINISH" in book.kinds():
+                break
+            assert len(book.open_parts) <= 3
+            book.open_parts.pop(0).fulfill(json={"ok": True})
+        assert not book.open_parts and book.kinds()[:book.kinds().index("FINISH")].count("PUT") == 5
+        assert book.most_at_once == 3 and book.kinds().count("PUT") == 5
+        browser.close()
+
+
 def test_a_refused_join_pauses_the_session_as_before():
     book = Book([_view(14)])
     book.talk = lambda: {"talk_id": TALK, "status": "failed",
