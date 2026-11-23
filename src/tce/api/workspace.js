@@ -31,14 +31,18 @@
     params: {},
     today: null,
     topics: null,
+    turnedDown: null,  // his own ideas the checks turned down, under Best matches
+    painted: null,     // the page now drawn from a finished read (B8): "topics", "room:<id>"...
     topicFilter: "best",
     topicLimit: 30,
     catFilter: "all",
     week: null,
     room: null,
+    roomVoice: null,   // what the voice call changed on this topic, in the room's panel
     workshop: null,
     workshopTab: "outline",
     library: null,
+    libraryTally: null, // the three counts over the cards
     libraryFilter: "todo",
     libraryCount: null,
     pending: null,     // a change set awaiting his yes or no
@@ -139,7 +143,7 @@
     return shown;
   }
 
-  function toast(message, bad) {
+  function toast(message, bad, ms) {
     var existing = document.querySelector(".toast");
     if (existing) existing.remove();
     var node = document.createElement("div");
@@ -147,7 +151,8 @@
     node.setAttribute("role", "status");
     node.textContent = message;
     document.body.appendChild(node);
-    setTimeout(function () { if (node.parentNode) node.remove(); }, 4600);
+    setTimeout(function () { if (node.parentNode) node.remove(); }, ms || 4600);
+    return node;
   }
 
   /* FastAPI sends `detail` as a string for plain errors and as an object for
@@ -671,9 +676,7 @@
     return first;
   }
 
-  async function renderTopics() {
-    var view = $("view");
-    view.innerHTML = '<div class="page">' + working("Reading the ideas waiting for you") + "</div>";
+  async function readTopics() {
     var results = await Promise.all([
       topicPages(),
       // His own ideas the checks turned down. A failure here never costs him the list.
@@ -681,10 +684,24 @@
         ? api("/editorial/turned-down").catch(function () { return { ideas: [] }; })
         : Promise.resolve({ ideas: [] })
     ]);
-    var data = results[0];
-    var turnedDown = results[1].ideas || [];
-    state.topics = data;
+    state.topics = results[0];
+    state.turnedDown = results[1].ideas || [];
+  }
 
+  async function renderTopics() {
+    var view = $("view");
+    view.innerHTML = '<div class="page">' + working("Reading the ideas waiting for you") + "</div>";
+    await readTopics();
+    view.innerHTML = topicsHtml(state.topics, state.turnedDown);
+    state.painted = "topics";
+    status(topicsStatus(state.topics));
+  }
+
+  function topicsStatus(data) {
+    return data.total + " " + plural(data.total, "idea") + " " + esc(data.filter_label).toLowerCase();
+  }
+
+  function topicsHtml(data, turnedDown) {
     var html = '<div class="page">';
     html += '<div class="page-head"><p class="kicker">Editorial workspace</p><h1>Topics</h1>';
     html += '<p class="lede">Decide what is worth your time. Nothing here asks the engine for anything.</p></div>';
@@ -740,9 +757,7 @@
       turnedDown.forEach(function (idea) { html += turnedDownCard(idea); });
       html += "</div>";
     }
-    html += "</div>";
-    view.innerHTML = html;
-    status(data.total + " " + plural(data.total, "idea") + " " + esc(data.filter_label).toLowerCase());
+    return html + "</div>";
   }
 
   function topicCard(topic) {
@@ -870,7 +885,27 @@
     }
     if (!loading.isConnected || state.route !== "week") return;
     state.week = data;
+    view.innerHTML = weekHtml(data);
+    state.painted = "week";
+    status(weekStatus(data));
+    var news = $("weekNewsProgress");
+    if (news) {
+      api("/news/workflow").catch(function () { return {unavailable: true}; }).then(function (progress) {
+        if (news.isConnected) news.innerHTML = newsProgressPanel(progress);
+      });
+    }
+  }
 
+  // A filmed topic stays on the list but its script is used: "ready" counts
+  // only what is still to film, and the filmed ones are named apart.
+  function weekStatus(data) {
+    var primary = data.primary || [];
+    var filmed = primary.filter(function (i) { return i.filmed; }).length;
+    return data.ready_count + " of " + (primary.length - filmed) + " scripts ready"
+           + (filmed ? ", " + filmed + " filmed" : "");
+  }
+
+  function weekHtml(data) {
     var primary = data.primary || [];
     var reserve = data.reserve || [];
 
@@ -922,19 +957,7 @@
     if (!window.TCE_SCOPED) {
       html += '<div id="weekNewsProgress" aria-live="polite">' + working("Loading AI news progress") + '</div>';
     }
-    html += "</div>";
-    view.innerHTML = html;
-    // A filmed topic stays on the list but its script is used: "ready" counts
-    // only what is still to film, and the filmed ones are named apart.
-    var filmed = primary.filter(function (i) { return i.filmed; }).length;
-    status(data.ready_count + " of " + (primary.length - filmed) + " scripts ready"
-           + (filmed ? ", " + filmed + " filmed" : ""));
-    var news = $("weekNewsProgress");
-    if (news) {
-      api("/news/workflow").catch(function () { return {unavailable: true}; }).then(function (progress) {
-        if (news.isConnected) news.innerHTML = newsProgressPanel(progress);
-      });
-    }
+    return html + "</div>";
   }
 
   /* A topic he can start filming now: its script is ready and he has not filmed
@@ -1020,15 +1043,27 @@
 
   // ------------------------------------------------------------- Topic room
 
-  async function renderRoom(candidateId) {
-    var view = $("view");
-    view.innerHTML = '<div class="page">' + working("Opening the topic") + "</div>";
+  async function readRoom(candidateId) {
     var data = await api("/editorial/topics/" + encodeURIComponent(candidateId) + "/room");
-    state.room = data;
     var voiceItems = (await voiceActivity()).filter(function (item) {
       return item.candidate_id === data.candidate_id;
     });
+    state.room = data;
+    state.roomVoice = voiceItems;
+  }
 
+  async function renderRoom(candidateId) {
+    var view = $("view");
+    view.innerHTML = '<div class="page">' + working("Opening the topic") + "</div>";
+    await readRoom(candidateId);
+    view.innerHTML = roomHtml(state.room, state.roomVoice);
+    state.painted = "room:" + candidateId;
+    status(roomStatus(state.room));
+  }
+
+  function roomStatus(data) { return "Version " + ((data.brief || {}).version || 1); }
+
+  function roomHtml(data, voiceItems) {
     var brief = data.brief || {};
     var blocks = brief.blocks || [];
 
@@ -1098,9 +1133,7 @@
       html += "</div>";
     }
 
-    html += "</div>";
-    view.innerHTML = html;
-    status("Version " + (brief.version || 1));
+    return html + "</div>";
   }
 
   function originSentence(origin) {
@@ -1865,9 +1898,37 @@
     state.libraryStale = false;
     var view = $("view");
     view.innerHTML = '<div class="page">' + working("Reading what you have recorded") + "</div>";
-    var data = await api("/production/library?filter=" + encodeURIComponent(state.libraryFilter));
-    state.library = data;
+    await readLibrary();
+    view.innerHTML = libraryHtml(state.library, state.libraryTally);
+    state.painted = "library";
+    // 16-Oct: back from his yes on the notes sheet, that video's card is in sight.
+    var focus = state.libraryFocus;
+    state.libraryFocus = null;
+    var mine = focus && view.querySelector('article.card[data-upload="' + focus + '"]');
+    if (mine) mine.scrollIntoView({ block: "start" });
+    var items = libraryShown(state.library);
+    status(libraryStatus(items));
+    scheduleLibraryPoll(items);
+    // Drawn by a card action that still waits on its own: a press on its way stays (B8).
+    if (presses.length) repaint();
+  }
 
+  async function readLibrary() {
+    var data = await api("/production/library?filter=" + encodeURIComponent(state.libraryFilter));
+    // 18-Oct (T-13905): the two numbers he comes for, up front. Counted over everything
+    // still on his plate, whichever list he is looking at.
+    var counts = await libraryCounts(data);
+    state.library = data;
+    state.libraryTally = counts;
+  }
+
+  function libraryShown(data) {
+    return (data.items || []).filter(function (i) { return countMatch(state.libraryCount, i); });
+  }
+
+  function libraryStatus(items) { return items.length + " " + plural(items.length, "recording"); }
+
+  function libraryHtml(data, counts) {
     var html = '<div class="page">';
     html += '<div class="page-head"><p class="kicker">Editorial workspace</p><h1>Library</h1>';
     html += '<p class="lede">' + esc(LIBRARY_LEDE[data.filter] || LIBRARY_LEDE.all) + "</p>";
@@ -1882,11 +1943,8 @@
     });
     html += "</div>";
 
-    // 18-Oct (T-13905): the two numbers he comes for, up front. Counted over everything
-    // still on his plate, whichever list he is looking at.
-    var counts = await libraryCounts(data);
     html += libraryCountsHtml(counts);
-    var items = (data.items || []).filter(function (i) { return countMatch(state.libraryCount, i); });
+    var items = libraryShown(data);
     if (!items.length && state.libraryCount) {
       html += '<div class="empty"><strong>None right now</strong>Tap the number again to see every video.</div>';
     } else if (!items.length && data.filter === "todo") {
@@ -1906,15 +1964,7 @@
       items.forEach(function (item) { html += libraryCard(item); });
       html += "</div>";
     }
-    html += "</div>";
-    view.innerHTML = html;
-    // 16-Oct: back from his yes on the notes sheet, that video's card is in sight.
-    var focus = state.libraryFocus;
-    state.libraryFocus = null;
-    var mine = focus && view.querySelector('article.card[data-upload="' + focus + '"]');
-    if (mine) mine.scrollIntoView({ block: "start" });
-    status(items.length + " " + plural(items.length, "recording"));
-    scheduleLibraryPoll(items);
+    return html + "</div>";
   }
 
   /* 28-Sep: the Library opens on what still needs pushing through; what went out
@@ -1958,7 +2008,16 @@
     var playing = document.querySelector(".player:not([hidden])");
     var typing = document.activeElement && document.activeElement.closest
       && document.activeElement.closest(".publish, .rename-form");
-    if (JSON.stringify(data.items || []) !== before && !playing && !typing) { renderLibrary(); return; }
+    if (JSON.stringify(data.items || []) !== before && !playing && !typing) {
+      // 23-Nov (B8): drawn in place, so a card he just pressed keeps its answer.
+      var counts = await libraryCounts(data);
+      state.library = data;
+      state.libraryTally = counts;
+      state.libraryStale = false;
+      if (!repaint()) { renderLibrary(); return; }
+      scheduleLibraryPoll(libraryShown(data));
+      return;
+    }
     scheduleLibraryPoll(data.items || []);
   }
 
@@ -2387,7 +2446,7 @@
     return out;
   }
 
-  async function publishStart(uploadId, schedule) {
+  function publishStart(uploadId, schedule) {
     var section = document.querySelector('[data-pub-upload="' + uploadId + '"]');
     var picked = [].slice.call(section.querySelectorAll("[data-pub-pick]:checked"))
       .map(function (el) { return el.getAttribute("data-pub-pick"); });
@@ -2400,21 +2459,28 @@
     }
     var names = picked.map(function (p) { return p.charAt(0).toUpperCase() + p.slice(1); }).join(", ");
     if (!window.confirm((schedule ? "Schedule this video on " : "Post this video now on ") + names + "?")) return;
-    try {
-      // Save what he changed first: the post goes out exactly as it reads on screen.
-      for (var i = 0; i < picked.length; i++) {
-        await api("/production/uploads/" + encodeURIComponent(uploadId) + "/publishing/" + picked[i], {
-          method: "PUT", body: { fields: publishFields(section, picked[i]) }
+    // The words as they read on screen now, before the card is locked.
+    var fields = picked.map(function (p) { return publishFields(section, p); });
+    // 23-Nov (B8): the button says it is posting at once. Each post says it went out only
+    // when TCE's own read says so, platform by platform, as before.
+    press({
+      page: "library", card: "u" + uploadId,
+      busy: { selector: schedule ? "[data-pub-schedule]" : "[data-pub-post]", label: schedule ? "Scheduling" : "Posting" },
+      send: async function () {
+        // Save what he changed first: the post goes out exactly as it reads on screen.
+        for (var i = 0; i < picked.length; i++) {
+          await api("/production/uploads/" + encodeURIComponent(uploadId) + "/publishing/" + picked[i], {
+            method: "PUT", body: { fields: fields[i] }
+          });
+        }
+        return api("/production/uploads/" + encodeURIComponent(uploadId) + "/publishing/publish", {
+          method: "POST", body: { platforms: picked, at: at }
         });
+      },
+      done: function () {
+        toast(schedule ? "Scheduling. The card shows each one as it is booked." : "Posting. The card shows each link as it goes live.");
       }
-      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/publishing/publish", {
-        method: "POST", body: { platforms: picked, at: at }
-      });
-      toast(schedule ? "Scheduling. The card shows each one as it is booked." : "Posting. The card shows each link as it goes live.");
-      renderLibrary();
-    } catch (error) {
-      toast(error.message, true);
-    }
+    });
   }
 
   /* 3-Oct: what Jennifer found when she checked this edit. A pass shows "Checked by
@@ -2706,22 +2772,26 @@
     }
   }
 
-  async function pickStyle(uploadId, style) {
+  // 23-Nov (B8): the style he picked is lit at once; TCE's refusal puts the old one back.
+  function pickStyle(uploadId, style) {
     var name = style === "creatorz" ? "Creatorz" : "Pill";
     var wait = style === "creatorz" ? "It takes about 10 minutes." : "It takes a few minutes.";
     if (!window.confirm("Make this video in " + name + " style? " + wait + " The current edit is replaced when the new one is ready.")) return;
-    try {
-      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/style", { method: "POST", body: { style: style } });
-      toast("Making the " + name + " version. The card shows each step as it happens.");
-      renderLibrary();
-    } catch (error) {
-      toast(error.message, true);
-    }
+    press({
+      page: "library", card: "u" + uploadId,
+      show: function (s) { styleUpload(s, uploadId, style); },
+      send: function () {
+        return api("/production/uploads/" + encodeURIComponent(uploadId) + "/style", { method: "POST", body: { style: style } });
+      },
+      done: function () { toast("Making the " + name + " version. The card shows each step as it happens."); }
+    });
   }
 
   // 18-Nov: every other scene of this video redrawn in another part of the village. It costs
   // real money, so the question names the amount before anything starts.
-  async function pickBackdrop(uploadId, choice, about, max) {
+  // 23-Nov (B8): the button says it is starting, never that it is drawing: the spend caps and
+  // the owner's switch on the server decide, and a refusal is said in their own words.
+  function pickBackdrop(uploadId, choice, about, max) {
     var on = choice === "on";
     var ask = on
       ? "Show other parts of the village behind you in every other scene? A paid video model draws them: about $"
@@ -2729,34 +2799,36 @@
         + ". It adds about 10 minutes. The current edit is replaced when the new one is ready."
       : "Go back to the real backgrounds in this video? It takes about 10 minutes and costs nothing.";
     if (!window.confirm(ask)) return;
-    try {
-      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/backdrop", { method: "POST", body: { on: on } });
-      toast(on ? "Making it with new backgrounds. The card shows each scene as it is drawn."
-               : "Making it with the real backgrounds. The card shows each step as it happens.");
-      renderLibrary();
-    } catch (error) {
-      toast(error.message, true);
-    }
+    press({
+      page: "library", card: "u" + uploadId,
+      busy: { selector: '[data-backdrop-pick][data-backdrop="' + choice + '"]', label: "Starting" },
+      send: function () {
+        return api("/production/uploads/" + encodeURIComponent(uploadId) + "/backdrop", { method: "POST", body: { on: on } });
+      },
+      done: function () {
+        toast(on ? "Making it with new backgrounds. The card shows each scene as it is drawn."
+                 : "Making it with the real backgrounds. The card shows each step as it happens.");
+      }
+    });
   }
 
   // 4-Oct review: one tap, one edit. A second tap while the first is on its way does
-  // nothing here, and the server answers a repeat with the edit already running.
-  var editNowSent = {};
-  async function editNow(uploadId) {
-    if (editNowSent[uploadId]) return;
-    editNowSent[uploadId] = true;
-    try {
-      var row = await api("/production/uploads/" + encodeURIComponent(uploadId) + "/auto-edit", { method: "POST" });
-      var fromArchive = String((row && row.status_detail) || "").indexOf("Taken out of Archived") === 0;
-      toast(fromArchive
-        ? "Editing it now. It left Archived: find it under Still to do, where the card shows each step."
-        : "Editing it now. The card shows each step as it happens.");
-      renderLibrary();
-    } catch (error) {
-      toast(error.message, true);
-    } finally {
-      delete editNowSent[uploadId];
-    }
+  // nothing here (its card is locked, B8), and the server answers a repeat with the edit
+  // already running. The card says the edit started only once TCE said so.
+  function editNow(uploadId) {
+    press({
+      page: "library", card: "u" + uploadId,
+      busy: { selector: '[data-edit-now="' + uploadId + '"]', label: "Starting" },
+      send: function () {
+        return api("/production/uploads/" + encodeURIComponent(uploadId) + "/auto-edit", { method: "POST" });
+      },
+      done: function (row) {
+        var fromArchive = String((row && row.status_detail) || "").indexOf("Taken out of Archived") === 0;
+        toast(fromArchive
+          ? "Editing it now. It left Archived: find it under Still to do, where the card shows each step."
+          : "Editing it now. The card shows each step as it happens.");
+      }
+    });
   }
 
   /* 12-Oct: name a take recorded with no script. The box opens in the card, under its
@@ -2775,35 +2847,53 @@
     input.select();
   }
 
-  async function renameSave(button) {
+  // 23-Nov (B8): the new name is on the card at once; a refusal puts the old one back and
+  // opens the box again with what he typed.
+  function renameSave(button) {
     var form = button.closest(".rename-form");
     var title = ((form && form.querySelector(".rename-input")) || {}).value || "";
     if (title.trim().length < 2) { toast("Give it a name of at least two letters.", true); return; }
-    button.disabled = true;
-    try {
-      var row = await api("/production/recordings/" + encodeURIComponent(button.dataset.renameSave) + "/title", {
-        method: "POST", body: { title: title.trim() }
-      });
-      toast("Renamed to " + row.title + ".");
-      if (form) form.remove();
-      renderLibrary();
-    } catch (error) {
-      button.disabled = false;
-      toast(error.message, true);
-    }
+    var uploadId = button.dataset.renameSave;
+    var wanted = title.trim();
+    var op = {
+      page: "library", card: "u" + uploadId,
+      show: function (s) { titleUpload(s, uploadId, wanted); },
+      send: function () {
+        return api("/production/recordings/" + encodeURIComponent(uploadId) + "/title", {
+          method: "POST", body: { title: wanted }
+        });
+      },
+      done: function (row) {
+        op.show = function (s) { titleUpload(s, uploadId, row.title); };
+        toast("Renamed to " + row.title + ".");
+      },
+      fail: function (error) {
+        toast(notThrough(error), true);
+        var again = document.querySelector('[data-rename="' + uploadId + '"]');
+        if (!again) return;
+        renameOpen(again);
+        var box = again.parentNode.querySelector(".rename-input");
+        if (box) box.value = wanted;
+      }
+    };
+    if (press(op) && form) form.remove();
   }
 
-  async function archiveRecording(uploadId, archived) {
-    try {
-      await api("/production/recordings/" + encodeURIComponent(uploadId) + "/archive", {
-        method: "POST", body: { archived: archived }
-      });
-      toast(archived ? "Archived. It is under the Archived filter, and nothing was deleted."
-                     : "Back in your Library.");
-      renderLibrary();
-    } catch (error) {
-      toast(error.message, true);
-    }
+  // 23-Nov (B8): the card leaves the list at once and comes back if TCE refuses.
+  function archiveRecording(uploadId, archived) {
+    press({
+      page: "library", card: "u" + uploadId,
+      show: function (s) { dropUpload(s, uploadId); },
+      send: function () {
+        return api("/production/recordings/" + encodeURIComponent(uploadId) + "/archive", {
+          method: "POST", body: { archived: archived }
+        });
+      },
+      done: function () {
+        toast(archived ? "Archived. It is under the Archived filter, and nothing was deleted."
+                       : "Back in your Library.");
+      }
+    });
   }
 
   async function publishRevise(uploadId) {
@@ -2821,16 +2911,20 @@
     }
   }
 
-  async function publishDraft(uploadId) {
-    try {
-      await api("/production/uploads/" + encodeURIComponent(uploadId) + "/publishing/draft", { method: "POST" });
-      state.pubWriting = state.pubWriting || {};
-      state.pubWriting[uploadId] = Date.now();
-      toast("Writing the posts on your subscription. This card fills in when they are ready.");
-      renderLibrary();
-    } catch (error) {
-      toast(error.message, true);
-    }
+  // 23-Nov (B8): the button says it is asking at once; "writing" shows once TCE took it.
+  function publishDraft(uploadId) {
+    press({
+      page: "library", card: "u" + uploadId,
+      busy: { selector: '[data-pub-draft="' + uploadId + '"]', label: "Asking for the posts" },
+      send: function () {
+        return api("/production/uploads/" + encodeURIComponent(uploadId) + "/publishing/draft", { method: "POST" });
+      },
+      done: function () {
+        state.pubWriting = state.pubWriting || {};
+        state.pubWriting[uploadId] = Date.now();
+        toast("Writing the posts on your subscription. This card fills in when they are ready.");
+      }
+    });
   }
 
   /* The player opens inside the card it belongs to, under its buttons: one
@@ -3803,37 +3897,453 @@
          + '<p class="section-hint">New topics you asked for, scripts and edits: a buzz when each is ready.</p>';
   }
 
-  // ----------------------------------------------------------------- events
+  // ------------------------------------------------ a press answers at once (B8)
 
-  async function decide(candidateId, decision) {
+  /* 23-Nov (B8): a press on a topic, the week or a Library card used to wait for TCE,
+   * then wipe the page and draw it again under his finger. Now the card answers at
+   * once, the request goes exactly as before, and TCE stays the judge:
+   *
+   *   - The page is drawn from what TCE last said, with the presses still on their way
+   *     laid over it (`show`). A press TCE refuses, or that gets no answer, is taken
+   *     off: its card is back where it was, as it was, and one sentence says so.
+   *   - One request at a time, in the order he pressed. A card whose request is out is
+   *     locked, so nothing is sent twice; every other card stays usable.
+   *   - When the last one has settled, one quiet re-read draws the page again in
+   *     place: only what changed is touched, so nothing jumps and focus stays.
+   *   - A paid or public step (new backgrounds, posting) only says it is starting
+   *     until TCE answers; what it did comes from TCE's own read.
+   */
+  var presses = [];                   // in press order, until a read after their answer
+  var pressLine = Promise.resolve();  // one request at a time
+  var landings = 0;                   // answers so far, so a read knows which ones it saw
+  var rereading = { running: false, again: false };
+  var UNDO_MS = 9000;
+  var NO_ANSWER = "No answer from TCE, so this is shown as it was. The page checks again in a moment.";
+
+  // The page a press belongs to. The notes sheet sits over the Library.
+  function pageKey() {
+    var route = parse();
+    if (route.name === "room") return "room:" + route.id;
+    return route.name === "talk" ? "library" : route.name;
+  }
+
+  function notThrough(error) {
+    // A request that got no answer may still have landed: the re-read says which.
+    if (error.network || error.status === 502 || error.status === 504) return NO_ANSWER;
+    return "That did not go through: " + error.message;
+  }
+
+  // What the page last read: a redraw starts from it. Null until the page is drawn.
+  function screenOf(page) {
+    if (!page || state.painted !== page) return null;
+    if (page === "topics") return { data: state.topics, turnedDown: state.turnedDown || [] };
+    if (page === "week") return { data: state.week };
+    if (page === "library") return { data: state.library, counts: state.libraryTally };
+    return { data: state.room, voice: state.roomVoice || [] };
+  }
+
+  function screenHtml(page, s) {
+    if (page === "topics") return topicsHtml(s.data, s.turnedDown);
+    if (page === "week") return weekHtml(s.data);
+    if (page === "library") return libraryHtml(s.data, s.counts);
+    return roomHtml(s.data, s.voice);
+  }
+
+  function screenStatus(page, s) {
+    if (page === "topics") return topicsStatus(s.data);
+    if (page === "week") return weekStatus(s.data);
+    if (page === "library") return libraryStatus(libraryShown(s.data));
+    return roomStatus(s.data);
+  }
+
+  async function readScreen(page) {
+    if (page === "topics") return readTopics();
+    if (page === "library") return readLibrary();
+    if (page.indexOf("room:") === 0) return readRoom(page.slice(5));
+    var week = await api("/editorial/weeks/current/lineup");
+    // A move answered while this read was out is newer than it.
+    if (!state.week || !(week.revision < state.week.revision)) state.week = week;
+  }
+
+  /* Draws the page from its last read with the presses laid over it, in place.
+     False when this page is not drawn (it is loading, or he left it). */
+  function repaint() {
+    var page = pageKey();
+    var base = screenOf(page);
+    if (!base) return false;
+    var s = JSON.parse(JSON.stringify(base));
+    presses.forEach(function (p) { if (p.page === page && p.show) p.show(s); });
+    patchView(screenHtml(page, s));
+    status(screenStatus(page, s));
+    presses.forEach(function (p) { if (p.page === page && !p.unlocked) lockCard(p); });
+    return true;
+  }
+
+  // The card a press locks: a Library card by its video, a topic's card by the topic
+  // (in the topic room, its decision buttons).
+  function pressRegion(card) {
+    var view = $("view");
+    var id = card.slice(1);
+    if (card.charAt(0) === "u") return view.querySelector('article[data-upload="' + id + '"]');
+    if (card.charAt(0) !== "t") return null;
+    var open = view.querySelector('article [data-open-room="' + id + '"]');
+    if (open) return open.closest("article");
+    var decision = view.querySelector('[data-decide][data-id="' + id + '"]');
+    return decision ? decision.closest(".btn-row") : null;
+  }
+
+  function lockCard(p) {
+    var region = pressRegion(p.card);
+    if (!region) return;
+    region.setAttribute("aria-busy", "true");
+    region.querySelectorAll("button, input, select, textarea").forEach(function (c) { c.disabled = true; });
+    var pressed = p.busy && region.querySelector(p.busy.selector);
+    if (!pressed) return;
+    pressed.textContent = p.busy.label;
+    pressed.classList.add("is-busy");
+  }
+
+  function press(op) {
+    op.page = op.page || pageKey();
+    if (presses.some(function (p) { return p.card === op.card && p.page === op.page; })) return false;
+    presses.push(op);
+    repaint();
+    pressLine = pressLine.then(function () { return sendPress(op); }).catch(function (error) {
+      if (window.console) console.error(error);
+    });
+    return true;
+  }
+
+  async function sendPress(op) {
+    var answer;
     try {
-      var result = await api("/editorial/topics/" + encodeURIComponent(candidateId) + "/decide", {
-        method: "POST", body: { decision: decision }
-      });
-      if (decision === "this_week" && result.placed) {
-        toast(result.placed.slot === "reserve"
-          ? "In the reserve list."
-          : "In this week's list at number " + result.placed.rank + ".");
-      } else {
-        toast(decisionSentence(decision));
-      }
-      await render();
+      answer = await op.send();
     } catch (error) {
-      toast(error.message, true);
+      presses.splice(presses.indexOf(op), 1);
+      repaint();
+      if (op.fail) op.fail(error); else toast(notThrough(error), true);
+      settled();
+      return;
+    }
+    op.landed = ++landings;
+    if (op.done) op.done(answer);
+    // An answer that is the whole page as TCE has it now needs no read to let go.
+    if (op.final) presses.splice(presses.indexOf(op), 1);
+    repaint();
+    settled();
+  }
+
+  function settled() {
+    if (!presses.some(function (p) { return !p.landed; })) quietReread();
+  }
+
+  /* After the last press settles: the page read again and drawn in place. The presses
+     TCE answered before the read began are in it now; one answered while it was out
+     stays laid over until the next read. A read that fails keeps what TCE answered on
+     screen and lets the cards go; the next press or visit reads again. */
+  async function quietReread() {
+    if (rereading.running) { rereading.again = true; return; }
+    rereading.running = true;
+    try {
+      do {
+        rereading.again = false;
+        var page = pageKey();
+        var seen = landings;
+        var read = false;
+        if (screenOf(page)) {
+          try { await readScreen(page); read = true; } catch (error) { read = false; }
+        }
+        presses = presses.filter(function (p) {
+          if (!p.landed || p.landed > seen) return true;
+          if (read || p.page !== page) return false;
+          p.unlocked = true;
+          return true;
+        });
+        repaint();
+        if (read && page === "library") scheduleLibraryPoll(libraryShown(state.library));
+      } while (rereading.again);
+    } finally {
+      rereading.running = false;
     }
   }
 
-  async function moveItem(candidateId, action, slot) {
-    var body = { move: { candidate_id: candidateId, action: action },
-                 expected_revision: state.week ? state.week.revision : null };
-    if (slot) body.move.slot = slot;
-    try {
-      state.week = await api("/editorial/weeks/current/lineup", { method: "PATCH", body: body });
-      await render();
-    } catch (error) {
-      toast(error.message, true);
-      if (error.status === 409) await render();
+  /* Makes the page equal to `html` while keeping every node that did not change: no
+     wipe, so the scroll, the focus, an open player and a fold he opened all stay. A
+     card is matched by what it is about, so one leaving never turns into another. */
+  function patchView(html) {
+    var view = $("view");
+    var fresh = document.createElement("div");
+    fresh.innerHTML = html;
+    // A name he is typing is not part of any read: it stays under its own button.
+    var typing = Array.prototype.map.call(view.querySelectorAll(".rename-form"), function (form) {
+      var save = form.querySelector("[data-rename-save]");
+      var had = form.contains(document.activeElement) ? document.activeElement : null;
+      form.remove();
+      return { form: form, id: save && save.getAttribute("data-rename-save"), focus: had };
+    });
+    morphChildren(view, fresh);
+    typing.forEach(function (t) {
+      var button = t.id && view.querySelector('[data-rename="' + t.id + '"]');
+      if (!button) return;
+      button.insertAdjacentElement("afterend", t.form);
+      if (t.focus) t.focus.focus();
+    });
+  }
+
+  function cardKey(node) {
+    if (!node || node.nodeType !== 1) return null;
+    if (node.id) return "#" + node.id;
+    if (node.nodeName !== "ARTICLE") return null;
+    if (node.getAttribute("data-upload")) return "u" + node.getAttribute("data-upload");
+    var about = node.querySelector("[data-open-room], [data-add-anyway]");
+    if (!about) return null;
+    return about.hasAttribute("data-open-room") ? "t" + about.getAttribute("data-open-room")
+                                                : "a" + about.getAttribute("data-add-anyway");
+  }
+
+  function morph(live, fresh) {
+    if (live.nodeType !== 1) {
+      if (live.nodeValue !== fresh.nodeValue) live.nodeValue = fresh.nodeValue;
+      return;
     }
+    if (live.isEqualNode(fresh)) return;
+    // A player he opened, and the news line that fills itself, belong to no read.
+    if (live.classList.contains("player") || live.id === "weekNewsProgress") return;
+    if (attrNames(live) !== attrNames(fresh)) {
+      // Written again in the fresh order, so the page is exactly what a fresh render is.
+      Array.prototype.slice.call(live.attributes).forEach(function (a) {
+        if (!userOpen(live, a.name)) live.removeAttribute(a.name);
+      });
+    }
+    Array.prototype.forEach.call(fresh.attributes, function (a) {
+      if (live.getAttribute(a.name) !== a.value) live.setAttribute(a.name, a.value);
+    });
+    morphChildren(live, fresh);
+  }
+
+  function shape(node) {
+    return node.nodeName + (node.nodeType === 1 ? "." + node.getAttribute("class") : "");
+  }
+
+  // A fold he opened stays open: it is his, not the read's.
+  function userOpen(el, name) { return name === "open" && el.nodeName === "DETAILS"; }
+
+  function attrNames(el) {
+    return Array.prototype.filter.call(el.attributes, function (a) { return !userOpen(el, a.name); })
+      .map(function (a) { return a.name; }).join(" ");
+  }
+
+  function morphChildren(live, fresh) {
+    var old = Array.prototype.slice.call(live.childNodes);
+    var byKey = Object.create(null);
+    old.forEach(function (n) { var k = cardKey(n); if (k) byKey[k] = n; });
+    var taken = [];
+    var at = 0;
+    var next = Array.prototype.slice.call(fresh.childNodes).map(function (n) {
+      var key = cardKey(n);
+      var match = null;
+      if (key) {
+        match = byKey[key] || null;
+        delete byKey[key];
+      } else {
+        // The next unclaimed node of the same kind: a section that went away is skipped,
+        // not turned into the one after it.
+        for (var j = at; j < old.length; j++) {
+          if (cardKey(old[j]) || taken.indexOf(old[j]) >= 0 || shape(old[j]) !== shape(n)) continue;
+          match = old[j];
+          at = j + 1;
+          break;
+        }
+      }
+      if (!match) return n;
+      taken.push(match);
+      morph(match, n);
+      return match;
+    });
+    old.forEach(function (n) { if (next.indexOf(n) < 0) live.removeChild(n); });
+    next.forEach(function (n, i) { if (live.childNodes[i] !== n) live.insertBefore(n, live.childNodes[i] || null); });
+  }
+
+  // ------------------------------------------------- what each press shows (B8)
+
+  // Where a decided idea goes, as far as the page can tell before TCE answers. TCE's own
+  // filter (inbox._matches) decides, and the read after the press shows its answer.
+  function leavesTopics(filter, decision) {
+    if (filter === "later" || filter === "away" || filter === "improve") return decision !== filter;
+    var filed = decision === "away" || decision === "later" || decision === "improve";
+    if (!window.TCE_SCOPED) {
+      if (filter === "discuss") return decision !== "discuss" && decision !== "later";
+      return ["all", "calls", "builds", "code", "news"].indexOf(filter) < 0;
+    }
+    var lanes = (window.TCE_LANE_TABS || []).map(function (t) { return t[0]; });
+    if (lanes.indexOf(filter) >= 0 || ["calls", "code", "news"].indexOf(filter) >= 0) return filed;
+    return filed || decision === "this_week";
+  }
+
+  function dropTopic(s, candidateId) {
+    var before = (s.data.topics || []).length;
+    s.data.topics = (s.data.topics || []).filter(function (t) { return t.candidate_id !== candidateId; });
+    if (s.data.topics.length < before) s.data.total = Math.max(0, (s.data.total || 0) - 1);
+  }
+
+  function decidedTopic(s, candidateId, decision) {
+    if (!Array.isArray(s.data.topics)) { s.data.decision = decision; return; }  // the topic room
+    s.data.topics.forEach(function (t) {
+      if (t.candidate_id !== candidateId) return;
+      t.decision = decision;
+      t.set_aside_by_engine = false;
+    });
+  }
+
+  // The week as it reads after one move, the way lineup.apply_move makes it. TCE's
+  // answer to the move takes its place the moment it lands.
+  function movedWeek(week, move) {
+    var lists = { primary: week.primary || [], reserve: week.reserve || [] };
+    var slot = null;
+    var at = -1;
+    ["primary", "reserve"].forEach(function (name) {
+      lists[name].forEach(function (item, i) {
+        if (item.candidate_id === move.candidate_id) { slot = name; at = i; }
+      });
+    });
+    if (!slot) return week;
+    var list = lists[slot];
+    var item = list[at];
+    if (move.action === "remove") {
+      list.splice(at, 1);
+    } else if (move.action === "slot") {
+      if (move.slot !== slot && lists[move.slot]) {
+        list.splice(at, 1);
+        item.slot = move.slot;
+        lists[move.slot].push(item);
+      }
+    } else {
+      var to = move.action === "first" ? 0
+             : move.action === "up" ? Math.max(0, at - 1)
+             : move.action === "down" ? Math.min(list.length - 1, at + 1) : at;
+      list.splice(to, 0, list.splice(at, 1)[0]);
+    }
+    ["primary", "reserve"].forEach(function (name) {
+      lists[name].forEach(function (i, n) { i.rank = n + 1; });
+    });
+    week.primary = lists.primary;
+    week.reserve = lists.reserve;
+    week.over_by = Math.max(0, week.primary.length - (week.primary_slots || 0));
+    week.ready_count = week.primary.filter(toFilmNow).length;
+    return week;
+  }
+
+  function findUpload(s, uploadId) {
+    return (s.data.items || []).filter(function (i) { return i.upload_id === uploadId; })[0] || null;
+  }
+
+  function dropUpload(s, uploadId) {
+    var before = (s.data.items || []).length;
+    s.data.items = (s.data.items || []).filter(function (i) { return i.upload_id !== uploadId; });
+    if (s.data.items.length < before) s.data.total = Math.max(0, (s.data.total || 0) - 1);
+  }
+
+  function titleUpload(s, uploadId, title) {
+    var item = findUpload(s, uploadId);
+    if (item) item.title = title;
+  }
+
+  function styleUpload(s, uploadId, style) {
+    var item = findUpload(s, uploadId);
+    ((item && item.actions) || []).forEach(function (a) {
+      if (a.key !== "style") return;
+      a.current = style;
+      a.stale = false;
+    });
+  }
+
+  // ----------------------------------------------------------------- events
+
+  /* 23-Nov (B8): the card leaves the list at once, or, where it stays, says "Saving"
+     until TCE answers. TCE's answer carries the id of this one write, and its own undo
+     takes exactly that write back. */
+  function decide(candidateId, decision) {
+    var page = pageKey();
+    var leaves = page === "topics" && leavesTopics(state.topics && state.topics.filter, decision);
+    var op = {
+      page: page, card: "t" + candidateId,
+      busy: leaves ? null : { selector: '[data-decide="' + decision + '"]', label: "Saving" },
+      show: leaves ? function (s) { dropTopic(s, candidateId); } : null,
+      send: function () {
+        return api("/editorial/topics/" + encodeURIComponent(candidateId) + "/decide", {
+          method: "POST", body: { decision: decision }
+        });
+      },
+      done: function (result) {
+        if (!leaves) op.show = function (s) { decidedTopic(s, candidateId, result.decision); };
+        var said = decision === "this_week" && result.placed
+          ? (result.placed.slot === "reserve"
+            ? "In the reserve list."
+            : "In this week's list at number " + result.placed.rank + ".")
+          : decisionSentence(decision);
+        // No change id: the write changed nothing, so there is nothing to take back.
+        if (result.change_id) offerUndo(toast(said, false, UNDO_MS), candidateId, result.change_id);
+        else toast(said);
+      }
+    };
+    press(op);
+  }
+
+  function offerUndo(node, candidateId, changeId) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn toast-undo";
+    button.setAttribute("data-undo-decision", candidateId);
+    button.setAttribute("data-change-id", changeId);
+    button.textContent = "Undo";
+    node.classList.add("has-undo");
+    node.appendChild(button);
+  }
+
+  // His Undo on the decision he just made: TCE's undo of that one write. The topic comes
+  // back where TCE puts it, on the read after; a refusal says why in TCE's words.
+  function undoDecision(button) {
+    var candidateId = button.getAttribute("data-undo-decision");
+    var changeId = button.getAttribute("data-change-id");
+    var sent = press({
+      card: "x" + changeId,
+      send: function () {
+        return api("/editorial/topics/" + encodeURIComponent(candidateId) + "/undo-decision", {
+          method: "POST", body: { change_id: changeId, by: "ziv" }
+        });
+      },
+      done: function (result) { toast(result.said || "Undone."); }
+    });
+    if (!sent) return;
+    button.disabled = true;
+    button.textContent = "Undoing";
+  }
+
+  /* 23-Nov (B8): the card moves at once. Moves go one after another, each against the
+     week TCE answered the one before with, so quick presses all land in order. */
+  function moveItem(candidateId, action, slot) {
+    var move = { candidate_id: candidateId, action: action };
+    if (slot) move.slot = slot;
+    var op = {
+      page: "week", card: "t" + candidateId,
+      show: function (s) { s.data = movedWeek(s.data, move); },
+      send: async function () {
+        var body = { move: move, expected_revision: state.week ? state.week.revision : null };
+        try {
+          return await api("/editorial/weeks/current/lineup", { method: "PATCH", body: body });
+        } catch (error) {
+          // Changed somewhere else: the moves after this one go against the week as it is.
+          if (error.status === 409) {
+            try { state.week = await api("/editorial/weeks/current/lineup"); } catch (e) { /* the re-read tries again */ }
+          }
+          throw error;
+        }
+      },
+      // TCE's answer is the week as it is now, with this move in it.
+      final: true,
+      done: function (week) { state.week = week; }
+    };
+    press(op);
   }
 
   async function askForScript(candidateId) {
@@ -3851,6 +4361,9 @@
         note.textContent = said;
         button.replaceWith(note);
       });
+      // 23-Nov (B8): the page's own read learns it too, so a redraw in place after
+      // another press does not offer the button again.
+      if (!presses.some(function (p) { return !p.landed; })) quietReread();
     } catch (error) {
       toast(error.message, true);
     }
@@ -3874,7 +4387,8 @@
     "save-rules", "archive", "unarchive", "edit-again", "talk-edit", "edit-now",
     "check-again", "release-hold", "settle-hold", "note-reply", "rule-delete",
     "rename", "rename-save", "add-anyway", "pubtab", "libcount", "topic-more", "title-review", "style-pick",
-    "pictures-toggle", "picture-add", "picture-remove", "retry-view", "backdrop-pick"
+    "pictures-toggle", "picture-add", "picture-remove", "retry-view", "backdrop-pick",
+    "undo-decision"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -3930,6 +4444,7 @@
     if (d.pubtab !== undefined) { pickPubTab(target); return; }
     if (d.wtab !== undefined) { state.workshopTab = d.wtab; render(); return; }
     if (d.decide !== undefined) { decide(d.id, d.decide); return; }
+    if (d.undoDecision !== undefined) { undoDecision(target); return; }
     if (d.addAnyway !== undefined) { addAnyway(target, d.addAnyway); return; }
     if (d.openRoom !== undefined) { go("/topics/" + d.openRoom); return; }
     if (d.openScript !== undefined) { go("/scripts/" + d.openScript); return; }
@@ -4214,6 +4729,9 @@
     // its notes stay on the server. On its own address nothing here touches it.
     if (route.name !== "talk") closeNotesSheet();
     state.route = route.name;
+    // Drawn again from a fresh read: nothing is redrawn over it until it is (B8). The
+    // notes sheet opens over a Library already drawn.
+    if (!(route.name === "talk" && document.querySelector("[data-libfilter]"))) state.painted = null;
     setChrome(route);
     $("actionBar").hidden = true;
     document.body.classList.remove("has-talk");
@@ -4230,6 +4748,8 @@
       if (state.route !== route.name) return;
       if (route.name === "room") $("pageTitle").textContent = "Topic";
       setTalkContext(route);
+      // A press still on its way to TCE stays on the page it was made on (B8).
+      if (presses.length) repaint();
     } catch (error) {
       paintLoadError(route, error);
     }

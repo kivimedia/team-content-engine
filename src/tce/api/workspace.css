@@ -513,6 +513,11 @@ body.notes-open { overflow: hidden; }
   box-shadow: var(--shadow);
 }
 .toast.is-bad { background: var(--signal); border-color: #7d1a1a; }
+/* 23-Nov (B8): Undo on the decision he just made, inside its own toast. */
+.toast.has-undo { display: flex; align-items: center; gap: 14px; width: max-content; }
+.toast .toast-undo { flex: none; min-height: 40px; padding: 4px 14px; }
+/* The pressed button says what is starting; locked, it stays readable. */
+.btn.is-busy[disabled] { opacity: 1; cursor: progress; }
 
 /* ----------------------------------------------------------------- wider */
 

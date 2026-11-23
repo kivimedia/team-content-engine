@@ -598,6 +598,13 @@
     "Editing it now. The card shows each step as it happens.": "עורך עכשיו. הכרטיס יראה כל שלב כשהוא קורה.",
     "Archived. It is under the Archived filter, and nothing was deleted.": "הועבר לארכיון. הוא נמצא תחת 'בארכיון', ושום דבר לא נמחק.",
     "Back in your Library.": "חזר לספרייה שלך.",
+    // 23-Nov (B8): a press answers at once; these say where it stands until TCE answers.
+    "Starting": "מתחיל",
+    "Posting": "מפרסם",
+    "Scheduling": "מתזמן",
+    "Asking for the posts": "מבקש את הפוסטים",
+    "No answer from TCE, so this is shown as it was. The page checks again in a moment.":
+      "אין תשובה מ-TCE, אז זה מוצג כמו שהיה. הדף בודק שוב בעוד רגע.",
     "Close": "סגירה",
     "What should change about this video? Say it the way you would say it to Jennifer, your video editor.":
       "מה צריך לשנות בסרטון?\n\nאומרים את זה כמו שהיית אומר לג'ניפר, העורכת שלך.",
@@ -793,6 +800,8 @@
     [/^Subscription capacity: [\s\S]*; resumes at (\S+)$/, function (_, iso) { return capacityLine(iso); }],
     [/^Waiting for subscription capacity: [\s\S]*$/, "המערכת בהפסקה קצרה וחוזרת לעבוד בקרוב"],
     [/^Something went wrong \((\d+)\)\.$/, "משהו השתבש ($1)."],
+    // 23-Nov (B8): a press TCE refused, with TCE's own words after it.
+    [/^That did not go through: ([\s\S]*)$/, function (_, why) { return "זה לא עבר: " + tr(why); }],
     [/^Connection dropped, trying again \((\d+) of (\d+)\)$/, "החיבור נפל, מנסה שוב ($1 מתוך $2)"],
     // 11-Nov: the card's pictures button with its count
     [/^Pictures \((\d+)\)$/, "תמונות ($1)"],
