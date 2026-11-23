@@ -33,6 +33,12 @@ FACE_MODEL = Path("models") / "face_yunet.onnx"
 PARALLEL = 3
 # The longest a try waits for its turn or for room before it is refused (kept real).
 WAIT_S = 1200.0
+# A try's real bill is counted from the tokens its answer reports, and it can come in above
+# the per-second estimate it was booked at (the one live ledger row so far: 36.8 s at 1080p,
+# about 2% over). While a try is in flight, the others count it at its booking times this
+# margin, so no try starts side by side under a looser rule than it would one after another.
+# Observed about +2%; 1.5 leaves wide room.
+MARGIN = 1.5
 
 
 class Budget:
@@ -44,11 +50,13 @@ class Budget:
     (creatorz.reels._one_render) and spend.jsonl is written when a render ends, so nothing
     else spends from the same day while this one runs.
 
-    Every try books what it can cost (the redraw's estimate and the look after it) BEFORE the
-    call is made. A booking is checked against what is spent plus what the other scenes hold,
-    under the lock, so two scenes can never both pass a limit only one fits under. A booking
-    that does not fit waits while another try is still in flight (it may cost less, or nothing)
-    and is refused once nothing in flight can make room. A try is settled with what it really
+    A try starts under the one-at-a-time rule, word for word: what is spent plus its own
+    estimate may not pass the room. The only change side by side is that every OTHER try still
+    in flight is counted too, at an upper bound (its booking, the redraw's estimate and the
+    look after it, times MARGIN), because its real bill is not known yet. A booking that does
+    not fit while another try is in flight waits and is decided again after each settle, so
+    near a limit the scenes go one at a time on their own; a try is refused only when nothing
+    is in flight and the one-at-a-time rule refuses it. A try is settled with what it really
     cost, or released when the model did not answer (counted as nothing, as before). First
     tries book in scene order, so the scene kept real at a limit is the one it was when the
     scenes ran one after another."""
@@ -56,15 +64,21 @@ class Budget:
     def __init__(self, room: float) -> None:
         self.room = float(room)
         self.spent = 0.0
-        self.held = 0.0
         self.drawn_s = 0.0
+        self._bounds: list[float] = []  # every try in flight, at its upper bound
         self._cond = threading.Condition()
         self._turn = 1  # the first scene whose first try has not been decided yet
         self._done: set[int] = set()
         self._closed = False
 
+    @property
+    def held(self) -> float:
+        """The tries in flight, at their upper bounds (exactly 0 when none is)."""
+        return float(sum(self._bounds))
+
     def _fits(self, usd: float) -> bool:
-        return round(self.spent + self.held + usd, 6) <= round(self.room, 6)
+        # The one-at-a-time check (spent + estimate > room refuses), with the tries in flight added.
+        return not self.spent + self.held + usd > self.room
 
     def _pass(self, turn: int) -> None:
         self._done.add(turn)
@@ -72,29 +86,36 @@ class Budget:
             self._turn += 1
         self._cond.notify_all()
 
-    def book(self, usd: float, turn: int | None = None) -> bool:
-        """Hold ``usd`` for one try, or say no. ``turn`` (a scene's number) makes a first try
-        wait until every scene before it has booked or finished."""
+    def book(self, usd: float, turn: int | None = None, hold: float | None = None) -> bool:
+        """Start one try whose estimate is ``usd``, or say no. On a yes it is held at
+        ``hold`` (``usd`` when not given) times MARGIN until it is settled. ``turn`` (a
+        scene's number) makes a first try wait until every scene before it has booked or
+        finished."""
+        bound = (usd if hold is None else hold) * MARGIN
         with self._cond:
             try:
                 ready = self._cond.wait_for(
                     lambda: self._closed
-                    or ((turn is None or self._turn >= turn) and (self._fits(usd) or self.held <= 1e-9)),
+                    or ((turn is None or self._turn >= turn) and (self._fits(usd) or not self._bounds)),
                     timeout=WAIT_S,
                 )
                 ok = bool(ready) and not self._closed and (turn is None or self._turn >= turn) and self._fits(usd)
                 if ok:
-                    self.held = round(self.held + usd, 6)
+                    self._bounds.append(bound)
                 return ok
             finally:
                 if turn is not None:
                     self._pass(turn)
 
-    def settle(self, booked: float, cost: float, drawn_s: float = 0.0) -> None:
-        """A try is over: its booking is let go and what it really cost is spent."""
+    def settle(self, booked: float, cost: float | list[float], drawn_s: float = 0.0) -> None:
+        """A try is over: its bound is let go and what it really cost is spent (a list is
+        added in its order: the redraw, then the look, as one at a time)."""
+        bound = booked * MARGIN
         with self._cond:
-            self.held = max(0.0, round(self.held - booked, 6))
-            self.spent += cost
+            if bound in self._bounds:
+                self._bounds.remove(bound)
+            for usd in cost if isinstance(cost, list) else [cost]:
+                self.spent += usd
             self.drawn_s += drawn_s
             self._cond.notify_all()
 
@@ -421,9 +442,11 @@ class _Run:
         )
         video_uri, fix, why = None, "", ""
         for attempt in (1, 2):
-            # Booked under the budget's one lock before anything is sent (see Budget).
-            booked = omni.estimate_usd(seconds, self.resolution) + omni.LOOK_USD
-            if not self.budget.book(booked, n if attempt == 1 else None):
+            # Booked under the budget's one lock before anything is sent (see Budget): the
+            # one-at-a-time check on the estimate, held at the estimate and the look after it.
+            estimate = omni.estimate_usd(seconds, self.resolution)
+            booked = estimate + omni.LOOK_USD
+            if not self.budget.book(estimate, n if attempt == 1 else None, hold=booked):
                 why = self.limit_why or f"the spend limit for one video (${self.max_usd:.2f}) was reached"
                 self.say(f"backdrop: scene {n}/{total} kept real (spend limit)")
                 break
@@ -460,7 +483,7 @@ class _Run:
                     found = [checks.Finding("read", False, str(exc)[:160])]
             finally:
                 # Settled even when something broke: what was really spent is never lost.
-                self.budget.settle(booked, draw + sum(paid), seconds if drew else 0.0)
+                self.budget.settle(booked, [draw, *paid], seconds if drew else 0.0)
             cost = draw + sum(paid)  # the look, when it ran
             entry["cost_usd"] = round(entry["cost_usd"] + cost, 4)
             entry["attempts"].append(

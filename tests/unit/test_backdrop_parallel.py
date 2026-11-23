@@ -2,13 +2,17 @@
 
 Up to three scenes of one render are redrawn at once. The three spend limits (one render, the
 day, the live test) are kept under ONE lock: every try books what it can cost before it is sent,
-so scenes racing for room that only one of them fits under can never both be paid for. The
-step and its fake model are the ones test_backdrop.py drives; no paid call is made anywhere.
+so scenes racing for room that only one of them fits under can never both be paid for. A try
+starts under the one-at-a-time rule word for word, with every other try in flight counted at
+its booking times step.MARGIN, so a bill that comes in above its estimate never lets side by
+side spend more than one at a time would. The step and its fake model are the ones
+test_backdrop.py drives; no paid call is made anywhere.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 import time
 from datetime import UTC, datetime
@@ -137,12 +141,82 @@ def test_the_race_test_catches_a_booking_that_does_not_hold_its_room(cut, monkey
     one-at-a-time check, run side by side) lets both scenes through. The test above must
     fail on it, and it does: two redraws are paid for under room for one."""
 
-    def unheld(self, usd, turn=None):
-        return round(self.spent + usd, 6) <= round(self.room, 6)
-
-    monkeypatch.setattr(step.Budget, "book", unheld)
+    monkeypatch.setattr(step.Budget, "book", _unheld)
     report, model, added, _why = _race(cut, "one render")
     assert len(model.edits) == 2 and report["changed"] == 2 and added > 0.9
+
+
+def _unheld(self, usd, turn=None, hold=None):
+    """The planted-bad booking: only what is already spent, nothing in flight."""
+    return not self.spent + usd > self.room
+
+
+# ------------------------------------------------------------ a bill above its estimate
+class OverModel(SlowModel):
+    """Bills each redraw 1.2 times its estimate, as an answer counted from its tokens can."""
+
+    def edit(self, video_uri, ref_uris, prompt, *, model, resolution, out):
+        super().edit(video_uri, ref_uris, prompt, model=model, resolution=resolution, out=out)
+        over = 1.2 * omni.estimate_usd(5.0, resolution)
+        return {"total_output_tokens": round(over * 1e6 / omni.USD_PER_M_OUT)}
+
+
+OVER_PAID = 1.2 * omni.estimate_usd(5.0, "1080p") + omni.LOOK_USD
+# Room that one at a time refuses the second scene under (spent 0.694 + 0.57 > 1.2), but that a
+# second try counted at its booking alone (0.58 + 0.57) would pass.
+OVER_ROOM = 1.2
+
+
+def _render(cut, tag: str, **extra):
+    """One render of the same cut with its own cache and ledger, as the cut stage leaves it."""
+    work, cfg = cut
+    if (work / "base.real.mp4").exists():
+        shutil.copy(work / "base.real.mp4", work / "base.mp4")
+    run_cfg = {
+        **cfg,
+        "max_usd": OVER_ROOM,
+        "cache_dir": str(Path(cfg["cache_dir"]) / tag),
+        "ledger": str(Path(cfg["ledger"]).with_name(f"spend-{tag}.jsonl")),
+        **extra,
+    }
+    model = OverModel()
+    return step.run(work / "plan.json", run_cfg, api=model), model
+
+
+def test_side_by_side_never_spends_more_than_one_after_another_when_the_bill_runs_over(cut):
+    one, one_model = _render(cut, "one-at-a-time")
+    side, side_model = _render(cut, "side-by-side", parallel=3)
+    assert [e["result"] for e in one["scenes"]] == ["real", "new", "real", "real"]
+    assert [e["result"] for e in side["scenes"]] == [e["result"] for e in one["scenes"]]
+    assert len(side_model.edits) == len(one_model.edits) == 1
+    assert side["cost_usd"] <= one["cost_usd"] and side["cost_usd"] == pytest.approx(OVER_PAID, abs=1e-3)
+    assert side["scenes"][3]["why"] == one["scenes"][3]["why"]
+
+
+@pytest.mark.parametrize("plant", ["naive booking", "no margin"])
+def test_the_over_bill_test_catches_a_budget_that_counts_tries_in_flight_at_their_estimate(cut, monkeypatch, plant):
+    """The planted-bad cases for the test above: a booking that looks only at what is spent,
+    and the tries in flight counted at their booking with no margin (what d2b7353 did). Both
+    pay for the second scene, past what one at a time spends."""
+    one, _ = _render(cut, "one-at-a-time")
+    if plant == "naive booking":
+        monkeypatch.setattr(step.Budget, "book", _unheld)
+    else:
+        monkeypatch.setattr(step, "MARGIN", 1.0)
+    side, side_model = _render(cut, "side-by-side", parallel=3)
+    assert len(side_model.edits) == 2 and side["cost_usd"] > one["cost_usd"]
+    assert side["cost_usd"] > OVER_ROOM
+
+
+def test_a_scene_that_fits_the_one_at_a_time_rule_exactly_is_drawn(cut):
+    """Room exactly the first scene's estimate: one at a time draws it (spent + estimate is
+    not past the room), so side by side does too, and neither the look nor the margin keeps
+    it out."""
+    exact = omni.estimate_usd(5.0, "1080p")
+    for tag, extra in (("one-at-a-time", {}), ("side-by-side", {"parallel": 3})):
+        report, model = _render(cut, tag, max_usd=exact, **extra)
+        assert len(model.edits) == 1, tag
+        assert [e["result"] for e in report["scenes"]] == ["real", "new", "real", "real"], tag
 
 
 # ------------------------------------------------------------ the budget itself
@@ -158,7 +232,7 @@ def test_three_tries_racing_for_room_for_one_get_one_booking():
     for t in threads:
         t.start()
     time.sleep(0.3)
-    assert got == [True] and budget.held == pytest.approx(5.0), "one holds the room, two wait"
+    assert got == [True] and budget.held == pytest.approx(5.0 * step.MARGIN), "one holds the room, two wait"
     budget.settle(5.0, 5.0)  # the one in flight really spent it
     for t in threads:
         t.join(5)
@@ -176,7 +250,7 @@ def test_a_try_waits_for_one_in_flight_and_gets_its_room_back_when_that_one_cost
     assert result == [], "it waits while the other try may still cost less"
     budget.settle(0.6, 0.0)  # the model did not answer: nothing was spent
     later.join(5)
-    assert result == [True] and budget.held == pytest.approx(0.6)
+    assert result == [True] and budget.held == pytest.approx(0.6 * step.MARGIN)
 
 
 def test_a_try_is_refused_once_the_one_in_flight_really_spent_the_room():
@@ -213,3 +287,52 @@ def test_nothing_is_booked_once_a_scene_broke():
     budget = step.Budget(8.0)
     budget.close()
     assert budget.book(0.1) is False and budget.held == 0.0
+
+
+def _three_scenes_billed_over(budget) -> list[int]:
+    """Room 8.00, three scenes estimated 2.50 (2.51 with the look), each really billed 3.00."""
+    drawn: list[int] = []
+
+    def scene(n: int) -> None:
+        if budget.book(2.50, n, hold=2.51):
+            drawn.append(n)
+            time.sleep(0.2)  # drawn side by side with the next one
+            budget.settle(2.51, 3.00)
+
+    threads = [threading.Thread(target=scene, args=(n,), daemon=True) for n in (1, 2, 3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    return sorted(drawn)
+
+
+def test_three_scenes_billed_over_their_estimate_spend_what_one_at_a_time_would():
+    # One at a time: two are drawn (6.00 spent) and the third is refused (6.00 + 2.50 > 8).
+    budget = step.Budget(8.0)
+    assert _three_scenes_billed_over(budget) == [1, 2]
+    assert budget.spent == pytest.approx(6.0) and budget.held == 0.0
+
+
+def test_without_the_margin_the_three_scenes_pass_the_limit(monkeypatch):
+    """The planted-bad case for the test above: tries in flight counted at their booking."""
+    monkeypatch.setattr(step, "MARGIN", 1.0)
+    budget = step.Budget(8.0)
+    assert _three_scenes_billed_over(budget) == [1, 2, 3] and budget.spent == pytest.approx(9.0)
+
+
+def test_with_nothing_in_flight_the_margin_never_refuses_or_delays_an_exact_fit(monkeypatch):
+    monkeypatch.setattr(step, "WAIT_S", 3.0)
+    budget = step.Budget(1.0)
+    began = time.monotonic()
+    assert budget.book(1.0, 1, hold=1.0 + omni.LOOK_USD) is True, "spent 0 + 1.00 is not past 1.00"
+    assert time.monotonic() - began < 0.5
+    budget.settle(1.0 + omni.LOOK_USD, 0.0)  # the model did not answer
+    assert budget.held == 0.0
+    budget = step.Budget(1.0)
+    assert budget.book(0.25, hold=0.25)
+    budget.settle(0.25, [0.25, 0.125])  # the redraw, then the look: 0.375 spent
+    began = time.monotonic()
+    assert budget.book(0.625) is True, "0.375 + 0.625 is exactly the room"
+    assert time.monotonic() - began < 0.5
+    assert budget.spent == 0.375
