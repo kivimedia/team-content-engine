@@ -28,6 +28,10 @@ POST /book/chapters/{n}/write            his ask to write a chapter from its app
 audio) until its layout is approved and its current version was written or confirmed
 after that. The page cannot get round it: the server never sends held text.
 
+23-Nov-2026 (wait-less B10): his write ask, a layout note and a layout approval also wake
+the book editor in KM BOT once the record is written (wake_editor), so writing starts
+without waiting for its next turn. The tap never waits for the wake and never fails on it.
+
 The owner's only: a client login never reaches it (the scoped fence lists no /book
 path, and this router refuses a scoped key as well).
 """
@@ -35,8 +39,11 @@ path, and this router refuses a scoped key as well).
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import shutil
 import tempfile
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -386,6 +393,75 @@ def _editor_record(book: BookStore) -> EditorRecord:
     return book.record
 
 
+# --- 23-Nov-2026 (wait-less B10): his word wakes the book editor --------------------------
+# A write ask or a layout word used to sit in chapters.json until the editor's next turn.
+# TCE had no way of its own to reach KM BOT from the server (the Book page reads KM BOT in
+# his browser, through /kmbot-api, with his login), so the wake goes through KM BOT's own
+# fleet mail command on this box (settings.book_editor_wake): the message lands in the
+# editor's inbox and KM BOT starts its turn. It is sent as a script (KMBOT_SENDER), never as
+# Ziv: the record is where his word lives, and the message only points at it.
+
+WAKE_WORDS = {
+    "write": "chapter {n} has a new ask to write it from its approved layout ({at}, by {by})",
+    "note": "chapter {n} has a new note on its layout ({at}, by {by})",
+    "approve": "the layout of chapter {n} was approved ({at}, by {by})",
+}
+WAKE_SENDER = "api:tce-book"
+_woken: dict[tuple[int, str], float] = {}
+_wakes: set[asyncio.Task] = set()
+
+
+def wake_editor(n: int, word: str, at: str, by: str) -> bool:
+    """Wake the book editor about his word on chapter ``n``, without waiting for it. Called
+    only after the record is written. True when a wake was sent off; False when waking is
+    switched off, or the same word on the same chapter woke it moments ago (one wake for a
+    burst of taps). Never raises."""
+    command = (settings.book_editor_wake or "").strip()
+    if not command or word not in WAKE_WORDS:
+        return False
+    now = time.monotonic()
+    last = _woken.get((n, word))
+    if last is not None and now - last < float(settings.book_editor_wake_gap_s):
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    _woken[(n, word)] = now
+    who = re.sub(r"[^A-Za-z0-9 ._-]", "", by or "")[:40] or "ziv"
+    told = WAKE_WORDS[word].format(n=n, at=at or "now", by=who)
+    text = (f"From the Book in TCE: {told}. It is in your chapters.json; read it there and start on it now. "
+            "No reply is needed.")
+    task = loop.create_task(_send_wake(command, text))
+    _wakes.add(task)
+    task.add_done_callback(_wakes.discard)
+    return True
+
+
+async def _send_wake(command: str, text: str) -> None:
+    """One fleet message to the editor. A wake that does not go out is logged; the ask is in
+    the record either way, and the editor's next turn reads it as before."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            command, settings.book_editor_agent, text,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "KMBOT_SENDER": WAKE_SENDER},
+        )
+        try:
+            _out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except TimeoutError:
+            proc.kill()
+            logger.warning("book.wake_timed_out", agent=settings.book_editor_agent)
+            return
+        if proc.returncode != 0:
+            logger.warning("book.wake_refused", agent=settings.book_editor_agent, code=proc.returncode,
+                           error=err.decode(errors="replace")[-300:])
+            return
+        logger.info("book.wake_sent", agent=settings.book_editor_agent)
+    except Exception as exc:  # noqa: BLE001 - the tap already answered; the record holds his word
+        logger.warning("book.wake_failed", agent=settings.book_editor_agent, error=str(exc)[:300])
+
+
 @router.post("/chapters/{n}/layout")
 async def layout_word(n: int, body: LayoutBody, ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
     book = store()
@@ -406,6 +482,8 @@ async def layout_word(n: int, body: LayoutBody, ws: uuid.UUID = Depends(require_
         logger.warning("book.layout_not_written", chapter=n, action=body.action, error=str(exc)[:300])
         raise HTTPException(status_code=503, detail="The editor's record could not be written, so nothing changed") from exc
     logger.info("book.layout", chapter=n, action=body.action, by=by)
+    if body.action in ("note", "approve"):
+        wake_editor(n, body.action, str(out.get("at") or ""), by)
     chapter = _chapter_view(store(), n)
     return {"n": n, "action": body.action, "result": out, "phase": chapter.get("phase"), "phase_words": chapter.get("phase_words"),
             "chapter": chapter}
@@ -429,4 +507,5 @@ async def ask_to_write(n: int, body: WriteBody | None = None, ws: uuid.UUID = De
         logger.warning("book.write_not_asked", chapter=n, error=str(exc)[:300])
         raise HTTPException(status_code=503, detail="The editor's record could not be written, so nothing changed") from exc
     logger.info("book.write_requested", chapter=n, by=by, already=out.get("already"))
+    wake_editor(n, "write", str(out.get("write_requested_at") or ""), by)
     return {"n": n, **out, "chapter": _chapter_view(store(), n)}

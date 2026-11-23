@@ -12,7 +12,9 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,87 @@ REPORT = "backdrop.json"
 JUDGE_STILLS = 8
 FACE_STILLS = 5
 FACE_MODEL = Path("models") / "face_yunet.onnx"
+# 23-Nov (wait-less F12): scenes are redrawn side by side, at most this many at once
+# (the render is told its own number in cfg["parallel"]; 1, or none, is one at a time).
+PARALLEL = 3
+# The longest a try waits for its turn or for room before it is refused (kept real).
+WAIT_S = 1200.0
+
+
+class Budget:
+    """What one render may still spend, kept under ONE lock (23-Nov, wait-less F12).
+
+    The room is the lowest of the three limits: one render ($8), the day for every render
+    together ($25) and the live test for its videos ($16). limited() folds the day's and the
+    test's dollars left into it before the render starts; renders run one at a time
+    (creatorz.reels._one_render) and spend.jsonl is written when a render ends, so nothing
+    else spends from the same day while this one runs.
+
+    Every try books what it can cost (the redraw's estimate and the look after it) BEFORE the
+    call is made. A booking is checked against what is spent plus what the other scenes hold,
+    under the lock, so two scenes can never both pass a limit only one fits under. A booking
+    that does not fit waits while another try is still in flight (it may cost less, or nothing)
+    and is refused once nothing in flight can make room. A try is settled with what it really
+    cost, or released when the model did not answer (counted as nothing, as before). First
+    tries book in scene order, so the scene kept real at a limit is the one it was when the
+    scenes ran one after another."""
+
+    def __init__(self, room: float) -> None:
+        self.room = float(room)
+        self.spent = 0.0
+        self.held = 0.0
+        self.drawn_s = 0.0
+        self._cond = threading.Condition()
+        self._turn = 1  # the first scene whose first try has not been decided yet
+        self._done: set[int] = set()
+        self._closed = False
+
+    def _fits(self, usd: float) -> bool:
+        return round(self.spent + self.held + usd, 6) <= round(self.room, 6)
+
+    def _pass(self, turn: int) -> None:
+        self._done.add(turn)
+        while self._turn in self._done:
+            self._turn += 1
+        self._cond.notify_all()
+
+    def book(self, usd: float, turn: int | None = None) -> bool:
+        """Hold ``usd`` for one try, or say no. ``turn`` (a scene's number) makes a first try
+        wait until every scene before it has booked or finished."""
+        with self._cond:
+            try:
+                ready = self._cond.wait_for(
+                    lambda: self._closed
+                    or ((turn is None or self._turn >= turn) and (self._fits(usd) or self.held <= 1e-9)),
+                    timeout=WAIT_S,
+                )
+                ok = bool(ready) and not self._closed and (turn is None or self._turn >= turn) and self._fits(usd)
+                if ok:
+                    self.held = round(self.held + usd, 6)
+                return ok
+            finally:
+                if turn is not None:
+                    self._pass(turn)
+
+    def settle(self, booked: float, cost: float, drawn_s: float = 0.0) -> None:
+        """A try is over: its booking is let go and what it really cost is spent."""
+        with self._cond:
+            self.held = max(0.0, round(self.held - booked, 6))
+            self.spent += cost
+            self.drawn_s += drawn_s
+            self._cond.notify_all()
+
+    def passed(self, turn: int) -> None:
+        """A scene that never booked (drawn before, refused before, or broken) lets the next
+        one book. Saying it twice is harmless."""
+        with self._cond:
+            self._pass(turn)
+
+    def close(self) -> None:
+        """Nothing more is booked (a scene broke and the render is stopping)."""
+        with self._cond:
+            self._closed = True
+            self._cond.notify_all()
 
 
 def engine_view(
@@ -190,7 +273,14 @@ class _Run:
     def __init__(
         self, cfg: dict[str, Any], api: Any, say, plan: dict, edit: dict, size: tuple[int, int]
     ) -> None:
-        self.cfg, self.api, self.say, self.plan, self.size = cfg, api, say, plan, size
+        self.cfg, self.api, self.plan, self.size = cfg, api, plan, size
+        said = threading.Lock()  # scenes run side by side: one whole line at a time
+
+        def say_line(line: str) -> None:
+            with said:
+                say(line)
+
+        self.say = say_line
         self.fps = int(edit["fps"])
         self.shots: list[dict] = edit["shots"]
         self.work = Path(plan["work"])
@@ -205,21 +295,38 @@ class _Run:
         self.max_usd = float(cfg.get("max_usd") or 0.0)
         self.limit_why = str(cfg.get("limit_why") or "")
         self.face_model = str(Path(cfg["engine_dir"]) / FACE_MODEL)
-        self.spent = 0.0
-        self.drawn_s = 0.0
+        self.budget = Budget(self.max_usd)
         self._refs: dict[str, list[str]] = {}
+        self._refs_lock = threading.Lock()
         source = Path(plan["source"])
         self.source_id = f"{source.name}:{source.stat().st_size if source.exists() else 0}"
 
+    @property
+    def spent(self) -> float:
+        return self.budget.spent
+
+    @property
+    def drawn_s(self) -> float:
+        return self.budget.drawn_s
+
     def refs(self, look: looksmod.Look) -> list[str]:
-        if look.id not in self._refs:
-            self._refs[look.id] = [self.api.upload(ref) for ref in look.refs]
-        return self._refs[look.id]
+        with self._refs_lock:
+            if look.id not in self._refs:
+                self._refs[look.id] = [self.api.upload(ref) for ref in look.refs]
+            return self._refs[look.id]
 
     # ------------------------------------------------------------ the checks
     def check(
-        self, clip: Path, raw: Path, fitted: Path, frames: int, size: tuple[int, int]
+        self,
+        clip: Path,
+        raw: Path,
+        fitted: Path,
+        frames: int,
+        size: tuple[int, int],
+        paid: list[float] | None = None,
     ) -> list[checks.Finding]:
+        """``paid`` collects what the look cost (this scene's own, never another's)."""
+        paid = paid if paid is not None else []
         seconds = frames / self.fps
         found = [checks.length(seconds, clips.info(raw)["seconds"])]
         if not found[-1].ok:
@@ -251,7 +358,7 @@ class _Run:
                     [real[len(real) // 2], *_stills(fitted, seconds, JUDGE_STILLS)],
                     checks.JUDGE_PROMPT,
                 )
-                self.spent += omni.LOOK_USD
+                paid.append(omni.LOOK_USD)
                 break
             except omni.OmniError:
                 continue
@@ -314,41 +421,47 @@ class _Run:
         )
         video_uri, fix, why = None, "", ""
         for attempt in (1, 2):
-            if self.spent + omni.estimate_usd(seconds, self.resolution) > self.max_usd:
+            # Booked under the budget's one lock before anything is sent (see Budget).
+            booked = omni.estimate_usd(seconds, self.resolution) + omni.LOOK_USD
+            if not self.budget.book(booked, n if attempt == 1 else None):
                 why = self.limit_why or f"the spend limit for one video (${self.max_usd:.2f}) was reached"
                 self.say(f"backdrop: scene {n}/{total} kept real (spend limit)")
                 break
             raw = self.tmp / f"scene{scene.index:02d}-try{attempt}.mp4"
             began = time.monotonic()
-            self.say(
-                f"backdrop: scene {n}/{total} look {look.id} sent (try {attempt}, {seconds:.1f} s)"
-            )
+            draw, drew = 0.0, False
+            paid: list[float] = []
             try:
-                video_uri = video_uri or self.api.upload(clip, "video/mp4")
-                usage = self.api.edit(
-                    video_uri,
-                    self.refs(look),
-                    looksmod.prompt(look, speaker, fix),
-                    model=self.model,
-                    resolution=self.resolution,
-                    out=raw,
-                )
-            except omni.OmniError as exc:
-                why = str(exc)[:200]
-                entry["attempts"].append({"try": attempt, "cost_usd": 0.0, "error": why})
                 self.say(
-                    f"backdrop: scene {n}/{total} {'retry' if attempt == 1 else 'kept real'} (the model did not answer)"
+                    f"backdrop: scene {n}/{total} look {look.id} sent (try {attempt}, {seconds:.1f} s)"
                 )
-                continue
-            cost = omni.cost_usd(usage) or omni.estimate_usd(seconds, self.resolution)
-            self.spent += cost
-            self.drawn_s += seconds
-            before = self.spent
-            try:
-                found = self.check(clip, raw, fitted, frames, size)
-            except clips.ClipError as exc:
-                found = [checks.Finding("read", False, str(exc)[:160])]
-            cost += self.spent - before  # the look, when it ran
+                try:
+                    video_uri = video_uri or self.api.upload(clip, "video/mp4")
+                    usage = self.api.edit(
+                        video_uri,
+                        self.refs(look),
+                        looksmod.prompt(look, speaker, fix),
+                        model=self.model,
+                        resolution=self.resolution,
+                        out=raw,
+                    )
+                except omni.OmniError as exc:
+                    why = str(exc)[:200]
+                    entry["attempts"].append({"try": attempt, "cost_usd": 0.0, "error": why})
+                    self.say(
+                        f"backdrop: scene {n}/{total} {'retry' if attempt == 1 else 'kept real'} (the model did not answer)"
+                    )
+                    continue
+                draw = omni.cost_usd(usage) or omni.estimate_usd(seconds, self.resolution)
+                drew = True
+                try:
+                    found = self.check(clip, raw, fitted, frames, size, paid)
+                except clips.ClipError as exc:
+                    found = [checks.Finding("read", False, str(exc)[:160])]
+            finally:
+                # Settled even when something broke: what was really spent is never lost.
+                self.budget.settle(booked, draw + sum(paid), seconds if drew else 0.0)
+            cost = draw + sum(paid)  # the look, when it ran
             entry["cost_usd"] = round(entry["cost_usd"] + cost, 4)
             entry["attempts"].append(
                 {
@@ -486,24 +599,36 @@ def run(
         return close(stop)
     state = _Run(cfg, api, say, plan, edit, (int(picture["width"]), int(picture["height"])))
     swaps: list[tuple[int, int, str]] = []
-    nth = 0
+    jobs: list[tuple[scenesmod.Scene, int, int, looksmod.Look, int]] = []
+    for s in todo:
+        jobs.append(
+            (s, spans[s.keeps[0]][0], spans[s.keeps[-1]][1], lookset.get(s.look or ""), len(jobs) + 1)
+        )
+
+    def one(job: tuple[scenesmod.Scene, int, int, looksmod.Look, int]) -> dict[str, Any]:
+        s, a, b, look, nth = job
+        try:
+            return state.scene(s, a, b, look, lookset.speaker, nth, len(todo))
+        except clips.ClipError as exc:
+            return {"look": s.look, "result": "real", "why": str(exc)[:200], "attempts": [], "cost_usd": 0.0}
+        except BaseException:
+            state.budget.close()  # nothing more is booked once a scene broke
+            raise
+        finally:
+            state.budget.passed(nth)
+
+    # 23-Nov (wait-less F12): up to PARALLEL scenes are drawn at once when the app says so
+    # (a config without the number runs one at a time, as before); the budget keeps the three
+    # limits the way one at a time did. The report keeps the plan's order.
+    workers = max(1, min(PARALLEL, int(cfg.get("parallel") or 1)))
     try:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="backdrop") as pool:
+            done = iter(list(pool.map(one, jobs)))
         for s in planned:
             entry = _entry(s)
             if s.swap:
                 a, b = spans[s.keeps[0]][0], spans[s.keeps[-1]][1]
-                look = lookset.get(s.look or "")
-                nth += 1
-                try:
-                    got = state.scene(s, a, b, look, lookset.speaker, nth, len(todo))
-                except clips.ClipError as exc:
-                    got = {
-                        "look": s.look,
-                        "result": "real",
-                        "why": str(exc)[:200],
-                        "attempts": [],
-                        "cost_usd": 0.0,
-                    }
+                got = next(done)
                 clip = got.pop("clip", None)
                 entry.update(got)
                 if clip:

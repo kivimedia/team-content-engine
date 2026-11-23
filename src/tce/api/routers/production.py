@@ -3343,6 +3343,40 @@ async def _qc_render_listens(edited: Path, diagnostic: Path, duration: float, ws
     return stem, mix
 
 
+def _all_at_once(doing: list[str]) -> str:
+    """What she does at once, as one line for the card."""
+    if len(doing) < 2:
+        return doing[0] if doing else "reading the finished video"
+    return f"{', '.join(doing[:-1])} and {doing[-1]}, all at once"
+
+
+async def _qc_together(slow: dict[str, Any], still_reading: Any) -> dict[str, Any]:
+    """23-Nov (wait-less F12): run her slow readings at once and hand back each answer by
+    name. When only her reading of the words is left, the card says so (still_reading).
+    The first one that breaks stops the rest, as it did when they ran one after another."""
+    tasks = {name: asyncio.ensure_future(start()) for name, start in slow.items()}
+    try:
+        others = [t for name, t in tasks.items() if name != "asides"]
+        if others:
+            done, _ = await asyncio.wait(others, return_when=asyncio.FIRST_EXCEPTION)
+            for t in done:
+                if not t.cancelled() and t.exception() is not None:
+                    await t  # raises it; the finally below stops the rest
+        if "asides" in tasks and not tasks["asides"].done():
+            await still_reading()
+        return {name: await t for name, t in tasks.items()}
+    finally:
+        left = [t for t in tasks.values() if not t.done()]
+        for t in left:
+            t.cancel()
+        if left:
+            # Nothing of this check keeps running after it has ended.
+            await asyncio.wait(left, timeout=5)
+        for t in tasks.values():
+            if t.done() and not t.cancelled():
+                t.exception()  # looked at, so a second failure is not logged as lost
+
+
 async def _qc_measure(
     upload_id: uuid.UUID, ws: uuid.UUID, round_no: int, fixed: list[str] | None = None
 ) -> dict[str, dict[str, Any]] | None:
@@ -3392,15 +3426,35 @@ async def _qc_measure(
     caption_words = (sidecar.get("captions") or {}).get("words") or kept
     checks: dict[str, dict[str, Any]] = {}
 
+    # 23-Nov (wait-less F12): the slow readings run at once, not one after another: the
+    # second listen, the loudness, the caption frames, the word marks and her reading of the
+    # words on the subscription. None of them writes this video's row; the card says them all
+    # in one line, and then the one still running when the others are done.
+    slow: dict[str, Any] = {}
+    doing: list[str] = []
+    if kept:
+        slow["listens"] = lambda: _qc_render_listens(edited, listen_to, duration, ws)
+        doing.append(f"listening to it again on this server ({len(kept)} words to hear)")
+    slow["loudness"] = lambda: qc.measure_loudness(str(edited), ff)
+    doing.append("measuring how loud it is")
+    if sidecar.get("render_ref"):
+        slow["frames"] = lambda: qc.sample_caption_frames(edited, sidecar.get("captions"), workspace_language(ws))
+        doing.append("reading caption frames in the delivered video")
+    if kept:
+        slow["marks"] = lambda: word_marks_for(src, words, keep)
+        doing.append("checking that every word is heard whole")
+    if not uncut:
+        slow["asides"] = lambda: _qc_asides(upload_id, ws, kept, context, voices, rules)
+        doing.append("reading the words still in it for talk to the dogs or off the topic, on the subscription")
+    await _qc_step(upload_id, ws, round_no, _all_at_once(doing))
+    got = await _qc_together(slow, lambda: _qc_step(upload_id, ws, round_no, doing[-1]))
+
     # The second witness for two checks: the render transcribed again.
     heard: list[dict[str, Any]] | None = None
     delivered_words = None
     why: str | None = "nothing was cut from this one" if uncut else "this video has no word-by-word transcript"
     if kept:
-        await _qc_step(
-            upload_id, ws, round_no, f"listening to it again on this server ({len(kept)} words to hear)"
-        )
-        (heard, why), (delivered_words, _) = await _qc_render_listens(edited, listen_to, duration, ws)
+        (heard, why), (delivered_words, _) = got["listens"]
 
         # The next note-completion pass can reuse this independent listen only
         # when it checked the published MP4 itself, on the same version.
@@ -3409,7 +3463,6 @@ async def _qc_measure(
             if current.get("render_ref") == sidecar["render_ref"]:
                 _write_render_sidecar(edited, {**current, "delivered_audio_words": delivered_words})
 
-    await _qc_step(upload_id, ws, round_no, "measuring the pauses in the finished video")
     checks["gaps"] = (
         qc.skipped("nothing was cut from this one, so its pauses are his own")
         if uncut
@@ -3419,10 +3472,8 @@ async def _qc_measure(
         )
     )
 
-    await _qc_step(upload_id, ws, round_no, "measuring how loud it is")
-    checks["loudness"] = qc.check_loudness(await qc.measure_loudness(str(edited), ff), duration)
+    checks["loudness"] = qc.check_loudness(got["loudness"], duration)
 
-    await _qc_step(upload_id, ws, round_no, "checking that every word has its caption")
     # What the edit keeps, from the plan (not from the caption data it is checked against).
     expected = (
         [
@@ -3439,8 +3490,7 @@ async def _qc_measure(
     if playback.get("why"):
         checks["captions"]["playback_why"] = playback["why"]
     if sidecar.get("render_ref"):
-        await _qc_step(upload_id, ws, round_no, "reading caption frames in the delivered video")
-        frames = await qc.sample_caption_frames(edited, sidecar.get("captions"), workspace_language(ws))
+        frames = got["frames"]
         checks["captions"]["frames"] = frames
         checks["captions"]["problems"].extend(frames["problems"])
     if playback["problems"]:
@@ -3449,8 +3499,7 @@ async def _qc_measure(
         checks["captions"]["state"] = "fail"
 
     if kept:
-        await _qc_step(upload_id, ws, round_no, "checking that every word is heard whole")
-        marks = await word_marks_for(src, words, keep)
+        marks = got["marks"]
         # The cut list goes to the first check only (30-Oct): there a word at a cut heard as
         # less than was kept gets its cut opened; on the re-check it is the recogniser's.
         checks["audibility"] = qc.check_audibility(
@@ -3462,11 +3511,7 @@ async def _qc_measure(
     if uncut:
         checks["asides"] = qc.skipped("nothing was cut from this one")
     else:
-        await _qc_step(
-            upload_id, ws, round_no,
-            "reading the words still in it for talk to the dogs or off the topic, on the subscription",
-        )
-        checks["asides"] = await _qc_asides(upload_id, ws, kept, context, voices, rules)
+        checks["asides"] = got["asides"]
     second = plan.get("second_listen") or {}
     if not uncut and second.get("restart_flags"):
         checks["retakes"] = relisten.check_restart_flags(second, keep)
@@ -5540,6 +5585,9 @@ async def draft_posts(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool = Fa
 
 async def _draft_posts_said(upload_id: uuid.UUID, ws: uuid.UUID, *, rewrite: bool) -> None:
     """draft_posts in the background, where an error used to vanish with the task."""
+    # 23-Nov (wait-less B10): the edit just ended ready (her check passed, or he let it
+    # through), so its upload copy is made now, beside the posts being written.
+    _spawn(_pre_encode_social(upload_id, ws))
     try:
         await draft_posts(upload_id, ws, rewrite=rewrite)
     except Exception as broke:
@@ -5615,6 +5663,113 @@ async def revise_posts(upload_id: uuid.UUID, ws: uuid.UUID, request: str) -> Non
     await finish(f"Changed as you asked: {request.strip()[:200]}", clean(answer.structured or {}))
 
 
+# 23-Nov (wait-less B10): the upload copy is made in the background right after an edit
+# passes Jennifer's check (_pre_encode_social), as a hidden ".<stem>-social.ready.mp4" beside
+# the edit with a stamp naming the exact edit it was made from (its sha256 and size) and the
+# encode. The tap takes it only while the stamp names the edit on disk now; a copy that is
+# missing, stale, partial or failed is never used, and the tap encodes the old way.
+_social_locks: dict[uuid.UUID, asyncio.Lock] = {}
+
+
+def _social_lock(upload_id: uuid.UUID) -> asyncio.Lock:
+    """One maker of a video's upload copy at a time: a tap during the background encode
+    waits for it instead of encoding the same file twice."""
+    lock = _social_locks.get(upload_id)
+    if lock is None:
+        lock = _social_locks[upload_id] = asyncio.Lock()
+    return lock
+
+
+def _social_ready(edited: Path) -> tuple[Path, Path]:
+    ready = edited.with_name(f".{edited.stem}-social.ready.mp4")
+    return ready, ready.with_name(ready.name + ".json")
+
+
+def _social_print(edited: Path) -> dict[str, Any]:
+    """What names this edit for its upload copy: its bytes, and the encode made of them."""
+    digest = hashlib.sha256()
+    with open(edited, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    encode = " ".join(publishing.social_encode_args(Path("in"), Path("out")))
+    return {"edit_sha256": digest.hexdigest(), "edit_size": size,
+            "encode": hashlib.sha256(encode.encode()).hexdigest()[:16]}
+
+
+def _ready_stamp(edited: Path) -> dict[str, Any] | None:
+    ready, stamp = _social_ready(edited)
+    try:
+        told = json.loads(stamp.read_text(encoding="utf-8"))
+        size = ready.stat().st_size
+    except (OSError, ValueError):
+        return None
+    if not isinstance(told, dict) or not size or told.get("size") != size:
+        return None  # a partial or replaced copy is not the one the stamp names
+    return told
+
+
+async def _take_ready_copy(edited: Path, out: Path) -> bool:
+    """Put the copy made ahead of the tap in place, only when it was made from this very
+    edit. False sends the tap down the old path."""
+    told = _ready_stamp(edited)
+    if told is None:
+        return False
+    if told.get("made_from") != await asyncio.to_thread(_social_print, edited):
+        return False  # made from an earlier edit: never posted for this one
+    ready, stamp = _social_ready(edited)
+    os.replace(ready, out)
+    stamp.unlink(missing_ok=True)
+    return True
+
+
+async def _pre_encode_social(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
+    """The upload copy, made while he is still looking at the edit. Never a stop and never a
+    claim: whatever goes wrong here, his tap makes the copy the old way."""
+    try:
+        if not settings.production_social_preencode or not _posts_from_tce(ws, await _persona(ws)):
+            return  # a client posts by hand: no copy is needed
+        ff = media.ffmpeg_path()
+        async with session_factory()() as s:
+            row = await _load(s, upload_id, ws)
+            edited = Path(row.edited_path) if row.edited_path else None
+            status = row.status
+        if not ff or edited is None or status != "edited" or not edited.exists():
+            return
+        async with _social_lock(upload_id):
+            ready, stamp = _social_ready(edited)
+            made_from = await asyncio.to_thread(_social_print, edited)
+            told = _ready_stamp(edited)
+            if told is not None and told.get("made_from") == made_from:
+                return  # already made from this very edit
+            stamp.unlink(missing_ok=True)  # whatever copy is there is no longer this edit's
+            part = ready.with_name(f"{ready.name}.{os.getpid()}-{uuid.uuid4().hex[:8]}.part.mp4")
+            argv = [ff, *publishing.social_encode_args(edited, part)]
+            nice = shutil.which("nice")
+            proc = await asyncio.create_subprocess_exec(
+                *([nice, "-n", "10", *argv] if nice else argv),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            )
+            _o, err = await proc.communicate()
+            if proc.returncode != 0 or not part.exists():
+                part.unlink(missing_ok=True)
+                _log.warning("social pre-encode for %s did not finish: %s", upload_id,
+                             err.decode(errors="replace")[-200:])
+                return
+            if await asyncio.to_thread(_social_print, edited) != made_from:
+                part.unlink(missing_ok=True)  # the edit changed while it was encoded
+                return
+            os.replace(part, ready)
+            told_part = stamp.with_name(f"{stamp.name}.{uuid.uuid4().hex[:8]}.part")
+            told_part.write_text(json.dumps({
+                "made_from": made_from, "size": ready.stat().st_size,
+                "upload_id": str(upload_id), "at": _utcnow().isoformat(),
+            }), encoding="utf-8")
+            os.replace(told_part, stamp)  # the stamp lands last: until then the copy is not used
+    except Exception:  # noqa: BLE001 - the tap encodes it the old way
+        _log.warning("social pre-encode for %s stopped", upload_id, exc_info=True)
+
+
 async def _social_copy(upload_id: uuid.UUID, ws: uuid.UUID) -> Path:
     """The upload-sized encode every platform gets (made once)."""
     async with session_factory()() as s:
@@ -5623,22 +5778,25 @@ async def _social_copy(upload_id: uuid.UUID, ws: uuid.UUID) -> Path:
     if not edited.exists():
         raise RuntimeError("the edited video is not on the server")
     out = edited.with_name(f"{edited.stem}-social.mp4")
-    if out.exists() and out.stat().st_mtime >= edited.stat().st_mtime:
+    async with _social_lock(upload_id):
+        if await _take_ready_copy(edited, out):
+            return out
+        if out.exists() and out.stat().st_mtime >= edited.stat().st_mtime:
+            return out
+        ff = media.ffmpeg_path()
+        if not ff:
+            raise RuntimeError("ffmpeg is not installed")
+        tmp = out.with_name(f".{out.name}.part.mp4")
+        proc = await asyncio.create_subprocess_exec(
+            ff, *publishing.social_encode_args(edited, tmp),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _o, err = await proc.communicate()
+        if proc.returncode != 0:
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError(f"could not make the upload copy: {err.decode(errors='replace')[-200:]}")
+        os.replace(tmp, out)
         return out
-    ff = media.ffmpeg_path()
-    if not ff:
-        raise RuntimeError("ffmpeg is not installed")
-    tmp = out.with_name(f".{out.name}.part.mp4")
-    proc = await asyncio.create_subprocess_exec(
-        ff, *publishing.social_encode_args(edited, tmp),
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-    )
-    _o, err = await proc.communicate()
-    if proc.returncode != 0:
-        tmp.unlink(missing_ok=True)
-        raise RuntimeError(f"could not make the upload copy: {err.decode(errors='replace')[-200:]}")
-    os.replace(tmp, out)
-    return out
 
 
 def _linkedin_env() -> dict[str, str]:
@@ -5692,16 +5850,31 @@ async def _instagram_permalink(media_id: str) -> str | None:
         return None
 
 
+# 23-Nov (wait-less B10): a platform this process is posting right now is never started a
+# second time: a second run waits until the first lets it go, then reads its row again.
+_posting_now: dict[tuple[uuid.UUID, str], asyncio.Event] = {}
+
+
 async def publish_video(
     upload_id: uuid.UUID, ws: uuid.UUID, platforms: list[str], at: datetime | None
 ) -> None:
-    """Post (or schedule) the edited video on each chosen platform, one at a time."""
+    """Post (or schedule) the edited video on each chosen platform.
+
+    23-Nov (wait-less B10): the platforms go out side by side, no longer one after another.
+    Each keeps its own row and every guard it had: it goes out only while its row still says
+    "posting" and no other post of it is running here, its "... now" line is written before
+    its skill starts (so a restart never posts it blind), and one platform failing or
+    breaking never touches another. The rows are written one at a time, each in its own
+    session, while the uploads themselves run together."""
+    rows = asyncio.Lock()
+
     async def mark(platform: str, **fields: Any) -> None:
-        async with session_factory()() as s:
-            pub = (await _publications(s, ws, upload_id))[platform]
-            for k, v in fields.items():
-                setattr(pub, k, v)
-            await s.commit()
+        async with rows:
+            async with session_factory()() as s:
+                pub = (await _publications(s, ws, upload_id))[platform]
+                for k, v in fields.items():
+                    setattr(pub, k, v)
+                await s.commit()
 
     # Review 5-Oct: the schedule-* skills post to the owner's accounts. A client's post
     # left on "posting" (the restart resume path) never goes out through them.
@@ -5710,6 +5883,40 @@ async def publish_video(
             await mark(platform, status="failed", detail=client_posting_detail(ws))
         return
 
+    # Each platform once. One this process is posting already is waited for, then its row
+    # is read again like every other: only what is still "posting" goes out.
+    wanted = list(dict.fromkeys(platforms))
+    while busy := [_posting_now[(upload_id, p)] for p in wanted if (upload_id, p) in _posting_now]:
+        for held in busy:
+            await held.wait()
+    mine = {p: asyncio.Event() for p in wanted}
+    _posting_now.update({(upload_id, p): done for p, done in mine.items()})
+
+    def let_go(platform: str) -> None:
+        if _posting_now.get((upload_id, platform)) is mine[platform]:
+            del _posting_now[(upload_id, platform)]
+        mine[platform].set()
+
+    try:
+        async with session_factory()() as s:
+            found = await _publications(s, ws, upload_id)
+        live = [p for p in wanted if p in found and found[p].status == "posting"]
+        for platform in wanted:
+            if platform not in live:
+                let_go(platform)  # out already, or stopped: nothing to post
+        if live:
+            await _publish_side_by_side(upload_id, ws, live, at, mark, rows, let_go)
+    finally:
+        for platform in wanted:
+            let_go(platform)
+
+
+async def _publish_side_by_side(
+    upload_id: uuid.UUID, ws: uuid.UUID, platforms: list[str], at: datetime | None,
+    mark: Any, rows: asyncio.Lock, let_go: Any,
+) -> None:
+    """The body of publish_video once its platforms are claimed: the upload copy, then
+    every platform at once."""
     try:
         for platform in platforms:
             await mark(platform, status="posting", detail="Making the upload copy of the video")
@@ -5723,10 +5930,14 @@ async def publish_video(
         f"{_media_token(upload_id)}.mp4"
     )
     at_iso = at.replace(microsecond=0).isoformat() + "Z" if at else None
-    for platform in platforms:
-        async with session_factory()() as s:
-            pub = (await _publications(s, ws, upload_id))[platform]
-            copy, candidate_id = dict(pub.copy or {}), pub.candidate_id
+
+    async def post(platform: str) -> None:
+        async with rows:
+            async with session_factory()() as s:
+                pub = (await _publications(s, ws, upload_id))[platform]
+                if pub.status != "posting":
+                    return  # out already, or stopped meanwhile: never sent twice
+                copy, candidate_id = dict(pub.copy or {}), pub.candidate_id
         argv = publishing.command(platform, copy, media_path=str(social), media_url=media_url, at_iso=at_iso)
         await mark(platform, detail=f"{'Scheduling' if at else 'Posting'} on {publishing.LABELS[platform]} now")
         code, out = await run_platform(platform, argv)
@@ -5734,35 +5945,46 @@ async def publish_video(
         if code == 0 and platform == "linkedin" and not at:
             await mark(platform, status="scheduled", scheduled_for=_utcnow(), external_id=result["row_id"],
                        detail="Queued on LinkedIn: kmboards posts it within about 5 minutes")
-            continue
+            return
         if code != 0 or (not at and not result["post_id"] and platform != "linkedin"):
             tail = " ".join(out.strip().splitlines()[-3:])[-400:]
             await mark(platform, status="failed", detail=f"Did not go out: {tail}")
-            continue
+            return
         if at:
             await mark(platform, status="scheduled", scheduled_for=at, external_id=result["row_id"],
                        detail=f"Scheduled for {at_iso}")
-            continue
+            return
         url = result["url"]
         if platform == "instagram" and result["post_id"]:
             url = await _instagram_permalink(result["post_id"])
         await mark(platform, status="posted", external_id=result["post_id"] or result["row_id"],
                    url=url, posted_at=_utcnow(), detail=None)
         if candidate_id and result["post_id"]:
-            async with session_factory()() as s:
-                s.add(
-                    PublicationReceipt(
-                        workspace_id=ws, candidate_id=candidate_id, platform=platform,
-                        external_post_id=str(result["post_id"])[:300], url=url,
-                        published_at=_utcnow(),
-                        final_text=copy.get("caption") or copy.get("message") or copy.get("description"),
-                        recorded_by="tce-publish",
+            async with rows:
+                async with session_factory()() as s:
+                    s.add(
+                        PublicationReceipt(
+                            workspace_id=ws, candidate_id=candidate_id, platform=platform,
+                            external_post_id=str(result["post_id"])[:300], url=url,
+                            published_at=_utcnow(),
+                            final_text=copy.get("caption") or copy.get("message") or copy.get("description"),
+                            recorded_by="tce-publish",
+                        )
                     )
-                )
-                try:
-                    await s.commit()
-                except Exception:  # noqa: BLE001 - a duplicate receipt is not a failed post
-                    await s.rollback()
+                    try:
+                        await s.commit()
+                    except Exception:  # noqa: BLE001 - a duplicate receipt is not a failed post
+                        await s.rollback()
+
+    async def one(platform: str) -> None:
+        try:
+            await post(platform)
+        except Exception:  # noqa: BLE001 - its row keeps its last line; the restart rule reads it
+            _log.warning("posting %s on %s stopped", upload_id, platform, exc_info=True)
+        finally:
+            let_go(platform)  # a tap after this one may post it again (the route decides)
+
+    await asyncio.gather(*(one(p) for p in platforms))
 
 
 class PublishBody(BaseModel):

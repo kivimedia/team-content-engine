@@ -19,6 +19,8 @@ _DEAD = {
     "TCE_CUTSENSE_API_URL": "http://127.0.0.1:1",
     "TCE_PRODUCTION_SKILLS_DIR": "/nonexistent/tce-test-noskills",
     "TCE_PRODUCTION_LINKEDIN_ENV_FILE": "/nonexistent/tce-test-noskills/li.env",
+    # 23-Nov: the Book's wake of its editor runs KM BOT's fleet mail command on this box.
+    "TCE_BOOK_EDITOR_WAKE": "/nonexistent/tce-test-nowake/kmbot-send.sh",
 }
 for _name, _value in _DEAD.items():
     os.environ.setdefault(_name, _value)
@@ -60,6 +62,9 @@ def jennifer_only_where_asked(monkeypatch):
 
     monkeypatch.setattr(settings, "production_qc", "off")
     monkeypatch.setattr(settings, "production_learn_rules", False)
+    # 23-Nov: the upload copy made ahead of Post is an ffmpeg encode of every finished edit;
+    # tests/unit/test_publish_side_by_side.py switches it on where it is the subject.
+    monkeypatch.setattr(settings, "production_social_preencode", False)
 
 
 @pytest.fixture

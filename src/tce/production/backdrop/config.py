@@ -77,6 +77,8 @@ def for_render(
         "resolution": settings.production_backdrop_resolution,
         "max_usd": float(settings.production_backdrop_max_usd),
         "day_usd": float(settings.production_backdrop_day_usd),
+        # 23-Nov (wait-less F12): how many scenes are drawn at once (1 = one at a time).
+        "parallel": int(settings.production_backdrop_parallel),
         # A different first place for each video, the same one every time it is made again.
         "start_look": int(uuid.UUID(str(upload_id)).hex[:6], 16),
         "ledger": str(Path(settings.production_backdrop_dir) / LEDGER),

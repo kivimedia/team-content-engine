@@ -240,6 +240,9 @@ class Settings(BaseSettings):
     # Dollars: the most one render may spend, and the most all renders may spend in 24 hours.
     production_backdrop_max_usd: float = 8.0
     production_backdrop_day_usd: float = 25.0
+    # 23-Nov (wait-less F12): scenes redrawn at once (at most 3; 1 = one at a time). The
+    # limits above hold the same either way: each try books its cost under one lock first.
+    production_backdrop_parallel: int = 3
     production_backdrop_timeout_s: float = 1800.0
     # 25-Sep: a finished session edits itself and editing requests run themselves,
     # on the subscription worker. Off = the old click-each-step flow.
@@ -269,6 +272,13 @@ class Settings(BaseSettings):
     # 12-Nov-2026 (T-20758): the layouts drawn up for the new chapters before the editor's
     # record carries its own. A layout in the record always wins over this file.
     book_layout_seed: str = "/opt/kmbot-files/doni/book/book2-layouts-v1.json"
+    # 23-Nov (wait-less B10): his write ask, layout note or layout approval wakes the book
+    # editor in KM BOT at once, through KM BOT's own fleet mail command on this box (the
+    # message lands in the agent's inbox; KM BOT starts its turn). Empty = no wake. Taps on
+    # the same chapter and the same word inside book_editor_wake_gap_s send one wake.
+    book_editor_wake: str = "/opt/kmbot/bin/kmbot-send.sh"
+    book_editor_agent: str = "book-editor"
+    book_editor_wake_gap_s: float = 120.0
     # 28-Sep: his dogs. A short line with their name in it is talk to them, not to the
     # viewer, and is cut ("If I call my dogs maple, rain ... that needs to be edited out").
     production_aside_names: str = "Maple,Rain"
@@ -291,6 +301,9 @@ class Settings(BaseSettings):
     # 26-Sep: TCE publishes the edited video through the schedule-* skills on this box.
     production_skills_dir: str = "/home/ziv/skills"
     production_linkedin_env_file: str = "/home/ziv/.kmboards-li.env"
+    # 23-Nov (wait-less B10): the upload copy is made when an edit ends ready, so Post does
+    # not wait for it. Off = it is made on the tap, as before.
+    production_social_preencode: bool = True
     # His own 15-minute booking page (memory: ziv-booking-link).
     tce_booking_url: str = "https://kivimedia.co/15"
     # Where this server answers itself; LinkedIn fetches the video from a URL.
