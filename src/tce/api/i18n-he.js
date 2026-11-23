@@ -736,7 +736,17 @@
       "נשלח, אבל עוד לא הסתיים (השרת לא הצליח לחבר אותו כרגע). מנסים שוב בעוד כמה שניות.",
     "Sending paused (the server could not put it together just now). Trying again in a few seconds; nothing is lost.":
       "השליחה הושהתה (השרת לא הצליח לחבר אותו כרגע). מנסים שוב בעוד כמה שניות; שום דבר לא אבד.",
-    "Next to review": "הבא לבדיקה"
+    "Next to review": "הבא לבדיקה",
+
+    // 23-Nov-2026 (wait-less F11): a typed Book comment goes to the editor's chat, no call (book.js)
+    "The editor is busy with another job. Your comment goes to it the moment that job ends, and the answer shows here.":
+      "העורך עסוק במשימה אחרת. ההערה שלך תגיע אליו ברגע שהמשימה תסתיים, והתשובה תופיע כאן.",
+    "The line to the editor dropped while it was answering. Its answer shows here when it is ready.":
+      "הקשר עם העורך נותק בזמן שענה. התשובה תופיע כאן כשתהיה מוכנה.",
+    "The editor finished without a written reply.": "העורך סיים בלי תשובה כתובה.",
+    "The editor's answer has not come back here yet. It will be in the editor's chat in KM BOT.":
+      "התשובה של העורך עוד לא הגיעה לכאן. היא תופיע בצ'אט של העורך ב-KM BOT.",
+    "The editor could not answer that.": "העורך לא הצליח לענות על זה."
   };
 
   // The weekday letters an Israeli reads in a date ("ביום ה' 8.10"), Sunday first.
@@ -979,7 +989,9 @@
     [/^Opening changed\. Packet version (\d+) is bound to this take set\.$/, "הפתיחה הוחלפה. גרסה $1 מחוברת להקלטה הזאת."],
     // 23-Nov-2026 (wait-less B9): a Book session put together in the background (book.js)
     [/^"([^"]*)" is being put together into its video now\. You can leave this page\.$/,
-      "מחברים עכשיו את \"$1\" לסרטון. אפשר לצאת מהעמוד."]
+      "מחברים עכשיו את \"$1\" לסרטון. אפשר לצאת מהעמוד."],
+    // 23-Nov-2026 (wait-less F11): a typed Book comment KM BOT did not take (book.js)
+    [/^Comment not sent: ([\s\S]*)\. Your draft is saved\.$/, "ההערה לא נשלחה: $1. הטיוטה שלך שמורה."]
   ];
 
   function translate(text) {

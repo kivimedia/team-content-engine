@@ -206,17 +206,30 @@
     if (loading) return loading;
     loading = (async function () {
       var status = 0;
+      var code = null;
       try {
         var probe = await fetch(src, { credentials: "same-origin", cache: "no-cache" });
         status = probe.status;
-      } catch (e) { status = 0; }
+        // 23-Nov-2026 (wait-less F11): the probe's own bytes are the script, so the client is
+        // fetched once, not a second time by the tag.
+        if (status >= 200 && status < 300) code = await probe.text();
+      } catch (e) { status = status || 0; }
       if (status < 200 || status >= 300) return { ok: false, status: status };
+      var blob = "";
+      try {
+        if (code !== null && global.Blob && global.URL && URL.createObjectURL) {
+          blob = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+        }
+      } catch (e) { blob = ""; }
       return await new Promise(function (resolve) {
         var tag = document.createElement("script");
-        tag.src = src;
+        tag.src = blob || src;
         tag.async = true;
-        tag.onload = function () { resolve(global.KmVoice ? { ok: true } : { ok: false, status: 0 }); };
-        tag.onerror = function () { tag.remove(); resolve({ ok: false, status: 0 }); };
+        tag.onload = function () {
+          if (blob) URL.revokeObjectURL(blob);
+          resolve(global.KmVoice ? { ok: true } : { ok: false, status: 0 });
+        };
+        tag.onerror = function () { if (blob) URL.revokeObjectURL(blob); tag.remove(); resolve({ ok: false, status: 0 }); };
         document.head.appendChild(tag);
       });
     })();

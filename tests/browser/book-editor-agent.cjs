@@ -21,9 +21,13 @@ const out=process.env.TCE_SHOT_DIR||fs.mkdtempSync(path.join(os.tmpdir(),'tce-bo
  try{for(const width of [390,1440]){
   const ctx=await browser.newContext({viewport:{width,height:900}}),p=await ctx.newPage();
   p.on('pageerror',e=>errors.push(e.message));
+  const posted=[];
   await p.route('**/*',r=>{
    const u=new URL(r.request().url());if(u.hostname!=='book.invalid')return r.abort();
    if(u.pathname==='/voice-client.js')return r.fulfill({status:503,body:''});
+   // 23-Nov-2026 (wait-less F11): a typed comment with no call goes to the editor's chat, and the answer streams back.
+   if(u.pathname==='/kmbot-api/message'){posted.push(JSON.parse(r.request().postData()||'{}'));return r.fulfill({status:200,contentType:'text/event-stream',
+    body:'event: accepted\ndata: {"agent":"book-editor","request":"ab12"}\n\nevent: ack\ndata: {"text":"Two things first: the bakery layout is ready, and the routine switched itself off."}\n\nevent: result\ndata: {"text":""}\n\nevent: done\ndata: {"code":0}\n\n'});}
    if(u.pathname==='/kmbot-api/history')return r.fulfill({json:{agent:'book-editor',view:'chat',turns}});
    if(u.pathname==='/kmbot-api/tasks')return r.fulfill({json:{tasks}});
    if(u.pathname.includes('/api/v1/')){
@@ -52,13 +56,15 @@ const out=process.env.TCE_SHOT_DIR||fs.mkdtempSync(path.join(os.tmpdir(),'tce-bo
   check(width+' a KM BOT notice is not called the editor',/KM BOT( \(new\))?\s*The "book editor write requests"/.test(log));
   check(width+' unseen replies marked new',await p.locator('#editorLog .chat-line.fresh').count()===2);
   await p.evaluate(()=>{window.sent=[];window.KmVoice={start:({on})=>{window.callOn=on;setTimeout(()=>on('realtime',{}),0);return {send:t=>sent.push(t),stop(){},mute(){}};}};});
-  await p.locator('#editorText').fill('Where are we?');await p.locator('#editorForm button[type=submit]').click();await p.waitForTimeout(200);
-  const first=await p.evaluate(()=>window.sent[0]||'');
-  check(width+' new call asks for the unseen replies first',/2 replies he has not seen/.test(first)&&/Ziv: Where are we\?/.test(first));
-  check(width+' the first line carries what the unseen replies say',/bakery chapter layout is ready/.test(first)&&/switched itself off/.test(first));
-  check(width+' the first line does not carry a reply he saw',!/Tightened chapter 11/.test(first));
-  await p.evaluate(()=>{window.callOn('said',{text:'Where are we?'});window.callOn('turn_end',{text:'Two things first: the bakery layout is ready, and the routine switched itself off.'});});
+  await p.locator('#editorText').fill('Where are we?');await p.locator('#editorForm button[type=submit]').click();await p.waitForTimeout(400);
+  const first=(posted[0]&&posted[0].text)||'';
+  check(width+' a typed comment dials no call',await p.evaluate(()=>window.sent.length===0&&!window.callOn));
+  check(width+' the first comment asks for the unseen replies first',/2 replies he has not seen/.test(first)&&/Ziv: Where are we\?/.test(first));
+  check(width+' the first comment carries what the unseen replies say',/bakery chapter layout is ready/.test(first)&&/switched itself off/.test(first));
+  check(width+' the first comment does not carry a reply he saw',!/Tightened chapter 11/.test(first));
   check(width+' the status line stops waiting once the reply is in',!/Waiting for the reply/.test(await p.locator('#editorState').innerText())&&/Two things first/.test(await p.locator('#editorLog').innerText()));
+  await p.locator('#editorMic').click();await p.waitForTimeout(200);
+  check(width+' the mic dials the call and tells it where he is',/^\[Where I am in the Book\]/.test(await p.evaluate(()=>window.sent[0]||'')));
   await p.screenshot({path:path.join(out,`chat-${width}.png`)});
   const fontOk=await p.evaluate(()=>[...document.querySelectorAll('.agent-card,.agent-catchup p')].every(e=>parseFloat(getComputedStyle(e).fontSize)>=15));
   check(width+' text at 15px or more',fontOk);

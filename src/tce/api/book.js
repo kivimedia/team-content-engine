@@ -898,7 +898,8 @@
     const log = $("editorLog");
     const frag = document.createDocumentFragment();
     for (const x of agentState.history) {
-      for (const [who, text] of [["me", hisRow(x) ? x.message : ""], ["editor", replyOf(x)]]) {
+      // His typed Book comments reach KM BOT with the place line in front (F11): shown without it.
+      for (const [who, text] of [["me", hisRow(x) ? chatShown(x.message) : ""], ["editor", replyOf(x)]]) {
         if (!text || kept.has(clip(text, 200))) continue;
         const p = document.createElement("p");
         p.className = `chat-line ${who} past${who === "editor" && freshAt.has(x.at) ? " fresh" : ""}`;
@@ -934,18 +935,31 @@
       const probe = await fetch(VOICE_SCRIPT, { credentials: "same-origin", cache: "no-cache" }).catch(() => null);
       if (!probe || probe.status === 401 || probe.status === 403) return "signin";
       if (!probe.ok) return "unavailable";
+      // 23-Nov-2026 (wait-less F11): the probe's own bytes are the script, so the client is
+      // fetched once, not a second time by the tag.
+      const code = await probe.text();
+      const blob = window.Blob && URL.createObjectURL ? URL.createObjectURL(new Blob([code], { type: "text/javascript" })) : "";
       await new Promise((resolve, reject) => {
         const tag = document.createElement("script");
-        tag.src = VOICE_SCRIPT;
+        tag.src = blob || VOICE_SCRIPT;
         tag.onload = resolve;
         tag.onerror = () => reject(new Error("the voice client did not load"));
         document.head.appendChild(tag);
-      });
+      }).finally(() => { if (blob) URL.revokeObjectURL(blob); });
       return window.KmVoice ? true : "unavailable";
-    })();
-    const out = await chat.loading.catch(() => "unavailable");
+    })().catch(() => "unavailable");
+    const out = await chat.loading;
     if (out !== true) chat.loading = null;
     return out;
+  }
+
+  /* Once the page is drawn and KM BOT has answered this phone (so its sign-in is here and the
+     probe cannot raise a sign-in box), the voice client is fetched once, behind the page, so a
+     tap on the mic dials at once. */
+  function preloadVoice() {
+    const run = () => { loadVoice().catch(() => {}); };
+    if (window.requestIdleCallback) window.requestIdleCallback(run, { timeout: 3000 });
+    else setTimeout(run, 1200);
   }
 
   function onCall(type, data) {
@@ -1049,6 +1063,8 @@
     // A new call: the top line stops saying the last one ended (T-22863, seen on a live test call).
     if ($("bookState").textContent === CALL_ENDED) top(chat.topBefore || "On a call with the editor");
     chat.topBefore = "";
+    // A new call is told where he is, even when his last typed comment already said it (F11).
+    chat.sentPlace = "";
     // Events from a call this page already let go of (a drop it has redialed) change nothing.
     const gen = ++chat.gen;
     chat.call = window.KmVoice.start({ agent: EDITOR_AGENT, greet: false, startMuted: !chat.micOn,
@@ -1065,10 +1081,162 @@
     return `[Where I am in the Book] ${here.line}${ask ? `\n\n${ask}` : ""}${text ? `\n\nZiv: ${text}` : ""}`;
   }
 
+  /* 23-Nov-2026 (wait-less F11): with no call up, a typed comment no longer dials one. It goes
+     to the editor's own chat in KM BOT (POST /kmbot-api/message, the KM BOT app's own send),
+     with the same [Where I am in the Book] line and the same ask about unseen replies, and the
+     editor's answer streams back into this chat as it comes. A call is dialed only when he taps
+     the mic; a line typed while a call is up still goes on the call, as before. The turn is his
+     in KM BOT's chat (from ziv, origin you), so the next visit paints it from the history. Sent
+     with queue: when the editor is busy with another job the comment waits its own turn there,
+     never folded into that job, and this page watches the history for its answer. */
+  const REPLY_WATCH_MS = 5000;
+  const REPLY_WATCH_FOR_MS = 20 * 60 * 1000;
+  const READY_LINE = "Ready. Type below, or tap the mic and talk.";
+  const QUEUED_LINE = "The editor is busy with another job. Your comment goes to it the moment that job ends, and the answer shows here.";
+  const DROPPED_LINE = "The line to the editor dropped while it was answering. Its answer shows here when it is ready.";
+  const NO_WORDS_LINE = "The editor finished without a written reply.";
+  const LATE_LINE = "The editor's answer has not come back here yet. It will be in the editor's chat in KM BOT.";
+  const plain = (text) => String(text || "").replace(/\s+/g, " ").trim();
+  function newId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    const b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+  const typedDone = () => { if (!callOn()) chatState(READY_LINE); };
+
+  async function readEvents(response, on) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      let cut;
+      while ((cut = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, cut);
+        buffer = buffer.slice(cut + 2);
+        const event = /^event: (.+)$/m.exec(frame);
+        const data = /^data: (.+)$/m.exec(frame);
+        if (!event || !data) continue;
+        let payload = null;
+        try { payload = JSON.parse(data[1]); } catch (_) { continue; }
+        on(event[1].trim(), payload || {});
+      }
+    }
+  }
+
+  /* His comment's answer from KM BOT's history, when it did not come on this page's own stream
+     (it waited its turn, or the line dropped): his row is the one that starts with what was sent. */
+  function watchReply(wire, sentAt, say) {
+    const sent = plain(wire);
+    const until = Date.now() + REPLY_WATCH_FOR_MS;
+    const same = (message) => {
+      const got = plain(message);
+      const n = Math.min(got.length, sent.length, 300);
+      return n > 0 && n >= Math.min(20, sent.length) && got.slice(0, n) === sent.slice(0, n);
+    };
+    const look = async () => {
+      const h = await kmbot(`/history?agent=${EDITOR_AGENT}&view=chat&limit=20`).catch(() => null);
+      const row = ((h && h.turns) || []).find((x) => hisRow(x) && !x.in_flight && replyOf(x).trim()
+        && Date.parse(x.at || 0) >= sentAt - 5 * 60 * 1000 && same(x.message));
+      if (row) {
+        say(replyOf(row));
+        typedDone();
+        return;
+      }
+      if (Date.now() < until) setTimeout(look, REPLY_WATCH_MS);
+      else chatState(LATE_LINE);
+    };
+    setTimeout(look, REPLY_WATCH_MS);
+  }
+
+  async function typedSend(text, here) {
+    const before = Boolean(chat.followUpAsked);
+    const line = withPlace(text, here);
+    const carried = !before && Boolean(chat.followUpAsked);
+    editorPending = { key: here.key, text };
+    chatState("Sending your comment to the editor...");
+    const sentAt = Date.now();
+    const shown = new Set();
+    let taken = false;
+    const say = (reply) => {
+      const s = String(reply || "").trim();
+      if (!s || [...shown].some((x) => x.includes(s))) return;
+      shown.add(s);
+      chatLine("editor", s);
+    };
+    // The box has it: his line is painted and the draft goes, as the call's "said" does.
+    const received = () => {
+      if (taken) return;
+      taken = true;
+      chatLine("me", text);
+      editorPending = null;
+      editorBusy(false);
+      if (readLocal(`tce-book-comment:${here.key}`) === text) saveLocal(`tce-book-comment:${here.key}`, "");
+      if (draftPlace === here.key && $("editorText").value.trim() === text) $("editorText").value = "";
+    };
+    // Not taken: the draft stays, and the next comment says where he is (and asks again).
+    const unsent = (why) => {
+      chat.sentPlace = "";
+      if (carried) chat.followUpAsked = false;
+      editorPending = null;
+      editorBusy(false);
+      chatState(why, true);
+    };
+    let response = null;
+    try {
+      response = await fetch(`${KMBOT_API}/message`, {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent: EDITOR_AGENT, text: line, source_id: newId(), queue: true }),
+      });
+    } catch (_) { unsent("Comment not sent: no connection to KM BOT. Your draft is saved."); return; }
+    if (response.status === 401 || response.status === 403) {
+      unsent("Sign in to KM BOT on this phone once, then come back and tap the icon again.");
+      $("editorSignin").hidden = false;
+      return;
+    }
+    if (!response.ok) {
+      const refused = await response.json().catch(() => null);
+      unsent(`Comment not sent: ${(refused && refused.error) || `KM BOT answered ${response.status}`}. Your draft is saved.`);
+      return;
+    }
+    if (!(response.headers.get("content-type") || "").includes("text/event-stream")) {
+      const j = (await response.json().catch(() => null)) || {};
+      if (j.owner_open_answer && j.owner_open_answer.text) { received(); say(j.owner_open_answer.text); typedDone(); return; }
+      if (j.queued || j.steered || j.captured) { received(); chatState(QUEUED_LINE); watchReply(line, sentAt, say); return; }
+      unsent(`Comment not sent: ${j.error || j.note || "KM BOT did not take it"}. Your draft is saved.`);
+      return;
+    }
+    // A stream is answered only once KM BOT has written the message down.
+    received();
+    chatState("Comment received by the editor. Waiting for the reply.");
+    let ended = false;
+    let replied = false;
+    try {
+      await readEvents(response, (event, data) => {
+        if (event === "first" && data.text) { replied = true; say(data.text); }
+        else if (event === "step" && data.text && !ended) chatState(data.text);
+        else if (event === "ack" && data.text) { replied = true; say(data.text); }
+        else if (event === "result") {
+          ended = true;
+          if (data.text) { replied = true; say(data.text); }
+          if (replied || data.first_is_reply) typedDone(); else chatState(NO_WORDS_LINE);
+        } else if (event === "error") { ended = true; chatState(data.text || "The editor could not answer that.", true); }
+        else if (event === "done" && !ended) { ended = true; if (replied) typedDone(); else chatState(NO_WORDS_LINE); }
+      });
+    } catch (_) { /* the line dropped: below */ }
+    if (!ended) { chatState(DROPPED_LINE); watchReply(line, sentAt, say); }
+  }
+
   async function chatSend(text) {
     const here = place();
     saveLocal(`tce-book-comment:${here.key}`, text);
     editorBusy(true);
+    if (!callOn()) { await typedSend(text, here); return; }
     try {
       if (!(await ensureCall())) { editorBusy(false); return; }
       const line = withPlace(text, here);
@@ -1668,9 +1836,18 @@
   window.addEventListener("pageshow", backToBook);
   $("filmButton").hidden = !supportedMime;
 
+  // 23-Nov-2026 (wait-less F11): KM BOT's side (the editor's chat and its list) is read while the
+  // Book opens, not after it. /tasks filters by status only, so the editor's own cards are still
+  // picked out here (loadAgent).
+  const agentRead = loadAgent().catch(() => false);
   go(n_from_path(), false).then(() => {
     restoreChat();
-    loadAgent().then((ok) => { if (ok && chat.open) paintHistory(); }).catch(() => {});
+    agentRead.then((ok) => {
+      if (!ok) return;
+      drawAgent();
+      if (chat.open) paintHistory();
+      preloadVoice();
+    }).catch(() => {});
     // A session from an earlier visit that never finished sending is finished now.
     allPieces().then((left) => allTakes().then(async (takes) => {
       // 10-Nov (T-19955): a take from an earlier visit that never got Send or Archive is

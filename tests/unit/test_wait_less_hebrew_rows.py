@@ -49,3 +49,30 @@ def test_each_line_has_its_hebrew_row():
     for line, hebrew in zip(LINES, got, strict=True):
         assert hebrew and hebrew != line and any("֐" <= ch <= "׿" for ch in hebrew), line
     assert '"Book session on Episode 16, 23 Nov"' in got[-1]
+
+
+# 23-Nov-2026 (wait-less F11): what the Book's chat says about a typed comment with no call.
+TYPED_LINES = [
+    "The editor is busy with another job. Your comment goes to it the moment that job ends, and the answer shows here.",
+    "The line to the editor dropped while it was answering. Its answer shows here when it is ready.",
+    "The editor finished without a written reply.",
+    "The editor's answer has not come back here yet. It will be in the editor's chat in KM BOT.",
+    "The editor could not answer that.",
+    "Comment not sent: no connection to KM BOT. Your draft is saved.",
+]
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_the_typed_comment_lines_are_the_books_and_have_their_hebrew_rows():
+    book = (API / "book.js").read_text(encoding="utf-8")
+    for line in TYPED_LINES[:5]:
+        assert line in book, line
+    assert "Comment not sent: no connection to KM BOT. Your draft is saved." in book
+    path = json.dumps(str(API / "i18n-he.js"))
+    got = json.loads(subprocess.run(
+        [NODE, "-e", f"const t = require({path}).translate; process.stdout.write(JSON.stringify("
+                     f"{json.dumps(TYPED_LINES)}.map((x) => t(x))));"],
+        check=True, capture_output=True, text=True, timeout=30).stdout)
+    for line, hebrew in zip(TYPED_LINES, got, strict=True):
+        assert hebrew and hebrew != line and any("֐" <= ch <= "׿" for ch in hebrew), line
+    assert "KM BOT" in got[-1]
