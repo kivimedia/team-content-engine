@@ -84,6 +84,9 @@
   var SPEAKING_QUIET_MS = 1500; // no new words from the editor for this long: it has stopped talking
   var POLL_FAST_MS = 2000;     // while a note waits for its words or the editor's reading
   var POLL_SLOW_MS = 30000;    // otherwise: the sheet's heartbeat (a sitting is "active" for 120 s)
+  // 23-Nov (F13): after a change, a press or his words, the next read is 1 s away, then
+  // 2 s, 4 s and on, never past the two above (busy 2 s, idle 30 s, as before).
+  var POLL_FIRST_MS = 1000;
   var AWAIT_MS = 120000;       // the seat brain's own turn cap: past it, "not confirmed yet"
   var NOTICE_MS = 7000;        // how long a one-off sentence stays before the status returns
   var WAITING = ["listening", "held"];
@@ -125,6 +128,24 @@
 
   // The sitting's own sentence: the batch's live step, how it ended, or why it was handed back.
   function statusOf(payload) { return norm(payload && payload.result && payload.result.status); }
+
+  // 23-Nov (F13): the wait before the next read of the sitting: 1 s after a change, then
+  // twice as long each read, never past the ceiling (2 s busy or 30 s idle, as before).
+  function pollDelay(step, ceiling) {
+    return Math.min(ceiling, POLL_FIRST_MS * Math.pow(2, Math.max(0, step)));
+  }
+
+  // What a read of the sitting says, to tell a change: all of it but the heartbeat stamp,
+  // which moves on every read, and a render's progress line, which moves every second of
+  // a render (it is still drawn at each beat; it just does not hold the poll at 1 s).
+  function readKey(payload) {
+    if (!payload) return "";
+    var copy = {};
+    Object.keys(payload).forEach(function (k) {
+      if (k !== "last_seen" && k !== "video_step") copy[k] = payload[k];
+    });
+    return JSON.stringify(copy);
+  }
 
   /* An error the voice client reports, as a sentence for him. Live's own errors come
      as "Voice error: {json}", which is not a sentence: it goes to the console. */
@@ -358,6 +379,10 @@
     var notice = null;       // {text, until}
     var noticeTimer = null;
     var pollTimer = null;
+    // Reads since the last change: the back-off (F13). Opening the sheet is not news, so it
+    // starts fully backed off: the old beat until a change, a press or his words.
+    var pollStep = Infinity;
+    var pollSeen = readKey(start);
     var epoch = 0;           // bumped when the sitting is reopened on a new edit
     var wakeLock = null;
     var shownStatus = "";    // the sitting's own sentence, last said as a notice
@@ -579,7 +604,11 @@
       try {
         var payload = await api("/production/talk/" + sitting.id);
         // A read sent before the sitting was reopened on a new edit would move it back.
-        if (asked === epoch) take(payload);
+        if (asked === epoch) {
+          var key = readKey(payload);
+          if (key !== pollSeen) { pollSeen = key; pollStep = 0; }
+          take(payload);
+        }
       } catch (error) { /* the next beat tries again */ }
       schedule();
     }
@@ -591,12 +620,16 @@
          or the batch. A pin with no words that nothing listens for (an earlier visit's)
          is not waited on (1-Oct final review: it kept the 2 s poll going for good). */
       var waiting = Object.keys(awaited).length || hold || settling || WORKING.indexOf(sitting.state) >= 0;
-      pollTimer = setTimeout(refresh, waiting ? POLL_FAST_MS : POLL_SLOW_MS);
+      // 23-Nov (F13): 1 s, 2 s, 4 s... while nothing changes, never slower than before.
+      // A press and his words start it again at refreshSoon; a change, at refresh.
+      pollTimer = setTimeout(refresh, pollDelay(pollStep, waiting ? POLL_FAST_MS : POLL_SLOW_MS));
+      pollStep += 1;
     }
 
     function refreshSoon() {
       if (gone()) return;
       clearTimeout(pollTimer);
+      pollStep = 0;   // something just happened: a pin, his words, the editor's turn
       pollTimer = setTimeout(refresh, 250);
     }
 

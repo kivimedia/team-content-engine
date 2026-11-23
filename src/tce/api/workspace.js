@@ -1043,13 +1043,21 @@
 
   // ------------------------------------------------------------- Topic room
 
+  /* 23-Nov (F13): the topic and what the voice call changed on it are read at the same
+     time, not one after the other. Each keeps its own answer to a failure, as before: a
+     topic that cannot be read is the page's error at once (the voice read is not waited
+     for), and voice activity that cannot be read is an empty panel (voiceActivity). The
+     page is drawn once, when both are in, exactly as it was. */
   async function readRoom(candidateId) {
-    var data = await api("/editorial/topics/" + encodeURIComponent(candidateId) + "/room");
-    var voiceItems = (await voiceActivity()).filter(function (item) {
+    var both = await Promise.all([
+      api("/editorial/topics/" + encodeURIComponent(candidateId) + "/room"),
+      voiceActivity()
+    ]);
+    var data = both[0];
+    state.room = data;
+    state.roomVoice = both[1].filter(function (item) {
       return item.candidate_id === data.candidate_id;
     });
-    state.room = data;
-    state.roomVoice = voiceItems;
   }
 
   async function renderRoom(candidateId) {
@@ -1617,34 +1625,50 @@
     body.scrollTop = body.scrollHeight;
   }
 
+  /* 23-Nov (F13): the reply is looked for 1 s after he sends, then 2 s, then every 4 s
+     (what it always was), and again 1 s after anything in the thread changes. While a
+     reply is being written it never waits longer than 4 s; it stops when the reply
+     lands, or after five minutes, as before. */
+  var TALK_POLL_MS = [1000, 2000, 4000];
+
   function startTalkPoll() {
     if (state.talkTimer) clearInterval(state.talkTimer);
     var started = Date.now();
-    state.talkTimer = setInterval(async function () {
-      if (!state.thread || $("talkSheet").hidden) {
-        clearInterval(state.talkTimer); state.talkTimer = null; return;
-      }
+    var token = state.talkPoll = {};   // a newer start (another send) replaces this one
+    var step = 0;
+    var seen = JSON.stringify(state.thread);
+    function next() {
+      state.talkTimer = setTimeout(beat, TALK_POLL_MS[Math.min(step, TALK_POLL_MS.length - 1)]);
+      step += 1;
+    }
+    async function beat() {
+      if (state.talkPoll !== token) return;
+      if (!state.thread || $("talkSheet").hidden) { state.talkTimer = null; return; }
       try {
         var fresh = await api("/editorial/threads/" + state.thread.thread_id);
+        if (state.talkPoll !== token || !state.thread) return;
         var wasPending = state.thread.pending;
         state.thread = fresh;
         renderTalk();
+        var now = JSON.stringify(fresh);
+        if (now !== seen) { seen = now; step = 0; }
         if (!fresh.pending) {
-          clearInterval(state.talkTimer); state.talkTimer = null;
+          state.talkTimer = null;
           if (wasPending) {
             var last = (fresh.messages || []).filter(function (m) {
               return m.role === "assistant" && m.status === "complete";
             }).pop();
             if (last) speak(last.text);
           }
+          return;
         }
       } catch (error) { /* a dropped poll is not worth a toast; the next one retries */ }
       // Five minutes is well past the worker's usual minute. Stop guessing and
       // let the row say what it says.
-      if (Date.now() - started > 300000) {
-        clearInterval(state.talkTimer); state.talkTimer = null;
-      }
-    }, 4000);
+      if (Date.now() - started > 300000) { state.talkTimer = null; return; }
+      next();
+    }
+    next();
   }
 
   async function sendTalk() {
@@ -2023,7 +2047,9 @@
 
   /* 18-Oct (T-13905). "Unedited": recorded, no edit yet and not set aside. "Unreviewed":
      the edit exists but none of its posts has gone out or been scheduled, so he has not
-     been through it. There is no per-video review flag; this is the honest stand-in. */
+     been through it. There is no per-video review flag; this is the honest stand-in.
+     TCE counts the same way (library.library_counts, COUNT_KINDS). */
+  var COUNT_KINDS = ["editing", "unedited", "unreviewed"];
   function countMatch(kind, i) {
     if (!kind) return true;
     if (i.archived) return false;
@@ -2036,6 +2062,12 @@
     });
   }
   async function libraryCounts(data) {
+    // 23-Nov (F13): TCE counts them in the same read. A TCE from before that sends no
+    // counts, and the page counts them itself from a second read, as it did.
+    var said = data.counts;
+    if (said && COUNT_KINDS.every(function (k) { return typeof said[k] === "number"; })) {
+      return { editing: said.editing, unedited: said.unedited, unreviewed: said.unreviewed };
+    }
     var pool = data.items || [];
     if (data.filter !== "todo" && data.filter !== "all") {
       try { pool = (await api("/production/library?filter=todo")).items || []; } catch (e) { pool = []; }

@@ -515,6 +515,7 @@ async def list_library(
             "filters": [{"key": k, "label": FILTER_LABELS[k]} for k in LIBRARY_FILTERS],
             "items": [],
             "total": 0,
+            "counts": dict.fromkeys(COUNT_KINDS, 0),
             **await _post_by_hand(db, ws),
         }
 
@@ -617,6 +618,14 @@ async def list_library(
     # "I need a way to find the edited video" (25-Sep): a replaced take is kept on
     # the server for history, never shown, and an edit sits above the raw takes.
     uploads = [u for u in uploads if u.status != "superseded"]
+    # 23-Nov (F13): the three numbers over the cards come in this same read, so the page
+    # needs no second one. Counted over the page's own pool (workspace.js libraryCounts):
+    # this list for Still to do and Everything, Still to do for every other filter.
+    pool = [
+        u for u in uploads
+        if u.archived_at is None and (filter_key == "all" or not is_published(u))
+    ]
+    counts = library_counts(pool, pubs_by_upload)
     # 27-Sep: archived recordings live only under the Archived filter.
     if filter_key == "archived":
         uploads = [u for u in uploads if u.archived_at is not None]
@@ -717,8 +726,33 @@ async def list_library(
         "filters": [{"key": k, "label": FILTER_LABELS[k]} for k in LIBRARY_FILTERS],
         "items": items,
         "total": len(items),
+        "counts": counts,
         **await _post_by_hand(db, ws),
     }
+
+
+# 18-Oct (T-13905): the three tiles over the Library's cards. The rules are the page's
+# countMatch, word for word: never an archived video; "editing" and "unedited" have no
+# edit yet, and are or are not being edited now; "unreviewed" has an edit and no post
+# out, scheduled or posting.
+COUNT_KINDS = ("editing", "unedited", "unreviewed")
+_REVIEWED = ("posted", "scheduled", "posting")
+
+
+def library_counts(
+    uploads: list[RecordingUpload], pubs_by_upload: dict[uuid.UUID, dict[str, VideoPublication]]
+) -> dict[str, int]:
+    counts = dict.fromkeys(COUNT_KINDS, 0)
+    for upload in uploads:
+        if upload.archived_at is not None:
+            continue
+        if not upload.edited_path:
+            counts["editing" if upload.status in _LIVE_STATUSES else "unedited"] += 1
+            continue
+        posts = _publishing_json(pubs_by_upload.get(upload.id, {}))
+        if not any(p["status"] in _REVIEWED for p in posts):
+            counts["unreviewed"] += 1
+    return counts
 
 
 async def _post_by_hand(db: AsyncSession, ws: uuid.UUID) -> dict[str, Any]:
