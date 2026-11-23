@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -320,3 +321,80 @@ async def test_a_job_leased_as_its_client_goes_away_is_rolled_back(rig, monkeypa
     plain = await rig.post(LEASE, json={"worker_id": "next"}, headers=AUTH)
     assert plain.json()["job"]["id"] == str(job.id)
     assert plain.json()["job"]["attempt_count"] == 1
+
+
+# --- a held lease is first granted a short term (review, 23-Nov-2026) -------------------
+#
+# A held request may be answered into a connection nobody reads (a PC asleep, a link
+# dropped without a close): the watcher only sees a clean close. The job it leased is
+# free again after a short first lease, not after the full term; the worker's confirm
+# heartbeat extends it to the full term.
+
+
+async def lease_term(client, job_id) -> tuple[float, int]:
+    async with client.maker() as s:
+        row = await queue.get_job(s, job_id)
+        return (row.leased_until - row.heartbeat_at).total_seconds(), row.attempt_count
+
+
+async def test_a_job_handed_to_a_client_that_never_reads_is_free_again_after_the_short_lease(rig):
+    never = asyncio.Event()  # the client neither reads nor closes
+    task = asyncio.create_task(
+        _drive(rig.app, {"worker_id": "asleep", "wait_seconds": 20, "lease_seconds": 600}, None, never)
+    )
+    await held_count_reaches(1)
+    job = await enqueue(rig)
+    sent = await asyncio.wait_for(task, timeout=5)
+    assert any(m.get("type") == "http.response.body" for m in sent), "answered into the void"
+    term, attempts = await lease_term(rig, job.id)
+    assert term == getattr(llm_jobs, "HELD_FIRST_LEASE_S", -1), f"first lease was {term}s"
+    assert attempts == 1
+    async with rig.maker() as s:
+        row = await queue.get_job(s, job.id)
+        leased_at = row.heartbeat_at
+    async with rig.maker() as s:
+        early = await queue.lease_job(s, "awake", 600, now=leased_at + timedelta(seconds=44))
+        await s.commit()
+        assert early is None
+    async with rig.maker() as s:
+        late = await queue.lease_job(s, "awake", 600, now=leased_at + timedelta(seconds=46))
+        await s.commit()
+        assert late is not None and late.id == job.id
+        assert late.attempt_count == 2, "the lost answer costs one attempt, as it does today"
+
+
+async def test_the_confirm_heartbeat_extends_a_short_lease_to_the_full_term(rig):
+    job = await enqueue(rig)
+    got = await rig.post(
+        LEASE, json={"worker_id": "w1", "wait_seconds": 5, "lease_seconds": 600}, headers=AUTH
+    )
+    leased = got.json()["job"]
+    term, _ = await lease_term(rig, job.id)
+    assert term == getattr(llm_jobs, "HELD_FIRST_LEASE_S", -1)
+    beat = await rig.post(
+        f"/api/v1/llm-jobs/{job.id}/heartbeat",
+        json={"attempt_id": leased["attempt_id"], "lease_seconds": 600},
+        headers=AUTH,
+    )
+    assert beat.status_code == 200
+    term, attempts = await lease_term(rig, job.id)
+    assert term == 600 and attempts == 1
+
+
+@pytest.mark.parametrize("asked", [600, None, 30])
+async def test_a_plain_lease_is_still_the_full_term(rig, asked):
+    job = await enqueue(rig)
+    body = {"worker_id": "old-worker"}
+    if asked is not None:
+        body["lease_seconds"] = asked
+    got = await rig.post(LEASE, json=body, headers=AUTH)
+    assert got.json()["job"]["id"] == str(job.id)
+    term, _ = await lease_term(rig, job.id)
+    assert term == (asked or settings.llm_job_lease_seconds)
+
+
+async def test_a_held_lease_never_lengthens_a_shorter_term_it_asked_for(rig):
+    job = await enqueue(rig)
+    await rig.post(LEASE, json={"worker_id": "w1", "wait_seconds": 5, "lease_seconds": 30}, headers=AUTH)
+    term, _ = await lease_term(rig, job.id)
+    assert term == 30

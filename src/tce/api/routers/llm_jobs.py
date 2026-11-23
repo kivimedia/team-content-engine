@@ -45,6 +45,12 @@ LEASE_LOOK_AGAIN_S = 1.5
 # Each worker process holds at most one request (the PC runs three). Beyond this
 # many held at once, a request is answered at once, as before.
 MAX_HELD_LEASES = 8
+# A held request can be answered into a connection nobody reads (a PC asleep, a link
+# dropped without a close). So a job leased by a request that asked to wait is first
+# leased only this long; the worker confirms it at once with a heartbeat, which
+# extends it to the full term. Unconfirmed, the job is free again in under a minute
+# instead of after the whole lease. A request without wait_seconds is not affected.
+HELD_FIRST_LEASE_S = 45
 
 
 class LeaseBody(BaseModel):
@@ -201,11 +207,13 @@ async def _lease_or_hold(
     Each look is ``queue.lease_job`` in its own short transaction, so every lease
     rule applies to every look, and no connection or transaction is held across
     the wait. A job leased in the moment its client went away is rolled back: it
-    stays exactly as it was for the next worker.
+    stays exactly as it was for the next worker. Whatever this leases gets the short
+    first lease (HELD_FIRST_LEASE_S) until the worker's heartbeat confirms it.
     """
+    lease_seconds = min(lease_seconds, HELD_FIRST_LEASE_S)
     waiter = queue.add_lease_waiter(MAX_HELD_LEASES)
     if waiter is None:
-        # Enough requests are held already: answered at once, as before.
+        # Enough requests are held already: answered at once, short lease included.
         return await queue.lease_job(db, worker_id, lease_seconds)
     gone = asyncio.Event()
     watcher = asyncio.create_task(_watch_disconnect(request, gone, waiter))

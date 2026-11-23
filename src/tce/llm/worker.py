@@ -76,6 +76,13 @@ PREFLIGHT_REFRESH_POLL_S = 2.0
 LEASE_WAIT_S = 25.0
 # The read timeout of a held lease: longer than the hold, so it never cuts one short.
 LEASE_WAIT_TIMEOUT_MARGIN_S = 15.0
+# The server first leases a job from a held lease for 45 s only (a held answer can go
+# into a connection nobody reads). The worker confirms it at once with a heartbeat that
+# extends it to the full lease. A confirm that fails is tried again while the job
+# runs: five tries, the last one starting by 32 s even if every try hangs for its
+# whole timeout, so one lost request never costs a running job its lease.
+LEASE_CONFIRM_TIMEOUT_S = 6.0
+LEASE_CONFIRM_RETRY_WAITS_S = (2.0, 2.0, 2.0, 2.0)
 
 DEFAULT_ALLOWED_AUTH = frozenset({"claude.ai"})
 OPTIONAL_AUTH = frozenset({"oauth_token"})
@@ -526,7 +533,9 @@ class ApiClient:
         self._key = service_key
         self.timeout = timeout
 
-    def post(self, path: str, body: dict[str, Any]) -> tuple[int, Any]:
+    def post(
+        self, path: str, body: dict[str, Any], *, timeout: float | None = None
+    ) -> tuple[int, Any]:
         data = json.dumps(body, default=str).encode("utf-8")
         req = urllib.request.Request(
             f"{self.api_base}/api/v1/llm-jobs{path}",
@@ -534,7 +543,7 @@ class ApiClient:
             method="POST",
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._key}"},
         )
-        timeout = self.timeout
+        timeout = self.timeout if timeout is None else timeout
         wait = body.get("wait_seconds") if isinstance(body, dict) else None
         if wait:
             timeout = max(timeout, float(wait) + LEASE_WAIT_TIMEOUT_MARGIN_S)
@@ -720,6 +729,43 @@ class Worker:
         left = PREFLIGHT_CACHE_S - (time.monotonic() - kept_at) - 1.0
         wait = min(self.lease_wait_s, left)
         return wait if wait >= 1.0 else 0.0
+
+    def confirm_lease(self, job: dict[str, Any]) -> int:
+        """One heartbeat that extends a held lease's short first term to the full lease.
+
+        Returns the HTTP status (0: transport). A server without the short term just
+        renews the lease it gave, so the extra heartbeat changes nothing there.
+        """
+        try:
+            status, _ = self.api.post(
+                f"/{job['id']}/heartbeat",
+                {"attempt_id": str(job["attempt_id"]), "lease_seconds": self.lease_seconds},
+                timeout=LEASE_CONFIRM_TIMEOUT_S,
+            )
+        except Exception as exc:
+            self.log(f"lease confirm failed: {type(exc).__name__}")
+            return 0
+        return status
+
+    def confirm_lease_again(self, job: dict[str, Any], stop: threading.Event) -> threading.Thread:
+        """Try a failed confirm again in the background while the job starts, until one
+        lands, the lease is reported lost (409, as on any heartbeat) or ``stop`` is set."""
+
+        def retry() -> None:
+            for wait in LEASE_CONFIRM_RETRY_WAITS_S:
+                if stop.wait(wait):
+                    return
+                status = self.confirm_lease(job)
+                if status == 200:
+                    return
+                if status == 409:
+                    self.log(f"job {job['id']}: lease lost (409 on heartbeat)")
+                    return
+            self.log(f"job {job['id']}: lease confirm did not land; the short lease may lapse")
+
+        thread = threading.Thread(target=retry, name=f"confirm-{job['id'][:8]}", daemon=True)
+        thread.start()
+        return thread
 
     def execute(self, job: dict[str, Any], preflight: Preflight) -> JobOutcome:
         attempt_id = str(job["attempt_id"])
@@ -999,11 +1045,24 @@ class Worker:
                         held_s = time.monotonic() - asked_at
                     break
                 leased_any = True
+                stop_confirm = threading.Event()
+                if wait_s:
+                    # A held lease is first granted a short term: confirm it now, before
+                    # the job starts, so it runs on the full lease. A 409 means the lease
+                    # is already lost, as on any heartbeat, so the job is not run; any
+                    # other failure is tried again in the background while it starts.
+                    confirmed = self.confirm_lease(job)
+                    if confirmed == 409:
+                        self.log(f"job {job['id']}: lease lost before it started (409 on confirm)")
+                        continue
+                    if confirmed != 200:
+                        self.confirm_lease_again(job, stop_confirm)
                 # Normally the kept result, at once. If the background check found the
                 # sign-in bad while the lease was held, or the kept result is too old,
                 # this checks again as before, and the job never starts on a bad one.
                 pf = self.check()
                 if not pf.ok:
+                    stop_confirm.set()
                     self.log(f"preflight failed: {pf.reason}; job {job['id']} handed back")
                     self.submit(
                         job["id"],
@@ -1023,6 +1082,7 @@ class Worker:
                 self._busy = True
                 with self.heartbeat(pf, job["id"]):
                     outcome = self.execute(job, pf)
+                stop_confirm.set()
                 outbox_path = self.persist_outcome(job["id"], outcome)
                 code, _ = self.submit(job["id"], outcome)
                 self.finish_outbox_delivery(outbox_path, code)

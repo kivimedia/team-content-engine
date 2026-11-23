@@ -58,14 +58,20 @@ class Runner:
 class LeaseApi:
     """Answers /lease from a script; each entry is (status, body, seconds the server held)."""
 
-    def __init__(self, clock: Clock, script: list) -> None:
+    def __init__(self, clock: Clock, script: list, heartbeats: list[int] | None = None) -> None:
         self.clock = clock
         self.script = list(script)
         self.posts: list[tuple[str, dict]] = []
         self.leases: list[dict] = []
+        self.heartbeat_answers = list(heartbeats or [])  # then 200
+        self.heartbeats: list[tuple[str, dict, dict, int]] = []
 
-    def post(self, path, body):
+    def post(self, path, body, **kw):
         self.posts.append((path, body))
+        if path.endswith("/heartbeat"):
+            status = self.heartbeat_answers.pop(0) if self.heartbeat_answers else 200
+            self.heartbeats.append((path, dict(body), kw, status))
+            return status, ({"leased_until": "later"} if status == 200 else {})
         if path != "/lease":
             return 200, {"status": "ok"}
         self.leases.append(dict(body))
@@ -319,3 +325,66 @@ def test_a_late_background_result_never_replaces_a_newer_check(monkeypatch):
     newer = worker.preflight
     worker._keep_preflight(w.Preflight(False, "an older check, finished late"), clock.now - 5)
     assert worker.preflight is newer and worker.check() is newer
+
+
+# --- the confirm of a held lease (review, 23-Nov-2026) ----------------------------------
+#
+# A held lease is first granted only a short term by the server, so a job handed to a
+# connection nobody reads is free again in under a minute. The worker confirms it at
+# once with a heartbeat that extends it to the full lease.
+
+
+def heartbeat_paths(api: LeaseApi) -> list[str]:
+    return [path for path, _body, _kw, _status in api.heartbeats]
+
+
+def test_a_job_from_a_held_lease_is_confirmed_once_and_a_plain_one_never(monkeypatch):
+    clock = Clock(monkeypatch)
+    api = LeaseApi(clock, [(200, {"job": job_n(1)}, 3.0), (200, {"job": job_n(2)}, 0.0)])
+    worker = make_worker(api, Runner())
+    assert worker.run(max_jobs=2, poll_seconds=10.0) == w.EXIT_OK
+    assert "wait_seconds" in api.leases[0] and "wait_seconds" not in api.leases[1]
+    assert heartbeat_paths(api) == [f"/{job_n(1)['id']}/heartbeat"]
+    _path, body, _kw, _status = api.heartbeats[0]
+    assert body == {"attempt_id": job_n(1)["attempt_id"], "lease_seconds": 600}
+    first_run = [i for i, (p, _) in enumerate(api.posts) if p == f"/{job_n(1)['id']}/complete"][0]
+    confirm = api.posts.index((f"/{job_n(1)['id']}/heartbeat", body))
+    assert confirm < first_run, "the confirm goes out before the job's result"
+
+
+def test_a_lost_confirm_is_tried_again_and_the_running_job_keeps_its_lease(monkeypatch):
+    clock = Clock(monkeypatch)
+    monkeypatch.setattr(w, "LEASE_CONFIRM_RETRY_WAITS_S", (0.05, 0.05, 0.05, 0.05), raising=False)
+    api = LeaseApi(clock, [(200, {"job": job_n(1)}, 1.0)], heartbeats=[0, 502])
+    popen = FakePopen(slow_job_proc(clock, before=5, after=5))
+    worker = make_worker(api, Runner(), popen=popen)
+    assert worker.run(max_jobs=1, poll_seconds=10.0) == w.EXIT_OK
+    statuses = [status for _p, _b, _kw, status in api.heartbeats]
+    assert statuses == [0, 502, 200], "tried again until one landed, then back to the slow beat"
+    assert all(kw.get("timeout") == w.LEASE_CONFIRM_TIMEOUT_S for _p, _b, kw, _s in api.heartbeats)
+    assert len(popen.calls) == 1, "the job started while the confirm was tried again"
+    assert [p for p, _ in api.posts].count(f"/{job_n(1)['id']}/complete") == 1
+
+
+def test_a_409_on_the_confirm_means_the_lease_is_lost_and_the_job_never_runs(monkeypatch):
+    clock = Clock(monkeypatch)
+    api = LeaseApi(
+        clock, [(200, {"job": job_n(1)}, 30.0), (200, {"job": job_n(2)}, 0.0)], heartbeats=[409]
+    )
+    popen = FakePopen(FakeProc(stream()))
+    worker = make_worker(api, Runner(), popen=popen)
+    assert worker.run(max_jobs=1, poll_seconds=10.0) == w.EXIT_OK
+    assert len(popen.calls) == 1, "only the second job ran"
+    done = [p for p, _ in api.posts if p.endswith(("/complete", "/fail"))]
+    assert done == [f"/{job_n(2)['id']}/complete"], "nothing is sent for the lost lease"
+
+
+def test_every_confirm_try_starts_inside_the_short_first_lease():
+    from tce.api.routers import llm_jobs
+
+    waits = w.LEASE_CONFIRM_RETRY_WAITS_S
+    # Worst case: every try hangs for its whole timeout before the next one starts.
+    last_start = len(waits) * w.LEASE_CONFIRM_TIMEOUT_S + sum(waits)
+    assert last_start + w.LEASE_CONFIRM_TIMEOUT_S <= llm_jobs.HELD_FIRST_LEASE_S
+    # One lost request: the second try starts well inside the term.
+    assert w.LEASE_CONFIRM_TIMEOUT_S + waits[0] <= llm_jobs.HELD_FIRST_LEASE_S / 3
