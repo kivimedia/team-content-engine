@@ -9,6 +9,9 @@
 # so pm2 waits for the drain instead of SIGKILL'ing at the default 1.6s.
 cd /home/ziv/team-content-engine
 export PYTHONPATH=/home/ziv/team-content-engine/src
+# T-24600: the server's own writer on the team's subscription pool (moves to the
+# next account with room when one is at its limit). TCE_POOL_WORKER=0 turns it off.
+export TCE_POOL_WORKER="${TCE_POOL_WORKER:-1}"
 # Localhost only: km-worker calls http://localhost:8200, and the dashboard is
 # reached through the authenticated nginx vhost. Private evidence must never be
 # served on a public port. Override with TCE_BIND_HOST only behind a proxy.
