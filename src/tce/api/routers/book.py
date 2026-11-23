@@ -203,7 +203,7 @@ _generating: dict[str, asyncio.Lock] = {}
 
 
 @router.get("/chapters/{n}/audio/{i}")
-async def paragraph_audio(n: int, i: int, ws: uuid.UUID = Depends(require_owner)):
+async def paragraph_audio(n: int, i: int, cached: bool = False, ws: uuid.UUID = Depends(require_owner)):
     book = store()
     chapter = _chapter(book, n)
     _refuse_held(chapter)
@@ -216,6 +216,13 @@ async def paragraph_audio(n: int, i: int, ws: uuid.UUID = Depends(require_owner)
     path = book.audio_path(text, voice if reading["model"] == settings.elevenlabs_model else f"{voice}|{reading['model']}")
     if path.is_file():
         return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "private, max-age=86400"})
+    if cached:
+        # 23-Nov-2026 (wait-less F10): ?cached=1 is the page reading ahead, and it gets only
+        # audio already made. A paragraph not made yet is never bought here and the budget is
+        # not read: it is asked for again, without the flag, when its turn comes, as before.
+        from fastapi.responses import Response
+
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
     state = narration_state(book)
     if not state["configured"] or state["spent_chars"] + len(text) > state["budget_chars"]:
         # No narration may be bought: the page reads this paragraph with the device's

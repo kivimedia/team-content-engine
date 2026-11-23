@@ -5,6 +5,8 @@ Synthetic text only, plus one read of the real manuscript when it is on this box
 
 from __future__ import annotations
 
+import os
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -712,3 +714,102 @@ def test_the_real_record_holds_every_new_chapter_until_its_layout_is_approved():
     assert all(not c["readable"] or c["layout_status"] == "approved" for c in new)
     assert all(c["layout"] and c["layout"]["big_idea"] for c in new)
     assert all(c["readable"] and not c["phased"] for c in chapters if c["n"] <= 11)
+
+
+# --- 23-Nov-2026 (wait-less F10): the page reads ahead, and the record is kept between reads ----
+
+
+def _age(root: Path, seconds: int = 600) -> None:
+    """Every file of the record as if written a while ago: a file changed this instant is never kept."""
+    old = time.time() - seconds
+    for path in root.iterdir():
+        os.utime(path, (old, old))
+
+
+def test_the_record_is_read_once_while_nothing_changes_and_every_write_is_read_back_at_once(api, editor, monkeypatch):
+    import tce.book.store as store_module
+
+    reads = []
+    real = store_module.parse_episode_file
+    monkeypatch.setattr(store_module, "parse_episode_file", lambda text: reads.append(1) or real(text))
+    _age(editor)
+    record = EditorRecord(editor / "chapters.json", 1)
+    first = record.chapters()
+    assert len(reads) == 3
+    # The routes build a new store on every call: the record is still read only once.
+    again = EditorRecord(editor / "chapters.json", 1).chapters()
+    assert again == first and len(reads) == 3
+    # Each caller gets its own copy.
+    again[0]["paragraphs"].append("changed by a caller")
+    assert record.chapters()[0]["paragraphs"] == first[0]["paragraphs"]
+    # The editor saves a rewrite: read back at once.
+    _chapter_file(editor, 12, 2, "Not frameworks", ["Rewritten line."])
+    assert next(c for c in record.chapters() if c["n"] == 12)["paragraphs"] == ["Rewritten line."]
+    # His Approve through the app is read back at once, by the page's next call.
+    _age(editor)
+    record.chapters()
+    kept = len(reads)
+    record.chapters()
+    assert len(reads) == kept
+    assert api.post("/api/v1/book/chapters/12/status", headers=OWNER, json={"status": "approved"}).status_code == 200
+    assert api.get("/api/v1/book/chapters/12", headers=OWNER).json()["status"] == "approved"
+    # The editor rewrites the record and its time is set back: the size still tells.
+    _age(editor)
+    record.chapters()
+    data = json.loads((editor / "chapters.json").read_text())
+    data["chapters"][0]["title"] = "A longer first title than the one before"
+    (editor / "chapters.json").write_text(json.dumps(data))
+    _age(editor)
+    assert record.chapters()[0]["title"] == "A longer first title than the one before"
+    # A new version file, even one dated in the past, is a new name: read.
+    _chapter_file(editor, 2, 2, "My second million was easy", ["A second version."])
+    _age(editor)
+    assert next(c for c in record.chapters() if c["n"] == 2)["paragraphs"] == ["A second version."]
+
+
+class _CountTTS:
+    calls: list = []
+
+    def __init__(self, *a, output_dir="", **k):
+        self.out = Path(output_dir)
+
+    async def generate(self, segments, voice_id=None, **k):
+        _CountTTS.calls.append(segments[0]["narratorText"])
+        path = self.out / "voiceover.mp3"
+        path.write_bytes(b"ID3fake")
+
+        class R:
+            file_path = str(path)
+
+        return R()
+
+
+def test_a_read_ahead_gets_only_audio_already_made_and_never_buys_or_reads_the_budget(api, monkeypatch):
+    _CountTTS.calls = []
+    monkeypatch.setattr("tce.services.tts.TTSService", _CountTTS)
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "configured")
+    monkeypatch.setattr(settings, "book_tts_char_budget", 1000)
+    spent = lambda: api.get("/api/v1/book/chapters", headers=OWNER).json()["narration"]["spent_chars"]  # noqa: E731
+    ahead = api.get("/api/v1/book/chapters/1/audio/0?cached=1", headers=OWNER)
+    assert ahead.status_code == 204 and ahead.content == b"" and "no-store" in ahead.headers["cache-control"]
+    assert _CountTTS.calls == [] and spent() == 0
+    # Its turn comes: bought once, as before. A read ahead then gets it, free.
+    assert api.get("/api/v1/book/chapters/1/audio/0", headers=OWNER).status_code == 200
+    again = api.get("/api/v1/book/chapters/1/audio/0?cached=1", headers=OWNER)
+    assert again.status_code == 200 and again.content == b"ID3fake" and len(_CountTTS.calls) == 1
+    # The budget does not fit the next paragraph: the read ahead buys nothing, and its own ask is
+    # refused to the device's voice exactly as before.
+    monkeypatch.setattr(settings, "book_tts_char_budget", spent() + 5)
+    assert api.get("/api/v1/book/chapters/1/audio/1?cached=1", headers=OWNER).status_code == 204
+    refused = api.get("/api/v1/book/chapters/1/audio/1", headers=OWNER)
+    assert refused.status_code == 409 and refused.json()["device_voice"] is True
+    assert len(_CountTTS.calls) == 1
+    # With no narration at all, a read ahead still only answers "not made yet".
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "")
+    assert api.get("/api/v1/book/chapters/1/audio/1?cached=1", headers=OWNER).status_code == 204
+    assert api.get("/api/v1/book/chapters/1/audio/9?cached=1", headers=OWNER).status_code == 404
+    assert api.get("/api/v1/book/chapters/1/audio/0?cached=1", headers=CLIENT).status_code == 403
+
+
+def test_a_read_ahead_of_a_held_chapter_is_refused_as_its_audio_is(api, held):
+    assert api.get("/api/v1/book/chapters/12/audio/0?cached=1", headers=OWNER).status_code == 423

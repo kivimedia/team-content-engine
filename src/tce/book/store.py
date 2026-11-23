@@ -51,6 +51,7 @@ import json
 import os
 import re
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,24 @@ _PART = re.compile(r"^\s*part\s+([a-z0-9.]+)\s*[-\u2013\u2014:]?\s*(.*)$", re.IG
 _RULE = re.compile(r"^[\s_\-=*]+$")
 
 _lock = threading.Lock()
+
+# 23-Nov-2026 (wait-less F10): the editor's record read once and kept while none of its files
+# changed. Every Book call (a paragraph's audio too) read it, its version files and the seed
+# from disk. Keyed by each file's name, size, inode and change time; a file changed in the last
+# _FRESH_S seconds is never kept (a write that fast may leave the time as it was), and the
+# app's own writes forget it at once.
+_FRESH_S = 2.0
+_chapters_kept: dict[tuple[str, int, str], tuple[tuple, list[dict[str, Any]]]] = {}
+_kept_lock = threading.Lock()
+
+
+def _thaw(value: Any) -> Any:
+    """A copy of a kept answer, so no caller can change what the next one is handed."""
+    if isinstance(value, dict):
+        return {k: _thaw(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_thaw(v) for v in value]
+    return value
 
 
 def _now() -> str:
@@ -309,7 +328,51 @@ class EditorRecord:
             return "approved"
         return raw if raw in STATUSES else "draft"
 
+    def _kept_key(self) -> tuple[str, int, str]:
+        return (str(self.path), self.written_through, str(self.seed or ""))
+
+    def _files_now(self) -> tuple | None:
+        """What chapters() reads, file by file, or None when any of it is too fresh to trust."""
+        try:
+            names = sorted(name for name in os.listdir(self.dir) if _VERSION_FILE.match(name))
+        except OSError:
+            return None
+        now = time.time()
+        out = []
+        for path in [self.path, self.seed, *(self.dir / name for name in names)]:
+            if path is None:
+                continue
+            try:
+                st = path.stat()
+            except FileNotFoundError:
+                out.append((str(path), None))
+                continue
+            except OSError:
+                return None
+            if now - st.st_mtime < _FRESH_S:
+                return None
+            out.append((str(path), st.st_size, st.st_ino, st.st_mtime_ns))
+        return tuple(out)
+
+    def _forget(self) -> None:
+        with _kept_lock:
+            _chapters_kept.pop(self._kept_key(), None)
+
     def chapters(self) -> list[dict[str, Any]]:
+        files = self._files_now()
+        if files is not None:
+            with _kept_lock:
+                kept = _chapters_kept.get(self._kept_key())
+            if kept is not None and kept[0] == files:
+                return _thaw(kept[1])
+        out = self._read_chapters()
+        # Kept only when nothing changed while it was read.
+        if files is not None and self._files_now() == files:
+            with _kept_lock:
+                _chapters_kept[self._kept_key()] = (files, _thaw(out))
+        return out
+
+    def _read_chapters(self) -> list[dict[str, Any]]:
         data = self.load()
         entries = data.get("chapters") or []
         newest = self._versions()
@@ -404,6 +467,7 @@ class EditorRecord:
         return {"status": status, "at": at, "by": by, "history": history[-30:]}
 
     def _save(self, data: dict[str, Any]) -> None:
+        self._forget()
         tmp = self.dir / f".chapters.json.{os.getpid()}.tmp"
         try:
             tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -413,6 +477,8 @@ class EditorRecord:
             with contextlib.suppress(OSError):
                 tmp.unlink()
             raise RecordWriteError(str(exc)) from exc
+        finally:
+            self._forget()
 
     def _change(self, n: int, work) -> dict[str, Any]:
         """Change one entry, read fresh under the lock; work(entry, now) returns the answer."""

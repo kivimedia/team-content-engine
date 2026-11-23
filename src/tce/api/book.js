@@ -328,6 +328,7 @@
   }
 
   function showChapter(c) {
+    dropAhead();
     state.chapter = c;
     remember(c);
     const saved = Number(readLocal(positionKey(c), "0"));
@@ -537,7 +538,60 @@
     if (state.audio) { state.audio.pause(); }
     if (window.speechSynthesis) window.speechSynthesis.cancel();
     state.utterance = null;
+    dropAhead((i, slot) => Boolean(slot.url));
     if (state.chapter) mark();
+  }
+
+  /* 23-Nov-2026 (wait-less F10): while a paragraph plays in his chosen voice, the next two are
+     read ahead, so the next one starts with no gap. Only audio the server already holds:
+     ?cached=1 answers 204 for a paragraph not made yet and never buys it, so nothing is bought
+     before its turn, and a paragraph not made is asked for when its turn comes, as before. At
+     most three are kept, each a Blob URL let go when it leaves that window, all of them when
+     the chapter changes. Pause, Stop and a skip stop the reads still on their way. */
+  const READ_AHEAD = 2;
+  const KEEP_AHEAD = 3;
+  const ahead = new Map();
+  const aheadKey = (c, i) => `${c.n}:v${c.version || 1}:${i}`;
+
+  function dropAhead(keep = () => false) {
+    for (const [i, slot] of ahead) {
+      if (keep(i, slot)) continue;
+      ahead.delete(i);
+      slot.dropped = true;
+      slot.controller.abort();
+      if (slot.url) URL.revokeObjectURL(slot.url);
+    }
+  }
+
+  function readAhead(from) {
+    const c = state.chapter;
+    if (!c || !(state.narration && state.narration.on) || !window.AbortController) return;
+    dropAhead((i, slot) => slot.key === aheadKey(c, i) && i > from && i < from + KEEP_AHEAD);
+    for (let i = from + 1; i <= from + READ_AHEAD && i < c.paragraphs.length; i += 1) {
+      if (ahead.has(i)) continue;
+      const slot = { key: aheadKey(c, i), controller: new AbortController(), url: "", dropped: false, settled: false };
+      slot.ready = fetch(`${apiV1}/book/chapters/${c.n}/audio/${i}?cached=1`, { credentials: "same-origin", signal: slot.controller.signal })
+        .then(async (response) => {
+          if (response.status !== 200) return "";
+          const blob = await response.blob();
+          if (slot.dropped) return "";
+          slot.url = URL.createObjectURL(blob);
+          return slot.url;
+        })
+        .catch(() => "")
+        .finally(() => { slot.settled = true; });
+      ahead.set(i, slot);
+    }
+  }
+
+  /* The paragraph's audio when it was read ahead, else "" (then it is fetched as before). A read
+     still on its way when its turn comes is let go, so a slow one never holds the reading up. */
+  async function fromAhead(i) {
+    const slot = ahead.get(i);
+    if (!slot || !state.chapter || slot.key !== aheadKey(state.chapter, i)) return "";
+    ahead.delete(i);
+    if (!slot.settled) { slot.dropped = true; slot.controller.abort(); return ""; }
+    return (await slot.ready) || "";
   }
 
   function audioElement() {
@@ -567,17 +621,20 @@
     filmLine(text);
     const url = `${apiV1}/book/chapters/${state.chapter.n}/audio/${i}`;
     if (state.narration && state.narration.on) {
-      const response = await fetch(url, { credentials: "same-origin" });
+      const early = await fromAhead(i);
+      if (token !== state.token) { if (early) URL.revokeObjectURL(early); return; }
+      const response = early ? null : await fetch(url, { credentials: "same-origin" });
       if (token !== state.token) return;
-      if (response.ok) {
-        const blob = await response.blob();
+      if (early || response.ok) {
+        const src = early || URL.createObjectURL(await response.blob());
         const audio = audioElement();
         if (audio.dataset.src) URL.revokeObjectURL(audio.dataset.src);
-        audio.dataset.src = URL.createObjectURL(blob);
+        audio.dataset.src = src;
         audio.src = audio.dataset.src;
         mixNarration();
         state.mode = "voice";
         voiceBadge();
+        readAhead(i);
         await new Promise((resolve, reject) => {
           audio.onended = () => resolve();
           audio.onerror = () => reject(new Error("The narration did not play"));
@@ -605,6 +662,7 @@
     if (state.mode === "voice" && state.audio && state.audio.src && !state.audio.ended && state.audio.currentTime > 0 && state.audio.dataset.i === String(state.index)) {
       mark();
       top(`Reading paragraph ${state.index + 1}`);
+      readAhead(state.index);
       try {
         await new Promise((resolve, reject) => {
           state.audio.onended = () => resolve();
@@ -1522,6 +1580,7 @@
     try {
       if (n == null) {
         stop();
+        dropAhead();
         state.chapter = null;
         $("chapterView").hidden = true;
         $("player").hidden = true;
