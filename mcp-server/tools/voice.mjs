@@ -443,6 +443,8 @@ export function register(server, call, { reply, failure, shortId }) {
   }
 
   // ------------------------------------------------------------------ read
+  // tce_week and tce_topic are listed as read-only (READ_ONLY_TOOLS in tools.mjs), so a
+  // call may read them ahead with nobody asking: they must only ever send GETs.
 
   server.tool(
     'tce_week',

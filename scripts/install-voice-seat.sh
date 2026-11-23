@@ -27,6 +27,13 @@
 # brief beside it, is synced the same way after the tce seat. Its entry on the box
 # (its MCP signs in to TCE as the client) is set up once by hand; until it is there,
 # the client seat is skipped and named, never created by a deploy.
+#
+# 23-Nov (wait-less F13): a seat's "readAhead" (the read tool a call opened on the week,
+# a topic or a video reads while it is being set up) is carried the way KM BOT's
+# bin/kmbot-deploy-tce.sh carries it: when the repo seat names one it replaces the box's
+# whole, and when it names none the box's is left exactly as it is. An entry KM BOT's
+# loader would leave out is refused, so nothing is written; an entry whose screen waits
+# (the video context, above) waits with it.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -63,6 +70,13 @@ KIND = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
 TOOL = re.compile(r"^mcp__([a-z][a-z0-9_]{0,31})__([A-Za-z0-9_-]{1,64})$")
 MAX_TOOLS = 64
 MAX_TEXT = 2000
+# And for its read-ahead (readAheadOf and readAheadArgsWhy there; at most 16 kinds as
+# KM BOT bin/kmbot-deploy-tce.sh carries it). Named by position, never by value: a
+# value in the wrong slot can be a pasted key.
+ARG = re.compile(r"[a-z][a-z0-9_]{0,31}")
+CTL = re.compile(r"[\x00-\x1f\x7f]")
+MAX_READ_AHEAD = 16
+MAX_ARGS = 8
 
 
 def problems(entry, tools, contexts):
@@ -85,6 +99,49 @@ def problems(entry, tools, contexts):
             out.append(f"context {kind!r} has a kind that is not a short lowercase word")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
             out.append(f"context {kind!r} must be text of at most {MAX_TEXT} characters")
+    return out
+
+
+def args_problem(args):
+    if args is None:
+        return ""
+    if not isinstance(args, dict):
+        return "has args that are not an object"
+    if len(args) > MAX_ARGS:
+        return f"has more than {MAX_ARGS} args"
+    for key, value in args.items():
+        if not ARG.fullmatch(key):
+            return "has an arg name that is not a short word"
+        if (
+            not isinstance(value, str)
+            or not value
+            or len(value) > 200
+            or CTL.search(value)
+            or re.search(r"[{}]", value.replace("{id}", ""))
+        ):
+            return "has an arg that is not short text (with {id} for the call's id)"
+    return ""
+
+
+def read_ahead_problems(read_ahead, tools, kinds):
+    if not isinstance(read_ahead, dict) or len(read_ahead) > MAX_READ_AHEAD:
+        return [f"readAhead must be an object of at most {MAX_READ_AHEAD} kinds"]
+    tools = tools if isinstance(tools, list) else []
+    out = []
+    for n, (kind, spec) in enumerate(read_ahead.items(), 1):
+        entry = f"readAhead entry {n}"
+        if not (kind == "default" or KIND.fullmatch(kind)):
+            out.append(f"{entry} has a kind that is not a short lowercase word")
+        elif kind not in kinds:
+            out.append(f"{entry} names a kind the seat has no context for")
+        elif not isinstance(spec, dict):
+            out.append(f"{entry} must be an object")
+        elif not isinstance(spec.get("tool"), str) or spec["tool"] not in tools:
+            out.append(f"{entry} names a tool that is not in the seat's allowedTools")
+        else:
+            why = args_problem(spec.get("args"))
+            if why:
+                out.append(f"{entry} {why}")
     return out
 
 
@@ -129,6 +186,15 @@ if voice_client is not None and "video" in want_ctx and not voice_client_has_k1(
         "video. Deploy KM BOT first; the box's own contexts are kept."
     )
 bad = problems(entry, want_tools, want_ctx)
+# None: the repo seat names no read-ahead, and the box's is left as it is.
+want_ra = repo.get("readAhead")
+if want_ra is not None:
+    # Checked against every kind the seat will declare, before a context waits (above).
+    kinds = set()
+    for ctx in (entry.get("contexts"), repo.get("contexts")):
+        if isinstance(ctx, dict):
+            kinds.update(ctx)
+    bad += read_ahead_problems(want_ra, want_tools, kinds)
 if bad:
     for why in bad:
         print(f"{TAG} REFUSED, nothing written: {why}")
@@ -138,12 +204,22 @@ before_tools = entry.get("allowedTools") or []
 before_ctx = entry.get("contexts") or {}
 merged = dict(before_ctx)
 merged.update(want_ctx)
-if before_tools == want_tools and merged == before_ctx:
+before_ra = entry.get("readAhead")
+ra = before_ra
+if want_ra is not None:
+    # A screen whose context waits reads nothing ahead until its context goes in.
+    ra = {kind: spec for kind, spec in want_ra.items() if kind in merged}
+    waiting = sorted(set(want_ra) - set(ra))
+    if waiting:
+        print(f"{TAG} the read-ahead for {waiting} waits with its context")
+if before_tools == want_tools and merged == before_ctx and ra == before_ra:
     print(f"{TAG} tools ({len(want_tools)}) and contexts ({', '.join(merged)}) already current")
     sys.exit(3)
 
 entry["allowedTools"] = want_tools
 entry["contexts"] = merged
+if want_ra is not None:
+    entry["readAhead"] = ra
 with open(out_path, "w") as f:
     json.dump(seats, f, indent=2)
 os.chmod(out_path, 0o644)
@@ -158,6 +234,15 @@ new = sorted(set(want_ctx) - set(before_ctx))
 changed = sorted(k for k in want_ctx if k in before_ctx and before_ctx[k] != want_ctx[k])
 kept = sorted(set(before_ctx) - set(want_ctx))
 print(f"{TAG} contexts: added {new}; changed {changed}; kept as they are on this box {kept}")
+if want_ra is not None:
+    old_ra = before_ra if isinstance(before_ra, dict) else {}
+    if ra == before_ra:
+        print(f"{TAG} read ahead already current ({', '.join(ra) or 'none'})")
+    else:
+        added = sorted(set(ra) - set(old_ra))
+        moved = sorted(k for k in ra if k in old_ra and old_ra[k] != ra[k])
+        gone = sorted(set(old_ra) - set(ra))
+        print(f"{TAG} read ahead: added {added}; changed {moved}; removed {gone}")
 sys.exit(0)
 PY
 rc=$?
@@ -179,7 +264,13 @@ const doc = JSON.parse(fs.readFileSync(file, "utf8"));
 const raw = (Array.isArray(doc) ? doc : doc.seats).find((s) => s && s.id === id);
 const missing = Object.keys(raw.contexts || {}).filter((k) => !Object.hasOwn(seat.contexts, k));
 if (missing.length) { console.log(`it would leave out the contexts ${missing.join(", ")}`); process.exit(2); }
-console.log(`it loads the ${id} seat with ${seat.allowedTools.length} tools and the contexts ${Object.keys(seat.contexts).join(", ")}`);
+// A KM BOT from before read-ahead keeps no seat.readAhead: its calls read nothing ahead.
+const ahead = seat.readAhead && typeof seat.readAhead === "object" ? seat.readAhead : null;
+const wanted = raw.readAhead && typeof raw.readAhead === "object" ? Object.keys(raw.readAhead) : [];
+const dropped = ahead ? wanted.filter((k) => !Object.hasOwn(ahead, k)) : [];
+if (dropped.length) { console.log(`it would leave out the read-ahead for ${dropped.join(", ")}`); process.exit(2); }
+const reads = ahead ? Object.keys(ahead).join(", ") || "nothing" : "nothing (this KM BOT has no read-ahead)";
+console.log(`it loads the ${id} seat with ${seat.allowedTools.length} tools and the contexts ${Object.keys(seat.contexts).join(", ")}, and reads ahead ${reads}`);
 '
 
 if [ "$rc" -eq 4 ]; then

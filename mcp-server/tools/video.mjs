@@ -443,6 +443,8 @@ export function register(server, call, { reply, failure }) {
     },
   );
 
+  // Listed as read-only (READ_ONLY_TOOLS in tools.mjs), so a call may read it ahead with
+  // nobody asking: it must only ever send GETs.
   server.tool(
     'tce_video_notes',
     'The notes he gave on one video, oldest first: where each is, what it says, and where it stands '

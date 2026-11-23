@@ -38,5 +38,22 @@
     "video": {
       "speaker": "marin"
     }
+  },
+  "readAhead": {
+    "week": {
+      "tool": "mcp__tce__tce_week"
+    },
+    "topic": {
+      "tool": "mcp__tce__tce_topic",
+      "args": {
+        "topic": "{id}"
+      }
+    },
+    "video": {
+      "tool": "mcp__tce__tce_video_notes",
+      "args": {
+        "video": "{id}"
+      }
+    }
   }
 }

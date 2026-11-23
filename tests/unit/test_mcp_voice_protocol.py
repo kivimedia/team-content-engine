@@ -112,6 +112,7 @@ api.close();
 process.stdout.write(JSON.stringify({
   tools: listed.map((t) => ({
     name: t.name, description: t.description, inputSchema: t.inputSchema,
+    annotations: t.annotations ?? null,
   })),
   results,
   sent,
@@ -278,6 +279,37 @@ def test_the_voice_seat_gets_its_13_tools_and_a_call_reaches_the_api(sdk_install
     assert out["sent"][0]["key"] == "GET /editorial/voice/topic?q=report"
     assert out["sent"][0]["auth"] == "Bearer test-key"
     assert "Nobody opens the report (id 11111111)" in heard(out["results"][0])
+
+
+# ------------------------------------------------------------------ what a call may read ahead
+#
+# Wait-less F13: KM BOT reads a screen's tool while a seat call is being set up only when
+# the seat file names it under readAhead AND this server lists it as read-only. Exactly
+# these three only read: each sends GETs and nothing else, and tce_video_notes' only
+# other step is the call's own tool count in a temp file, which needs a call id that a
+# read ahead never has.
+READ_ONLY = ["tce_topic", "tce_video_notes", "tce_week"]
+SEAT_DIR = ROOT.parent / "deploy" / "voice-seat"
+
+
+def test_only_the_three_screen_reads_are_listed_as_read_only(sdk_installed, tmp_path):
+    out = run({"steps": []}, tmp_path)
+    assert len(out["tools"]) == len(VOICE_TOOLS) + len(OLDER_TOOLS)
+    marked = sorted(
+        t["name"] for t in out["tools"] if (t["annotations"] or {}).get("readOnlyHint") is True
+    )
+    assert marked == READ_ONLY
+    for t in out["tools"]:
+        if t["name"] in READ_ONLY:
+            assert t["annotations"]["destructiveHint"] is False, t["name"]
+        else:
+            assert "readOnlyHint" not in (t["annotations"] or {}), t["name"]
+    # Every seat file reads ahead only with a tool this server says is read-only.
+    for path in sorted(SEAT_DIR.glob("tce*.json")):
+        seat = json.loads(path.read_text(encoding="utf-8"))
+        assert seat.get("readAhead"), path.name
+        named = {spec["tool"].split("__")[-1] for spec in seat["readAhead"].values()}
+        assert named <= set(READ_ONLY), path.name
 
 
 # ------------------------------------------------------------------ what the model hears

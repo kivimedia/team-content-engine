@@ -53,9 +53,10 @@ if (scenario.unit) {
 }
 const tools = {};
 const descs = {};
+const schemas = {};
 const sent = [];
 const counters = {};
-register({ tool: (name, d, s, fn) => { tools[name] = fn; descs[name] = d; } },
+register({ tool: (name, d, s, fn) => { tools[name] = fn; descs[name] = d; schemas[name] = s; } },
   async (method, path, body) => {
     const key = `${method} ${path}`;
     sent.push({ key, body: body ?? null });
@@ -80,7 +81,7 @@ for (const step of scenario.steps) {
     ? JSON.stringify(out.structuredContent)
     : out.content.map((c) => c.text).join(' '));
 }
-console.log(JSON.stringify({ texts, seen, sent, descs, names: Object.keys(tools).sort() }));
+console.log(JSON.stringify({ texts, seen, sent, descs, schemas, names: Object.keys(tools).sort() }));
 """
 
 
@@ -3200,6 +3201,32 @@ def test_the_seat_has_a_video_context_for_any_upload_and_keeps_the_ones_on_the_b
     assert all(f"mcp__tce__{name}" in seat["allowedTools"] for name in VIDEO_TOOLS)
 
 
+# Wait-less F13: what a call opened on each screen reads while it is being set up, so its
+# first answer needs no fetch. KM BOT keeps only a tool the seat's own allow-list names, for
+# a kind the seat has a context for, and puts the call's id where the template says {id}.
+READ_AHEAD = {
+    "week": {"tool": "mcp__tce__tce_week"},
+    "topic": {"tool": "mcp__tce__tce_topic", "args": {"topic": "{id}"}},
+    "video": {"tool": "mcp__tce__tce_video_notes", "args": {"video": "{id}"}},
+}
+
+
+def test_every_seat_reads_its_screen_ahead_with_the_calls_own_id():
+    schemas = run({"steps": [], "responses": {}})["schemas"]
+    seats = sorted(SEAT_FILE.parent.glob("tce*.json"))
+    assert len(seats) > 1
+    for path in seats:
+        seat = json.loads(path.read_text(encoding="utf-8"))
+        assert seat["readAhead"] == READ_AHEAD, path.name
+        for kind, spec in seat["readAhead"].items():
+            assert kind in seat["contexts"] and spec["tool"] in seat["allowedTools"], path.name
+            # The argument is the one the tool reads, and every one it requires is given.
+            schema = schemas[spec["tool"].split("__")[-1]]
+            args = set(spec.get("args", {}))
+            assert args <= set(schema.get("properties", {})), (path.name, kind)
+            assert set(schema.get("required", [])) <= args, (path.name, kind)
+
+
 SEAT_CHECK = r"""
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -3214,13 +3241,18 @@ const seat = m.validateSeat({
     command: 'node', args: ['/home/ziv/team-content-engine/mcp-server/index.mjs'],
     env: { TCE_API_BASE: 'http://127.0.0.1:8200', TCE_MCP_FAMILIES: 'voice' },
   } },
-  allowedTools: repo.allowedTools, contexts: repo.contexts,
+  allowedTools: repo.allowedTools, contexts: repo.contexts, readAhead: repo.readAhead,
 }, errors);
+// A KM BOT from before read-ahead has no readAheadPlan; its calls read nothing ahead.
+const plans = seat && m.readAheadPlan
+  ? ['week', `topic:${upload}`, `video:${upload}`].map((c) => m.readAheadPlan(seat, m.resolveContext(seat, c)))
+  : null;
 console.log(JSON.stringify({
   errors, ok: Boolean(seat), re: String(m.CONTEXT_RE),
   video: seat && m.resolveContext(seat, `video:${upload}`),
   bare: seat && m.resolveContext(seat, 'video'),
   public: seat && m.publicSeat(seat),
+  plans,
 }));
 """
 
@@ -3260,6 +3292,11 @@ def test_km_bots_own_seat_check_takes_the_seat_and_opens_a_call_on_a_video():
     assert out["bare"]["ok"] is False, "a video call needs the video's id"
     # Scenario F's preflight reads exactly this: the seat lists a "video" context.
     assert "video" in out["public"]["contexts"]
+    if out["plans"] is not None:
+        week, topic, video = out["plans"]
+        assert (week["name"], week["args"]) == ("tce_week", {})
+        assert (topic["name"], topic["args"]) == ("tce_topic", {"topic": upload})
+        assert (video["name"], video["args"]) == ("tce_video_notes", {"video": upload})
 
 
 def test_scenario_f_in_km_bot_calls_only_tools_and_routes_this_repo_has():
@@ -3487,6 +3524,100 @@ def test_the_installer_holds_the_video_context_until_km_bots_voice_client_can_mu
     assert '"$cand" "$VOICE_CLIENT_JS" "$id" <<\'PY\'' in text
 
 
+def _seat_in(path, seat_id="tce"):
+    return next(s for s in json.loads(path.read_text(encoding="utf-8"))["seats"] if s["id"] == seat_id)
+
+
+def test_the_installer_carries_the_read_ahead_and_leaves_the_box_one_when_the_repo_names_none(tmp_path):
+    """Wait-less F13, as KM BOT's own TCE deploy carries it: the repo's readAhead replaces
+    the box's whole; a repo seat that names none leaves the box's exactly as it is."""
+    box = _box_seats(readAhead={"default": {"tool": "mcp__tce__tce_week"}})
+    proc, out = _install(tmp_path, box)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _seat_in(out)["readAhead"] == READ_AHEAD
+    assert "read ahead: added ['topic', 'video', 'week']; changed []; removed ['default']" in proc.stdout
+
+    # Run again on what it wrote: nothing to do. A box with everything but the read-ahead
+    # is not current.
+    after = json.loads(out.read_text(encoding="utf-8"))
+    again, second = _install(tmp_path, after, name="second.json")
+    assert again.returncode == 3 and not second.exists(), again.stdout
+    del after["seats"][1]["readAhead"]
+    stale, third = _install(tmp_path, after, name="third.json")
+    assert stale.returncode == 0, stale.stdout + stale.stderr
+    assert _seat_in(third)["readAhead"] == READ_AHEAD
+    assert "tools already current" in stale.stdout and "read ahead: added" in stale.stdout
+
+    repo = json.loads(SEAT_FILE.read_text(encoding="utf-8"))
+    del repo["readAhead"]
+    mine = {"week": {"tool": "mcp__tce__tce_week"}}
+    kept, out2 = _install(tmp_path, _box_seats(readAhead=mine), repo=repo, name="kept.json")
+    assert kept.returncode == 0, kept.stdout + kept.stderr
+    assert _seat_in(out2)["readAhead"] == mine and "read ahead" not in kept.stdout
+    none, out3 = _install(tmp_path, _box_seats(), repo=repo, name="none.json")
+    assert none.returncode == 0 and "readAhead" not in _seat_in(out3)
+
+
+def test_a_read_ahead_waits_with_the_video_context(tmp_path):
+    """No K1 on the box: the video context waits, so the video read-ahead waits with it
+    (KM BOT's loader would leave out a read-ahead for a kind the seat has no context for)."""
+    proc, out = _install(tmp_path, _box_seats(), client=_client_file(tmp_path, OLD_CLIENT))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _seat_in(out)["readAhead"] == {k: v for k, v in READ_AHEAD.items() if k != "video"}
+    assert "the read-ahead for ['video'] waits with its context" in proc.stdout
+
+
+PLANTED = "tok_live_9f3b"
+
+
+@pytest.mark.parametrize(
+    ("change", "why"),
+    [
+        (lambda ra: ["week"], "readAhead must be an object of at most 16 kinds"),
+        (lambda ra: {**ra, "week": "mcp__tce__tce_week"}, "readAhead entry 1 must be an object"),
+        (
+            lambda ra: {**ra, "topic": {"tool": "mcp__tce__tce_briefing"}},
+            "readAhead entry 2 names a tool that is not in the seat's allowedTools",
+        ),
+        (lambda ra: {**ra, "week": {"tool": PLANTED}}, "readAhead entry 1 names a tool that is not"),
+        (
+            lambda ra: {**ra, "library": {"tool": "mcp__tce__tce_week"}},
+            "readAhead entry 4 names a kind the seat has no context for",
+        ),
+        (
+            lambda ra: {**ra, "Video": {"tool": "mcp__tce__tce_week"}},
+            "readAhead entry 4 has a kind that is not a short lowercase word",
+        ),
+        (
+            lambda ra: {**ra, "topic": {"tool": "mcp__tce__tce_topic", "args": ["{id}"]}},
+            "readAhead entry 2 has args that are not an object",
+        ),
+        (
+            lambda ra: {**ra, "topic": {"tool": "mcp__tce__tce_topic", "args": {"Topic": "{id}"}}},
+            "readAhead entry 2 has an arg name that is not a short word",
+        ),
+        (
+            lambda ra: {**ra, "video": {"tool": "mcp__tce__tce_video_notes", "args": {"video": PLANTED + "{x}"}}},
+            "readAhead entry 3 has an arg that is not short text",
+        ),
+        (
+            lambda ra: {**ra, "video": {"tool": "mcp__tce__tce_video_notes", "args": {"video": 7}}},
+            "readAhead entry 3 has an arg that is not short text",
+        ),
+    ],
+)
+def test_the_installer_refuses_a_read_ahead_the_voice_service_would_leave_out(tmp_path, change, why):
+    """Refused like a bad tool or context: nothing written, the live seat untouched, and
+    the entry named by its place, never by what it holds (a value can be a pasted key)."""
+    repo = json.loads(SEAT_FILE.read_text(encoding="utf-8"))
+    repo["readAhead"] = change(repo["readAhead"])
+    proc, out = _install(tmp_path, _box_seats(), repo=repo)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "REFUSED, nothing written" in proc.stdout and why in proc.stdout
+    assert PLANTED not in proc.stdout
+    assert not out.exists()
+
+
 CLIENT_SEAT_FILE = SEAT_FILE.with_name("tce-connie.json")
 CLIENT_BRIEF = SEAT_FILE.with_name("tce-connie-brief.md")
 
@@ -3533,6 +3664,7 @@ def test_a_client_seat_on_the_box_gets_its_tools_and_contexts_and_keeps_its_logi
     mine = next(s for s in after if s["id"] == "tce-connie")
     want = json.loads(CLIENT_SEAT_FILE.read_text(encoding="utf-8"))
     assert mine["allowedTools"] == want["allowedTools"] and mine["contexts"] == want["contexts"]
+    assert mine["readAhead"] == want["readAhead"] == READ_AHEAD
     assert mine["mcpServers"] == connie["mcpServers"], "her login is never touched by a deploy"
     assert after[:2] == box["seats"][:2], "the owner's tce seat and other seats are untouched"
     assert "[voice-seat tce-connie] tools 1 -> " in proc.stdout
@@ -3608,6 +3740,34 @@ def test_the_installers_last_check_is_km_bots_own_module(tmp_path):
     assert "23 tools" in ok.stdout and "video" in ok.stdout
     assert refused.returncode == 2 and "would leave out the tce seat" in refused.stdout
     assert missing.returncode == 2, "a file it cannot read never goes live"
+
+
+def test_the_installers_last_check_refuses_a_read_ahead_km_bots_loader_leaves_out(tmp_path):
+    mod = _kmbot("bin/kmbot-voice-seats.mjs")
+    if "readAheadPlan" not in mod.read_text(encoding="utf-8"):
+        pytest.skip("the KM BOT beside this checkout has no read-ahead yet")
+    text = INSTALLER.read_text(encoding="utf-8")
+    start = text.index("NODE_CHECK='") + len("NODE_CHECK='")
+    check = text[start : text.index("\n'\n", start)]
+    proc, good = _install(tmp_path, _box_seats())
+    assert proc.returncode == 0, proc.stdout
+    bad = tmp_path / "bad.json"
+    broken = json.loads(good.read_text(encoding="utf-8"))
+    broken["seats"][1]["readAhead"]["topic"]["tool"] = "mcp__tce__tce_briefing"
+    bad.write_text(json.dumps(broken), encoding="utf-8")
+
+    def verdict(path):
+        return subprocess.run(
+            ["node", "--input-type=module", "-e", check, str(mod), str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            encoding="utf-8",
+        )
+
+    ok, refused = verdict(good), verdict(bad)
+    assert ok.returncode == 0 and "reads ahead week, topic, video" in ok.stdout, ok.stdout + ok.stderr
+    assert refused.returncode == 2 and "leave out the read-ahead for topic" in refused.stdout
 
 
 # ------------------------------------------- a scripted call on the real routes

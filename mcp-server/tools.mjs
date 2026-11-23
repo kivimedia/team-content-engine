@@ -254,6 +254,20 @@ export function inputShape(schema, z) {
 }
 
 /**
+ * The tools that only read, said so in their tools/list entry (wait-less F13).
+ *
+ * KM BOT calls a seat's tool while a call is being set up, so the first answer
+ * needs no fetch, only when the seat file names it under readAhead AND its server
+ * lists it with readOnlyHint true and destructiveHint not true. Each of these sends
+ * GETs and nothing else (tce_video_notes also counts the call's tool results in its
+ * own temp file, which needs a call id a read ahead never has). A tool that writes,
+ * starts a job or spends never goes here: a tool listed here can be called with
+ * nobody asking for it.
+ */
+export const READ_ONLY_TOOLS = new Set(['tce_week', 'tce_topic', 'tce_video_notes']);
+const READ_ONLY = Object.freeze({ readOnlyHint: true, destructiveHint: false });
+
+/**
  * Load every family in ./tools and register its tools.
  * One bad family must not cost the caller the others.
  */
@@ -269,7 +283,9 @@ export async function registerTools(server, call, only = familyFilter()) {
       if (tools.includes(name)) {
         throw new Error(`two families claim the tool name ${name}`);
       }
-      server.registerTool(name, { description, inputSchema: inputShape(schema, z) }, name.startsWith('tce_video') ? wrapHandler(handler) : handler);
+      const config = { description, inputSchema: inputShape(schema, z) };
+      if (READ_ONLY_TOOLS.has(name)) config.annotations = { ...READ_ONLY };
+      server.registerTool(name, config, name.startsWith('tce_video') ? wrapHandler(handler) : handler);
       // Counted only once the SDK took it, so the startup line is true.
       tools.push(name);
     },
