@@ -290,3 +290,14 @@ body.has-player,body.has-player.device-voice { padding-bottom:var(--player-space
 .agent-card { display: block; padding: 10px 12px; margin: 0 0 6px; border-radius: 10px; background: #fff; border: 1px solid #d8dde6; color: #1d4ed8; text-decoration: none; font-size: 1rem; min-height: 44px; box-sizing: border-box; }
 .chat-line.past { opacity: .85; }
 .chat-line.fresh strong { color: #1d4ed8; }
+
+/* 25-Nov-2026 (T-25211): one microphone at the top. It starts the call and the editor speaks
+   first; red while his mic is live. Typing is the small keyboard beside it. */
+.book-mic {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 54px; height: 54px; border-radius: 50%; border: 3px solid #fff;
+  background: var(--lake); color: #fff; padding: 0;
+}
+.book-mic.on { background: var(--signal); }
+.book-mic.on-call:not(.on) { box-shadow: 0 0 0 3px #1f8a4c; }
+.topbar .type-icon { min-width: 40px; min-height: 40px; background: #29405e; }

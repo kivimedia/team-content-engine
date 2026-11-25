@@ -23,6 +23,8 @@ POST /book/voice                         {"voice_id", "model"} Ziv's pick, read 
 POST /book/chapters/{n}/layout           {"action": approve|reopen|note, "note"} his word on a
                                          new chapter's layout (12-Nov, T-20758)
 POST /book/chapters/{n}/write            his ask to write a chapter from its approved layout
+GET  /book/catch-up                      the book so far, from the short version the editor
+                                         keeps beside its record (25-Nov, T-25211)
 
 12-Nov-2026 (T-20758): a new chapter's text and audio are HELD (no paragraphs, 423 on
 audio) until its layout is approved and its current version was written or confirmed
@@ -141,6 +143,53 @@ async def list_chapters(ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any
         "statuses": [{"id": s, "words": STATUS_WORDS[s]} for s in STATUSES],
         "phases": [{"id": p, "words": w} for p, w in PHASE_WORDS.items()],
     }
+
+
+# --- 25-Nov-2026 (T-25211): the editor catches him up -----------------------------------
+# Ziv, 25-Nov: "it's always overwhelming to even just get into the context ... I go in, I
+# start a conversation and I understand what's going on with the context of what was
+# written already." The editor keeps a short version of the book beside its record
+# (book-summary.md: a few lines on the whole book, then one line per chapter and a "More:"
+# line under it). The Book page never read it, so a call opened knowing nothing. This hands
+# the page the overview and the line for each chapter, so the first thing the editor hears
+# when he presses the microphone is where the book stands.
+CATCH_UP_FILE = "book-summary.md"
+CATCH_UP_OVERVIEW_CHARS = 1800
+_CHAPTER_LINE = re.compile(r"^Chapter (\d+),\s*(.+)$")
+_UPDATED = re.compile(r"Updated (\d{4}-\d{2}-\d{2}T[\d:]+Z)")
+
+
+def catch_up(path: Path) -> dict[str, Any]:
+    """The short version as {updated, overview, chapters: {n: line}}; empty when it is not there."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {"updated": "", "overview": "", "chapters": {}}
+    updated = _UPDATED.search(text)
+    overview: list[str] = []
+    chapters: dict[str, str] = {}
+    current = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("<!--"):
+            continue
+        found = _CHAPTER_LINE.match(line)
+        if found:
+            current = found.group(1)
+            chapters[current] = found.group(2).strip()
+        elif current and line.startswith("More:"):
+            chapters[current] = f"{chapters[current]} {line}"
+        elif not chapters:
+            overview.append(line)
+    words = "\n".join(overview)
+    if len(words) > CATCH_UP_OVERVIEW_CHARS:
+        words = words[: CATCH_UP_OVERVIEW_CHARS - 3].rstrip() + "..."
+    return {"updated": updated.group(1) if updated else "", "overview": words, "chapters": chapters}
+
+
+@router.get("/catch-up")
+async def get_catch_up(ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
+    return catch_up(Path(settings.book_editor_record).parent / CATCH_UP_FILE)
 
 
 @router.get("/chapters/{n}")

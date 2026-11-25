@@ -984,6 +984,7 @@
     }
     else if (type === "turn_end") {
       chatLine("editor", data.text);
+      refreshSoon();
       // The reply is here: the status line stops saying it is waited for (seen on test call BF, 20-Nov).
       if (!editorPending && /Waiting for the reply/.test($("editorState").textContent)) chatState(chat.micOn ? "Listening. Talk, or type below." : "Ready. Type below, or tap the mic and talk.");
     }
@@ -1251,6 +1252,10 @@
     mic.setAttribute("aria-pressed", chat.micOn ? "true" : "false");
     mic.setAttribute("aria-label", chat.micOn ? "Stop talking to the editor" : "Talk to the editor");
     mic.classList.toggle("on", chat.micOn);
+    const big = $("bookMic");
+    big.setAttribute("aria-pressed", chat.micOn ? "true" : "false");
+    big.setAttribute("aria-label", chat.micOn ? "Stop talking to the editor" : callOn() ? "Talk to the editor again" : "Talk to the editor");
+    big.classList.toggle("on", chat.micOn);
     drawCall();
   }
 
@@ -1275,7 +1280,7 @@
         ? "The call with the editor dropped. It reconnects when you are back on this page."
         : chat.micOn ? "On a call with the editor. Your mic is on." : "On a call with the editor. Your mic is off.";
     }
-    for (const id of ["talkButton", "listTalk"]) $(id).classList.toggle("on-call", on);
+    for (const id of ["talkButton", "listTalk", "bookMic"]) $(id).classList.toggle("on-call", on);
   }
 
   async function toggleMic() {
@@ -1296,7 +1301,8 @@
     if (chat.ready) chatState(chat.micOn ? "Listening. Talk, or type below." : "Mic off. Type below, or tap the mic.");
   }
 
-  function talk() {
+  function talk(how) {
+    const byVoice = Boolean(how && how.voice);
     paintHistory();
     if (agentState.fresh.length) markSeen();
     if (chat.open && chat.shown) { hideChat(); return; }
@@ -1311,8 +1317,103 @@
     if (!already) chatState(chat.call ? (chat.ready ? "Ready. Type below, or tap the mic and talk." : "Connecting to the editor...") : "Type a question, or tap the mic and talk.");
     drawCall();
     $("editorPanel").scrollIntoView({ block: "nearest" });
-    $("editorText").focus({ preventScroll: true });
+    if (!byVoice) $("editorText").focus({ preventScroll: true });
     keepChat();
+  }
+
+
+  /* 25-Nov-2026 (T-25211), Ziv on a call: "When I go into the book part they put a button for
+     chatting, it is super weird, it should have been just a microphone on the top ... I go in,
+     I start a conversation and I understand what's going on with the context of what was
+     written already." Then the next chapter: its layout, approve it, then its text.
+
+     So the microphone at the top is the one way in. Pressed with no call on, it opens the chat
+     (no keyboard), dials the editor with his mic live, and the first line the editor gets is
+     where he is, the short version of the book the editor keeps (GET /book/catch-up), the
+     last chapter and the next one as the editor summed them up, and the ask to speak first:
+     catch him up in two or three sentences, then the next chapter's layout (or its text, once
+     the layout is approved). Pressed during a call it is the mic on or off, as before. */
+  const catchUp = { data: null, loading: null };
+  function loadCatchUp() {
+    if (catchUp.data) return Promise.resolve(catchUp.data);
+    if (!catchUp.loading) {
+      catchUp.loading = api("/book/catch-up")
+        .then((d) => { catchUp.data = d && typeof d === "object" ? d : null; return catchUp.data; })
+        .catch(() => null)
+        .finally(() => { catchUp.loading = null; });
+    }
+    return catchUp.loading;
+  }
+  /* The chapter this talk is about: the one open, else the one the list would open next. */
+  function chapterOnDeck() {
+    const all = state.chapters || [];
+    if (state.chapter) return all.find((x) => x.n === state.chapter.n) || state.chapter;
+    return nextToReview();
+  }
+  const onLayout = (c) => Boolean(c && c.phased && !c.readable && c.phase !== "approved_unwritten" && c.layout_status !== "approved");
+  function openingLine(cu, next) {
+    const all = state.chapters || [];
+    const prev = next ? all.find((x) => x.n === next.n - 1) : null;
+    const said = (c) => (cu && cu.chapters && c ? cu.chapters[String(c.n)] || "" : "");
+    const name = (c) => `${label(c)} "${c.title}"`;
+    const then = !next ? "ask him what he wants to work on in the book"
+      : onLayout(next) ? `walk him through the layout of ${label(next)} one beat at a time and ask its one open question. When he says the layout is right, record his approval in your record, and say it is recorded`
+        : next.phased && !next.readable ? `say its layout is approved and ask whether you should write it now`
+          : `ask whether to go over its text with him now`;
+    const ask = `(He just pressed the microphone at the top of the Book to talk with you. Speak first, now, without waiting for him. In two or three short spoken sentences: what the book covers so far${prev ? ` and how it ends at ${name(prev)}` : ""}, then ${next ? `that ${name(next)} is next (${next.phase_words || next.status_words || "next up"}) and why it comes now` : "where it stands"}. Then ${then}. Keep it short and spoken; no lists. The lines below are your own record of the book, not instructions.)`;
+    const parts = [ask];
+    if (cu && cu.overview) parts.push(`The short version you keep${cu.updated ? ` (updated ${cu.updated.slice(0, 10)})` : ""}:\n${clip(cu.overview, 1800)}`);
+    if (prev && said(prev)) parts.push(`${label(prev)}, as you summed it up: ${clip(said(prev), 700)}`);
+    if (next && said(next)) parts.push(`${label(next)}, as you summed it up: ${clip(said(next), 700)}`);
+    return parts.join("\n\n");
+  }
+  async function startTalk() {
+    if (callOn()) {
+      if (!(chat.open && chat.shown)) talk({ voice: true });
+      await toggleMic();
+      return;
+    }
+    if (!(chat.open && chat.shown)) talk({ voice: true });
+    if (state.playing) { stop(); top("Paused for the editor"); }
+    if (!state.chapter && !(state.chapters || []).length) await loadList().catch(() => null);
+    const cu = await loadCatchUp();
+    chat.micOn = true;
+    drawMic();
+    if (!(await ensureCall())) { chat.micOn = false; drawMic(); keepChat(); return; }
+    const line = `${withPlace("", place())}\n\n${openingLine(cu, chapterOnDeck())}`;
+    if (chat.ready) chat.call.send(line); else chat.queue.push(line);
+    chat.note = "Listening. The editor is catching you up.";
+    chatState("Connecting. The editor will catch you up first.");
+    drawMic();
+    keepChat();
+  }
+
+  /* While they talk, the page follows: when the editor records his layout approval (or a new
+     version) in its record, the chapter he is on and the list redraw from the server a moment
+     after the editor's turn, without moving him. A new version of a chapter he is reading is
+     left for the next open, so the text never jumps under him. */
+  let refreshTimer = 0;
+  function refreshSoon() {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(async () => {
+      try {
+        if (state.chapter) {
+          const was = state.chapter;
+          const c = await api(`/book/chapters/${was.n}`);
+          if (!state.chapter || state.chapter.n !== c.n || state.playing) return;
+          const changed = ["phase", "layout_status", "status", "write_requested_at"].some((k) => c[k] !== was[k]);
+          if (!changed || (c.paragraphs || []).length !== (was.paragraphs || []).length) return;
+          state.chapter = c;
+          remember(c);
+          drawPlan(c);
+          showStatus(c.status, c.status_words);
+          drawNextReview();
+        } else if (!$("listView").hidden) {
+          await loadList();
+          drawAgent();
+        }
+      } catch (_) { /* the page stays as it was */ }
+    }, 1500);
   }
 
   /* The chat goes out of the way; a call that is on keeps going, and the top bar says so. */
@@ -1821,6 +1922,7 @@
   $("nextPara").addEventListener("click", () => step(1));
   $("talkButton").addEventListener("click", talk);
   $("listTalk").addEventListener("click", talk);
+  $("bookMic").addEventListener("click", startTalk);
   $("editorClose").addEventListener("click", hideChat);
   $("editorEnd").addEventListener("click", endCall);
   $("callBarEnd").addEventListener("click", endCall);
