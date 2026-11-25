@@ -121,6 +121,8 @@ class RecordingSessionCreate(BaseModel):
     candidate_id: uuid.UUID
     packet_id: uuid.UUID
     device_meta: dict[str, Any] = Field(default_factory=dict)
+    # 25-Nov: the video he stopped partway through, when this take set records the rest.
+    continues_upload_id: uuid.UUID | None = None
 
 
 class RecordingClipCreate(BaseModel):
@@ -202,6 +204,7 @@ async def _recording_session_json(db: AsyncSession, row: RecordingSession) -> di
         "selected_clip_ids": row.selected_clip_ids or [],
         "timeline_map": row.timeline_map or [],
         "canonical_upload_id": str(row.canonical_upload_id) if row.canonical_upload_id else None,
+        "continues_upload_id": str(row.continues_upload_id) if row.continues_upload_id else None,
         "device_meta": row.device_meta or {},
         "error_detail": row.error_detail,
         "clips": [_clip_json(clip) for clip in clips],
@@ -2439,7 +2442,16 @@ async def recording_queue(
                 "active_session_status": active.status if active else None,
             }
         )
-    return {"ideas": ideas, "count": len(ideas)}
+    # 25-Nov: the studio's "To continue recording" tab. Videos he stopped partway
+    # through that the team sent back, each with the script and the line to start on.
+    from tce.editorial import continuation
+
+    return {
+        "ideas": ideas,
+        "count": len(ideas),
+        "continue": await continuation.waiting_list(db, ws),
+        "continue_label": continuation.TAB_LABEL,
+    }
 
 
 @router.get("/recorded")
@@ -2505,7 +2517,8 @@ async def create_recording_session_route(
 ) -> dict[str, Any]:
     try:
         row = await recording_sessions.create_session(
-            db, ws, body.candidate_id, body.packet_id, device_meta=body.device_meta
+            db, ws, body.candidate_id, body.packet_id, device_meta=body.device_meta,
+            continues_upload_id=body.continues_upload_id,
         )
     except recording_sessions.RecordingSessionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2714,6 +2727,11 @@ async def _script_context(s: AsyncSession, ws: uuid.UUID, row: RecordingUpload) 
         # 3-Oct: every job that reads an agent talk (the review, a request, a sitting's
         # notes) knows it is a conversation and who the other voice is.
         context += "\n\n" + autoedit.talk_context(row.agent_name or "the agent")
+    elif (getattr(row, "continuation", None) or {}).get("state") == "joined_result":
+        # 25-Nov: recorded in two parts and joined; the editor is told where and how.
+        from tce.editorial import continuation
+
+        context += "\n\n" + continuation.jennifer_context(row)
     elif getattr(row, "source", None) == agent_talks.SOLO_SOURCE:
         # 12-Oct: a take with no script. One voice, his; the cut is the usual one.
         context += (

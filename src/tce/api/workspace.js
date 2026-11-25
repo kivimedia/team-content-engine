@@ -2124,6 +2124,7 @@
     html += "</div>";
 
     html += libraryCountsHtml(counts);
+    html += continuingHtml(data.continuing || []);
     var items = libraryShown(data);
     if (!items.length && state.libraryCount) {
       html += '<div class="empty"><strong>None right now</strong>Tap the number again to see every video.</div>';
@@ -2145,6 +2146,86 @@
       html += "</div>";
     }
     return html + "</div>";
+  }
+
+  /* 25-Nov: videos sent back to be finished are out of every list; this strip says
+     where they went, and "Take it back" returns one sent by mistake. */
+  function continuingHtml(rows) {
+    if (!rows.length) return "";
+    var html = '<section class="continuing" aria-label="Sent back to finish recording">'
+      + '<h2>Sent back to finish recording</h2>'
+      + '<p class="section-hint">Waiting in the studio under "To continue recording". When the rest is recorded, Jennifer joins both parts into one video and it comes back here.</p><ul>';
+    rows.forEach(function (r) {
+      html += '<li><strong>' + esc(r.title) + "</strong>"
+        + (r.state === "recording" ? " <span class=\"tag\">Recording the rest now</span>" : "")
+        + (r.repeat_line ? '<span class="continuing-line">Starts again from: "' + esc(r.repeat_line) + '"</span>'
+                         : '<span class="continuing-line">Starts again from the top of the script</span>')
+        + (r.state === "waiting"
+          ? '<button class="btn quiet" type="button" data-take-back="' + esc(r.upload_id) + '">Take it back</button>'
+          : "")
+        + "</li>";
+    });
+    return html + "</ul></section>";
+  }
+
+  /* 25-Nov: the confirm panel. Every line of the script, the one we read as the last
+     he said already chosen; a tap on another changes it. "Nothing yet" starts him at
+     the top. */
+  async function sendBackOpen(button) {
+    var card = button.closest(".card");
+    if (!card || card.querySelector(".send-back-form")) return;
+    var uploadId = button.dataset.sendBack;
+    var data;
+    try {
+      data = await api("/production/recordings/" + encodeURIComponent(uploadId) + "/send-back");
+    } catch (error) { toast(error.message, true); return; }
+    var chosen = data.last_said_index;
+    var name = "sb-" + uploadId;
+    var form = document.createElement("div");
+    form.className = "send-back-form";
+    var html = '<p class="send-back-lead">' + (data.detected
+      ? "They stopped after the line marked below. Tap another line if that is wrong."
+      : "There is no transcript to read yet, so tap the last line they said.") + "</p><ol class=\"send-back-lines\">";
+    html += '<li><label><input type="radio" name="' + esc(name) + '" value="-1"' + (chosen < 0 ? " checked" : "")
+      + "> <em>Nothing yet: start from the top</em></label></li>";
+    (data.lines || []).forEach(function (line, i) {
+      html += '<li><label><input type="radio" name="' + esc(name) + '" value="' + i + '"' + (i === chosen ? " checked" : "")
+        + "> " + esc(line) + "</label></li>";
+    });
+    html += "</ol><p class=\"section-hint\">They will start by saying the chosen line again, then record the rest. Jennifer joins both parts into one video.</p>"
+      + '<div class="actions"><button class="btn primary" type="button" data-send-back-confirm="' + esc(uploadId) + '">Send it back</button>'
+      + '<button class="btn quiet" type="button" data-send-back-cancel>Cancel</button></div>';
+    form.innerHTML = html;
+    button.insertAdjacentElement("afterend", form);
+    var picked = form.querySelector("input:checked");
+    if (picked) picked.closest("li").scrollIntoView({ block: "nearest" });
+  }
+
+  async function sendBackConfirm(button) {
+    var form = button.closest(".send-back-form");
+    var picked = form && form.querySelector("input:checked");
+    if (!picked) { toast("Tap the last line they said.", true); return; }
+    button.disabled = true;
+    try {
+      await api("/production/recordings/" + encodeURIComponent(button.dataset.sendBackConfirm) + "/send-back", {
+        method: "POST", body: { last_said_index: Number(picked.value) }
+      });
+      toast('Sent back. It is in the studio under "To continue recording".');
+      await refreshLibrary();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, true);
+    }
+  }
+
+  async function takeBack(uploadId) {
+    try {
+      await api("/production/recordings/" + encodeURIComponent(uploadId) + "/take-back", { method: "POST" });
+      toast("Taken back. It is in the Library again, as it was.");
+      await refreshLibrary();
+    } catch (error) {
+      toast(error.message, true);
+    }
   }
 
   /* 28-Sep: the Library opens on what still needs pushing through; what went out
@@ -2402,6 +2483,11 @@
         html += picturesBlock(item.upload_id, action.pictures || []);
       } else if (action.key === "edit_again") {
         html += '<button class="btn quiet" type="button" data-edit-again="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
+      } else if (action.key === "send_back") {
+        // 25-Nov: a take he stopped partway through goes back to the studio's "To
+        // continue recording" tab. The tap opens the script with the line we read as
+        // the last one he said; nothing is sent until the team confirms it.
+        html += '<button class="btn quiet" type="button" data-send-back="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
       } else if (action.key === "check_again") {
         // 3-Oct: Jennifer's check, on demand.
         html += '<button class="btn quiet" type="button" data-check-again="' + esc(item.upload_id) + '">' + esc(action.label) + "</button>";
@@ -4576,7 +4662,7 @@
     "check-again", "release-hold", "settle-hold", "note-reply", "rule-delete",
     "rename", "rename-save", "add-anyway", "pubtab", "libcount", "topic-more", "title-review", "style-pick",
     "pictures-toggle", "picture-add", "picture-remove", "retry-view", "backdrop-pick",
-    "undo-decision"
+    "undo-decision", "send-back", "send-back-confirm", "send-back-cancel", "take-back"
   ];
   var CLICK_SELECTOR = CLICK_ACTIONS.map(function (name) {
     return "[data-" + name + "]";
@@ -4602,6 +4688,10 @@
     if (d.pubRevise !== undefined) { publishRevise(d.pubRevise); return; }
     if (d.pubCopy !== undefined) { copyPost(target); return; }
     if (d.saveRules !== undefined) { saveRules(); return; }
+    if (d.sendBackConfirm !== undefined) { sendBackConfirm(target); return; }
+    if (d.sendBackCancel !== undefined) { var f = target.closest(".send-back-form"); if (f) f.remove(); return; }
+    if (d.sendBack !== undefined) { sendBackOpen(target); return; }
+    if (d.takeBack !== undefined) { takeBack(d.takeBack); return; }
     if (d.archive !== undefined) { archiveRecording(d.archive, true); return; }
     if (d.unarchive !== undefined) { archiveRecording(d.unarchive, false); return; }
     if (d.stylePick !== undefined) { pickStyle(d.stylePick, d.style); return; }

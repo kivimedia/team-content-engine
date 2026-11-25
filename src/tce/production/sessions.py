@@ -39,7 +39,25 @@ async def create_session(
     packet_id: uuid.UUID,
     *,
     device_meta: dict[str, Any] | None = None,
+    continues_upload_id: uuid.UUID | None = None,
 ) -> RecordingSession:
+    continuing: RecordingUpload | None = None
+    if continues_upload_id is not None:
+        # 25-Nov: the rest of a video he stopped partway through. It records the
+        # script that video was recorded from, even if a newer version came since.
+        continuing = (
+            await db.execute(
+                select(RecordingUpload).where(
+                    RecordingUpload.id == continues_upload_id,
+                    RecordingUpload.workspace_id == workspace_id,
+                )
+            )
+        ).scalar_one_or_none()
+        state = str(((continuing.continuation if continuing else None) or {}).get("state") or "")
+        if continuing is None or state not in ("waiting", "recording"):
+            raise RecordingSessionError("that video is not waiting to be finished")
+        if continuing.candidate_id != candidate_id or continuing.packet_id != packet_id:
+            raise RecordingSessionError("the rest must be recorded from the same script")
     packet = (
         await db.execute(
             select(RecordingPacket).where(
@@ -64,12 +82,12 @@ async def create_session(
     # opened a take set on that draft and he recorded the flagged line (28-Sep
     # review). Only a version the recording list would offer is recorded, whichever
     # page asks.
-    if packet.status == "superseded":
+    if continuing is None and packet.status == "superseded":
         raise RecordingSessionError(
             f"script version {packet.version} was replaced by a newer version; "
             "record the current version"
         )
-    if packet.status not in RECORDABLE_PACKET_STATUSES:
+    if continuing is None and packet.status not in RECORDABLE_PACKET_STATUSES:
         raise RecordingSessionError(
             f"script version {packet.version} is not ready to record: its safety check "
             "flagged a line. Fix the line or choose another opening first"
@@ -88,12 +106,18 @@ async def create_session(
                 RecordingSession.packet_id == packet_id,
                 RecordingSession.status == "draft",
                 RecordingClip.id.is_(None),
+                # A draft for the rest of a stopped video is only ever that.
+                RecordingSession.continues_upload_id.is_(None)
+                if continuing is None
+                else RecordingSession.continues_upload_id == continuing.id,
             )
             .order_by(RecordingSession.retake_index.desc())
             .limit(1)
         )
     ).scalar_one_or_none()
     if empty_draft is not None:
+        if continuing is not None:
+            _mark_recording(continuing, empty_draft.id)
         return empty_draft
     current = (
         await db.execute(
@@ -112,10 +136,21 @@ async def create_session(
         retake_index=int(current) + 1,
         status="draft",
         device_meta=device_meta or {},
+        continues_upload_id=continuing.id if continuing is not None else None,
     )
     db.add(row)
     await db.flush()
+    if continuing is not None:
+        _mark_recording(continuing, row.id)
     return row
+
+
+def _mark_recording(upload: RecordingUpload, session_id: uuid.UUID) -> None:
+    upload.continuation = {
+        **(upload.continuation or {}),
+        "state": "recording",
+        "session_id": str(session_id),
+    }
 
 
 async def create_clip(
@@ -357,6 +392,58 @@ async def assemble_clips(paths: list[Path], output: Path) -> dict[str, Any]:
                 fixed.unlink(missing_ok=True)
 
 
+def _shape(proof: dict[str, Any]) -> tuple[Any, ...]:
+    """What has to match for two files to be joined by copying: codecs and picture size."""
+    video = next((x for x in proof.get("streams") or [] if x.get("type") == "video"), {})
+    audio = next((x for x in proof.get("streams") or [] if x.get("type") == "audio"), {})
+    return (video.get("codec"), video.get("width"), video.get("height"), audio.get("codec"))
+
+
+async def assemble_continuation(paths: list[Path], output: Path) -> dict[str, Any]:
+    """25-Nov: the first recording, then the rest, as one video.
+
+    Recorded on the same phone in the same browser, the parts share a format and the
+    usual join copies them. Recorded on another device (another browser's format, or a
+    camera of another picture size), every part is first made the same: H.264 and AAC
+    at the first part's picture size, scaled and padded, never stretched. Then the
+    usual join copies them.
+    """
+    exe = ffmpeg_path()
+    if not exe:
+        raise RecordingSessionError("ffmpeg is not installed")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    shapes = [_shape(await probe_media(path)) for path in paths]
+    if all(shape == shapes[0] for shape in shapes):
+        return await assemble_clips(paths, output)
+    width, height = shapes[0][1], shapes[0][2]
+    if not width or not height:
+        raise RecordingSessionError("the first part of this video has no picture size")
+    w, h = int(width) // 2 * 2, int(height) // 2 * 2
+    made: list[Path] = []
+    try:
+        for index, path in enumerate(paths):
+            fixed = output.with_name(f"{output.stem}.fit{index}.mp4")
+            proc = await asyncio.create_subprocess_exec(
+                exe, "-y", "-v", "error", "-i", str(path), "-map", "0:v:0", "-map", "0:a:0",
+                "-vf",
+                f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
+                "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-ar", "48000", "-ac", "2", str(fixed),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            if proc.returncode != 0:
+                raise RecordingSessionError(
+                    f"part {index + 1} of this video could not be made ready to join"
+                )
+            made.append(fixed)
+        return await assemble_clips(made, output)
+    finally:
+        for path in made:
+            path.unlink(missing_ok=True)
+
+
 async def _audio_decodes(exe: str, path: Path) -> bool:
     proc = await asyncio.create_subprocess_exec(
         exe, "-v", "error", "-i", str(path), "-map", "0:a", "-f", "null", "-",
@@ -517,11 +604,36 @@ async def finalize_session(
     if set(by_id) != set(selected_clip_ids) or any(clip.status != "ready" for clip in clips):
         raise RecordingSessionError("every selected clip must be ready in this session")
     ordered = [by_id[clip_id] for clip_id in selected_clip_ids]
+    # 25-Nov: the rest of a video he stopped partway through. Its file goes first, the
+    # new clips after it, and the two become one video.
+    first: RecordingUpload | None = None
+    if recording.continues_upload_id is not None:
+        first = (
+            await db.execute(
+                select(RecordingUpload).where(
+                    RecordingUpload.id == recording.continues_upload_id,
+                    RecordingUpload.workspace_id == workspace_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if first is None or not first.storage_path:
+            raise RecordingSessionError("the first part of this video was not found")
+        # Taken back in the Library after this take set began: nothing is joined to it.
+        # ("joined" is this same take set rebuilt with more clips.)
+        if str((first.continuation or {}).get("state") or "") not in ("waiting", "recording", "joined"):
+            raise RecordingSessionError(
+                "this video was taken back in the Library, so the rest is not joined to it"
+            )
     recording.status = "finalizing"
     # A rebuild never writes over the file the old video row still points at.
     name = "canonical.mp4" if previous is None else f"canonical-{uuid.uuid4().hex[:8]}.mp4"
     output = root / str(workspace_id) / str(recording.id) / name
-    proof = await assembler([Path(clip.assembled_path or "") for clip in ordered], output)
+    paths = [Path(clip.assembled_path or "") for clip in ordered]
+    if first is not None:
+        join = assemble_continuation if assembler is assemble_clips else assembler
+        proof = await join([Path(first.storage_path), *paths], output)
+    else:
+        proof = await assembler(paths, output)
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
     upload = RecordingUpload(
         workspace_id=workspace_id,
@@ -546,6 +658,38 @@ async def finalize_session(
     recording.selected_clip_ids = [str(value) for value in selected_clip_ids]
     offset = 0.0
     timeline: list[dict[str, Any]] = []
+    if first is not None:
+        seam = float(first.duration_s or 0)
+        if not seam:
+            try:
+                seam = float((await probe_media(Path(first.storage_path))).get("duration_s") or 0)
+            except (OSError, ValueError):
+                seam = 0.0
+        timeline.append(
+            {
+                "part": "first_recording",
+                "upload_id": str(first.id),
+                "timeline_start_s": 0.0,
+                "timeline_end_s": round(seam, 3),
+                "source_duration_s": seam,
+            }
+        )
+        offset = seam
+        cont = first.continuation or {}
+        upload.continuation = {
+            "state": "joined_result",
+            "from_upload_id": str(first.id),
+            "seam_s": round(seam, 3),
+            "repeat_line": cont.get("repeat_line"),
+        }
+        upload.status_detail = (
+            "joined: the first recording and the rest recorded "
+            f"{utcnow():%Y-%m-%d %H:%M} UTC; both parts kept"
+        )
+        # The first part stays on the server for history, never shown on its own again.
+        first.status = "superseded"
+        first.status_detail = f"Joined with the rest of the recording into {upload.id}; kept for history"
+        first.continuation = {**cont, "state": "joined", "joined_upload_id": str(upload.id)}
     for clip in ordered:
         duration = float(clip.duration_s or clip.active_duration_s or 0)
         timeline.append(

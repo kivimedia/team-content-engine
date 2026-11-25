@@ -31,6 +31,7 @@ from tce.editorial import briefs as brief_service
 from tce.editorial import changes as change_service
 from tce.editorial import conversation, notify, title_acceptance, voice_agent
 from tce.editorial import inbox as inbox_service
+from tce.editorial import continuation as continuation_service
 from tce.editorial import library as library_service
 from tce.editorial import lineup as lineup_service
 from tce.editorial import today as today_service
@@ -52,6 +53,7 @@ ServiceError = (
     lineup_service.LineupError,
     inbox_service.InboxError,
     library_service.LibraryError,
+    continuation_service.ContinuationError,
     title_acceptance.TitleAcceptanceError,
 )
 
@@ -1018,6 +1020,64 @@ async def archive_recording(
         except ServiceError as error:
             raise _http(error) from error
         return {"upload_id": str(row.id), "archived": row.archived_at is not None}
+
+
+class SendBackBody(BaseModel):
+    # The last script line he said, as the team confirmed it: -1 for none. Left out,
+    # the line read from the transcript is used.
+    last_said_index: int | None = None
+
+
+@production_router.get("/recordings/{upload_id}/send-back")
+async def send_back_preview(
+    upload_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """25-Nov: the script and the line we think he stopped on, for the confirm sheet."""
+    uid = _uuid(upload_id, "recording")
+    async with open_session(sm) as db:
+        try:
+            return await continuation_service.preview(db, ws, uid)
+        except ServiceError as error:
+            raise _http(error) from error
+
+
+@production_router.post("/recordings/{upload_id}/send-back")
+async def send_back_recording(
+    upload_id: str,
+    body: SendBackBody,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """25-Nov: out of the Library, into the studio's "To continue recording" tab."""
+    uid = _uuid(upload_id, "recording")
+    async with open_session(sm) as db:
+        try:
+            row = await continuation_service.send_back(
+                db, ws, uid, last_said_index=body.last_said_index
+            )
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+        return {"upload_id": str(row.id), "continuation": row.continuation}
+
+
+@production_router.post("/recordings/{upload_id}/take-back")
+async def take_back_recording(
+    upload_id: str,
+    ws: uuid.UUID = Depends(require_private_workspace),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """25-Nov: sent back by mistake; the video returns to the Library as it was."""
+    uid = _uuid(upload_id, "recording")
+    async with open_session(sm) as db:
+        try:
+            row = await continuation_service.take_back(db, ws, uid)
+            await db.commit()
+        except ServiceError as error:
+            raise _http(error) from error
+        return {"upload_id": str(row.id), "continuation": row.continuation}
 
 
 class RenameBody(BaseModel):
