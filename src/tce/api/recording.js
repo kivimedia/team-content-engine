@@ -200,6 +200,9 @@ function rebindIdeas(ideas, next) {
   const PAGE_LANG = document.documentElement.lang === "he" ? "he" : "en";
   const state = {
     ideas: [], idea: null, session: null, stream: null, recorder: null, clip: null,
+    // 25-Nov: videos he stopped partway through, sent back to be finished, and which
+    // list the queue shows ("ready" or "continue").
+    continueItems: [], queueTab: "ready", continueScrolled: null,
     mode: "points", sequence: 0, startedAt: 0, activeStartedAt: 0, activeMs: 0,
     timerId: null, pendingWrites: [], pendingSync: new Map(), takeMarkers: [],
     wakeLock: null, pendingIdea: null, textSize: 1, wpm: 130,
@@ -428,7 +431,47 @@ function rebindIdeas(ideas, next) {
     return result.every(Boolean);
   }
 
+  /* 25-Nov: "To continue recording". A tab beside the ready scripts, shown only when
+     something is waiting to be finished; each card says the line he starts again from. */
+  function renderQueueTabs() {
+    const tabs = $("queueTabs");
+    const waiting = state.continueItems.length;
+    if (!waiting && state.queueTab === "continue") state.queueTab = "ready";
+    tabs.hidden = !waiting || Boolean(batch);
+    $("readyTab").textContent = `Ready to record (${state.ideas.length})`;
+    $("continueTab").textContent = `${state.continueLabel || "To continue recording"} (${waiting})`;
+    [["readyTab", "ready"], ["continueTab", "continue"]].forEach(([id, key]) => {
+      $(id).classList.toggle("is-active", state.queueTab === key);
+      $(id).setAttribute("aria-selected", String(state.queueTab === key));
+    });
+  }
+
+  function renderContinueQueue() {
+    const queue = $("queue");
+    queue.replaceChildren();
+    $("emptyQueue").hidden = true;
+    state.continueItems.forEach((item) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "idea-card continue-card";
+      card.innerHTML = `<strong></strong><span></span><div class="idea-meta"></div>`;
+      card.querySelector("strong").textContent = item.title;
+      card.querySelector("span").textContent = item.repeat_line
+        ? `You stopped after: "${item.repeat_line}". Start by saying it again, then record the rest.`
+        : "Start from the top of the script.";
+      const building = item.active_session_status === "finalizing";
+      card.querySelector(".idea-meta").textContent = building
+        ? "Being joined to the first part for editing"
+        : item.active_session_id ? "Continue your recording" : "Finish this video";
+      card.disabled = building;
+      card.addEventListener("click", () => chooseIdea(item));
+      queue.appendChild(card);
+    });
+  }
+
   function renderQueue() {
+    renderQueueTabs();
+    if (state.queueTab === "continue") { renderContinueQueue(); showNextScript(); return; }
     const queue = $("queue");
     queue.replaceChildren();
     $("emptyQueue").hidden = state.ideas.length > 0;
@@ -475,6 +518,8 @@ function rebindIdeas(ideas, next) {
       const named = new URLSearchParams(window.location.search).get("candidate");
       const data = await earlyOrAsk("/recording-queue" + (named ? `?candidate=${encodeURIComponent(named)}` : ""));
       state.ideas = data.ideas || [];
+      state.continueItems = batch ? [] : (data.continue || []);
+      state.continueLabel = data.continue_label;
       batchQueueReady = true;
       renderQueue();
       $("syncState").textContent = `${state.ideas.length} ready script${state.ideas.length === 1 ? "" : "s"}`;
@@ -505,10 +550,23 @@ function rebindIdeas(ideas, next) {
     const hook = state.mode === "points" ? selectedHook(idea) : null;
     const merged = Boolean(hook && items.length && sameLine(hook.text, items[0]));
     if (hook && !merged) reader.appendChild(openingLine(idea, hook.text, "points-opening"));
+    // 25-Nov: continuing a stopped video, in the full script: the lines already
+    // recorded are faded, the one to say again is marked "Start here".
+    const resume = state.mode === "script" && idea.continue_upload_id
+      ? Math.max(0, Number(idea.resume_index || 0) - (idea.repeat_line ? 1 : 0))
+      : -1;
     items.forEach((text, index) => {
       const line = document.createElement("p");
       line.className = "reader-line";
       line.id = `${state.mode}-${index}`;
+      if (resume >= 0 && index < resume) line.classList.add("already-said");
+      if (resume >= 0 && index === resume) {
+        line.classList.add("resume-here");
+        const label = document.createElement("span");
+        label.className = "reader-index";
+        label.textContent = idea.repeat_line ? "Start here: say this line again" : "Start here";
+        line.appendChild(label);
+      }
       // Points keep their number; spoken phrases do not - "p028" was noise
       // to read past while talking.
       if (state.mode === "points") {
@@ -542,7 +600,16 @@ function rebindIdeas(ideas, next) {
     scroller.measure = null;
     scroller.pos = null;
     const saved = Number(localStorage.getItem(`tce-reader-${idea.packet_id}-${state.mode}`) || 0);
-    requestAnimationFrame(() => { reader.scrollTop = saved; syncScrollRail(); });
+    const start = resume >= 0 && state.continueScrolled !== idea.continue_upload_id
+      ? document.getElementById(`script-${resume}`) : null;
+    requestAnimationFrame(() => {
+      if (start) {
+        // Once per visit: after that, wherever he scrolled to is kept.
+        state.continueScrolled = idea.continue_upload_id;
+        reader.scrollTop = Math.max(0, start.offsetTop - reader.offsetTop - 12);
+      } else reader.scrollTop = saved;
+      syncScrollRail();
+    });
   }
 
   /* Two lines are the same line when one starts with the other: the opening and
@@ -694,11 +761,16 @@ function rebindIdeas(ideas, next) {
     // Never a take set on a version the scan flagged (the server refuses it too).
     const verdict = ideaVerdict(state.idea);
     if (!verdict.recordable) return Promise.reject(new Error(verdict.summary));
-    if (state.session && state.session.packet_id === state.idea.packet_id) {
+    // 25-Nov: the take set for the rest of a stopped video is its own, never a plain
+    // take of the same script (and the other way round).
+    const continues = state.idea.continue_upload_id || null;
+    const forKey = `${state.idea.packet_id}:${continues || ""}`;
+    if (state.session && state.session.packet_id === state.idea.packet_id
+        && (state.session.continues_upload_id || null) === continues) {
       return Promise.resolve(state.session);
     }
-    if (!state.sessionPending || state.sessionPendingFor !== state.idea.packet_id) {
-      state.sessionPendingFor = state.idea.packet_id;
+    if (!state.sessionPending || state.sessionPendingFor !== forKey) {
+      state.sessionPendingFor = forKey;
       state.sessionPending = openSession().finally(() => { state.sessionPending = null; });
     }
     return state.sessionPending;
@@ -714,6 +786,7 @@ function rebindIdeas(ideas, next) {
         body: JSON.stringify({
           candidate_id: state.idea.candidate_id,
           packet_id: state.idea.packet_id,
+          continues_upload_id: state.idea.continue_upload_id || null,
           device_meta: {
             user_agent: navigator.userAgent.slice(0, 300),
             viewport: `${innerWidth}x${innerHeight}`,
@@ -1092,7 +1165,13 @@ function rebindIdeas(ideas, next) {
     if (!state.finishing) $("finishSessionButton").hidden = false;
     paintControls();
     $("scriptTitle").textContent = idea.title;
-    $("bigIdea").textContent = idea.big_idea;
+    // 25-Nov: the rest of a stopped video. The full script, the line to say again
+    // marked, so he picks up where he left off.
+    $("bigIdea").textContent = idea.continue_upload_id
+      ? (idea.repeat_line
+        ? `Finishing this video. Start by saying "${idea.repeat_line}" again, then record the rest.`
+        : "Finishing this video. Start from the top of the script.")
+      : idea.big_idea;
     $("hookChooser").hidden = true;
     renderHookPanel(idea, lockNote);
     // A different idea starts its numbers from the first page, nothing marked,
@@ -1101,7 +1180,7 @@ function rebindIdeas(ideas, next) {
     state.beatPage = 0;
     state.currentBeat = null;
     renderBeats();
-    setMode("points");
+    setMode(idea.continue_upload_id ? "script" : "points");
     updateSessionLabels();
     try {
       // The camera first, so what it actually gave is written into the take set:
@@ -1118,7 +1197,8 @@ function rebindIdeas(ideas, next) {
       const index = batch.items.findIndex(item => item.id === idea.candidate_id);
       $("studioName").textContent = `Video ${index + 1} of ${batch.items.length}`;
     }
-    if (state.idea?.packet_id === idea.packet_id) { openIdea(idea); return; }
+    if (state.idea?.packet_id === idea.packet_id
+        && (state.idea?.continue_upload_id || null) === (idea.continue_upload_id || null)) { openIdea(idea); return; }
     if (state.recorder && state.recorder.state !== "inactive") {
       state.pendingIdea = idea;
       $("switchDialog").showModal();
@@ -2356,6 +2436,17 @@ function rebindIdeas(ideas, next) {
       }
       return true;
     }
+    // 25-Nov: "Finish recording" on Today links straight to the video to finish.
+    var continueId = params.get("continue");
+    if (continueId) {
+      var rest = state.continueItems.find(function (item) { return item.continue_upload_id === continueId; });
+      window.history.replaceState({}, "", `${pathPrefix}/record`);
+      if (!rest) { showNotice("That video is no longer waiting to be finished."); return false; }
+      state.queueTab = "continue";
+      renderQueue();
+      chooseIdea(rest);
+      return true;
+    }
     var candidateId = params.get("candidate");
     var packetId = params.get("packet");
     if (!candidateId && !packetId) return false;
@@ -2390,6 +2481,8 @@ function rebindIdeas(ideas, next) {
     };
     renderBatch();
   }
+  $("readyTab").addEventListener("click", () => { state.queueTab = "ready"; renderQueue(); });
+  $("continueTab").addEventListener("click", () => { state.queueTab = "continue"; renderQueue(); });
   updateSyncLabel();
   loadQueue().then(function () {
     try { openFromQuery(); } catch (error) { /* the list still works */ }
