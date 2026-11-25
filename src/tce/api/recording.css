@@ -159,6 +159,8 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .reader-line.already-said { opacity: .42; }
 .reader-line.resume-here { border-left: 5px solid var(--signal); padding-left: 10px; }
 .queue-tabs { margin: 0 0 12px; }
+/* Two tabs, not the reader's four columns (Points, Full script, swap, overlay). */
+.tabs.queue-tabs { grid-template-columns: 1fr 1fr; }
 .continue-card { border-left: 5px solid var(--signal); }
 /* Mid-take a finger on the words holds them; on an iPhone a held finger also
    picked a word, with handles and a magnifier (28-Oct). */
