@@ -704,7 +704,7 @@ def test_split_screen_recording_can_always_be_stopped_and_the_layouts_switch(stu
 
         # Points / Full script sit UNDER the words, so the words are nearest the lens.
         order = page.evaluate(
-            "() => ({tabs: document.querySelector('.tabs').getBoundingClientRect().top,"
+            "() => ({tabs: document.querySelector('.reader-main > .tabs').getBoundingClientRect().top,"
             " reader: document.getElementById('reader').getBoundingClientRect().top})"
         )
         assert order["reader"] < order["tabs"], f"the tabs are above the words: {order}"
@@ -735,7 +735,7 @@ def test_split_screen_recording_can_always_be_stopped_and_the_layouts_switch(stu
         swapped = page.evaluate(
             """() => ({camera: document.querySelector('.camera-stage').getBoundingClientRect().top,
                       reader: document.querySelector('.reader-shell').getBoundingClientRect().top,
-                      tabs: document.querySelector('.tabs').getBoundingClientRect().top,
+                      tabs: document.querySelector('.reader-main > .tabs').getBoundingClientRect().top,
                       words: document.getElementById('reader').getBoundingClientRect().top})"""
         )
         assert swapped["camera"] < swapped["reader"], f"the swap did not put the video on top: {swapped}"
