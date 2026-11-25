@@ -969,6 +969,88 @@ def keep_build_lane(
     return final, rank_rejected, report
 
 
+# 25-Nov (T-22611): the AI news half of the same complaint. On the week of 23 Nov the
+# best news idea on his list (Google Docs comparing Word files, 0.88, clear of the 0.70
+# floor and every gate) lost the global ranking to coaching lessons, because that
+# ranking is written for his coaching audience, the same way the builds lost before
+# 18-Nov. In the owner's workspace a week keeps up to this many news ideas that cleared
+# the news floor, when the ranking left them all out. The floor itself is not touched.
+OWNER_NEWS_SLOTS = 1
+
+
+def keep_news_lane(
+    final: list[dict[str, Any]],
+    rank_rejected: list[dict[str, Any]],
+    finalists: list[dict[str, Any]],
+    max_candidates: int,
+    *,
+    is_repeat: Any = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """The owner's net under the global ranking for news: up to OWNER_NEWS_SLOTS.
+
+    Same shape as keep_build_lane. Only finalists the ranking set aside as not
+    selected (or cut over the cap) are eligible, never one it called a duplicate, and
+    only news ideas at or above the news quality floor. When the week is full, the
+    kept idea takes the place of the lowest-ranked pick that began in a call; build
+    ideas and other news are never displaced. That call pick is recorded as
+    `lane_room` and stays reserve. The weekly news rules still run after this.
+    Returns (final, rank_rejected, report).
+    """
+    floor = news_rules.FIRST_SLOT_FLOOR
+    have = sum(1 for c in final if c.get("news"))
+    report: dict[str, Any] = {"slots": OWNER_NEWS_SLOTS, "had": have, "kept": 0}
+    want = OWNER_NEWS_SLOTS - have
+    if want <= 0:
+        return final, rank_rejected, report
+    by_ids = {frozenset(c["moment_ids"]): c for c in finalists}
+    waiting: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for row in rank_rejected:
+        if row.get("code") not in ("not_selected_globally", "rank_cap"):
+            continue
+        cand = by_ids.get(frozenset(row["moment_ids"]))
+        if cand is None or not cand.get("news"):
+            continue
+        if float(cand.get("rank_score") or 0.0) < floor:
+            continue
+        if is_repeat is not None and is_repeat(cand):
+            continue
+        waiting.append((row, cand))
+    waiting.sort(key=lambda rc: float(rc[1].get("rank_score") or 0.0), reverse=True)
+    final, rank_rejected = list(final), list(rank_rejected)
+    for row, cand in waiting[:want]:
+        if len(final) >= max_candidates:
+            spot = next(
+                (
+                    i
+                    for i in range(len(final) - 1, -1, -1)
+                    if not _build_topic(final[i]) and not final[i].get("news")
+                ),
+                None,
+            )
+            if spot is None:
+                break
+            out = final.pop(spot)
+            cut = _reject(
+                out,
+                out["moment_ids"],
+                "unspecified",
+                "lane_room",
+                f"made room for a news idea ({cand['title']}): Ziv asked for more AI "
+                "news ideas (18-Nov)",
+            )
+            cut["job_id"] = out.get("job_id")
+            rank_rejected.append(cut)
+        rank_rejected.remove(row)
+        kept = dict(cand)
+        kept["rank_reason"] = (
+            "kept for the news lane: it cleared the news floor and every gate, and the "
+            "ranking left every news idea out"
+        )
+        final.append(kept)
+        report["kept"] += 1
+    return final, rank_rejected, report
+
+
 def _score(value: Any) -> float:
     try:
         return max(0.0, min(5.0, float(value))) / 5.0
@@ -2463,6 +2545,19 @@ async def select_candidates(
                     activity(
                         f"Kept {build_lane['kept']} build idea(s) the ranking left out, so "
                         f"the week holds up to {OWNER_BUILD_SLOTS} ideas from his builds"
+                    )
+                final, rank_rejected, news_lane = keep_news_lane(
+                    final,
+                    rank_rejected,
+                    finalists_pool,
+                    max_candidates,
+                    is_repeat=lambda c: find_duplicate(c, on_the_list) is not None,
+                )
+                coverage["rank"]["news_lane"] = news_lane
+                if news_lane["kept"]:
+                    activity(
+                        f"Kept {news_lane['kept']} news idea(s) the ranking left out, so "
+                        f"the week holds up to {OWNER_NEWS_SLOTS} AI news idea"
                     )
             rejected.extend(rank_rejected)
         else:
