@@ -30,6 +30,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tce.editorial import continuation
 from tce.editorial.common import ORIGIN_TECHNICAL_VALIDATION
 from tce.models.editorial import (
     RecordingPacket,
@@ -516,6 +517,7 @@ async def list_library(
             "items": [],
             "total": 0,
             "counts": dict.fromkeys(COUNT_KINDS, 0),
+            "continuing": [],
             **await _post_by_hand(db, ws),
         }
 
@@ -618,6 +620,14 @@ async def list_library(
     # "I need a way to find the edited video" (25-Sep): a replaced take is kept on
     # the server for history, never shown, and an edit sits above the raw takes.
     uploads = [u for u in uploads if u.status != "superseded"]
+    # 25-Nov: a video sent back to be finished is out of every list until the rest is
+    # recorded (or it is taken back). The strip over the cards names each one.
+    continuing = [
+        continuation.library_json(u, titles.get(u.candidate_id, "(untitled recording)"))
+        for u in uploads
+        if continuation.is_continuing(u)
+    ]
+    uploads = [u for u in uploads if not continuation.is_continuing(u)]
     # 23-Nov (F13): the three numbers over the cards come in this same read, so the page
     # needs no second one. Counted over the page's own pool (workspace.js libraryCounts):
     # this list for Still to do and Everything, Still to do for every other filter.
@@ -714,7 +724,7 @@ async def list_library(
                     if upload.id in made_by_upload
                     else None
                 ),
-                "actions": _actions(upload, open_count),
+                "actions": _with_send_back(_actions(upload, open_count), upload, published),
                 # 3-Oct: "Agent talk" and who it was with, for a filmed voice call.
                 **source_json(upload),
             }
@@ -727,8 +737,25 @@ async def list_library(
         "items": items,
         "total": len(items),
         "counts": counts,
+        "continuing": continuing,
         **await _post_by_hand(db, ws),
     }
+
+
+def _with_send_back(
+    actions: list[dict[str, str]], upload: RecordingUpload, published: bool
+) -> list[dict[str, str]]:
+    """25-Nov: "Send back to finish recording", just before "Record it again".
+
+    Never on a video that has gone out (posted or scheduled), never while it is being
+    edited, and only where there is a script to continue from.
+    """
+    if published or not continuation.can_offer(upload):
+        return actions
+    button = {"key": "send_back", "label": continuation.BUTTON_LABEL}
+    keys = [a["key"] for a in actions]
+    at = keys.index("re_record") if "re_record" in keys else len(actions)
+    return [*actions[:at], button, *actions[at:]]
 
 
 # 18-Oct (T-13905): the three tiles over the Library's cards. The rules are the page's

@@ -567,6 +567,18 @@ body[data-reader="largest"] .msg .bubble { font-size: 1.3rem; }
 
 /* Publish (26-Sep): the four posts on an edited video's card. */
 /* 12-Oct: naming a take recorded with no script, in its card. */
+/* 25-Nov: send a stopped take back to be finished. */
+.send-back-form { margin-top: 10px; padding: 12px; border: 2px solid var(--line, #d8d2c4); border-radius: 10px; }
+.send-back-lead { margin: 0 0 8px; font-weight: 600; }
+.send-back-lines { margin: 0 0 8px; padding-left: 0; list-style: none; max-height: 320px; overflow-y: auto; }
+.send-back-lines li { padding: 6px 0; border-bottom: 1px solid var(--line, #d8d2c4); }
+.send-back-lines label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.send-back-lines input { margin-top: 4px; flex: none; width: 20px; height: 20px; }
+.continuing { margin: 12px 0; padding: 12px; border: 2px dashed var(--line, #d8d2c4); border-radius: 10px; }
+.continuing h2 { margin: 0 0 4px; font-size: 1.05rem; }
+.continuing ul { margin: 8px 0 0; padding: 0; list-style: none; }
+.continuing li { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line, #d8d2c4); }
+.continuing-line { flex: 1 1 100%; opacity: .8; }
 .rename-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-top: 10px; }
 .rename-form label { display: flex; flex-direction: column; gap: 4px; flex: 1 1 220px; font-weight: 600; }
 .rename-form input { font: inherit; font-size: 1rem; padding: 10px 12px; border: 2px solid var(--line, #d8d2c4); border-radius: 8px; color: inherit; background: var(--white, #fff); }

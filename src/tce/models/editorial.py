@@ -334,6 +334,14 @@ class RecordingUpload(_PrivateWorkspaceMixin, Base):
     # "line", "numbers", "checks", "fixes", "at"}. Every check is also a `render_checks`
     # row; this is the newest, so the card reads it without another query.
     qc: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    # 25-Nov, continue recording (migration 060). On a take he stopped partway through
+    # and the team sent back: {"state": "waiting"|"recording"|"joined"|"cancelled",
+    # "sent_at", "resume_index" (the first script line still to say), "repeat_line"
+    # (the last line he said, said again to start the rest), "detected", "session_id",
+    # "joined_upload_id"}. While waiting or recording it is out of the Library and in
+    # the studio's "To continue recording" tab. On the video the two parts were joined
+    # into: {"state": "joined_result", "from_upload_id", "seam_s", "repeat_line"}.
+    continuation: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
 
 
 class VideoPublication(_PrivateWorkspaceMixin, Base):

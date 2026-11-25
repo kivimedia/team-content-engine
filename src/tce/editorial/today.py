@@ -27,7 +27,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tce.editorial import inbox
+from tce.editorial import continuation, inbox
 from tce.editorial import lineup as lineup_service
 from tce.editorial.library import LIBRARY_FILTERS, technical_candidate_ids
 from tce.editorial.status import israel_time
@@ -81,6 +81,7 @@ def _next_action(
     week: dict[str, Any],
     waiting: int,
     pending_reviews: int,
+    continuing: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     # A topic he has filmed stays in the week, so the week shows what he did, but
     # it is done (28-Sep): never offered for recording again, and never counted
@@ -88,6 +89,18 @@ def _next_action(
     primary = [row for row in week.get("primary") or [] if not row.get("filmed")]
     ready = [row for row in primary if row.get("script_state") == "ready"]
 
+    if continuing:
+        # 25-Nov: a video he stopped partway through, sent back to be finished, is the
+        # closest thing to a finished video there is: it comes first.
+        first = continuing[0]
+        more = len(continuing) - 1
+        return {
+            "key": "continue_recording",
+            "label": "Finish recording",
+            "detail": f"{first['title']} is waiting for the rest."
+            + (f" {more} more {'is' if more == 1 else 'are'} waiting too." if more else ""),
+            "href": f"/record?continue={first['continue_upload_id']}",
+        }
     if pending_reviews:
         return {
             "key": "review_changes",
@@ -202,11 +215,12 @@ async def build(db: AsyncSession, ws: uuid.UUID, *, sessionmaker: Any = None) ->
     waiting = await _waiting_count(db, ws)
     editing = await _editing_count(db, ws)
     pending_reviews = await _pending_reviews(db, ws)
+    continuing = await continuation.waiting_list(db, ws)
 
     return {
         "week": week,
         "next_action": _next_action(
-            week=week, waiting=waiting, pending_reviews=pending_reviews
+            week=week, waiting=waiting, pending_reviews=pending_reviews, continuing=continuing
         ),
         # Only counts that change what he would do next.
         "attention": {
@@ -214,6 +228,7 @@ async def build(db: AsyncSession, ws: uuid.UUID, *, sessionmaker: Any = None) ->
             "scripts_ready": week.get("ready_count", 0),
             "editing": editing,
             "pending_reviews": pending_reviews,
+            "to_continue": len(continuing),
         },
         "worker": {
             "online": bool(worker.get("online")),

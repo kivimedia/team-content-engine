@@ -42,6 +42,12 @@ class RecordingSession(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 25-Nov (migration 060): a take set that records the rest of a video he stopped
+    # partway through. Finish joins that video's file and these clips into one video.
+    # No foreign key: recording_uploads already points here, and a cycle is not worth it.
+    continues_upload_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
 
 
 class RecordingClip(Base):
