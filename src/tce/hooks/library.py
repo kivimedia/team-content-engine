@@ -147,6 +147,24 @@ async def pick(
         return entry
 
 
+async def repoint(ws: uuid.UUID, week: str, hook_id: str, expected: str, chosen: str, why: str) -> bool:
+    """Move a pick TCE placed to the video the AI chose (T-25711), with its reason.
+    Nothing moves when he placed it himself or it moved since."""
+    async with _LOCK:
+        data = read_store(ws)
+        for entry in data["weeks"].get(week, []):
+            if entry.get("hook_id") != hook_id:
+                continue
+            if entry.get("chosen_by") != "tce" or entry.get("candidate_id") != expected:
+                return False
+            entry.update({"candidate_id": chosen, "why": f"TCE chose it: {why}", "chosen_by": "tce", "at": _now()})
+            if chosen != expected:
+                entry["script"] = None
+            write_store(ws, data)
+            return True
+    return False
+
+
 async def set_script(
     ws: uuid.UUID, week: str, hook_id: str, candidate_id: str, state: str, detail: str, **extra: Any
 ) -> bool:

@@ -27,7 +27,7 @@ from tce.api.private_access import require_private_workspace, scoped_editor_work
 from tce.api.routers.editorial import get_editorial_sessionmaker
 from tce.editorial import lineup as lineup_service
 from tce.editorial.common import open_session
-from tce.hooks import library, script_fit
+from tce.hooks import ai_match, library, script_fit
 from tce.hooks.catalog import BY_ID
 
 router = APIRouter(prefix="/hooks", tags=["hooks"])
@@ -121,9 +121,15 @@ async def pick_hook(
         # T-25711: the script is rewritten to open on this hook, in the background
         # (the writer queue can take minutes); the pick shows how it went.
         await library.set_script(
-            ws, week, hook_id, entry["candidate_id"], "writing", "Writing an opening for this hook."
+            ws, week, hook_id, entry["candidate_id"], "writing",
+            "Choosing the best video for it, then writing an opening for it."
+            if entry.get("chosen_by") == "tce" else "Writing an opening for this hook."
         )
-        background.add_task(script_fit.fit_script, sm, ws, week, entry["candidate_id"], hook_id)
+        if entry.get("chosen_by") == "tce":
+            # The AI reads the week's videos and may move it first, with its reason.
+            background.add_task(ai_match.match_and_fit, sm, ws, week, hook_id, lineup)
+        else:
+            background.add_task(script_fit.fit_script, sm, ws, week, entry["candidate_id"], hook_id)
     return await library.library(ws, week, lineup, _preview_url)
 
 

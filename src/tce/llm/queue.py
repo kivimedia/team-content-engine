@@ -80,6 +80,7 @@ INTERACTIVE_JOB_TYPES = frozenset(
         "recording_packet_voice",
         "recording_packet_hooks",
         "recording_packet_hook_scripts",
+        "hook_video_match",
         "recording_script_slips",
         "video_edit_request",
         "video_edit_batch",
