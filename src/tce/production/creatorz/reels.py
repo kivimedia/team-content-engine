@@ -558,12 +558,17 @@ def _hole_sentences(holes: list[tuple[float, float]], shots: list[dict[str, Any]
 
 
 async def get_moments(
-    shots: list[dict[str, Any]], lang: str, ask: Ask, pictures: list[dict[str, Any]] = ()
+    shots: list[dict[str, Any]], lang: str, ask: Ask, pictures: list[dict[str, Any]] = (), hook: Any = None
 ) -> dict[str, Any]:
     """The writer's moments, checked. Anything wrong goes back once with the exact reasons,
     a stretch with nothing on screen included; after that the good ones go ahead and the
-    rest are dropped."""
-    prompt = moments_prompt(shots, lang, pictures)
+    rest are dropped.
+
+    With `hook` (the hook library's pick for this topic, T-25711) the writer is asked to
+    open with it, and the opening is put in by rule when its answer does not."""
+    from tce.hooks import edit_open
+
+    prompt = moments_prompt(shots, lang, pictures) + edit_open.directive(hook, list(pictures))
     answer = await ask(prompt, MOMENTS_SYSTEM, MOMENTS_SCHEMA, 0)
     moments, problems = clean_moments(answer.get("moments"), shots, lang, pictures)
     holes = quiet_gaps(moments, shots, lang) if moments else []
@@ -585,9 +590,19 @@ async def get_moments(
             now = (len(quiet_gaps(better, shots, lang)) if better else 10**6, -len(better))
             if now <= was:
                 moments, answer = better, second
+    opening = ""
+    if hook is not None:
+        opened, opening = edit_open.ensure_opening(moments, shots, hook, list(pictures))
+        if opened != moments:
+            # what the rule put in goes through the same checks as the writer's answer
+            checked, _ = clean_moments(opened, shots, lang, pictures)
+            if checked and checked[0] == opened[0]:
+                moments = checked
+            elif opening.startswith("Opens with"):
+                opening = f"The edit could not open with {hook.name}: it did not fit the opening lines."
     if not moments:
         raise CreatorzFailed("the writer of the text moments gave nothing that fits this video")
-    return {"moments": moments, "punchline": _punchline(answer, shots)}
+    return {"moments": moments, "punchline": _punchline(answer, shots), **({"opening": opening} if opening else {})}
 
 
 # ---------------------------------------------------------------- the engine
