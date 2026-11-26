@@ -288,6 +288,8 @@
     { name: "today",    pattern: /^\/today\/?$/,               title: "Today" },
     { name: "topics",   pattern: /^\/topics\/?$/,              title: "Topics" },
     { name: "week",     pattern: /^\/week\/?$/,                title: "This week" },
+    // 26-Nov (T-25210): the hook library, picked for the week beside its topics.
+    { name: "hooks",    pattern: /^\/hooks\/?$/,               title: "Hooks" },
     { name: "library",  pattern: /^\/library\/?$/,             title: "Library" },
     // 3-Oct: the rules Jennifer learned from his notes, each with its source video.
     { name: "rules",    pattern: /^\/library\/rules\/?$/,      title: "Jennifer's rules" },
@@ -340,7 +342,8 @@
     $("pageTitle").textContent = route.title;
     var nav = $("bottomNav");
     var active = { today: "today", topics: "topics", week: "week", library: "library",
-                   room: "topics", workshop: "week", talk: "library", rules: "library" }[route.name];
+                   room: "topics", workshop: "week", talk: "library", rules: "library",
+                   hooks: "week" }[route.name];
     Array.prototype.forEach.call(nav.querySelectorAll("a"), function (a) {
       if (a.dataset.route === active) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
@@ -888,6 +891,7 @@
     view.innerHTML = weekHtml(data);
     state.painted = "week";
     status(weekStatus(data));
+    paintWeekHooks();
     var news = $("weekNewsProgress");
     if (news) {
       api("/news/workflow").catch(function () { return {unavailable: true}; }).then(function (progress) {
@@ -920,6 +924,7 @@
       : primary.length + " of " + usual + " " + plural(usual, "video") + " planned.";
     html += '<p class="lede">' + lede + (data.mix ? " " + esc(data.mix) + "." : "")
          + ' <a href="settings" data-go="/settings">Change how many a week</a></p></div>';
+    if (!window.TCE_SCOPED) html += '<div id="weekHooks" class="week-hooks hooks-entry"></div>';
 
     if (!primary.length && !reserve.length) {
       html += '<div class="empty"><strong>Nothing chosen yet</strong>'
@@ -971,6 +976,7 @@
     var html = '<article class="card">';
     html += '<div class="card-title-row"><span class="rank">' + (item.rank || index + 1) + "</span>";
     html += "<h3>" + esc(item.title) + "</h3></div>";
+    html += '<p class="hook-on hooks-entry" data-hook-on="' + esc(item.candidate_id) + '" hidden></p>';
     html += suggestedTitle(item);
     html += solutionIdentity(item);
     if (item.reason) html += '<p class="why">' + esc(item.reason) + "</p>";
@@ -1039,6 +1045,156 @@
       draft: "Script being written",
       exported: "Script ready"
     }[scriptState] || ("Script " + scriptState);
+  }
+
+  // ------------------------------------------------------------- Hook library
+
+  /* 26-Nov (T-25210): "you choose topics for the week, you choose hooks for the week."
+     Every hook here was proved on his own takes first; its preview is that proof clip.
+     A pick goes on the video of the week it fits, with the reason in one line, and he
+     can move it. Favorites come first. The owner's only, like the Book. */
+  var hookBusy = false;
+
+  async function renderHooks() {
+    var view = $("view");
+    view.innerHTML = '<div class="page">' + working("Reading the hook library") + "</div>";
+    var loading = view.firstElementChild;
+    var data;
+    try {
+      data = await api("/hooks");
+    } catch (error) {
+      if (loading.isConnected) throw error;
+      return;
+    }
+    if (!loading.isConnected || state.route !== "hooks") return;
+    paintHooks(data);
+  }
+
+  function paintHooks(data) {
+    state.hooks = data;
+    var html = '<div class="page">';
+    html += '<div class="page-head"><p class="kicker">Week of ' + esc(data.week_start) + "</p>";
+    html += "<h1>Hooks</h1>";
+    html += '<p class="lede">' + data.proved + " visual openings, each proved on one of your own takes. "
+         + "Pick the ones you want this week and TCE puts each on the video it fits. "
+         + '<a href="week" data-go="/week">Back to this week</a></p></div>';
+    html += '<p class="hooks-tally" id="hooksTally">' + esc(hookTally(data)) + "</p>";
+    if (!data.videos.length) {
+      html += '<div class="empty"><strong>No videos this week yet</strong>'
+            + "You can star hooks now. Picking one needs a topic in this week first.</div>";
+    }
+    html += '<div class="hook-grid">';
+    data.hooks.forEach(function (hook) { html += hookCard(hook, data); });
+    html += "</div></div>";
+    $("view").innerHTML = html;
+    state.painted = "hooks";
+    status(hookTally(data));
+  }
+
+  function hookTally(data) {
+    return data.picked + " " + plural(data.picked, "hook") + " picked for this week, "
+         + data.favorites + " " + plural(data.favorites, "favorite");
+  }
+
+  function hookCard(hook, data) {
+    var id = esc(hook.id);
+    var html = '<article class="card hook-card' + (hook.pick ? " is-picked" : "") + '" data-hook-card="' + id + '">';
+    html += '<video class="hook-preview" src="' + esc(apiV1 + "/" + hook.preview_url)
+         + '" muted loop playsinline autoplay preload="metadata" aria-label="Preview of '
+         + esc(hook.name) + '"></video>';
+    html += '<div class="hook-body"><div class="card-title-row"><h3>' + esc(hook.name) + "</h3>";
+    html += '<button class="star' + (hook.favorite ? " is-on" : "") + '" type="button" data-hook-fav="' + id
+         + '" aria-pressed="' + (hook.favorite ? "true" : "false") + '" aria-label="'
+         + (hook.favorite ? "Remove from favorites" : "Add to favorites") + '">'
+         + (hook.favorite ? "&#9733;" : "&#9734;") + "</button></div>";
+    html += '<p class="hook-what">' + esc(hook.what) + "</p>";
+    html += '<p class="hook-record"><strong>On camera: </strong>' + esc(hook.record) + "</p>";
+    if (hook.pick) {
+      html += '<p class="hook-placed"><span class="tag is-ready">This week</span> '
+           + (hook.pick.title ? "On “" + esc(hook.pick.title) + "”. " : "")
+           + esc(hook.pick.why) + "</p>";
+      if (data.videos.length > 1) {
+        html += '<label class="hook-move"><span>Put it on another video</span><select data-hook-move="' + id + '">';
+        data.videos.forEach(function (video) {
+          html += '<option value="' + esc(video.candidate_id) + '"'
+               + (video.candidate_id === hook.pick.candidate_id ? " selected" : "") + ">"
+               + esc(video.title) + "</option>";
+        });
+        html += "</select></label>";
+      }
+      html += '<div class="actions"><button class="btn quiet" type="button" data-hook-unpick="' + id
+           + '">Not this week</button></div>';
+    } else {
+      html += '<div class="actions"><button class="btn primary" type="button" data-hook-pick="' + id + '"'
+           + (data.videos.length ? "" : " disabled") + ">Use it this week</button></div>";
+    }
+    return html + "</div></article>";
+  }
+
+  async function hookAction(path, method, body, sentence) {
+    if (hookBusy) return;
+    hookBusy = true;
+    status(sentence);
+    try {
+      var data = await api(path, { method: method, body: body });
+      if (state.route !== "hooks") return;
+      if (data && data.hooks) paintHooks(data);
+      else await renderHooks();
+    } catch (error) {
+      status(error && error.message ? error.message : "That did not save. Try again.");
+    } finally {
+      hookBusy = false;
+    }
+  }
+
+  document.addEventListener("click", function (event) {
+    var target = event.target.closest("[data-hook-fav],[data-hook-pick],[data-hook-unpick]");
+    if (!target || state.route !== "hooks") return;
+    var d = target.dataset;
+    if (d.hookFav !== undefined) {
+      var on = target.getAttribute("aria-pressed") !== "true";
+      hookAction("/hooks/" + encodeURIComponent(d.hookFav) + "/favorite", "POST", { on: on },
+                 on ? "Adding to your favorites" : "Taking it out of your favorites");
+    } else if (d.hookPick !== undefined) {
+      hookAction("/hooks/" + encodeURIComponent(d.hookPick) + "/pick", "POST", {},
+                 "Finding the video this hook fits best");
+    } else if (d.hookUnpick !== undefined) {
+      hookAction("/hooks/" + encodeURIComponent(d.hookUnpick) + "/pick", "DELETE", undefined,
+                 "Taking it out of this week");
+    }
+  });
+
+  document.addEventListener("change", function (event) {
+    var select = event.target.closest("[data-hook-move]");
+    if (!select || state.route !== "hooks") return;
+    hookAction("/hooks/" + encodeURIComponent(select.dataset.hookMove) + "/pick", "POST",
+               { candidate_id: select.value }, "Moving the hook to that video");
+  });
+
+  /* This week: how many hooks are picked, a way into the library, and on each video
+     the hook it opens with. Read after the week is drawn, so a slow read never holds
+     the list; a failed read leaves the week exactly as it was. */
+  function paintWeekHooks() {
+    var box = $("weekHooks");
+    if (!box) return;
+    api("/hooks", { retry: false }).then(function (data) {
+      if (!box.isConnected) return;
+      var names = {};
+      data.hooks.forEach(function (hook) {
+        if (hook.pick && hook.pick.candidate_id) {
+          (names[hook.pick.candidate_id] = names[hook.pick.candidate_id] || []).push(hook.name);
+        }
+      });
+      box.innerHTML = '<h2>Hooks for this week</h2><p class="section-hint">'
+        + esc(hookTally(data)) + ". " + data.proved + " visual openings to choose from.</p>"
+        + '<div class="actions"><button class="btn" type="button" data-go="/hooks">Choose hooks</button></div>';
+      Array.prototype.forEach.call(document.querySelectorAll("[data-hook-on]"), function (line) {
+        var list = names[line.dataset.hookOn];
+        if (!list) return;
+        line.textContent = "Opens with: " + list.join(", ");
+        line.hidden = false;
+      });
+    }).catch(function () { /* the week stands without it */ });
   }
 
   // ------------------------------------------------------------- Topic room
@@ -4771,6 +4927,7 @@
       if (route.name === "today") await renderToday();
       else if (route.name === "topics") await renderTopics();
       else if (route.name === "week") await renderWeek();
+      else if (route.name === "hooks") await renderHooks();
       else if (route.name === "library") await renderLibrary();
       else if (route.name === "rules") await renderRules();
       else if (route.name === "settings") await renderSettings();

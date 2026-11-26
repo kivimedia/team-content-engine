@@ -28,6 +28,7 @@ from tce.api.routers import (
     experiments,
     feedback,
     health,
+    hooks,
     llm_jobs,
     monthly,
     narration,
@@ -349,6 +350,8 @@ def create_app() -> FastAPI:
     app.include_router(agent_talks.router, prefix=prefix)
     # 9-Nov (T-19730): the book app, the owner's only.
     app.include_router(book.router, prefix=prefix)
+    # 26-Nov (T-25210): the hook library, the owner's only.
+    app.include_router(hooks.router, prefix=prefix)
     # The editorial workspace: Today, topics, the week, changes and the library.
     # Registered after the two routers above so their existing paths win any
     # overlap; these are all new paths, so nothing is shadowed today.
