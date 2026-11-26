@@ -1086,7 +1086,14 @@
     }
     html += '<div class="hook-grid">';
     data.hooks.forEach(function (hook) { html += hookCard(hook, data); });
-    html += "</div></div>";
+    html += "</div>";
+    // T-25711: the trending video studio, looked up only when he asks (YouTube's daily allowance).
+    html += '<section class="card hook-trending" aria-labelledby="hookTrendingTitle">'
+         + '<h2 id="hookTrendingTitle">Trending this week</h2>'
+         + '<p class="hook-trending-lede">The most watched short videos in your field this week, to find new openings.</p>'
+         + '<div id="hookTrending"><button type="button" class="btn primary" data-hook-trending="look">Find trending videos</button></div>'
+         + "</section>";
+    html += "</div>";
     $("view").innerHTML = html;
     state.painted = "hooks";
     status(hookTally(data));
@@ -1113,6 +1120,53 @@
     html += '<button type="button" class="hook-swatch' + (current ? "" : " is-on") + '" data-hook-accent=""'
          + ' aria-pressed="' + (current ? "false" : "true") + '">From the footage</button>';
     return html + "</div></section>";
+  }
+
+  function trendingHtml(t) {
+    var html = '<p class="hook-trending-said" id="hookTrendingSaid">' + esc(t.said) + "</p>";
+    if (t.videos && t.videos.length) {
+      html += '<ol class="hook-trending-list">';
+      t.videos.forEach(function (v) {
+        html += '<li class="hook-trend" data-trend="' + esc(v.video_id) + '">'
+             + '<a href="' + esc(v.url) + '" target="_blank" rel="noopener">' + esc(v.title || "Untitled") + "</a>"
+             + '<span class="hook-trend-meta">' + esc(v.channel) + ", " + esc(Number(v.views).toLocaleString("en-US"))
+             + " views, " + esc(Number(v.views_per_hour).toLocaleString("en-US")) + " an hour</span>"
+             + (v.considered
+               ? '<span class="hook-trend-on">On the list to prove</span>'
+               : '<button type="button" class="btn quiet" data-hook-consider="' + esc(v.video_id) + '">Consider as a hook</button>')
+             + "</li>";
+      });
+      html += "</ol>";
+      html += '<p class="hook-trending-note">' + esc(t.note) + "</p>";
+      html += '<button type="button" class="btn quiet" data-hook-trending="again">Look again</button>';
+    }
+    if (t.proposals && t.proposals.length) {
+      html += '<h3 class="hook-proposals-title">New hooks to prove</h3><ul class="hook-proposals">';
+      t.proposals.forEach(function (p) {
+        html += "<li>" + esc(p.title) + ": " + esc(p.state) + "</li>";
+      });
+      html += "</ul>";
+    }
+    return html;
+  }
+
+  async function trendingAction(path, method, sentence) {
+    var box = $("hookTrending");
+    if (!box || hookBusy) return;
+    hookBusy = true;
+    status(sentence);
+    box.setAttribute("aria-busy", "true");
+    try {
+      var t = await api(path, { method: method });
+      if (state.route !== "hooks" || !$("hookTrending")) return;
+      $("hookTrending").innerHTML = trendingHtml(t);
+      status(t.said);
+    } catch (error) {
+      status(error && error.message ? error.message : "That did not load. Try again.");
+    } finally {
+      hookBusy = false;
+      if ($("hookTrending")) $("hookTrending").removeAttribute("aria-busy");
+    }
   }
 
   function hookTally(data) {
@@ -1176,9 +1230,19 @@
   }
 
   document.addEventListener("click", function (event) {
-    var target = event.target.closest("[data-hook-fav],[data-hook-pick],[data-hook-unpick],[data-hook-accent]");
+    var target = event.target.closest("[data-hook-fav],[data-hook-pick],[data-hook-unpick],[data-hook-accent],[data-hook-trending],[data-hook-consider]");
     if (!target || state.route !== "hooks") return;
     var d = target.dataset;
+    if (d.hookTrending !== undefined) {
+      trendingAction("/hooks/trending" + (d.hookTrending === "again" ? "?again=1" : ""), "GET",
+                     "Looking up this week's trending short videos on YouTube");
+      return;
+    }
+    if (d.hookConsider !== undefined) {
+      trendingAction("/hooks/trending/" + encodeURIComponent(d.hookConsider) + "/consider", "POST",
+                     "Putting it on the list of new hooks to prove");
+      return;
+    }
     if (d.hookAccent !== undefined) {
       hookAction("/hooks/style", "POST", { accent: d.hookAccent || null },
                  d.hookAccent ? "Saving your color" : "Each video will pick its color from its footage");

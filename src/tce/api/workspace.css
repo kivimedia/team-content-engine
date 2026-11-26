@@ -691,6 +691,17 @@ input,textarea,select { font-size:max(16px,1rem); }
 
 /* ---------------------------------------------------------------- hook library (26-Nov, T-25210) */
 .hooks-tally { margin: 0 0 12px; color: var(--body); font-weight: 600; }
+/* T-25711: the trending video studio */
+.hook-trending { margin: 16px 0 0; padding: 14px; }
+.hook-trending h2 { margin: 0 0 6px; font-size: 1.15rem; }
+.hook-trending-lede, .hook-trending-said, .hook-trending-note { margin: 0 0 10px; color: var(--ink); line-height: 1.45; font-size: 1rem; }
+.hook-trending-list { margin: 0 0 10px; padding-inline-start: 22px; display: grid; gap: 12px; }
+.hook-trend { display: grid; gap: 4px; justify-items: start; font-size: 1rem; line-height: 1.4; }
+.hook-trend a { color: var(--ink); font-weight: 700; overflow-wrap: anywhere; }
+.hook-trend-meta, .hook-trend-on { color: var(--body); font-size: 1rem; }
+.hook-trend-on { font-weight: 700; }
+.hook-proposals-title { margin: 12px 0 6px; font-size: 1.05rem; }
+.hook-proposals { margin: 0; padding-inline-start: 20px; font-size: 1rem; line-height: 1.45; color: var(--ink); }
 /* T-25711: his color for the edit */
 .hook-style { margin: 0 0 14px; padding: 14px; }
 .hook-style h2 { margin: 0 0 6px; font-size: 1.15rem; }

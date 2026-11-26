@@ -9,6 +9,9 @@ POST   /hooks/{id}/pick            {"candidate_id": optional} pick it for this w
                                    script is then rewritten to open on it (T-25711)
 DELETE /hooks/{id}/pick            take it out of this week
 POST   /hooks/style                {"accent": "#2EA3F2" | null} his color for the edit
+GET    /hooks/trending?again=1     the trending video studio: this week's most watched
+                                   short videos in his field (YouTube, once a day)
+POST   /hooks/trending/{id}/consider  put one on the list of new hooks to prove
 GET    /hooks/for/{candidate_id}   the hooks picked onto that video this week, with what
                                    to do on camera (the recording screen, T-25711)
 
@@ -28,7 +31,7 @@ from tce.api.private_access import require_private_workspace, scoped_editor_work
 from tce.api.routers.editorial import get_editorial_sessionmaker
 from tce.editorial import lineup as lineup_service
 from tce.editorial.common import open_session
-from tce.hooks import ai_match, library, script_fit
+from tce.hooks import ai_match, library, script_fit, trending
 from tce.hooks.catalog import BY_ID
 
 router = APIRouter(prefix="/hooks", tags=["hooks"])
@@ -94,6 +97,20 @@ async def set_style(
         raise _http(error) from None
     lineup = await _lineup(sm, ws)
     return await library.library(ws, _week_key(), lineup, _preview_url)
+
+
+@router.get("/trending")
+async def get_trending(again: bool = False, ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
+    """The trending video studio (T-25711): this week's most watched shorts in his field."""
+    return await trending.look(ws, again=again)
+
+
+@router.post("/trending/{video_id}/consider")
+async def consider_trending(video_id: str, ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
+    try:
+        return await trending.consider(ws, video_id)
+    except library.HookError as error:
+        raise _http(error) from None
 
 
 @router.get("/for/{candidate_id}")

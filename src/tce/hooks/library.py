@@ -69,6 +69,11 @@ def read_store(ws: uuid.UUID) -> dict[str, Any]:
     out: dict[str, Any] = {"favorites": favorites, "weeks": weeks}
     if isinstance(data.get("style"), dict) and data["style"].get("accent") in SWATCH_BY_HEX:
         out["style"] = {"accent": data["style"]["accent"]}
+    # T-25711: the trending video studio's last look and the videos he sent to be proved
+    if isinstance(data.get("trending"), dict):
+        out["trending"] = data["trending"]
+    if isinstance(data.get("proposals"), list):
+        out["proposals"] = [p for p in data["proposals"] if isinstance(p, dict) and p.get("video_id")]
     return out
 
 
@@ -146,6 +151,22 @@ def accent_rgb(ws: uuid.UUID) -> list[int] | None:
     if not accent:
         return None
     return [int(accent[i:i + 2], 16) for i in (1, 3, 5)]
+
+
+async def save_trending(ws: uuid.UUID, trending: dict[str, Any]) -> None:
+    async with _LOCK:
+        data = read_store(ws)
+        data["trending"] = trending
+        write_store(ws, data)
+
+
+async def add_proposal(ws: uuid.UUID, proposal: dict[str, Any]) -> None:
+    """A trending video he wants considered as a new hook (once each), newest first."""
+    async with _LOCK:
+        data = read_store(ws)
+        kept = [p for p in data.get("proposals", []) if p.get("video_id") != proposal["video_id"]]
+        data["proposals"] = [{**proposal, "at": _now()}, *kept][:30]
+        write_store(ws, data)
 
 
 async def toggle_favorite(ws: uuid.UUID, hook_id: str, on: bool) -> list[str]:
