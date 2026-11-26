@@ -9,12 +9,15 @@ its proof clip renders on one of his own takes, as the first ten did.
 What it does not do, said on the page too: TCE reads the title and the numbers, not
 the picture, so it does not claim which visual opening a video uses.
 
-Without a YouTube key in TCE's settings it says so and looks up nothing.
+Without a YouTube key (TCE's settings, or one of the key files its settings name)
+it says so and looks up nothing. A key YouTube turns down is said as that, not as the
+day's allowance.
 """
 
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -34,6 +37,47 @@ QUERIES = tuple(DEFAULT_QUERIES["coaching"])  # 100 quota units each: six a day 
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+KEY_NAMES = ("TCE_YOUTUBE_API_KEY", "YOUTUBE_API_KEY")
+QUOTA_REASONS = {"quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded"}
+
+
+def youtube_key() -> str:
+    """TCE's own key first, then the first key file that holds one. Never logged."""
+    if settings.youtube_api_key:
+        return settings.youtube_api_key
+    for name in (settings.youtube_key_files or "").split(","):
+        name = name.strip()
+        if not name:
+            continue
+        try:
+            lines = Path(name).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        found = {}
+        for line in lines:
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            k, sep, v = line.partition("=")
+            if sep and k.strip() in KEY_NAMES:
+                v = v.strip().strip('"').strip("'")
+                if v:
+                    found.setdefault(k.strip(), v)
+        for k in KEY_NAMES:
+            if found.get(k):
+                return found[k]
+    return ""
+
+
+def _reason(exc: Exception) -> str:
+    """YouTube's own reason word for a refusal (quotaExceeded, keyInvalid, ...)."""
+    resp = getattr(exc, "response", None)
+    try:
+        return str(resp.json()["error"]["errors"][0]["reason"])
+    except Exception:  # noqa: BLE001 - no body, not JSON, other shape
+        return ""
 
 
 async def _search_shorts(key: str, query: str) -> list[str]:
@@ -58,20 +102,26 @@ async def look(ws: uuid.UUID, *, again: bool = False) -> dict[str, Any]:
                 return _page(ws, saved)
         except ValueError:
             pass
-    key = settings.youtube_api_key
+    key = youtube_key()
     if not key:
         return _page(ws, {"state": "no_key", "videos": saved.get("videos") or [], "at": saved.get("at")})
     found: dict[str, str] = {}
     failed = 0
+    refused = 0
     for query in QUERIES:
         try:
             for vid in await _search_shorts(key, query):
                 found.setdefault(vid, query)
-        except Exception as exc:  # 403 is usually the day's quota; the rest still count
+        except Exception as exc:  # the rest of the queries still count
             failed += 1
-            logger.info("hooks.trending_search_failed", query=query, error=type(exc).__name__)
+            reason = _reason(exc)
+            if reason and reason not in QUOTA_REASONS:
+                refused += 1
+            logger.info("hooks.trending_search_failed", query=query, error=type(exc).__name__, reason=reason)
+            if refused:
+                break  # a key YouTube turns down is turned down for every query
     if not found:
-        state = "quota" if failed else "none"
+        state = "refused" if refused else ("quota" if failed else "none")
         return _page(ws, {"state": state, "videos": saved.get("videos") or [], "at": saved.get("at")})
     stats = await YouTubeDemandService(api_key=key).fetch_video_stats(list(found))
     stats.sort(key=lambda v: v.get("views_per_hour", 0), reverse=True)
@@ -97,6 +147,7 @@ def _page(ws: uuid.UUID, trending: dict[str, Any]) -> dict[str, Any]:
         "ok": f"{len(trending.get('videos') or [])} short videos in your field, most watched per hour this week.",
         "no_key": "TCE has no YouTube key yet, so it cannot look up trending videos.",
         "quota": "YouTube refused today's lookups (the free daily allowance is used up). It looks again tomorrow.",
+        "refused": "YouTube did not accept the key TCE uses, so nothing was looked up.",
         "none": "YouTube found no short videos in your field this week.",
     }[state]
     return {

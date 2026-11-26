@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # caps to roughly 16 runs/day. trend_scout fetches gracefully degrade when
     # this is unset or quota-exceeded.
     youtube_api_key: str = ""
+    # When youtube_api_key is unset, the trending video studio reads a key from the
+    # first of these files that holds TCE_YOUTUBE_API_KEY or YOUTUBE_API_KEY (T-25711):
+    # a key of TCE's own pasted in the app, then the owner's Karaoke Madness key (same
+    # owner, same YouTube Data API). Read on each lookup, so no restart is needed.
+    youtube_key_files: str = "/opt/kmbot-secrets/tce-youtube.env,/home/ziv/karaoke-madness/.env"
 
     # S3-compatible storage (GAP-04)
     s3_endpoint: str = ""

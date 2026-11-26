@@ -26,8 +26,9 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def _youtube(monkeypatch, key="k", fail=False):
+def _youtube(monkeypatch, key="k", fail=False, files=""):
     monkeypatch.setattr(settings, "youtube_api_key", key)
+    monkeypatch.setattr(settings, "youtube_key_files", files)
     calls = {"search": 0}
 
     async def search(k, query):
@@ -105,3 +106,75 @@ def test_api_and_page(monkeypatch, store):
     assert client.post("/api/v1/hooks/trending/zzz/consider").status_code == 404
     js = (Path(__file__).resolve().parents[2] / "src/tce/api/workspace.js").read_text(encoding="utf-8")
     assert 'data-hook-trending="look"' in js and "Consider as a hook" in js and "function trendingHtml(t)" in js
+
+
+def test_key_from_the_first_file_that_holds_one(monkeypatch, store, tmp_path):
+    missing = tmp_path / "nope.env"
+    empty = tmp_path / "empty.env"
+    empty.write_text("TCE_YOUTUBE_API_KEY=\nOTHER=x\n", encoding="utf-8")
+    karaoke = tmp_path / "karaoke.env"
+    karaoke.write_text('# app\nexport YOUTUBE_API_KEY="from-karaoke"\nNEXT=1\n', encoding="utf-8")
+    seen = []
+    calls = _youtube(monkeypatch, key="", files=f"{missing}, {empty},{karaoke}")
+
+    async def search(k, query):
+        seen.append(k)
+        return ["v1"]
+
+    monkeypatch.setattr(trending, "_search_shorts", search)
+    page = run(trending.look(WS))
+    assert page["state"] == "ok" and set(seen) == {"from-karaoke"} and calls["ids"] == ["v1"]
+    own = tmp_path / "own.env"
+    own.write_text("TCE_YOUTUBE_API_KEY=own\n", encoding="utf-8")
+    monkeypatch.setattr(settings, "youtube_key_files", f"{own},{karaoke}")
+    assert trending.youtube_key() == "own"
+    monkeypatch.setattr(settings, "youtube_api_key", "setting")
+    assert trending.youtube_key() == "setting"
+
+
+def test_unreadable_key_file_is_no_key(monkeypatch, store, tmp_path):
+    locked = tmp_path / "locked.env"
+    locked.write_text("YOUTUBE_API_KEY=x\n", encoding="utf-8")
+    locked.chmod(0)
+    calls = _youtube(monkeypatch, key="", files=str(locked))
+    try:
+        page = run(trending.look(WS))
+    finally:
+        locked.chmod(0o600)
+    if page["state"] != "no_key":  # running as root reads a 000 file
+        pytest.skip("root reads the file")
+    assert calls["search"] == 0
+
+
+def _http_error(reason):
+    import httpx
+
+    req = httpx.Request("GET", "https://www.googleapis.com/youtube/v3/search")
+    resp = httpx.Response(403 if reason != "keyInvalid" else 400, request=req,
+                          json={"error": {"errors": [{"reason": reason}]}})
+    return httpx.HTTPStatusError("refused", request=req, response=resp)
+
+
+def test_a_key_youtube_turns_down_is_not_called_quota(monkeypatch, store):
+    calls = _youtube(monkeypatch)
+
+    async def refuse(k, query):
+        calls["search"] += 1
+        raise _http_error("keyInvalid")
+
+    monkeypatch.setattr(trending, "_search_shorts", refuse)
+    page = run(trending.look(WS, again=True))
+    assert page["state"] == "refused" and "did not accept the key" in page["said"]
+    assert calls["search"] == 1  # stops at the first refusal
+
+
+def test_quota_reason_is_still_quota(monkeypatch, store):
+    calls = _youtube(monkeypatch)
+
+    async def spent(k, query):
+        calls["search"] += 1
+        raise _http_error("quotaExceeded")
+
+    monkeypatch.setattr(trending, "_search_shorts", spent)
+    page = run(trending.look(WS, again=True))
+    assert page["state"] == "quota" and calls["search"] == len(trending.QUERIES)
