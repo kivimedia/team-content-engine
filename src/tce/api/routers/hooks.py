@@ -7,6 +7,8 @@ POST   /hooks/{id}/favorite        {"on": true|false}
 POST   /hooks/{id}/pick            {"candidate_id": optional} pick it for this week; with
                                    no video named, TCE puts it on the one it fits
 DELETE /hooks/{id}/pick            take it out of this week
+GET    /hooks/for/{candidate_id}   the hooks picked onto that video this week, with what
+                                   to do on camera (the recording screen, T-25711)
 
 The owner's only, like the Book: the proof clips are his own footage.
 """
@@ -73,6 +75,14 @@ async def get_library(
 ) -> dict[str, Any]:
     lineup = await _lineup(sm, ws)
     return await library.library(ws, _week_key(), lineup, _preview_url)
+
+
+@router.get("/for/{candidate_id}")
+async def hooks_for_video(candidate_id: str, ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
+    hooks = library.for_video(ws, _week_key(), candidate_id)
+    for hook in hooks:
+        hook["preview_url"] = _preview_url(hook["id"])
+    return {"candidate_id": candidate_id, "week_start": _week_key(), "hooks": hooks}
 
 
 @router.get("/{hook_id}/preview")

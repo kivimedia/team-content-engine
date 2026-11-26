@@ -223,3 +223,25 @@ def hooks_for_week(ws: uuid.UUID, week: str) -> dict[str, list[str]]:
         if hook is not None and entry.get("candidate_id"):
             out.setdefault(entry["candidate_id"], []).append(hook.name)
     return out
+
+
+def for_video(ws: uuid.UUID, week: str, candidate_id: str) -> list[dict[str, Any]]:
+    """The hooks picked onto one video this week, with what to do on camera (T-25711).
+
+    The recording screen reads this before he presses record. Read only: a pick whose
+    video left the week is moved by the library page, not here."""
+    out: list[dict[str, Any]] = []
+    for entry in read_store(ws)["weeks"].get(week, []):
+        hook = BY_ID.get(entry.get("hook_id"))
+        if hook is None or entry.get("candidate_id") != candidate_id:
+            continue
+        out.append({
+            "id": hook.id,
+            "name": hook.name,
+            "what": hook.what,
+            "record": hook.record,
+            "coach": list(hook.coach) or [hook.record],
+            "why": entry.get("why", ""),
+            "chosen_by": entry.get("chosen_by", "tce"),
+        })
+    return out

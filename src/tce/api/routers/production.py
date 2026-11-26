@@ -2410,6 +2410,11 @@ async def recording_queue(
         if candidate is not None and packet is not None and candidate.workspace_id == ws:
             rows.append((candidate, packet))
     ideas: list[dict[str, Any]] = []
+    # T-25711: the visual hook picked for each video in the hook library, so the
+    # studio coaches it without a second request. A workspace with no library has none.
+    from tce.hooks import library as hook_library
+
+    hook_week = lineup_service.week_start_for(None).date().isoformat()
     for candidate, packet in rows:
         active = (
             await db.execute(
@@ -2440,6 +2445,10 @@ async def recording_queue(
                 "packet_format": "v2" if packet.hook_options and packet.beats else "legacy",
                 "active_session_id": str(active.id) if active else None,
                 "active_session_status": active.status if active else None,
+                "visual_hooks": [
+                    {**hook, "preview_url": f"hooks/{hook['id']}/preview"}
+                    for hook in hook_library.for_video(ws, hook_week, str(candidate.id))
+                ],
             }
         )
     # 25-Nov: the studio's "To continue recording" tab. Videos he stopped partway

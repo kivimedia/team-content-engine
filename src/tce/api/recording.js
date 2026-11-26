@@ -17,6 +17,27 @@ function payoffPhrase(phrases, phraseId) {
   return Number.isInteger(index) && index >= 0 && index < list.length ? list[index] : "";
 }
 
+/* T-25711: the visual hook picked for this video in the hook library, as the
+   recording screen shows it before he presses record. Pure, so it is tested
+   without a browser. */
+function visualHookModel(payload, apiV1 = "/api/v1") {
+  const hooks = Array.isArray(payload?.hooks) ? payload.hooks.filter((hook) => hook && hook.id) : [];
+  if (!hooks.length) return { show: false, hooks: [] };
+  const first = hooks[0];
+  const coach = (Array.isArray(first.coach) && first.coach.length ? first.coach : [first.record])
+    .filter((line) => typeof line === "string" && line.trim());
+  const others = hooks.slice(1).map((hook) => hook.name).filter(Boolean);
+  return {
+    show: true,
+    hooks,
+    title: first.name,
+    what: others.length ? `${first.what} Also picked for this video: ${others.join(", ")}.` : first.what,
+    coach: coach.slice(0, 3),
+    clip: `${apiV1}/hooks/${encodeURIComponent(first.id)}/preview`,
+    tip: `Visual hook: ${first.name}. ${coach[0] || ""}`.trim(),
+  };
+}
+
 function hookChooserModel(idea, context = {}) {
   const options = Array.isArray(idea?.hook_options) ? idea.hook_options : [];
   const phrases = Array.isArray(idea?.script_phrases) ? idea.script_phrases : [];
@@ -262,6 +283,68 @@ function rebindIdeas(ideas, next) {
     const bar = document.querySelector("#studioView .controls");
     if (bar) bar.dataset.phase = controlsPhase();
   }
+
+  /* T-25711: the hook he picked for this video in the hook library. The studio
+     has room for one line (its name and a How to film it button); the clip and two
+     or three lines on where to stand, hands and body, and when to move get their
+     own screen, shown once before the first take of that video and on the button.
+     Nothing shows when no hook is picked or the page is a client's. */
+  function visualHookSeenKey(candidateId, hookId) {
+    return `tce-visual-hook-seen-${candidateId}-${hookId}`;
+  }
+
+  function openVisualHookSheet() {
+    const sheet = $("visualHookSheet");
+    if (!state.visualHook) return;
+    sheet.hidden = false;
+    const clip = $("visualHookClip");
+    if (clip.getAttribute("src") !== state.visualHook.clip) clip.src = state.visualHook.clip;
+    clip.play().catch(() => { /* a muted clip may still be refused; it shows its first frame */ });
+    $("visualHookReady").focus({ preventScroll: true });
+  }
+
+  function closeVisualHookSheet() {
+    const sheet = $("visualHookSheet");
+    sheet.hidden = true;
+    $("visualHookClip").pause();
+    if (state.idea && state.visualHook) {
+      try { localStorage.setItem(visualHookSeenKey(state.idea.candidate_id, state.visualHook.hooks[0].id), "1"); } catch { /* private mode */ }
+    }
+  }
+
+  function paintVisualHook(idea) {
+    const box = $("visualHook");
+    const tip = $("cameraHookTip");
+    state.visualHook = null;
+    box.hidden = true;
+    tip.hidden = true;
+    $("visualHookSheet").hidden = true;
+    $("visualHookClip").pause();
+    if (!idea?.candidate_id || window.TCE_SCOPED) return;
+    const asked = idea.candidate_id;
+    // The recording list carries the hooks picked for each video (no second request).
+    const model = visualHookModel({ hooks: idea.visual_hooks }, apiV1);
+    if (!model.show) return;
+    state.visualHook = model;
+    $("visualHookTitle").textContent = model.title;
+    $("visualHookSheetTitle").textContent = model.title;
+    $("visualHookWhat").textContent = model.what;
+    $("visualHookCoach").replaceChildren(...model.coach.map((line) => {
+      const item = document.createElement("li");
+      item.textContent = line;
+      return item;
+    }));
+    tip.textContent = model.tip;
+    tip.hidden = false;
+    box.hidden = false;
+    let seen = false;
+    try { seen = localStorage.getItem(visualHookSeenKey(asked, model.hooks[0].id)) === "1"; } catch { /* private mode */ }
+    const live = state.recorder && state.recorder.state !== "inactive";
+    if (!seen && !live) openVisualHookSheet();
+  }
+
+  $("visualHookHow").addEventListener("click", () => openVisualHookSheet());
+  $("visualHookReady").addEventListener("click", () => closeVisualHookSheet());
 
   function showNotice(message, timeout = 4200) {
     const notice = $("notice");
@@ -1174,6 +1257,7 @@ function rebindIdeas(ideas, next) {
       : idea.big_idea;
     $("hookChooser").hidden = true;
     renderHookPanel(idea, lockNote);
+    paintVisualHook(idea);
     // A different idea starts its numbers from the first page, nothing marked,
     // and its clock at zero.
     if (!state.recorder || state.recorder.state === "inactive") resetTimer();
