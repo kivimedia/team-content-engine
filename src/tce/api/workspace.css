@@ -691,6 +691,14 @@ input,textarea,select { font-size:max(16px,1rem); }
 
 /* ---------------------------------------------------------------- hook library (26-Nov, T-25210) */
 .hooks-tally { margin: 0 0 12px; color: var(--body); font-weight: 600; }
+/* T-25711: his color for the edit */
+.hook-style { margin: 0 0 14px; padding: 14px; }
+.hook-style h2 { margin: 0 0 6px; font-size: 1.15rem; }
+.hook-style-now { margin: 0 0 10px; color: var(--ink); line-height: 1.45; font-size: 1rem; }
+.hook-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.hook-swatch { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border: 2px solid var(--line, #c9cfd8); border-radius: 22px; background: transparent; color: var(--ink); font-weight: 700; font-size: 1rem; }
+.hook-swatch.is-on { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.hook-swatch-dot { width: 20px; height: 20px; border-radius: 50%; border: 1px solid rgba(0, 0, 0, 0.35); flex: 0 0 auto; }
 .hook-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
 @media (min-width: 720px) { .hook-grid { grid-template-columns: 1fr 1fr; } }
 @media (min-width: 1080px) { .hook-grid { grid-template-columns: 1fr 1fr 1fr; } }

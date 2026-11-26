@@ -1267,6 +1267,7 @@ async def _render_creatorz(
 ) -> tuple[_Styled | None, str | None]:
     """The finished Creatorz file at `out` and what the render needs to say about it, or
     (None, why) so the same render makes the Pill version instead."""
+    from tce.hooks import library as hook_library
     from tce.llm import LLMUnavailable
     from tce.llm.queue import QueueError
 
@@ -1328,6 +1329,8 @@ async def _render_creatorz(
             backdrop=backdrop_config.for_render(ws, upload_id, src, plan),
             # 19-Nov: the sound a moment later when this recording's lips trail it.
             **({"sound_delay_ms": late_ms} if late_ms else {}),
+            # T-25711: his color from the hook studio, when he chose one.
+            **({"accent": accent} if (accent := hook_library.accent_rgb(ws)) else {}),
         )
         os.replace(made.voice, creatorz_voice_path(out))
         os.replace(made.out, out)

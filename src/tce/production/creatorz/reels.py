@@ -251,11 +251,15 @@ def reel_plan(
     moments: list[dict[str, Any]], punchline: int | None, bed: str | Path | None,
     sound_delay_ms: int = 0,
     caption_gap_s: float = CAPTION_GAP_S, caption_anchors: list[dict[str, Any]] | None = None,
+    accent: list[int] | None = None,
 ) -> dict[str, Any]:
+    # T-25711: his color from the hook studio; without it the engine picks one from the footage.
+    color = {"accent": list(accent)} if accent else {}
     # 19-Nov: only a recording whose lips trail its sound carries the key (media.sound_delay_for).
     late = {"sound_delay_ms": int(sound_delay_ms)} if sound_delay_ms and sound_delay_ms > 0 else {}
     return {
         **late,
+        **color,
         "schema": engine_plan.SCHEMA,
         "source": str(src),
         "words": str(words_path),
@@ -758,6 +762,7 @@ async def render_reel(
     moments: list[dict[str, Any]], punchline: int | None, bed: str | None, on_status: Status,
     backdrop: dict[str, Any] | None = None, sound_delay_ms: int = 0,
     caption_gap_s: float = CAPTION_GAP_S, caption_anchors: list[dict[str, Any]] | None = None,
+    accent: list[int] | None = None,
 ) -> ReelResult:
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -769,7 +774,7 @@ async def render_reel(
             reel_plan(
                 src=src, words_path=words_path, keep=keep, lang=lang, work=work, moments=moments,
                 punchline=punchline, bed=bed, sound_delay_ms=sound_delay_ms,
-                caption_gap_s=caption_gap_s, caption_anchors=caption_anchors,
+                caption_gap_s=caption_gap_s, caption_anchors=caption_anchors, accent=accent,
             ),
             ensure_ascii=False,
         ),

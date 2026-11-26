@@ -8,6 +8,7 @@ POST   /hooks/{id}/pick            {"candidate_id": optional} pick it for this w
                                    no video named, TCE puts it on the one it fits. The
                                    script is then rewritten to open on it (T-25711)
 DELETE /hooks/{id}/pick            take it out of this week
+POST   /hooks/style                {"accent": "#2EA3F2" | null} his color for the edit
 GET    /hooks/for/{candidate_id}   the hooks picked onto that video this week, with what
                                    to do on camera (the recording screen, T-25711)
 
@@ -50,6 +51,10 @@ class PickRequest(BaseModel):
     candidate_id: str | None = None
 
 
+class StyleRequest(BaseModel):
+    accent: str | None = None
+
+
 def _week_key() -> str:
     return lineup_service.week_start_for(None).date().isoformat()
 
@@ -74,6 +79,19 @@ def _preview_url(hook_id: str) -> str:
 async def get_library(
     ws: uuid.UUID = Depends(require_owner), sm: Any = Depends(get_editorial_sessionmaker)
 ) -> dict[str, Any]:
+    lineup = await _lineup(sm, ws)
+    return await library.library(ws, _week_key(), lineup, _preview_url)
+
+
+@router.post("/style")
+async def set_style(
+    body: StyleRequest, ws: uuid.UUID = Depends(require_owner), sm: Any = Depends(get_editorial_sessionmaker)
+) -> dict[str, Any]:
+    """His color for every hook and headline in the Creatorz edit (T-25711)."""
+    try:
+        await library.set_accent(ws, body.accent or None)
+    except library.HookError as error:
+        raise _http(error) from None
     lineup = await _lineup(sm, ws)
     return await library.library(ws, _week_key(), lineup, _preview_url)
 

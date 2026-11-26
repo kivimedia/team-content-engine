@@ -1079,6 +1079,7 @@
          + "Pick the ones you want this week and TCE puts each on the video it fits. "
          + '<a href="week" data-go="/week">Back to this week</a></p></div>';
     html += '<p class="hooks-tally" id="hooksTally">' + esc(hookTally(data)) + "</p>";
+    html += hookStyle(data.style);
     if (!data.videos.length) {
       html += '<div class="empty"><strong>No videos this week yet</strong>'
             + "You can star hooks now. Picking one needs a topic in this week first.</div>";
@@ -1089,6 +1090,29 @@
     $("view").innerHTML = html;
     state.painted = "hooks";
     status(hookTally(data));
+  }
+
+  /* T-25711: his color for every hook and headline in the Creatorz edit. Swatches only:
+     each stays readable as the editor's 3D letters. */
+  function hookStyle(style) {
+    if (!style || !style.swatches) return "";
+    var current = style.accent || "";
+    var named = style.swatches.filter(function (s) { return s.hex === current; })[0];
+    var html = '<section class="card hook-style" aria-labelledby="hookStyleTitle">';
+    html += '<h2 id="hookStyleTitle">Your color</h2>';
+    html += '<p class="hook-style-now" id="hookStyleNow">' + (named
+      ? "Every hook and headline in your Creatorz edits is drawn in " + esc(named.name) + "."
+      : "Each video picks its color from its own footage. Choose one to use it on every video.") + "</p>";
+    html += '<div class="hook-swatches">';
+    style.swatches.forEach(function (s) {
+      var on = s.hex === current;
+      html += '<button type="button" class="hook-swatch' + (on ? " is-on" : "") + '" data-hook-accent="' + esc(s.hex)
+           + '" aria-pressed="' + (on ? "true" : "false") + '"><span class="hook-swatch-dot" style="background:'
+           + esc(s.hex) + '"></span>' + esc(s.name) + "</button>";
+    });
+    html += '<button type="button" class="hook-swatch' + (current ? "" : " is-on") + '" data-hook-accent=""'
+         + ' aria-pressed="' + (current ? "false" : "true") + '">From the footage</button>';
+    return html + "</div></section>";
   }
 
   function hookTally(data) {
@@ -1152,9 +1176,14 @@
   }
 
   document.addEventListener("click", function (event) {
-    var target = event.target.closest("[data-hook-fav],[data-hook-pick],[data-hook-unpick]");
+    var target = event.target.closest("[data-hook-fav],[data-hook-pick],[data-hook-unpick],[data-hook-accent]");
     if (!target || state.route !== "hooks") return;
     var d = target.dataset;
+    if (d.hookAccent !== undefined) {
+      hookAction("/hooks/style", "POST", { accent: d.hookAccent || null },
+                 d.hookAccent ? "Saving your color" : "Each video will pick its color from its footage");
+      return;
+    }
     if (d.hookFav !== undefined) {
       var on = target.getAttribute("aria-pressed") !== "true";
       hookAction("/hooks/" + encodeURIComponent(d.hookFav) + "/favorite", "POST", { on: on },

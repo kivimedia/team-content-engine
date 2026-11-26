@@ -29,6 +29,19 @@ from tce.settings import settings
 _LOCK = asyncio.Lock()
 KEEP_WEEKS = 12
 
+# T-25711: his color for every hook and headline in the Creatorz edit. Only light,
+# saturated colors the editor's 3D letters stay readable in (the letter's side is the
+# same color at 58 percent), so the choice is from swatches, not any color.
+SWATCHES: tuple[tuple[str, str], ...] = (
+    ("#2EA3F2", "Kivi blue"),
+    ("#F0E2BC", "Sand"),
+    ("#FFE280", "Butter"),
+    ("#B2E4FF", "Ice"),
+    ("#FF8A6B", "Coral"),
+    ("#7FE0B5", "Mint"),
+)
+SWATCH_BY_HEX = {hex_: name for hex_, name in SWATCHES}
+
 
 class HookError(Exception):
     def __init__(self, code: str, message: str, status: int = 409):
@@ -53,7 +66,10 @@ def read_store(ws: uuid.UUID) -> dict[str, Any]:
         data = {}
     favorites = [h for h in data.get("favorites", []) if h in BY_ID]
     weeks = data.get("weeks") if isinstance(data.get("weeks"), dict) else {}
-    return {"favorites": favorites, "weeks": weeks}
+    out: dict[str, Any] = {"favorites": favorites, "weeks": weeks}
+    if isinstance(data.get("style"), dict) and data["style"].get("accent") in SWATCH_BY_HEX:
+        out["style"] = {"accent": data["style"]["accent"]}
+    return out
 
 
 def write_store(ws: uuid.UUID, data: dict[str, Any]) -> None:
@@ -106,6 +122,30 @@ def place(hook: Hook, videos: list[dict[str, Any]], taken: set[str]) -> tuple[st
     if free:
         return free[0]["candidate_id"], "This hook works on any opening line, and this video had no hook yet."
     return videos[0]["candidate_id"], "This hook works on any opening line; every video already has one, so it is first in your order."
+
+
+async def set_accent(ws: uuid.UUID, accent: str | None) -> dict[str, Any] | None:
+    """Save his color (one of SWATCHES), or None to let each video pick from its footage."""
+    if accent is not None:
+        accent = accent.upper()
+        if accent not in SWATCH_BY_HEX:
+            raise HookError("unknown_color", "That color is not one of the readable ones on the list.", status=400)
+    async with _LOCK:
+        data = read_store(ws)
+        if accent is None:
+            data.pop("style", None)
+        else:
+            data["style"] = {"accent": accent}
+        write_store(ws, data)
+        return data.get("style")
+
+
+def accent_rgb(ws: uuid.UUID) -> list[int] | None:
+    """His color as [r, g, b] for the editor, or None (the editor picks from the footage)."""
+    accent = (read_store(ws).get("style") or {}).get("accent")
+    if not accent:
+        return None
+    return [int(accent[i:i + 2], 16) for i in (1, 3, 5)]
 
 
 async def toggle_favorite(ws: uuid.UUID, hook_id: str, on: bool) -> list[str]:
@@ -247,6 +287,10 @@ async def library(ws: uuid.UUID, week: str, lineup: dict[str, Any], preview_url:
         "favorites": len(favorites),
         "videos": [{"candidate_id": v["candidate_id"], "title": v.get("title") or ""} for v in videos],
         "proved": len(HOOKS),
+        "style": {
+            "accent": (data.get("style") or {}).get("accent"),
+            "swatches": [{"hex": h, "name": n} for h, n in SWATCHES],
+        },
     }
 
 
