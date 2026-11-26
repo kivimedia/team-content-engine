@@ -32,6 +32,11 @@ from tests.editorial_db import create_tables
 KEY = "synthetic-test-key"
 AUTH = {"Authorization": f"Bearer {KEY}"}
 LEASE = "/api/v1/llm-jobs/lease"
+# "At once" for a lease the server must not hold. A held one waits seconds (up to
+# LEASE_WAIT_MAX_S, 25 s), so 3 s still tells the two apart, and a shared CI runner
+# that stalls for a second is not a failure (26-Nov-2026: 0.97 s on GitHub for a
+# plain lease that takes 0.03 s on the box, T-25692).
+AT_ONCE_S = 3.0
 
 
 def held() -> int:
@@ -103,7 +108,7 @@ async def held_count_reaches(n: int, within: float = 2.0) -> None:
 async def test_a_plain_lease_answers_at_once_in_todays_shape(rig):
     t = time.monotonic()
     empty = await rig.post(LEASE, json={"worker_id": "old-worker"}, headers=AUTH)
-    assert time.monotonic() - t < 0.5
+    assert time.monotonic() - t < AT_ONCE_S
     assert empty.status_code == 200 and empty.json() == {"job": None}
 
     job = await enqueue(rig)
@@ -134,7 +139,7 @@ async def test_a_waiting_lease_takes_a_job_already_queued_at_once(rig):
     job = await enqueue(rig)
     t = time.monotonic()
     got = await rig.post(LEASE, json={"worker_id": "w1", "wait_seconds": 20}, headers=AUTH)
-    assert got.json()["job"]["id"] == str(job.id) and time.monotonic() - t < 0.5
+    assert got.json()["job"]["id"] == str(job.id) and time.monotonic() - t < AT_ONCE_S
 
 
 async def test_a_waiting_lease_ends_with_the_normal_empty_answer_at_its_bound(rig, monkeypatch):
@@ -155,7 +160,7 @@ async def test_a_waiting_lease_ends_with_the_normal_empty_answer_at_its_bound(ri
 async def test_a_zero_or_negative_wait_is_a_plain_lease(rig, wait):
     t = time.monotonic()
     got = await rig.post(LEASE, json={"worker_id": "w1", "wait_seconds": wait}, headers=AUTH)
-    assert got.json() == {"job": None} and time.monotonic() - t < 0.5
+    assert got.json() == {"job": None} and time.monotonic() - t < AT_ONCE_S
 
 
 async def test_a_waiting_lease_holds_no_database_connection_while_it_waits(rig):
