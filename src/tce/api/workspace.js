@@ -1113,6 +1113,10 @@
       html += '<p class="hook-placed"><span class="tag is-ready">This week</span> '
            + (hook.pick.title ? "On “" + esc(hook.pick.title) + "”. " : "")
            + esc(hook.pick.why) + "</p>";
+      if (hook.pick.script && hook.pick.script.detail) {
+        html += '<p class="hook-script" data-hook-script="' + esc(hook.pick.script.state || "") + '">'
+             + '<strong>Script: </strong>' + esc(hook.pick.script.detail) + "</p>";
+      }
       if (data.videos.length > 1) {
         html += '<label class="hook-move"><span>Put it on another video</span><select data-hook-move="' + id + '">';
         data.videos.forEach(function (video) {

@@ -5,7 +5,8 @@ GET    /hooks                      every proved hook (favorites first), this wee
 GET    /hooks/{id}/preview         the hook's proof clip, rendered from his own take
 POST   /hooks/{id}/favorite        {"on": true|false}
 POST   /hooks/{id}/pick            {"candidate_id": optional} pick it for this week; with
-                                   no video named, TCE puts it on the one it fits
+                                   no video named, TCE puts it on the one it fits. The
+                                   script is then rewritten to open on it (T-25711)
 DELETE /hooks/{id}/pick            take it out of this week
 GET    /hooks/for/{candidate_id}   the hooks picked onto that video this week, with what
                                    to do on camera (the recording screen, T-25711)
@@ -18,7 +19,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -26,7 +27,7 @@ from tce.api.private_access import require_private_workspace, scoped_editor_work
 from tce.api.routers.editorial import get_editorial_sessionmaker
 from tce.editorial import lineup as lineup_service
 from tce.editorial.common import open_session
-from tce.hooks import library
+from tce.hooks import library, script_fit
 from tce.hooks.catalog import BY_ID
 
 router = APIRouter(prefix="/hooks", tags=["hooks"])
@@ -106,15 +107,24 @@ async def set_favorite(hook_id: str, body: FavoriteRequest, ws: uuid.UUID = Depe
 async def pick_hook(
     hook_id: str,
     body: PickRequest,
+    background: BackgroundTasks,
     ws: uuid.UUID = Depends(require_owner),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
     lineup = await _lineup(sm, ws)
+    week = _week_key()
     try:
-        await library.pick(ws, _week_key(), hook_id, lineup, body.candidate_id)
+        entry = await library.pick(ws, week, hook_id, lineup, body.candidate_id)
     except library.HookError as error:
         raise _http(error) from None
-    return await library.library(ws, _week_key(), lineup, _preview_url)
+    if entry.get("candidate_id"):
+        # T-25711: the script is rewritten to open on this hook, in the background
+        # (the writer queue can take minutes); the pick shows how it went.
+        await library.set_script(
+            ws, week, hook_id, entry["candidate_id"], "writing", "Writing an opening for this hook."
+        )
+        background.add_task(script_fit.fit_script, sm, ws, week, entry["candidate_id"], hook_id)
+    return await library.library(ws, week, lineup, _preview_url)
 
 
 @router.delete("/{hook_id}/pick")

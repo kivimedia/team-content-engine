@@ -30,6 +30,8 @@ class Hook:
     fit_reason: str = ""
     # Before he presses record (T-25711): where to stand, hands and body, when to move.
     coach: tuple[str, ...] = field(default_factory=tuple)
+    # What the first spoken line must give this hook, for the script writer (T-25711).
+    script_need: str = ""
 
     @property
     def preview(self) -> Path:
@@ -47,6 +49,7 @@ HOOKS: tuple[Hook, ...] = (
             "Hands low and still, so nothing crosses the word.",
             "Say the key word clearly and stay in your spot for the first two seconds.",
         ),
+        script_need="one short, strong key word in the first line that can sit big behind his head",
     ),
     Hook(
         "punch-in",
@@ -58,6 +61,7 @@ HOOKS: tuple[Hook, ...] = (
             "Keep your hands below your chin so the close frame stays clean.",
             "Lean in a little on the key word, then settle back.",
         ),
+        script_need="one key word in the first line worth zooming in on",
     ),
     Hook(
         "word-by-word",
@@ -69,6 +73,7 @@ HOOKS: tuple[Hook, ...] = (
             "Hands relaxed and low; the words appear over that space.",
             "Say the line clearly in one breath, no pause in the middle.",
         ),
+        script_need="a first line short enough to read word by word, under twelve words",
     ),
     Hook(
         "whip-in",
@@ -80,6 +85,7 @@ HOOKS: tuple[Hook, ...] = (
             "Hands ready, no reaching for the phone after you press.",
             "Start talking the moment you press record, no pause.",
         ),
+        script_need="a first word that is already the point, with no warm-up words before it",
     ),
     Hook(
         "freeze-stamp",
@@ -94,6 +100,7 @@ HOOKS: tuple[Hook, ...] = (
             "Make one clear face or gesture on the key word.",
             "Hold it for half a beat, then carry on talking.",
         ),
+        script_need="an early word that names the mistake or the wrong belief, short enough for a two or three word stamp",
     ),
     Hook(
         "split-screen",
@@ -108,6 +115,7 @@ HOOKS: tuple[Hook, ...] = (
             "Use your hands when you say the problem and again for the result.",
             "Say the problem early and the result later; TCE puts them side by side.",
         ),
+        script_need="a clear before and a clear after, the problem said early and the result said later",
     ),
     Hook(
         "big-number",
@@ -121,6 +129,7 @@ HOOKS: tuple[Hook, ...] = (
             "Hold up the number with your fingers if it is small, otherwise hands low.",
             "Say the number out loud and clearly, for example eighty percent.",
         ),
+        script_need="a specific number said out loud in the first line, taken from the evidence, never invented",
     ),
     Hook(
         "bw-to-color",
@@ -132,6 +141,7 @@ HOOKS: tuple[Hook, ...] = (
             "Hands relaxed.",
             "Say the key word clearly; the color comes on with it.",
         ),
+        script_need="one key word in the first line where the picture can snap to color",
     ),
     Hook(
         "proof-pop",
@@ -146,6 +156,7 @@ HOOKS: tuple[Hook, ...] = (
             "Point down on the claim, toward where the proof appears.",
             "Attach the picture that proves it to the take, and say the claim it proves.",
         ),
+        script_need="a claim in the first lines that one of his own screenshots or results can prove",
     ),
     Hook(
         "background-jump",
@@ -160,6 +171,7 @@ HOOKS: tuple[Hook, ...] = (
             "Keep hands close to your body so the edge around you stays clean.",
             "Stay still in one spot for the first two seconds.",
         ),
+        script_need="a place, or a change of place, named in the first line",
     ),
 )
 

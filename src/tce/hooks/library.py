@@ -147,6 +147,22 @@ async def pick(
         return entry
 
 
+async def set_script(
+    ws: uuid.UUID, week: str, hook_id: str, candidate_id: str, state: str, detail: str, **extra: Any
+) -> bool:
+    """Write how the script follows this pick (T-25711). Only on the pick that is
+    still on that video: a pick moved meanwhile is not overwritten by a stale run."""
+    async with _LOCK:
+        data = read_store(ws)
+        picks = data["weeks"].get(week, [])
+        for entry in picks:
+            if entry.get("hook_id") == hook_id and entry.get("candidate_id") == candidate_id:
+                entry["script"] = {"state": state, "detail": detail, "at": _now(), **extra}
+                write_store(ws, data)
+                return True
+    return False
+
+
 async def unpick(ws: uuid.UUID, week: str, hook_id: str) -> None:
     async with _LOCK:
         data = read_store(ws)
@@ -177,7 +193,7 @@ async def library(ws: uuid.UUID, week: str, lineup: dict[str, Any], preview_url:
                 chosen, why = place(hook, videos, taken)
                 if chosen != entry.get("candidate_id"):
                     left = "Its video left this week's list. " if entry.get("candidate_id") else ""
-                    entry = {**entry, "candidate_id": chosen, "why": left + why, "chosen_by": "tce", "at": _now()}
+                    entry = {**entry, "candidate_id": chosen, "why": left + why, "chosen_by": "tce", "at": _now(), "script": None}
                     changed = True
             if entry.get("candidate_id"):
                 taken.add(entry["candidate_id"])
@@ -203,6 +219,7 @@ async def library(ws: uuid.UUID, week: str, lineup: dict[str, Any], preview_url:
                 "title": titles.get(entry.get("candidate_id") or "", ""),
                 "why": entry.get("why", ""),
                 "chosen_by": entry.get("chosen_by", "tce"),
+                "script": entry.get("script"),
             },
         })
     return {
@@ -243,5 +260,6 @@ def for_video(ws: uuid.UUID, week: str, candidate_id: str) -> list[dict[str, Any
             "coach": list(hook.coach) or [hook.record],
             "why": entry.get("why", ""),
             "chosen_by": entry.get("chosen_by", "tce"),
+            "script": entry.get("script"),
         })
     return out

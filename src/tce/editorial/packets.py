@@ -1250,7 +1250,9 @@ MORE_HOOKS_SCHEMA: dict[str, Any] = {
 }
 
 
-def build_more_hooks_prompt(packet: RecordingPacket, cand: TopicCandidate, wanted: int) -> str:
+def build_more_hooks_prompt(
+    packet: RecordingPacket, cand: TopicCandidate, wanted: int, visual_hook: Any = None
+) -> str:
     existing = [
         {"id": h.get("id"), "text": h.get("text"), "question": h.get("question")}
         for h in (packet.hook_options or [])
@@ -1267,9 +1269,26 @@ def build_more_hooks_prompt(packet: RecordingPacket, cand: TopicCandidate, wante
         }
         for c in (cand.citations_private or [])
     ]
+    sections = []
+    if visual_hook is not None:
+        # T-25711: a visual hook from the hook library is picked for this video, so
+        # the opening is written for it: the edit needs something from the first line.
+        sections.append(
+            "THE VISUAL HOOK THIS VIDEO OPENS WITH (write every new opening for it):\n"
+            + json.dumps(
+                {
+                    "name": visual_hook.name,
+                    "what_the_viewer_sees": visual_hook.what,
+                    "the_first_line_must_give_it": visual_hook.script_need,
+                },
+                indent=1,
+            )
+            + f'\nStart each rationale with "Fits {visual_hook.name}: " and say what in the line the edit uses.'
+        )
     return "\n\n".join(
         [
             f"WRITE {wanted} NEW OPENING(S).",
+            *sections,
             "THE IDEA:\n" + json.dumps({"title": cand.title, "lesson": cand.lesson}, indent=1),
             "OPENINGS THAT ALREADY EXIST (do not repeat or reword these):\n"
             + json.dumps(existing, indent=1),
@@ -1333,8 +1352,13 @@ async def more_hook_options(
     packet_id: uuid.UUID | str,
     *,
     wanted: int = 3,
+    visual_hook: Any = None,
 ) -> PacketOutcome:
     """Ask for more openings for a packet, as a new immutable version.
+
+    With `visual_hook` (a hook library Hook, T-25711) the new openings are written
+    for that visual opening, and an earlier finished job is not reused: it was
+    written without it.
 
     The script, the bullets and the evidence do not change: only the list of
     openings grows, and the one in use stays in use. A take set already holding
@@ -1404,7 +1428,7 @@ async def more_hook_options(
                 .limit(1)
             )
         ).scalar_one_or_none()
-        if done is not None and done.id != packet.job_id:
+        if done is not None and done.id != packet.job_id and visual_hook is None:
             applied = await _apply_more_hooks(session, ws, packet, cand, done.result_json, done.id)
             if applied.status == "ok":
                 return applied
@@ -1417,7 +1441,7 @@ async def more_hook_options(
                 {
                     "role": "user",
                     "content": f"MORE OPENINGS: {nonce}\n\n"
-                    + build_more_hooks_prompt(packet, cand, wanted),
+                    + build_more_hooks_prompt(packet, cand, wanted, visual_hook),
                 }
             ],
             system=MORE_HOOKS_SYSTEM,
@@ -1426,7 +1450,8 @@ async def more_hook_options(
             prompt_version=MORE_HOOKS_PROMPT_VERSION,
             workspace_id=ws,
             run_id=cand.id,
-            idempotency_key=f"more-hooks:{ws}:{packet.id}:{nonce}",
+            idempotency_key=f"more-hooks:{ws}:{packet.id}:{nonce}"
+            + (f":{visual_hook.id}" if visual_hook is not None else ""),
         )
         try:
             llm = await _llm.complete(request)
