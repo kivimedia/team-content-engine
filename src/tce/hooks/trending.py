@@ -80,10 +80,10 @@ def _reason(exc: Exception) -> str:
         return ""
 
 
-async def _search_shorts(key: str, query: str) -> list[str]:
+async def _search_shorts(key: str, query: str, days: int = 7) -> list[str]:
     params = {
         "part": "snippet", "type": "video", "videoDuration": "short", "order": "viewCount",
-        "publishedAfter": (_now() - timedelta(days=7)).isoformat(timespec="seconds"),
+        "publishedAfter": (_now() - timedelta(days=days)).isoformat(timespec="seconds"),
         "q": query, "maxResults": 10, "relevanceLanguage": "en", "key": key,
     }
     async with httpx.AsyncClient(timeout=15) as client:
@@ -171,3 +171,68 @@ async def consider(ws: uuid.UUID, video_id: str) -> dict[str, Any]:
         "state": "waiting for a proof clip on one of your takes",
     })
     return _page(ws, saved)
+
+
+# T-25834: real videos in a trend format, as its examples. A format lives longer than a
+# week's news, so the look goes back FORMAT_DAYS; one query (100 units), on tap, 20 h cache.
+FORMAT_DAYS = 45
+FORMAT_SHOW = 6
+
+
+async def format_examples(ws: uuid.UUID, format_id: str, *, again: bool = False) -> dict[str, Any]:
+    """The most watched recent short videos in this format, from the saved list when fresh."""
+    from tce.hooks import format_library
+    from tce.hooks.formats import BY_ID
+
+    fmt = BY_ID.get(format_id)
+    if fmt is None:
+        raise library.HookError("unknown_format", "That format is not in the studio.", status=404)
+    saved = (library.read_store(ws).get("format_examples") or {}).get(format_id) or {}
+    if saved.get("at") and not again:
+        try:
+            if _now() - datetime.fromisoformat(saved["at"]) < FRESH_FOR:
+                return _examples_page(fmt, saved)
+        except ValueError:
+            pass
+    key = youtube_key()
+    if not key:
+        return _examples_page(fmt, {"state": "no_key", "videos": saved.get("videos") or [], "at": saved.get("at")})
+    try:
+        ids = await _search_shorts(key, fmt.example_query, days=FORMAT_DAYS)
+    except Exception as exc:  # said plainly; the saved list stays
+        reason = _reason(exc)
+        logger.info("hooks.format_examples_failed", format=format_id, error=type(exc).__name__, reason=reason)
+        state = "refused" if reason and reason not in QUOTA_REASONS else "quota"
+        return _examples_page(fmt, {"state": state, "videos": saved.get("videos") or [], "at": saved.get("at")})
+    if not ids:
+        return _examples_page(fmt, {"state": "none", "videos": saved.get("videos") or [], "at": saved.get("at")})
+    stats = await YouTubeDemandService(api_key=key).fetch_video_stats(ids)
+    stats.sort(key=lambda v: v.get("views", 0), reverse=True)
+    videos = [
+        {
+            "video_id": v["video_id"], "title": v.get("title", ""), "channel": v.get("channel", ""),
+            "url": f"https://www.youtube.com/shorts/{v['video_id']}", "views": v.get("views", 0),
+            "hours_old": v.get("hours_old"),
+        }
+        for v in stats[:FORMAT_SHOW]
+    ]
+    fresh = {"state": "ok", "videos": videos, "at": _now().isoformat(timespec="seconds")}
+    await format_library.save_examples(ws, format_id, fresh)
+    return _examples_page(fmt, fresh)
+
+
+def _examples_page(fmt: Any, found: dict[str, Any]) -> dict[str, Any]:
+    state = found.get("state") or ("ok" if found.get("videos") else "none")
+    count = len(found.get("videos") or [])
+    said = {
+        "ok": f"{count} short videos in this format, the most watched of the last {FORMAT_DAYS} days.",
+        "no_key": "TCE has no YouTube key yet, so it cannot look up examples.",
+        "quota": "YouTube refused the lookup (the free daily allowance is used up). Try again tomorrow.",
+        "refused": "YouTube did not accept the key TCE uses, so nothing was looked up.",
+        "none": f"YouTube found no short videos in this format in the last {FORMAT_DAYS} days.",
+    }[state]
+    return {
+        "format_id": fmt.id, "state": state, "said": said, "at": found.get("at"),
+        "videos": found.get("videos") or [],
+        "note": "Found by searching YouTube for the format's words. TCE reads titles and numbers, not the picture.",
+    }

@@ -1263,7 +1263,7 @@ class _Styled:
 async def _render_creatorz(
     upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, src: Path, plan: dict[str, Any], keep: list[list[float]],
     size: tuple[int, int], out: Path, lang: str, transcript: list[dict[str, Any]], report,
-    late_ms: int = 0, hook: Any = None,
+    late_ms: int = 0, hook: Any = None, fmt: Any = None,
 ) -> tuple[_Styled | None, str | None]:
     """The finished Creatorz file at `out` and what the render needs to say about it, or
     (None, why) so the same render makes the Pill version instead."""
@@ -1289,6 +1289,8 @@ async def _render_creatorz(
     key = creatorz_reels.moments_key(tight, words, pictures)
     if hook is not None:  # T-25711: a hook picked for this topic asks the moments again
         key = f"{key}-{hook.id}"
+    if fmt is not None:  # T-25834: so does a trend format
+        key = f"{key}-{fmt.id}"
 
     async def ask(prompt: str, system: str, schema: dict[str, Any], try_no: int) -> dict[str, Any]:
         try:
@@ -1311,7 +1313,7 @@ async def _render_creatorz(
         else:
             await report("Creatorz style: choosing the words that pop, on the subscription")
             shots = await asyncio.to_thread(creatorz_reels.shots_for, tight, words)
-            chosen = await creatorz_reels.get_moments(shots, lang, ask, pictures=pictures, hook=hook)
+            chosen = await creatorz_reels.get_moments(shots, lang, ask, pictures=pictures, hook=hook, fmt=fmt)
         # 11-Nov: the engine gets each picture as its file; the saved moments keep the ids.
         moments, missing = creatorz_reels.with_picture_files(
             chosen["moments"], pictures, creatorz_reels.pictures_dir(src)
@@ -1403,19 +1405,22 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         style_failure = None
         # T-25711: the hook picked for this topic in the hook library. A video with no style
         # chosen gets the Creatorz edit when the editor can draw that hook, so it opens with it.
-        from tce.hooks import edit_open
+        # T-25834: so does a trend format on the topic; the edit puts its words on screen.
+        from tce.hooks import edit_open, format_edit
 
         hook = edit_open.hook_on(ws, candidate_id) if mode == "cut" and not audio_only else None
+        fmt = format_edit.format_on(ws, candidate_id) if mode == "cut" and not audio_only else None
         chosen_style = (plan.get("overrides") or {}).get("style")
         wants_creatorz = creatorz_reels.style_of(plan) == creatorz_reels.CREATORZ or (
-            chosen_style is None and hook is not None and hook.id in edit_open.DRAWN
+            chosen_style is None
+            and ((hook is not None and hook.id in edit_open.DRAWN) or fmt is not None)
             and creatorz_reels.enabled_for(ws)
         )
         if mode == "cut" and not audio_only and wants_creatorz:
             styled, style_failure = await _render_creatorz(
                 upload_id, ws, attempt, src, plan, keep, size, out, lang,
                 [w for w in words if w.get("start_s") is not None and w.get("end_s") is not None], report,
-                late_ms=late_ms, hook=hook,
+                late_ms=late_ms, hook=hook, fmt=fmt,
             )
         if styled is not None:
             # From here on this render's clock is the one it was cut on, for every reader.
@@ -2432,6 +2437,7 @@ async def recording_queue(
     ideas: list[dict[str, Any]] = []
     # T-25711: the visual hook picked for each video in the hook library, so the
     # studio coaches it without a second request. A workspace with no library has none.
+    from tce.hooks import format_library
     from tce.hooks import library as hook_library
 
     hook_week = lineup_service.week_start_for(None).date().isoformat()
@@ -2469,6 +2475,8 @@ async def recording_queue(
                     {**hook, "preview_url": f"hooks/{hook['id']}/preview"}
                     for hook in hook_library.for_video(ws, hook_week, str(candidate.id))
                 ],
+                # T-25834: the trend format on this video, step by step for the recording cards
+                "trend_formats": format_library.for_video(ws, hook_week, str(candidate.id)),
             }
         )
     # 25-Nov: the studio's "To continue recording" tab. Videos he stopped partway

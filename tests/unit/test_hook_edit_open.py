@@ -125,4 +125,6 @@ def test_the_render_wires_the_hook():
 
     src = (Path(__file__).resolve().parents[2] / "src/tce/api/routers/production.py").read_text(encoding="utf-8")
     assert "edit_open.hook_on(ws, candidate_id)" in src and "hook=hook" in src
-    assert 'key = f"{key}-{hook.id}"' in src and "chosen_style is None and hook is not None" in src
+    assert 'key = f"{key}-{hook.id}"' in src and "chosen_style is None" in src
+    # T-25834: a hook the editor draws, or a trend format, asks for the Creatorz edit
+    assert "(hook is not None and hook.id in edit_open.DRAWN) or fmt is not None" in src

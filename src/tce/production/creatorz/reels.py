@@ -562,17 +562,19 @@ def _hole_sentences(holes: list[tuple[float, float]], shots: list[dict[str, Any]
 
 
 async def get_moments(
-    shots: list[dict[str, Any]], lang: str, ask: Ask, pictures: list[dict[str, Any]] = (), hook: Any = None
+    shots: list[dict[str, Any]], lang: str, ask: Ask, pictures: list[dict[str, Any]] = (), hook: Any = None,
+    fmt: Any = None,
 ) -> dict[str, Any]:
     """The writer's moments, checked. Anything wrong goes back once with the exact reasons,
     a stretch with nothing on screen included; after that the good ones go ahead and the
     rest are dropped.
 
     With `hook` (the hook library's pick for this topic, T-25711) the writer is asked to
-    open with it, and the opening is put in by rule when its answer does not."""
-    from tce.hooks import edit_open
+    open with it, and the opening is put in by rule when its answer does not. With `fmt`
+    (a trend format on the topic, T-25834) each of its words goes on screen as he says it."""
+    from tce.hooks import edit_open, format_edit
 
-    prompt = moments_prompt(shots, lang, pictures) + edit_open.directive(hook, list(pictures))
+    prompt = moments_prompt(shots, lang, pictures) + edit_open.directive(hook, list(pictures)) + format_edit.directive(fmt)
     answer = await ask(prompt, MOMENTS_SYSTEM, MOMENTS_SCHEMA, 0)
     moments, problems = clean_moments(answer.get("moments"), shots, lang, pictures)
     holes = quiet_gaps(moments, shots, lang) if moments else []
@@ -604,6 +606,19 @@ async def get_moments(
                 moments = checked
             elif opening.startswith("Opens with"):
                 opening = f"The edit could not open with {hook.name}: it did not fit the opening lines."
+    if fmt is not None:
+        followed, sentence, words = format_edit.ensure_beats(
+            moments, shots, fmt, keep_first=opening.startswith("Opens with")
+        )
+        if words:
+            # the rule's words go through the same checks; any the engine refuses are said
+            checked, _ = clean_moments(followed, shots, lang, pictures)
+            kept = [w for w in words if any(format_edit._is_beat(m, w) for m in checked)]
+            if checked:
+                moments = checked
+            missing = [b.word.upper() for b in fmt.beats if b.word.upper() not in kept]
+            sentence = format_edit.said(fmt, kept, missing)
+        opening = f"{opening.rstrip('.')}. {sentence}" if opening and sentence else (opening or sentence)
     if not moments:
         raise CreatorzFailed("the writer of the text moments gave nothing that fits this video")
     return {"moments": moments, "punchline": _punchline(answer, shots), **({"opening": opening} if opening else {})}

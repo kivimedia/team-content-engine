@@ -74,6 +74,10 @@ def read_store(ws: uuid.UUID) -> dict[str, Any]:
         out["trending"] = data["trending"]
     if isinstance(data.get("proposals"), list):
         out["proposals"] = [p for p in data["proposals"] if isinstance(p, dict) and p.get("video_id")]
+    # T-25834: the trend formats picked for each week and their looked-up examples
+    for key in ("format_weeks", "format_examples"):
+        if isinstance(data.get(key), dict):
+            out[key] = data[key]
     return out
 
 

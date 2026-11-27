@@ -1084,6 +1084,9 @@
       html += '<div class="empty"><strong>No videos this week yet</strong>'
             + "You can star hooks now. Picking one needs a topic in this week first.</div>";
     }
+    // T-25834: trend formats, a whole video shape, sit above the openings.
+    html += formatsHtml(data);
+    html += '<h2 class="hook-grid-title">Visual openings</h2>';
     html += '<div class="hook-grid">';
     data.hooks.forEach(function (hook) { html += hookCard(hook, data); });
     html += "</div>";
@@ -1097,7 +1100,220 @@
     $("view").innerHTML = html;
     state.painted = "hooks";
     status(hookTally(data));
+    watchFormatScripts(data);
   }
+
+  /* T-25834: trend formats. A format is how the whole video goes, not only its first two
+     seconds: why it is trending with real examples, the script TCE writes from the topic
+     for him to read and accept, the steps he films (each with a drawing) and what the
+     edit puts on screen. Its card says what is happening to the script at every moment. */
+  function formatsHtml(data) {
+    var list = data.formats || [];
+    if (!list.length) return "";
+    var html = '<section class="trend-formats" aria-labelledby="trendFormatsTitle">';
+    html += '<h2 id="trendFormatsTitle">Trend formats</h2>';
+    html += '<p class="section-hint">A whole video shape people are watching now. Put one on a video and TCE '
+         + "writes its script from that topic for you to read, then coaches you step by step when you record.</p>";
+    list.forEach(function (fmt) { html += formatCard(fmt, data); });
+    html += "</section>";
+    return html;
+  }
+
+  function formatDrawing(fmt, step) {
+    return apiV1 + "/hooks/formats/" + encodeURIComponent(fmt.id) + "/drawing/" + encodeURIComponent(step.id) + ".svg";
+  }
+
+  function formatCard(fmt, data) {
+    var id = esc(fmt.id);
+    var beats = fmt.steps.filter(function (s) { return s.word; });
+    var html = '<article class="card format-card' + (fmt.pick ? " is-picked" : "") + '" data-format-card="' + id + '">';
+    html += '<div class="format-top">';
+    html += '<div class="format-example" role="img" aria-label="Example of what the edit shows: '
+         + esc(beats.map(function (b) { return b.word.toUpperCase(); }).join(", ")) + ', one on each point">';
+    html += '<img src="' + esc(formatDrawing(fmt, fmt.steps[0])) + '" alt="">';
+    beats.forEach(function (b, i) {
+      html += '<span class="format-example-word' + (i === beats.length - 1 ? " is-last" : "") + '" style="--i:' + i + '">'
+           + esc(b.word.toUpperCase()) + "</span>";
+    });
+    html += '<span class="format-example-label">Example</span>';
+    html += "</div>";
+    html += '<div class="format-about"><div class="card-title-row"><h3>' + esc(fmt.name) + "</h3>"
+         + '<span class="tag">Trend format</span></div>';
+    html += '<p class="format-what">' + esc(fmt.what) + "</p>";
+    html += '<p class="format-line"><strong>Why it is trending: </strong>' + esc(fmt.why) + "</p>";
+    html += '<p class="format-line"><strong>The edit: </strong>' + esc(fmt.edit) + "</p>";
+    html += '<p class="format-line"><strong>Song: </strong>' + esc(fmt.song) + "</p>";
+    html += "</div></div>";
+    html += '<details class="format-steps-box"><summary>The ' + fmt.steps.length + " steps you film</summary>";
+    html += '<ol class="format-steps">';
+    fmt.steps.forEach(function (step) {
+      html += '<li class="format-step"><img src="' + esc(formatDrawing(fmt, step)) + '" alt="Drawing: '
+           + esc(step.label) + '"><div><strong>' + esc(step.label) + "</strong><span>"
+           + esc(step.does) + "</span>"
+           + (step.screen ? '<span class="format-step-screen">On screen: ' + esc(step.screen) + "</span>" : "")
+           + "</div></li>";
+    });
+    html += "</ol></details>";
+    html += formatPickHtml(fmt, data);
+    html += '<div class="format-examples" id="formatExamples-' + id + '">' + formatExamplesHtml(fmt, null) + "</div>";
+    html += "</article>";
+    return html;
+  }
+
+  function formatPickHtml(fmt, data) {
+    var id = esc(fmt.id);
+    if (!fmt.pick) {
+      return '<div class="actions"><button class="btn primary" type="button" data-format-pick="' + id + '"'
+           + (data.videos.length ? "" : " disabled") + ">Use it this week</button></div>";
+    }
+    var pick = fmt.pick;
+    var html = '<p class="hook-placed"><span class="tag is-ready">This week</span> '
+         + (pick.title ? "On “" + esc(pick.title) + "”. " : "") + esc(pick.why) + "</p>";
+    if (data.videos.length > 1) {
+      html += '<label class="hook-move"><span>Put it on another video</span><select data-format-move="' + id + '">';
+      data.videos.forEach(function (video) {
+        html += '<option value="' + esc(video.candidate_id) + '"'
+             + (video.candidate_id === pick.candidate_id ? " selected" : "") + ">" + esc(video.title || "Untitled") + "</option>";
+      });
+      html += "</select></label>";
+    }
+    var script = pick.script;
+    html += '<div class="format-script" data-format-script="' + esc(script ? script.state : "none") + '">';
+    html += "<h4>The script</h4>";
+    if (!script) {
+      html += '<p class="format-script-said">No script yet.</p>';
+      html += '<div class="actions"><button class="btn" type="button" data-format-again="' + id + '">Write the script</button></div>';
+    } else if (script.state === "writing") {
+      html += '<p class="format-script-said" role="status">' + esc(script.detail) + " This page checks again every few seconds.</p>";
+    } else if (script.state === "failed" || !script.lines.length) {
+      html += '<p class="format-script-said">' + esc(script.detail) + "</p>";
+      html += '<div class="actions"><button class="btn" type="button" data-format-again="' + id + '">Write it again</button></div>';
+    } else {
+      html += '<p class="format-script-said">' + (script.state === "approved" ? '<span class="tag is-ready">Accepted</span> ' : "")
+           + esc(script.detail) + "</p>";
+      html += '<ol class="format-script-lines">';
+      script.lines.forEach(function (line) {
+        var field = "fmt-" + id + "-" + esc(line.step);
+        html += '<li><label for="' + field + '">' + esc(line.label) + (line.name ? ": " + esc(line.name) : "") + "</label>"
+             + '<textarea id="' + field + '" rows="2" maxlength="220" data-format-line="' + esc(line.step) + '">'
+             + esc(line.text) + "</textarea></li>";
+      });
+      html += "</ol>";
+      html += '<div class="actions"><button class="btn primary" type="button" data-format-accept="' + id + '">'
+           + (script.state === "approved" ? "Save my changes" : "Accept this script") + "</button>"
+           + '<button class="btn quiet" type="button" data-format-again="' + id + '">Write it again</button></div>';
+    }
+    html += "</div>";
+    html += '<div class="actions"><button class="btn quiet" type="button" data-format-unpick="' + id
+         + '">Take it out of this week</button></div>';
+    return html;
+  }
+
+  function formatExamplesHtml(fmt, found) {
+    var id = esc(fmt.id);
+    var videos = found ? found.videos : (fmt.examples || []);
+    var html = "";
+    if (found) html += '<p class="hook-trending-said">' + esc(found.said) + "</p>";
+    if (videos.length) {
+      html += '<h4>Real examples on YouTube</h4><ol class="hook-trending-list">';
+      videos.forEach(function (v) {
+        html += '<li class="hook-trend"><a href="' + esc(v.url) + '" target="_blank" rel="noopener">' + esc(v.title) + "</a>"
+             + '<span class="hook-trend-meta">' + esc(v.channel) + ", " + esc(Number(v.views).toLocaleString("en-US"))
+             + " views</span></li>";
+      });
+      html += "</ol>";
+      html += '<button type="button" class="btn quiet" data-format-examples="' + id + '" data-again="1">Look again</button>';
+    } else {
+      html += '<button type="button" class="btn" data-format-examples="' + id + '">Show real examples</button>';
+    }
+    return html;
+  }
+
+  /* While a script is being written the page reads the studio again every five seconds,
+     for at most five minutes, and never while he is typing in a line. */
+  var formatWatch = null;
+  function watchFormatScripts(data) {
+    if (formatWatch) clearTimeout(formatWatch.timer);
+    var writing = (data && data.formats || []).some(function (f) {
+      return f.pick && f.pick.script && f.pick.script.state === "writing";
+    });
+    if (!writing) { formatWatch = null; return; }
+    var tries = formatWatch ? formatWatch.tries + 1 : 0;
+    if (tries > 60) {
+      formatWatch = null;
+      status("The script is still being written. Reload the page in a minute.");
+      return;
+    }
+    formatWatch = { tries: tries, timer: setTimeout(async function () {
+      if (state.route !== "hooks") { formatWatch = null; return; }
+      var typing = document.activeElement && document.activeElement.matches
+        && document.activeElement.matches("[data-format-line]");
+      if (hookBusy || typing) { watchFormatScripts(state.hooks); return; }
+      try {
+        var fresh = await api("/hooks", { retry: false });
+        if (state.route === "hooks") paintHooks(fresh);
+      } catch (error) {
+        watchFormatScripts(state.hooks);
+      }
+    }, 5000) };
+  }
+
+  async function formatExamples(id, again) {
+    var box = $("formatExamples-" + id);
+    if (!box || hookBusy) return;
+    hookBusy = true;
+    box.setAttribute("aria-busy", "true");
+    box.innerHTML = '<p class="hook-trending-said" role="status">Looking up real videos in this format on YouTube</p>';
+    status("Looking up real videos in this format on YouTube");
+    try {
+      var found = await api("/hooks/formats/" + encodeURIComponent(id) + "/examples" + (again ? "?again=1" : ""));
+      var fmt = (state.hooks && state.hooks.formats || []).filter(function (f) { return f.id === id; })[0];
+      if (fmt) fmt.examples = found.videos;
+      if ($("formatExamples-" + id) && fmt) $("formatExamples-" + id).innerHTML = formatExamplesHtml(fmt, found);
+      status(found.said);
+    } catch (error) {
+      if ($("formatExamples-" + id)) {
+        $("formatExamples-" + id).innerHTML = '<p class="hook-trending-said">'
+          + esc(error && error.message ? error.message : "The lookup did not answer. Try again.") + "</p>";
+      }
+    } finally {
+      hookBusy = false;
+      if ($("formatExamples-" + id)) $("formatExamples-" + id).removeAttribute("aria-busy");
+    }
+  }
+
+  document.addEventListener("click", function (event) {
+    var target = event.target.closest("[data-format-pick],[data-format-unpick],[data-format-again],[data-format-accept],[data-format-examples]");
+    if (!target || state.route !== "hooks") return;
+    var d = target.dataset;
+    if (d.formatExamples !== undefined) {
+      formatExamples(d.formatExamples, d.again === "1");
+    } else if (d.formatPick !== undefined) {
+      hookAction("/hooks/formats/" + encodeURIComponent(d.formatPick) + "/pick", "POST", {},
+                 "Putting the format on a video of this week");
+    } else if (d.formatUnpick !== undefined) {
+      hookAction("/hooks/formats/" + encodeURIComponent(d.formatUnpick) + "/pick", "DELETE", undefined,
+                 "Taking the format out of this week");
+    } else if (d.formatAgain !== undefined) {
+      hookAction("/hooks/formats/" + encodeURIComponent(d.formatAgain) + "/script", "POST", { action: "again" },
+                 "Asking TCE to write the script again");
+    } else if (d.formatAccept !== undefined) {
+      var card = target.closest("[data-format-card]");
+      var lines = {};
+      Array.prototype.forEach.call(card.querySelectorAll("[data-format-line]"), function (field) {
+        lines[field.dataset.formatLine] = field.value;
+      });
+      hookAction("/hooks/formats/" + encodeURIComponent(d.formatAccept) + "/script", "POST",
+                 { action: "accept", lines: lines }, "Saving the script you accepted");
+    }
+  });
+
+  document.addEventListener("change", function (event) {
+    var select = event.target.closest("[data-format-move]");
+    if (!select || state.route !== "hooks") return;
+    hookAction("/hooks/formats/" + encodeURIComponent(select.dataset.formatMove) + "/pick", "POST",
+               { candidate_id: select.value }, "Moving the format to that video");
+  });
 
   /* T-25711: his color for every hook and headline in the Creatorz edit. Swatches only:
      each stays readable as the editor's 3D letters. */
@@ -1282,13 +1498,21 @@
           (names[hook.pick.candidate_id] = names[hook.pick.candidate_id] || []).push(hook.name);
         }
       });
+      var formatNames = {};  // T-25834: the trend format on each video
+      (data.formats || []).forEach(function (fmt) {
+        if (fmt.pick && fmt.pick.candidate_id) {
+          (formatNames[fmt.pick.candidate_id] = formatNames[fmt.pick.candidate_id] || []).push(fmt.name);
+        }
+      });
       box.innerHTML = '<h2>Hooks for this week</h2><p class="section-hint">'
         + esc(hookTally(data)) + ". " + data.proved + " visual openings to choose from.</p>"
         + '<div class="actions"><button class="btn" type="button" data-go="/hooks">Choose hooks</button></div>';
       Array.prototype.forEach.call(document.querySelectorAll("[data-hook-on]"), function (line) {
         var list = names[line.dataset.hookOn];
-        if (!list) return;
-        line.textContent = "Opens with: " + list.join(", ");
+        var shapes = formatNames[line.dataset.hookOn];
+        if (!list && !shapes) return;
+        line.textContent = [list ? "Opens with: " + list.join(", ") : "", shapes ? "Format: " + shapes.join(", ") : ""]
+          .filter(Boolean).join(". ");
         line.hidden = false;
       });
     }).catch(function () { /* the week stands without it */ });

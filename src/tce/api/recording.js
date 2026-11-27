@@ -38,6 +38,28 @@ function visualHookModel(payload, apiV1 = "/api/v1") {
   };
 }
 
+/* T-25834: the trend format on this video, as step cards before he records: one
+   card per step with its drawing, the line to say (when the script is written) or
+   what the line does, what the edit shows there, and two or three lines on camera.
+   Pure, so it is tested without a browser. */
+function trendFormatModel(payload, apiV1 = "/api/v1") {
+  const list = Array.isArray(payload?.formats) ? payload.formats.filter((f) => f && f.id && Array.isArray(f.steps)) : [];
+  if (!list.length || !list[0].steps.length) return { show: false, steps: [] };
+  const fmt = list[0];
+  const written = fmt.script_state === "ready" || fmt.script_state === "approved";
+  const steps = fmt.steps.map((step, index) => ({
+    id: step.id,
+    kicker: `${fmt.name}, step ${index + 1} of ${fmt.steps.length}`,
+    title: step.label,
+    say: written && step.say ? step.say : step.does,
+    guide: !(written && step.say),
+    screen: step.screen ? `On screen: ${step.screen}` : "",
+    coach: (Array.isArray(step.coach) ? step.coach : []).filter((line) => typeof line === "string" && line.trim()).slice(0, 3),
+    drawing: `${apiV1}/hooks/formats/${encodeURIComponent(fmt.id)}/drawing/${encodeURIComponent(step.id)}.svg`,
+  }));
+  return { show: true, id: fmt.id, title: fmt.name, written, steps };
+}
+
 function hookChooserModel(idea, context = {}) {
   const options = Array.isArray(idea?.hook_options) ? idea.hook_options : [];
   const phrases = Array.isArray(idea?.script_phrases) ? idea.script_phrases : [];
@@ -342,6 +364,75 @@ function rebindIdeas(ideas, next) {
     const live = state.recorder && state.recorder.state !== "inactive";
     if (!seen && !live) openVisualHookSheet();
   }
+
+  function formatSeenKey(candidateId, formatId) {
+    return `tce-format-seen-${candidateId}-${formatId}`;
+  }
+
+  function showFormatStep(index) {
+    const model = state.trendFormat;
+    if (!model) return;
+    const at = Math.max(0, Math.min(index, model.steps.length - 1));
+    const step = model.steps[at];
+    state.trendFormatStep = at;
+    $("formatSheetKicker").textContent = step.kicker;
+    $("formatSheetTitle").textContent = step.title;
+    const drawing = $("formatStepDrawing");
+    if (drawing.getAttribute("src") !== step.drawing) drawing.src = step.drawing;
+    drawing.alt = `Drawing: ${step.title}`;
+    const say = $("formatStepSay");
+    say.textContent = step.guide ? step.say : `Say: ${step.say}`;
+    say.classList.toggle("is-guide", step.guide);
+    $("formatStepScreen").textContent = step.screen;
+    $("formatStepCoach").replaceChildren(...step.coach.map((line) => {
+      const item = document.createElement("li");
+      item.textContent = line;
+      return item;
+    }));
+    $("formatStepBack").disabled = at === 0;
+    $("formatStepNext").textContent = at === model.steps.length - 1 ? "Ready to record" : "Next step";
+  }
+
+  function openFormatSheet() {
+    if (!state.trendFormat) return;
+    $("formatSheet").hidden = false;
+    showFormatStep(0);
+    $("formatStepNext").focus({ preventScroll: true });
+  }
+
+  function closeFormatSheet() {
+    $("formatSheet").hidden = true;
+    if (state.idea && state.trendFormat) {
+      try { localStorage.setItem(formatSeenKey(state.idea.candidate_id, state.trendFormat.id), "1"); } catch { /* private mode */ }
+    }
+  }
+
+  function paintTrendFormat(idea) {
+    const box = $("trendFormat");
+    state.trendFormat = null;
+    box.hidden = true;
+    $("formatSheet").hidden = true;
+    if (!idea?.candidate_id || window.TCE_SCOPED) return;
+    const model = trendFormatModel({ formats: idea.trend_formats }, apiV1);
+    if (!model.show) return;
+    state.trendFormat = model;
+    $("trendFormatTitle").textContent = model.title;
+    box.hidden = false;
+    let seen = false;
+    try { seen = localStorage.getItem(formatSeenKey(idea.candidate_id, model.id)) === "1"; } catch { /* private mode */ }
+    const live = state.recorder && state.recorder.state !== "inactive";
+    // the hook's own screen comes first when both are new; the format's waits for its button
+    if (!seen && !live && $("visualHookSheet").hidden) openFormatSheet();
+  }
+
+  $("trendFormatHow").addEventListener("click", () => openFormatSheet());
+  $("formatStepBack").addEventListener("click", () => showFormatStep((state.trendFormatStep || 0) - 1));
+  $("formatStepNext").addEventListener("click", () => {
+    const model = state.trendFormat;
+    if (!model) return;
+    if ((state.trendFormatStep || 0) >= model.steps.length - 1) closeFormatSheet();
+    else showFormatStep((state.trendFormatStep || 0) + 1);
+  });
 
   $("visualHookHow").addEventListener("click", () => openVisualHookSheet());
   $("visualHookReady").addEventListener("click", () => closeVisualHookSheet());
@@ -1258,6 +1349,7 @@ function rebindIdeas(ideas, next) {
     $("hookChooser").hidden = true;
     renderHookPanel(idea, lockNote);
     paintVisualHook(idea);
+    paintTrendFormat(idea);
     // A different idea starts its numbers from the first page, nothing marked,
     // and its clock at zero.
     if (!state.recorder || state.recorder.state === "inactive") resetTimer();

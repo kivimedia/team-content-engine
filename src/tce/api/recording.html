@@ -121,6 +121,22 @@
       </div>
     </section>
 
+    <section id="formatSheet" class="visual-hook-sheet format-sheet" hidden role="dialog" aria-modal="true" aria-labelledby="formatSheetTitle">
+      <div class="visual-hook-sheet-inner">
+        <span class="visual-hook-label" id="formatSheetKicker"></span>
+        <h2 id="formatSheetTitle"></h2>
+        <img id="formatStepDrawing" class="format-step-drawing" alt="">
+        <p id="formatStepSay" class="format-step-say"></p>
+        <p id="formatStepScreen" class="format-step-screen"></p>
+        <strong class="visual-hook-label">On camera</strong>
+        <ul id="formatStepCoach" class="visual-hook-coach"></ul>
+        <div class="format-step-nav">
+          <button id="formatStepBack" type="button" class="visual-hook-how">Back</button>
+          <button id="formatStepNext" type="button" class="visual-hook-ready">Next step</button>
+        </div>
+      </div>
+    </section>
+
     <section id="studioView" class="studio-view" hidden>
       <div class="camera-stage">
         <video id="camera" playsinline muted></video>
@@ -143,6 +159,10 @@
         <div id="visualHook" class="visual-hook" hidden>
           <span class="visual-hook-line">Visual hook: <strong id="visualHookTitle"></strong></span>
           <button id="visualHookHow" type="button" class="visual-hook-how">How to film it</button>
+        </div>
+        <div id="trendFormat" class="visual-hook trend-format-line" hidden>
+          <span class="visual-hook-line">Format: <strong id="trendFormatTitle"></strong></span>
+          <button id="trendFormatHow" type="button" class="visual-hook-how">Step by step</button>
         </div>
         <section id="hookChooser" class="hook-chooser" hidden aria-labelledby="hookChooserTitle">
           <div class="hook-chooser-head">
