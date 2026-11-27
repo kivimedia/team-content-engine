@@ -736,14 +736,17 @@ input,textarea,select { font-size:max(16px,1rem); }
 .hook-placed { margin: 6px 0 8px; color: var(--body); line-height: 1.45; }
 .hook-script { margin: 6px 0 8px; color: var(--body); line-height: 1.45; }
 .hook-move { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; color: var(--body); }
+.hook-move { min-width: 0; }
+/* T-26008: a select sizes to its longest option (a long video title), so it fills its box instead */
 .hook-move select { min-height: 44px; border: 1px solid var(--line); border-radius: 10px; background: var(--white);
-  padding: 6px 10px; max-width: 100%; }
+  padding: 6px 10px; width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; text-overflow: ellipsis; }
 .hook-on { margin: 4px 0 6px; color: var(--moss); font-weight: 600; }
 /* T-25834: trend formats, above the visual openings */
 .trend-formats { margin: 0 0 18px; }
 .trend-formats > h2, .hook-grid-title { margin: 0 0 6px; font-size: 1.2rem; }
 .hook-grid-title { margin-top: 4px; }
-.format-card { padding: 14px; display: grid; gap: 10px; }
+.format-card { padding: 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.format-card > * { min-width: 0; }
 .format-card.is-picked { border-color: var(--moss); box-shadow: 0 0 0 2px var(--moss) inset; }
 .format-top { display: grid; grid-template-columns: minmax(110px, 34%) 1fr; gap: 12px; align-items: start; }
 @media (min-width: 720px) { .format-top { grid-template-columns: 170px 1fr; gap: 16px; } }
