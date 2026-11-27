@@ -149,6 +149,7 @@ def _script_view(fmt: Format, script: dict[str, Any] | None) -> dict[str, Any] |
     return {
         "state": script.get("state") or "",
         "detail": script.get("detail") or "",
+        "at": script.get("at"),
         "lines": [
             {"step": s.id, "label": s.label, "text": lines.get(s.id, ""), "name": names.get(s.id, "")}
             for s in fmt.steps

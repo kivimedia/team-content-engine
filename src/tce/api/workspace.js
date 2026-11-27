@@ -1184,7 +1184,8 @@
       html += '<p class="format-script-said">No script yet.</p>';
       html += '<div class="actions"><button class="btn" type="button" data-format-again="' + id + '">Write the script</button></div>';
     } else if (script.state === "writing") {
-      html += '<p class="format-script-said" role="status">' + esc(script.detail) + " This page checks again every few seconds.</p>";
+      html += '<p class="format-script-said" role="status">' + esc(script.detail) + " " + esc(formatSince(script.at))
+           + " This page checks again every few seconds.</p>";
     } else if (script.state === "failed" || !script.lines.length) {
       html += '<p class="format-script-said">' + esc(script.detail) + "</p>";
       html += '<div class="actions"><button class="btn" type="button" data-format-again="' + id + '">Write it again</button></div>';
@@ -1207,6 +1208,15 @@
     html += '<div class="actions"><button class="btn quiet" type="button" data-format-unpick="' + id
          + '">Take it out of this week</button></div>';
     return html;
+  }
+
+  // How long the writer has been at it, so a long wait never reads as a frozen page.
+  function formatSince(at) {
+    var started = Date.parse(at || "");
+    if (!started) return "";
+    var minutes = Math.floor((Date.now() - started) / 60000);
+    if (minutes < 1) return "Started less than a minute ago.";
+    return "Started " + minutes + " " + plural(minutes, "minute") + " ago.";
   }
 
   function formatExamplesHtml(fmt, found) {

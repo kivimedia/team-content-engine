@@ -196,7 +196,8 @@ def test_hook_studio_format_card_from_pick_to_accepted_script(studio, tmp_path, 
             page.click("[data-format-pick]")
             page.wait_for_selector("[data-format-script='writing']")
             page.screenshot(path=str(out / f"format-card-writing-{name}.png"))
-            assert "Writing the Good, better, best script" in page.evaluate(PAGE_MEASURE)["said"]
+            said = page.evaluate(PAGE_MEASURE)["said"]
+            assert "Writing the Good, better, best script" in said and "Started less than a minute ago." in said, said
             page.wait_for_selector("[data-format-script='ready']", timeout=15000)
             page.click(".format-steps-box summary")
             page.wait_for_timeout(300)
