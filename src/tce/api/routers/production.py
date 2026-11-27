@@ -3993,7 +3993,32 @@ async def _hear_to_the_end(upload_id: uuid.UUID, ws: uuid.UUID) -> int:
     though it was on this server. The original's speech after the last word is heard
     in stretches (tail.unheard_stretches) and the words are added at their place.
     Returns how many words came back; 0 leaves the transcript and the card as they were.
-    Never stops an edit."""
+    Never stops an edit: it runs inside every automatic edit and before every note, so a
+    failure here (the audio unreadable, the database busy) is logged, the card is put back
+    as it was and the edit goes on with the words it had."""
+    before: tuple[str | None, str | None] | None = None
+    try:
+        async with session_factory()() as s:
+            row = await _load(s, upload_id, ws)
+            before = (row.status, row.status_detail)
+        return await _hear_to_the_end_once(upload_id, ws)
+    except Exception:  # noqa: BLE001 - the edit goes on with the transcript it had
+        import structlog
+
+        structlog.get_logger().warning("production.hear_to_the_end_failed", upload=str(upload_id), exc_info=True)
+        try:
+            if before is not None:
+                async with session_factory()() as s:
+                    row = await _load(s, upload_id, ws)
+                    if row.status == "proofreading" and (row.status, row.status_detail) != before:
+                        row.status, row.status_detail = before
+                        await s.commit()
+        except Exception:  # noqa: BLE001 - the next step writes the card anyway
+            pass
+        return 0
+
+
+async def _hear_to_the_end_once(upload_id: uuid.UUID, ws: uuid.UUID) -> int:
     async with session_factory()() as s:
         row = await _load(s, upload_id, ws)
         words = list(row.transcript or [])

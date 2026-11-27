@@ -140,3 +140,41 @@ async def test_a_complete_transcript_is_never_sent_to_the_worker(editorial_sessi
     upload_id = await _seed(editorial_sessionmaker, tmp_path, FIRST_LINE)
     heard = _hearing(monkeypatch, editorial_sessionmaker, [(0.4, 2.5)], lambda a, b: {})
     assert await prod._hear_to_the_end(upload_id, WS) == 0 and heard == []
+
+
+async def test_an_original_that_cannot_be_read_never_stops_the_edit(
+    editorial_sessionmaker, monkeypatch, tmp_path
+):
+    """The step runs inside every automatic edit and before every note: a failure in it
+    (the audio unreadable, the database busy) leaves the words as they were and the edit
+    goes on, instead of ending as "Automatic edit stopped"."""
+    upload_id = await _seed(editorial_sessionmaker, tmp_path, FIRST_LINE)
+    _hearing(monkeypatch, editorial_sessionmaker, SPEECH, lambda a, b: {})
+
+    async def unreadable(_src):
+        raise OSError("ffmpeg could not read the audio")
+
+    monkeypatch.setattr(prod, "_speech_activity", unreadable)
+    assert await prod._hear_to_the_end(upload_id, WS) == 0
+    async with editorial_sessionmaker() as s:
+        row = await prod._load(s, upload_id, WS)
+    assert row.transcript == FIRST_LINE
+    assert (row.status, row.status_detail) == ("edited", "Edited")
+
+
+async def test_a_failure_after_the_listening_note_puts_the_card_back(
+    editorial_sessionmaker, monkeypatch, tmp_path
+):
+    upload_id = await _seed(editorial_sessionmaker, tmp_path, FIRST_LINE)
+    _hearing(monkeypatch, editorial_sessionmaker, SPEECH,
+             lambda a, b: {"words": [{"word": "w", "start": 0.5, "end": 0.9}]})
+
+    def broken(*_a, **_kw):
+        raise ValueError("a word the recogniser sent back could not be placed")
+
+    monkeypatch.setattr(prod.tail, "place", broken)
+    assert await prod._hear_to_the_end(upload_id, WS) == 0
+    async with editorial_sessionmaker() as s:
+        row = await prod._load(s, upload_id, WS)
+    assert row.transcript == FIRST_LINE
+    assert (row.status, row.status_detail) == ("edited", "Edited")
