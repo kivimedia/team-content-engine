@@ -43,6 +43,22 @@ if is_live_database(os.environ["TCE_DATABASE_URL"]):
         "TCE_DATABASE_URL points at the live TCE database; the test suite never runs against it"
     )
 
+# --- A UUID column is text on the suite's SQLite (T-25692, 26-Nov) ---------------
+# The models use Postgres UUID columns. On SQLite their declared type "UUID" gets
+# NUMERIC affinity, so a random id whose 32 hex characters read as a number
+# (only digits and one "e") was stored as a REAL and came back as a float:
+# "AttributeError: 'float' object has no attribute 'replace'" in uuid.UUID,
+# a rare failure in a full run of the suite. CHAR(32) has TEXT affinity and
+# keeps every id as written. Postgres DDL is not affected.
+from sqlalchemy.dialects.postgresql import UUID as _PG_UUID  # noqa: E402
+from sqlalchemy.ext.compiler import compiles  # noqa: E402
+
+
+@compiles(_PG_UUID, "sqlite")
+def _pg_uuid_is_text_on_sqlite(type_, compiler, **kw):
+    return "CHAR(32)"
+
+
 # editorial_session / editorial_sessionmaker fixtures for the new evidence tables
 pytest_plugins = ["tests.editorial_db"]
 
