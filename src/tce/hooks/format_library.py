@@ -5,6 +5,11 @@ Kept in the same hooks.json as the hook library, under two keys of its own:
     "format_weeks":    {"2026-11-23": [{"format_id", "candidate_id", "why", "chosen_by",
                                         "at", "script": {...}}]}
     "format_examples": {"good-better-best": {"state", "videos", "at"}}
+    "format_wants":    {"good-better-best": {"choice": "want" | "pass", "at"}}   (T-26074)
+
+T-26074 (Ziv, 27-Nov-2026): the trend page is for understanding a trend and deciding,
+nothing more. "I see a trend I say yes, it goes into the list of big ideas." A yes is
+kept here as "want"; TCE works out how he would do it after, never on that page.
 
 A format goes on one video of the week. TCE puts it on the first video with no
 format yet unless he names one; he can move it. Its script is written in the
@@ -197,6 +202,7 @@ async def page(ws: uuid.UUID, week: str, videos: list[dict[str, Any]]) -> list[d
             _put(data, week, kept)
             library.write_store(ws, data)
         examples = data.get("format_examples") if isinstance(data.get("format_examples"), dict) else {}
+        wants = data.get("format_wants") if isinstance(data.get("format_wants"), dict) else {}
     by_format = {p["format_id"]: p for p in kept}
     out = []
     for fmt in FORMATS:
@@ -211,6 +217,9 @@ async def page(ws: uuid.UUID, week: str, videos: list[dict[str, Any]]) -> list[d
             "edit": fmt.edit,
             "steps": _steps(fmt, ""),
             "examples": (seen.get("videos") or [])[:6],
+            "real": _real(fmt),
+            "decision": (wants.get(fmt.id) or {}).get("choice") if isinstance(wants.get(fmt.id), dict) else None,
+            "decided_at": (wants.get(fmt.id) or {}).get("at") if isinstance(wants.get(fmt.id), dict) else None,
             "pick": None if entry is None else {
                 "candidate_id": entry.get("candidate_id"),
                 "title": titles.get(entry.get("candidate_id") or "", ""),
@@ -267,6 +276,54 @@ def names_for_week(ws: uuid.UUID, week: str) -> dict[str, list[str]]:
         if fmt is not None and entry.get("candidate_id"):
             out.setdefault(entry["candidate_id"], []).append(f"{fmt.name} (format)")
     return out
+
+
+CHOICES = ("want", "pass")
+
+
+async def decide(ws: uuid.UUID, format_id: str, choice: str | None) -> dict[str, Any] | None:
+    """His yes ("want": it goes on his big ideas list) or no ("pass") on a trend.
+    None takes the decision back. Returns what is kept now."""
+    _get(format_id)
+    if choice is not None and choice not in CHOICES:
+        raise library.HookError("bad_choice", "That is not a choice for a trend.", status=400)
+    async with library._LOCK:
+        data = library.read_store(ws)
+        wants = data.get("format_wants") if isinstance(data.get("format_wants"), dict) else {}
+        if choice is None:
+            wants.pop(format_id, None)
+            kept = None
+        else:
+            kept = {"choice": choice, "at": library._now()}
+            wants[format_id] = kept
+        data["format_wants"] = wants
+        library.write_store(ws, data)
+        return kept
+
+
+def wanted(ws: uuid.UUID) -> list[dict[str, Any]]:
+    """The trends he said yes to, oldest first: his big ideas waiting for TCE's idea."""
+    wants = library.read_store(ws).get("format_wants") or {}
+    out = []
+    for format_id, entry in wants.items():
+        fmt = BY_ID.get(format_id)
+        if fmt is None or not isinstance(entry, dict) or entry.get("choice") != "want":
+            continue
+        out.append({"id": fmt.id, "name": fmt.name, "what": fmt.what, "at": entry.get("at")})
+    return sorted(out, key=lambda e: e.get("at") or "")
+
+
+def _real(fmt: Format) -> list[dict[str, Any]]:
+    return [
+        {
+            "video_id": e.video_id, "url": e.url, "channel": e.channel, "title": e.title, "watch": e.watch,
+            # YouTube's own stills from the start, middle and end of the clip: they play
+            # as a moving picture on the card before he taps for the video itself.
+            "frames": [f"https://i.ytimg.com/vi/{e.video_id}/hq{n}.jpg" for n in (1, 2, 3)],
+            "embed": f"https://www.youtube-nocookie.com/embed/{e.video_id}?autoplay=1&playsinline=1&rel=0",
+        }
+        for e in fmt.real
+    ]
 
 
 async def save_examples(ws: uuid.UUID, format_id: str, found: dict[str, Any]) -> None:

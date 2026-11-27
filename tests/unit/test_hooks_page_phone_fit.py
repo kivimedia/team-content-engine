@@ -51,15 +51,14 @@ MEASURE = """
       }
     }
   }
-  const select = document.querySelector('[data-format-move]');
   return {
     scrollWidth: document.documentElement.scrollWidth, innerWidth, clientWidth: document.documentElement.clientWidth,
     spills,
-    formatSelect: select ? Math.round(r(select).width) : null,
     hookSelects: document.querySelectorAll('[data-hook-move]').length,
-    formatPicked: !!document.querySelector('[data-format-card].is-picked'),
+    formatCards: document.querySelectorAll('[data-format-card], [data-trend-card]').length,
+    pointer: !!document.querySelector('.trends-pointer a[data-go="/trends"]'),
     hookPicked: !!document.querySelector('[data-hook-card].is-picked'),
-    smallest: Math.min(...[...document.querySelectorAll('[data-format-card] p, [data-format-card] label span, [data-format-card] select')]
+    smallest: Math.min(...[...document.querySelectorAll('[data-hook-card] p, [data-hook-card] label span, [data-hook-card] select, .trends-pointer')]
       .filter((e) => r(e).width).map((e) => parseFloat(getComputedStyle(e).fontSize))),
   };
 }
@@ -116,13 +115,10 @@ def test_hooks_page_fits_the_phone_with_long_video_titles(studio, tmp_path, monk
             errors: list[str] = []
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.goto(f"{studio['base']}/hooks")
-            page.wait_for_selector("[data-format-move]")
             page.wait_for_selector("[data-hook-card].is-picked")
-            page.wait_for_function("[...document.querySelectorAll('[data-format-card] img')]"
-                                   ".every((i) => i.complete && i.naturalWidth > 0)", timeout=10000)
             page.wait_for_timeout(300)
             m = page.evaluate(MEASURE)
-            page.evaluate("document.querySelector('[data-format-move]').scrollIntoView({block: 'center'})")
+            page.evaluate("document.querySelector('[data-hook-move]').scrollIntoView({block: 'center'})")
             page.wait_for_timeout(200)
             page.screenshot(path=str(out / f"hooks-page-{name}.png"))
             page.screenshot(path=str(out / f"hooks-page-full-{name}.png"), full_page=True)
@@ -132,7 +128,8 @@ def test_hooks_page_fits_the_phone_with_long_video_titles(studio, tmp_path, monk
             context.close()
         browser.close()
     for name, m in results.items():
-        assert m["formatPicked"] and m["hookPicked"] and m["hookSelects"] >= 1, (name, m)
+        # T-26074: the trend card left the hooks page for its own Trends page; one line points there
+        assert m["formatCards"] == 0 and m["pointer"] and m["hookPicked"] and m["hookSelects"] >= 1, (name, m)
         # a phone widens its layout to fit wide content and zooms out, so compare with the screen asked for
         assert m["innerWidth"] == m["asked"] and m["scrollWidth"] <= m["asked"], (name, m)
         assert not m["spills"], (name, m)

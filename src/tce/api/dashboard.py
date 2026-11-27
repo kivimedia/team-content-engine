@@ -235,6 +235,7 @@ async def _workspace_page(request: Request | None = None) -> HTMLResponse | Redi
 @router.get("/topics", response_class=HTMLResponse, include_in_schema=False)
 @router.get("/week", response_class=HTMLResponse, include_in_schema=False)
 @router.get("/hooks", response_class=HTMLResponse, include_in_schema=False)
+@router.get("/trends", response_class=HTMLResponse, include_in_schema=False)
 @router.get("/library", response_class=HTMLResponse, include_in_schema=False)
 @router.get("/settings", response_class=HTMLResponse, include_in_schema=False)
 async def workspace_shell(request: Request):

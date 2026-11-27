@@ -794,3 +794,51 @@ input,textarea,select { font-size:max(16px,1rem); }
 .format-examples { border-top: 1px solid var(--line); padding-top: 10px; }
 .week-hooks { margin: 0 0 14px; }
 .week-hooks:empty { display: none; }
+
+/* T-26074: the Trends page. A trend card is a real example, one sentence, two buttons. */
+.trends-pointer { margin: 0 0 16px; color: var(--ink); font-size: 1rem; line-height: 1.45; }
+.big-ideas { padding: 14px; margin: 0 0 16px; }
+.big-ideas h2 { margin: 0 0 6px; font-size: 1.15rem; }
+.big-ideas-list { margin: 0; padding: 0 0 0 18px; display: grid; gap: 6px; }
+.big-ideas-list strong { color: var(--ink); }
+.big-ideas-list span, .big-ideas-empty { color: var(--body); line-height: 1.45; }
+.big-ideas-empty { margin: 0; }
+.trend-card { padding: 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin: 0 0 16px; }
+.trend-card > * { min-width: 0; }
+.trend-card.is-wanted { border-color: var(--moss); box-shadow: 0 0 0 2px var(--moss) inset; }
+/* Phone: the clip beside the name and its one sentence, the rest under both, so the two
+   buttons are on the first screen. Desktop: the clip on the left, everything else beside it. */
+.trend-top { display: grid; grid-template-columns: 44% minmax(0, 1fr); grid-template-areas: "ex head" "about about";
+  gap: 10px 12px; align-items: start; }
+.trend-example { grid-area: ex; }
+.trend-head { grid-area: head; min-width: 0; }
+.trend-about { grid-area: about; min-width: 0; }
+@media (min-width: 720px) {
+  .trend-top { grid-template-columns: 250px minmax(0, 1fr); grid-template-rows: auto 1fr; grid-template-areas: "ex head" "ex about"; gap: 6px 18px; }
+  .trend-about { align-self: start; }
+}
+.trend-example { margin: 0; }
+.trend-play, .trend-video { position: relative; display: block; width: 100%; max-width: 250px; margin: 0 auto;
+  aspect-ratio: 9 / 16; border: 0; border-radius: 12px; overflow: hidden; background: #0f1b2b; padding: 0; cursor: pointer; }
+/* YouTube's three stills play in turn, like a short moving picture, until he taps. */
+.trend-play img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  opacity: 0; animation: trend-frames 4.5s calc(var(--i) * 1.5s) infinite; }
+.trend-play img:first-child { opacity: 1; }
+@keyframes trend-frames { 0% { opacity: 0; } 6% { opacity: 1; } 33% { opacity: 1; } 40% { opacity: 0; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .trend-play img { animation: none; } .trend-play img:not(:first-child) { display: none; } }
+.trend-play-badge { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); padding: 6px 14px;
+  border-radius: 999px; background: rgba(15, 27, 43, .88); color: #ffffff; font-weight: 800; font-size: 1rem; white-space: nowrap; }
+.trend-example figcaption { max-width: 250px; margin: 8px auto 0; display: flex; flex-direction: column; gap: 2px;
+  color: var(--body); font-size: 1rem; line-height: 1.4; }
+.trend-example figcaption a { color: var(--lake); font-weight: 700; }
+.trend-head h2 { margin: 0 0 6px; font-size: 1.25rem; color: var(--ink); }
+.trend-what { margin: 0 0 8px; color: var(--ink); font-size: 1.05rem; line-height: 1.45; }
+.trend-line { margin: 4px 0; color: var(--body); font-size: 1rem; line-height: 1.45; }
+.trend-line strong { color: var(--ink); }
+.trend-decide { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.trend-decide .btn { flex: 1 1 140px; }
+.trend-what { overflow-wrap: anywhere; }
+.trend-decide .btn { min-height: 48px; }
+.trend-said { margin: 0; color: var(--ink); font-size: 1rem; }
+.trend-more { margin: 0; color: var(--body); font-size: 1rem; line-height: 1.45; }
+.trend-more a { color: var(--lake); }

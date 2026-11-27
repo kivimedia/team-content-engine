@@ -36,6 +36,25 @@ class Step:
 
 
 @dataclass(frozen=True)
+class Example:
+    """A real creator doing the trend, picked by hand and checked by eye (T-26074).
+
+    Ziv, 27-Nov-2026: "Find a video of someone doing it ... so I understand what it
+    is and even a link to the actual video." The YouTube word search for a format
+    mostly finds other things (for good, better, best: a football coach's chant), so
+    the example he sees first is one a person looked at, not the search's top hit."""
+
+    video_id: str
+    channel: str
+    title: str
+    watch: str  # what to look for in it, one plain sentence
+
+    @property
+    def url(self) -> str:
+        return f"https://www.youtube.com/shorts/{self.video_id}"
+
+
+@dataclass(frozen=True)
 class Format:
     id: str
     name: str
@@ -45,6 +64,7 @@ class Format:
     song: str
     edit: str
     steps: tuple[Step, ...] = field(default_factory=tuple)
+    real: tuple[Example, ...] = field(default_factory=tuple)  # hand-picked, first one plays on the card
 
     @property
     def beats(self) -> tuple[Step, ...]:
@@ -69,6 +89,16 @@ GOOD_BETTER_BEST = Format(
     example_query="good better best",
     song="No song needed. The words on screen carry it.",
     edit="The edit puts GOOD, BETTER and BEST in big letters on the words as you say them, BEST in your color.",
+    real=(
+        Example(
+            "Q5eGlbwsn0M", "@editingwtaylor", "Is this valid???",
+            "She holds up three choices, one at a time, and each gets its word on screen: good, then better, then best.",
+        ),
+        Example(
+            "5h72Dgz5EKo", "@R2RMarketingChesapeake", "Good, Better, Best Pricing",
+            "A business owner talks to the camera about offering a good, a better and a best price.",
+        ),
+    ),
     steps=(
         Step(
             "open", "The topic",

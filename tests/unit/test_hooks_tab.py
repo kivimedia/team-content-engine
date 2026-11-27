@@ -25,11 +25,14 @@ def test_the_hooks_tab_is_hidden_for_a_client_and_its_page_is_fenced():
     assert ".hooks-entry" in dashboard.SCOPED_HEAD
     assert "/hooks" not in private_access.SCOPED_PAGE_PATHS
     assert not private_access.scoped_path_allowed("/hooks")
+    # T-26074: the Trends tab is the owner's only too
+    assert "/trends" not in private_access.SCOPED_PAGE_PATHS
+    assert not private_access.scoped_path_allowed("/trends")
 
 
 def test_the_hooks_page_lights_its_own_tab():
     js = (ROOT / "workspace.js").read_text(encoding="utf-8")
-    assert 'hooks: "hooks" }[route.name]' in js
+    assert 'hooks: "hooks", trends: "trends" }[route.name]' in js  # T-26074: Trends lights its own tab
     assert 'hooks: "week" }' not in js
 
 

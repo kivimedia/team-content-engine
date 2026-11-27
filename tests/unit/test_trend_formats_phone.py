@@ -150,24 +150,69 @@ def test_recording_screen_walks_the_format_step_by_step(studio, tmp_path):  # no
         browser.close()
 
 
-def test_hook_studio_format_card_from_pick_to_accepted_script(studio, tmp_path, monkeypatch):  # noqa: F811
+TREND_MEASURE = """
+() => {
+  const r = (el) => el.getBoundingClientRect();
+  const card = document.querySelector('[data-trend-card]');
+  const texty = [...card.querySelectorAll("h2, p, a, button, summary, figcaption span")].filter((e) => r(e).width);
+  const buttons = [...card.querySelectorAll('button, summary')].filter((e) => r(e).width);
+  const overlaps = [];
+  for (let i = 0; i < buttons.length; i++) for (let j = i + 1; j < buttons.length; j++) {
+    const a = r(buttons[i]), b = r(buttons[j]);
+    if (buttons[i].contains(buttons[j]) || buttons[j].contains(buttons[i])) continue;
+    if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) overlaps.push(i + '/' + j);
+  }
+  const frames = [...card.querySelectorAll('.trend-play img')];
+  const nav = [...document.querySelectorAll('#bottomNav a')].filter((a) => r(a).width);
+  const navClipped = nav.filter((a) => a.scrollWidth > a.clientWidth + 1).map((a) => a.textContent.trim());
+  const original = card.querySelector('.trend-example figcaption a');
+  return {
+    frames: frames.length, framesLoaded: frames.every((i) => i.complete && i.naturalWidth > 0),
+    original: original ? original.href : null, originalNewTab: original ? original.target : null,
+    by: (card.querySelector('.trend-example-by') || {}).textContent || '',
+    decideButtons: [...card.querySelectorAll('[data-trend-decide]')].map((b) => b.textContent),
+    textareas: document.querySelectorAll('#view textarea, #view select').length,
+    ideas: [...document.querySelectorAll('.big-ideas-list strong')].map((e) => e.textContent),
+    wanted: card.classList.contains('is-wanted'),
+    smallest: Math.min(...texty.map((e) => parseFloat(getComputedStyle(e).fontSize))),
+    lowestButton: Math.min(...buttons.map((b) => r(b).height)),
+    overlaps,
+    overflowX: document.documentElement.scrollWidth > innerWidth + 1,
+    cardInside: r(card).right <= innerWidth + 1 && r(card).left >= -1,
+    nav: nav.map((a) => a.textContent.trim()), navClipped,
+    navCurrent: (document.querySelector('#bottomNav a[aria-current="page"]') || {}).textContent || '',
+    navInside: nav.every((a) => r(a).right <= innerWidth + 1),
+    video: (card.querySelector('iframe.trend-video') || {}).src || null,
+    // the yes sits on the first screen, above the bottom menu, with the clip beside it
+    yesOnFirstScreen: (() => { const b = card.querySelector('[data-choice="want"]'); const nav = document.getElementById('bottomNav');
+      return !!b && r(b).bottom <= r(nav).top && r(b).top >= 0; })(),
+  };
+}
+"""
+
+# A tiny picture and a stand-in player, so the test never reaches YouTube itself.
+PIXEL = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+    "1f15c4890000000d49444154789c6360f8cf000000040001f61738550000000049454e44ae426082"
+)
+
+
+def test_trends_page_real_example_then_a_yes_goes_on_big_ideas(studio, tmp_path, monkeypatch):  # noqa: F811
+    """T-26074 (Ziv, 27-Nov): a trend is understood from a real creator doing it, decided with
+    one tap, and the yes lands on his big ideas list. No edit boxes on the page."""
     from playwright.sync_api import sync_playwright
 
     out = _shots(tmp_path)
     cid = studio["candidate_id"]
-    week = hooks_router._week_key()
     lineup = {"primary": [{"candidate_id": cid, "title": "Plan the course", "big_idea": "", "reason": "", "filmed": False}],
               "reserve": []}
+    picked: list[str] = []
 
     async def fake_lineup(_sm, _ws):
         return lineup
 
-    async def fake_fill(_sm, ws, wk, format_id, candidate_id, topic):
-        await asyncio.sleep(1.5)  # the writer takes a moment; the card says it is writing meanwhile
-        await format_library.set_script(ws, wk, format_id, candidate_id, {
-            "state": "ready", "lines": LINES, "names": {"good": "Topics", "better": "Weekly", "best": "Asked"},
-            "detail": "Written from its script. Read it, change any line, then accept it.",
-        })
+    async def fake_fill(*args):
+        picked.append("script")
 
     async def enabled():
         return True
@@ -177,43 +222,52 @@ def test_hook_studio_format_card_from_pick_to_accepted_script(studio, tmp_path, 
     monkeypatch.setattr(dashboard, "_workspace_enabled", enabled)  # the flag lives in the real database
     monkeypatch.setattr(hooks_router, "_lineup", fake_lineup)
     monkeypatch.setattr(hooks_router.format_script, "fill", fake_fill)
+    real = GBB.real[0]
     with sync_playwright() as pw:
         browser = _browser(pw)
         for name, viewport, mobile in (("390", PHONE, True), ("1280", DESKTOP, False)):
             library.write_store(WS, {"favorites": [], "weeks": {}})
             context = browser.new_context(viewport=viewport, device_scale_factor=2, is_mobile=mobile, has_touch=mobile)
+            context.route("https://i.ytimg.com/**", lambda route: route.fulfill(body=PIXEL, content_type="image/png"))
+            context.route("https://www.youtube-nocookie.com/**",
+                          lambda route: route.fulfill(body="<p>player</p>", content_type="text/html"))
             page = context.new_page()
             errors: list[str] = []
             page.on("pageerror", lambda e: errors.append(str(e)))
-            page.goto(f"{studio['base']}/hooks")
-            page.wait_for_selector("[data-format-card]")
-            page.wait_for_function("[...document.querySelectorAll('[data-format-card] img')]"
+            page.goto(f"{studio['base']}/trends")
+            page.wait_for_selector("[data-trend-card]")
+            page.wait_for_function("[...document.querySelectorAll('.trend-play img')]"
                                    ".every((i) => i.complete && i.naturalWidth > 0)", timeout=10000)
-            m = page.evaluate(PAGE_MEASURE)
-            page.screenshot(path=str(out / f"format-card-new-{name}.png"))
-            assert m["exampleWords"] == ["GOOD", "BETTER", "BEST"] and m["imgsLoaded"], m
-            assert not m["overflowX"] and m["cardInside"] and m["smallest"] >= 15 and m["lowestButton"] >= 44, m
-            page.click("[data-format-pick]")
-            page.wait_for_selector("[data-format-script='writing']")
-            page.screenshot(path=str(out / f"format-card-writing-{name}.png"))
-            said = page.evaluate(PAGE_MEASURE)["said"]
-            assert "Writing the Good, better, best script" in said and "Started less than a minute ago." in said, said
-            page.wait_for_selector("[data-format-script='ready']", timeout=15000)
-            page.click(".format-steps-box summary")
-            page.wait_for_timeout(300)
-            m = page.evaluate(PAGE_MEASURE)
-            page.screenshot(path=str(out / f"format-card-ready-{name}.png"), full_page=True)
-            assert m["lines"] == 5 and m["imgs"] == 6 and m["imgsLoaded"], m
-            assert not m["overflowX"] and not m["overlaps"] and m["smallest"] >= 15, m
-            page.fill("#fmt-good-better-best-close", "I use the last one, every course.")
-            page.click("[data-format-accept]")
-            page.wait_for_selector("[data-format-script='approved']")
-            entry = format_library.current(WS, week, GBB.id)
-            assert entry["script"]["state"] == "approved" and entry["script"]["lines"]["close"] == "I use the last one, every course."
-            assert "with your changes" in page.evaluate(PAGE_MEASURE)["said"]
-            page.screenshot(path=str(out / f"format-card-accepted-{name}.png"))
+            page.wait_for_timeout(400)
+            m = page.evaluate(TREND_MEASURE)
+            page.screenshot(path=str(out / f"trends-new-{name}.png"))
+            assert m["frames"] == 3 and m["framesLoaded"], m
+            assert m["original"] == real.url and m["originalNewTab"] == "_blank" and real.channel in m["by"], m
+            assert m["decideButtons"] == ["I want this one", "Not for me"] and m["textareas"] == 0, m
+            assert m["ideas"] == [] and not m["wanted"] and m["yesOnFirstScreen"], m
+            assert not m["overflowX"] and m["cardInside"] and not m["overlaps"], m
+            assert m["smallest"] >= 15 and m["lowestButton"] >= 44, m
+            labels = [n[1:] for n in m["nav"]]  # each label starts with its one-character icon
+            assert "Trends" in labels and "Hooks" in labels and m["navCurrent"].endswith("Trends"), m
+            assert not m["navClipped"] and m["navInside"], m
+            page.click("[data-trend-decide][data-choice='want']")
+            page.wait_for_selector("[data-trend-card].is-wanted")
+            m = page.evaluate(TREND_MEASURE)
+            page.screenshot(path=str(out / f"trends-wanted-{name}.png"))
+            assert m["ideas"] == [GBB.name] and m["decideButtons"] == ["Take it off the list"], m
+            assert format_library.wanted(WS)[0]["id"] == GBB.id and picked == []
+            assert format_library.current(WS, hooks_router._week_key(), GBB.id) is None  # no video, no script
+            page.click("[data-trend-play]")
+            page.wait_for_selector("iframe.trend-video")
+            m = page.evaluate(TREND_MEASURE)
+            assert m["video"].startswith("https://www.youtube-nocookie.com/embed/" + real.video_id), m
+            assert not m["overflowX"] and m["cardInside"], m
+            page.screenshot(path=str(out / f"trends-playing-{name}.png"))
+            page.click("[data-trend-decide]")
+            page.wait_for_selector("[data-trend-decide][data-choice='pass']")
+            assert format_library.wanted(WS) == []
             assert not errors, errors
             context.close()
         browser.close()
-    # the hook library beside it is untouched by the format's writes
+    # the hook library beside it is untouched by the trend's writes
     assert library.read_store(WS)["favorites"] == []

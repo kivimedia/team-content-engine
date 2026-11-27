@@ -21,6 +21,8 @@ POST   /hooks/formats/{id}/pick    {"candidate_id": optional} put it on a video 
 DELETE /hooks/formats/{id}/pick    take it out of this week
 POST   /hooks/formats/{id}/script  {"action": "again"} write it again, or
                                    {"action": "accept", "lines": {step: line}} accept it
+POST   /hooks/formats/{id}/decide  {"choice": "want" | "pass" | null} his yes (it goes on his
+                                     big ideas list), his no, or taking it back (T-26074)
 GET    /hooks/formats/{id}/examples?again=1  real short videos in the format (YouTube)
 GET    /hooks/formats/{id}/drawing/{step}.svg  the recording card's drawing
 
@@ -67,6 +69,10 @@ class StyleRequest(BaseModel):
     accent: str | None = None
 
 
+class DecideRequest(BaseModel):
+    choice: str | None = None
+
+
 class FormatScriptRequest(BaseModel):
     action: str = "again"
     lines: dict[str, str] | None = None
@@ -96,6 +102,7 @@ async def _page(ws: uuid.UUID, week: str, lineup: dict[str, Any]) -> dict[str, A
     """The studio's whole read: the hook library and, beside it, the trend formats (T-25834)."""
     data = await library.library(ws, week, lineup, _preview_url)
     data["formats"] = await format_library.page(ws, week, library.week_videos(lineup))
+    data["big_ideas"] = format_library.wanted(ws)  # T-26074: the trends he said yes to
     return data
 
 
@@ -203,6 +210,23 @@ async def format_script_action(
     except library.HookError as error:
         raise _http(error) from None
     return await _page(ws, week, lineup)
+
+
+@router.post("/formats/{format_id}/decide")
+async def decide_format(
+    format_id: str,
+    body: DecideRequest,
+    ws: uuid.UUID = Depends(require_owner),
+    sm: Any = Depends(get_editorial_sessionmaker),
+) -> dict[str, Any]:
+    """T-26074: the trend page's only choice. A yes puts the trend on his big ideas
+    list; nothing is put on a video and no script is written here."""
+    try:
+        await format_library.decide(ws, format_id, body.choice)
+    except library.HookError as error:
+        raise _http(error) from None
+    lineup = await _lineup(sm, ws)
+    return await _page(ws, _week_key(), lineup)
 
 
 @router.get("/formats/{format_id}/examples")

@@ -290,6 +290,8 @@
     { name: "week",     pattern: /^\/week\/?$/,                title: "This week" },
     // 26-Nov (T-25210): the hook library, picked for the week beside its topics.
     { name: "hooks",    pattern: /^\/hooks\/?$/,               title: "Hooks" },
+    // 27-Nov (T-26074): trends on a page of their own: see what it is, say yes or no.
+    { name: "trends",   pattern: /^\/trends\/?$/,              title: "Trends" },
     { name: "library",  pattern: /^\/library\/?$/,             title: "Library" },
     // 3-Oct: the rules Jennifer learned from his notes, each with its source video.
     { name: "rules",    pattern: /^\/library\/rules\/?$/,      title: "Jennifer's rules" },
@@ -343,7 +345,7 @@
     var nav = $("bottomNav");
     var active = { today: "today", topics: "topics", week: "week", library: "library",
                    room: "topics", workshop: "week", talk: "library", rules: "library",
-                   hooks: "hooks" }[route.name];
+                   hooks: "hooks", trends: "trends" }[route.name];
     Array.prototype.forEach.call(nav.querySelectorAll("a"), function (a) {
       if (a.dataset.route === active) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
@@ -1084,8 +1086,11 @@
       html += '<div class="empty"><strong>No videos this week yet</strong>'
             + "You can star hooks now. Picking one needs a topic in this week first.</div>";
     }
-    // T-25834: trend formats, a whole video shape, sit above the openings.
-    html += formatsHtml(data);
+    // T-26074: trend formats moved to their own Trends page; one line points there.
+    if ((data.formats || []).length) {
+      html += '<p class="trends-pointer">Whole video trends, like good, better, best, are on their own page now: '
+           + '<a href="trends" data-go="/trends">see the trends</a>.</p>';
+    }
     html += '<h2 class="hook-grid-title">Visual openings</h2>';
     html += '<div class="hook-grid">';
     data.hooks.forEach(function (hook) { html += hookCard(hook, data); });
@@ -1099,256 +1104,166 @@
     html += "</div>";
     $("view").innerHTML = html;
     state.painted = "hooks";
-    fitFormatLines();
     status(hookTally(data));
-    watchFormatScripts(data);
     startHookClips();
   }
 
-  /* T-25834: trend formats. A format is how the whole video goes, not only its first two
-     seconds: why it is trending with real examples, the script TCE writes from the topic
-     for him to read and accept, the steps he films (each with a drawing) and what the
-     edit puts on screen. Its card says what is happening to the script at every moment. */
-  function formatsHtml(data) {
+  /* T-26074 (Ziv, 27-Nov-2026): "The trending studio, its goal is to help me understand
+     what is the trend, choose it and then later I will talk about it with TCE." So a trend
+     card is: a real creator doing it (moving stills, a tap plays the video, a link to the
+     original), one sentence on what it is, what to watch for, and two buttons. A yes puts it
+     on his big ideas list. No script boxes and no video picking here: that comes later.
+     (T-25834 put the pick and the script on this card; they stay in the data, off the page.) */
+  var trendBusy = false;
+
+  async function renderTrends() {
+    var view = $("view");
+    view.innerHTML = '<div class="page">' + working("Reading the trends") + "</div>";
+    var loading = view.firstElementChild;
+    var data;
+    try {
+      data = await api("/hooks");
+    } catch (error) {
+      if (loading.isConnected) throw error;
+      return;
+    }
+    if (!loading.isConnected || state.route !== "trends") return;
+    paintTrends(data);
+  }
+
+  function paintTrends(data) {
+    state.hooks = data;
     var list = data.formats || [];
-    if (!list.length) return "";
-    var html = '<section class="trend-formats" aria-labelledby="trendFormatsTitle">';
-    html += '<h2 id="trendFormatsTitle">Trend formats</h2>';
-    html += '<p class="section-hint">A whole video shape people are watching now. Put one on a video and TCE '
-         + "writes its script from that topic for you to read, then coaches you step by step when you record.</p>";
-    list.forEach(function (fmt) { html += formatCard(fmt, data); });
+    var ideas = data.big_ideas || [];
+    var html = '<div class="page">';
+    html += '<div class="page-head"><h1>Trends</h1>';
+    html += '<p class="lede">Watch a real example, then say yes or no. A yes goes on your big ideas list.</p></div>';
+    html += '<section class="card big-ideas" aria-labelledby="bigIdeasTitle"><h2 id="bigIdeasTitle">Your big ideas</h2>';
+    if (ideas.length) {
+      html += '<ul class="big-ideas-list">';
+      ideas.forEach(function (idea) {
+        html += "<li><strong>" + esc(idea.name) + "</strong> <span>" + esc(idea.what) + "</span></li>";
+      });
+      html += "</ul>";
+    } else {
+      html += '<p class="big-ideas-empty">Nothing yet. Say yes to a trend below and it shows here.</p>';
+    }
     html += "</section>";
-    return html;
+    if (!list.length) html += '<div class="empty"><strong>No trends yet</strong>TCE has none to show you right now.</div>';
+    list.forEach(function (fmt) { html += trendCard(fmt); });
+    html += "</div>";
+    $("view").innerHTML = html;
+    state.painted = "trends";
+    status(ideas.length ? ideas.length + " " + plural(ideas.length, "trend") + " on your big ideas list" : "Trends");
   }
 
   function formatDrawing(fmt, step) {
     return apiV1 + "/hooks/formats/" + encodeURIComponent(fmt.id) + "/drawing/" + encodeURIComponent(step.id) + ".svg";
   }
 
-  function formatCard(fmt, data) {
+  function trendExampleHtml(fmt) {
+    var real = (fmt.real || [])[0];
+    if (!real) return "";
     var id = esc(fmt.id);
-    var beats = fmt.steps.filter(function (s) { return s.word; });
-    var html = '<article class="card format-card' + (fmt.pick ? " is-picked" : "") + '" data-format-card="' + id + '">';
-    html += '<div class="format-top">';
-    html += '<div class="format-example" role="img" aria-label="Example of what the edit shows: '
-         + esc(beats.map(function (b) { return b.word.toUpperCase(); }).join(", ")) + ', one on each point">';
-    html += '<img src="' + esc(formatDrawing(fmt, fmt.steps[0])) + '" alt="">';
-    beats.forEach(function (b, i) {
-      html += '<span class="format-example-word' + (i === beats.length - 1 ? " is-last" : "") + '" style="--i:' + i + '">'
-           + esc(b.word.toUpperCase()) + "</span>";
+    var html = '<figure class="trend-example">';
+    html += '<button type="button" class="trend-play" data-trend-play="' + id + '" aria-label="Play the example video: '
+         + esc(real.title) + " by " + esc(real.channel) + '">';
+    (real.frames || []).forEach(function (src, i) {
+      html += '<img src="' + esc(src) + '" alt="" loading="lazy" style="--i:' + i + '">';
     });
-    html += '<span class="format-example-label">Example</span>';
-    html += "</div>";
-    html += '<div class="format-about"><div class="card-title-row"><h3>' + esc(fmt.name) + "</h3>"
-         + '<span class="tag">Trend format</span></div>';
-    html += '<p class="format-what">' + esc(fmt.what) + "</p>";
-    html += '<p class="format-line"><strong>Why it is trending: </strong>' + esc(fmt.why) + "</p>";
-    html += '<p class="format-line"><strong>The edit: </strong>' + esc(fmt.edit) + "</p>";
-    html += '<p class="format-line"><strong>Song: </strong>' + esc(fmt.song) + "</p>";
+    html += '<span class="trend-play-badge" aria-hidden="true">&#9654; Play</span></button>';
+    html += '<figcaption><span class="trend-example-by">Real example: ' + esc(real.channel) + "</span> "
+         + '<a href="' + esc(real.url) + '" target="_blank" rel="noopener">Open the original video</a></figcaption>';
+    html += "</figure>";
+    return html;
+  }
+
+  function trendCard(fmt) {
+    var id = esc(fmt.id);
+    var real = fmt.real || [];
+    var decided = fmt.decision;
+    var html = '<article class="card trend-card' + (decided === "want" ? " is-wanted" : decided === "pass" ? " is-passed" : "")
+         + '" data-trend-card="' + id + '">';
+    html += '<div class="trend-top">';
+    html += trendExampleHtml(fmt);
+    html += '<div class="trend-head"><h2>' + esc(fmt.name) + "</h2>";
+    html += '<p class="trend-what">' + esc(fmt.what) + "</p>";
+    html += '<div class="trend-decide" role="group" aria-label="Your choice on ' + esc(fmt.name) + '">';
+    if (decided === "want") {
+      html += '<p class="trend-said"><span class="tag is-ready">On your big ideas list</span></p>'
+           + '<button class="btn quiet" type="button" data-trend-decide="' + id + '" data-choice="">Take it off the list</button>';
+    } else if (decided === "pass") {
+      html += '<p class="trend-said">You said not for you.</p>'
+           + '<button class="btn quiet" type="button" data-trend-decide="' + id + '" data-choice="">Change my mind</button>';
+    } else {
+      html += '<button class="btn primary" type="button" data-trend-decide="' + id + '" data-choice="want">I want this one</button>'
+           + '<button class="btn" type="button" data-trend-decide="' + id + '" data-choice="pass">Not for me</button>';
+    }
     html += "</div></div>";
-    html += '<details class="format-steps-box"><summary>The ' + fmt.steps.length + " steps you film</summary>";
+    html += '<div class="trend-about">';
+    if (real[0] && real[0].watch) html += '<p class="trend-line"><strong>In the example: </strong>' + esc(real[0].watch) + "</p>";
+    html += '<p class="trend-line"><strong>Why people watch it: </strong>' + esc(fmt.why) + "</p>";
+    html += "</div></div>";
+    if (real.length > 1) {
+      html += '<p class="trend-more">More real examples: ';
+      html += real.slice(1).map(function (r) {
+        return '<a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.title) + "</a> (" + esc(r.channel) + ")";
+      }).join(", ");
+      html += "</p>";
+    }
+    html += '<details class="format-steps-box"><summary>How you would film it, in ' + fmt.steps.length + " steps</summary>";
+    html += '<p class="trend-line">' + esc(fmt.edit) + " " + esc(fmt.song) + "</p>";
     html += '<ol class="format-steps">';
     fmt.steps.forEach(function (step) {
       html += '<li class="format-step"><img src="' + esc(formatDrawing(fmt, step)) + '" alt="Drawing: '
-           + esc(step.label) + '"><div><strong>' + esc(step.label) + "</strong><span>"
+           + esc(step.label) + '" loading="lazy"><div><strong>' + esc(step.label) + "</strong><span>"
            + esc(step.does) + "</span>"
            + (step.screen ? '<span class="format-step-screen">On screen: ' + esc(step.screen) + "</span>" : "")
            + "</div></li>";
     });
     html += "</ol></details>";
-    html += formatPickHtml(fmt, data);
-    html += '<div class="format-examples" id="formatExamples-' + id + '">' + formatExamplesHtml(fmt, null) + "</div>";
     html += "</article>";
     return html;
   }
 
-  function formatPickHtml(fmt, data) {
-    var id = esc(fmt.id);
-    if (!fmt.pick) {
-      return '<div class="actions"><button class="btn primary" type="button" data-format-pick="' + id + '"'
-           + (data.videos.length ? "" : " disabled") + ">Use it this week</button></div>";
-    }
-    var pick = fmt.pick;
-    var html = '<p class="hook-placed"><span class="tag is-ready">This week</span> '
-         + (pick.title ? "On “" + esc(pick.title) + "”. " : "") + esc(pick.why) + "</p>";
-    if (data.videos.length > 1) {
-      html += '<label class="hook-move"><span>Put it on another video</span><select data-format-move="' + id + '">';
-      data.videos.forEach(function (video) {
-        html += '<option value="' + esc(video.candidate_id) + '"'
-             + (video.candidate_id === pick.candidate_id ? " selected" : "") + ">" + esc(video.title || "Untitled") + "</option>";
-      });
-      html += "</select></label>";
-    }
-    var script = pick.script;
-    html += '<div class="format-script" data-format-script="' + esc(script ? script.state : "none") + '">';
-    html += "<h4>The script</h4>";
-    if (!script) {
-      html += '<p class="format-script-said">No script yet.</p>';
-      html += '<div class="actions"><button class="btn" type="button" data-format-again="' + id + '">Write the script</button></div>';
-    } else if (script.state === "writing") {
-      html += '<p class="format-script-said" role="status">' + esc(script.detail) + " " + esc(formatSince(script.at))
-           + " This page checks again every few seconds.</p>";
-    } else if (script.state === "failed" || !script.lines.length) {
-      html += '<p class="format-script-said">' + esc(script.detail) + "</p>";
-      html += '<div class="actions"><button class="btn" type="button" data-format-again="' + id + '">Write it again</button></div>';
-    } else {
-      html += '<p class="format-script-said">' + (script.state === "approved" ? '<span class="tag is-ready">Accepted</span> ' : "")
-           + esc(script.detail) + "</p>";
-      html += '<ol class="format-script-lines">';
-      script.lines.forEach(function (line) {
-        var field = "fmt-" + id + "-" + esc(line.step);
-        html += '<li><label for="' + field + '">' + esc(line.label) + (line.name ? ": " + esc(line.name) : "") + "</label>"
-             + '<textarea id="' + field + '" rows="2" maxlength="220" data-format-line="' + esc(line.step) + '">'
-             + esc(line.text) + "</textarea></li>";
-      });
-      html += "</ol>";
-      html += '<div class="actions"><button class="btn primary" type="button" data-format-accept="' + id + '">'
-           + (script.state === "approved" ? "Save my changes" : "Accept this script") + "</button>"
-           + '<button class="btn quiet" type="button" data-format-again="' + id + '">Write it again</button></div>';
-    }
-    html += "</div>";
-    html += '<div class="actions"><button class="btn quiet" type="button" data-format-unpick="' + id
-         + '">Take it out of this week</button></div>';
-    return html;
-  }
-
-  // How long the writer has been at it, so a long wait never reads as a frozen page.
-  function formatSince(at) {
-    var started = Date.parse(at || "");
-    if (!started) return "";
-    var minutes = Math.floor((Date.now() - started) / 60000);
-    if (minutes < 1) return "Started less than a minute ago.";
-    return "Started " + minutes + " " + plural(minutes, "minute") + " ago.";
-  }
-
-  function formatExamplesHtml(fmt, found) {
-    var id = esc(fmt.id);
-    var videos = found ? found.videos : (fmt.examples || []);
-    var html = "";
-    if (found) html += '<p class="hook-trending-said">' + esc(found.said) + "</p>";
-    if (videos.length) {
-      html += '<h4>Real examples on YouTube</h4><ol class="hook-trending-list">';
-      videos.forEach(function (v) {
-        html += '<li class="hook-trend"><a href="' + esc(v.url) + '" target="_blank" rel="noopener">' + esc(v.title) + "</a>"
-             + '<span class="hook-trend-meta">' + esc(v.channel) + ", " + esc(Number(v.views).toLocaleString("en-US"))
-             + " views</span></li>";
-      });
-      html += "</ol>";
-      html += '<button type="button" class="btn quiet" data-format-examples="' + id + '" data-again="1">Look again</button>';
-    } else {
-      html += '<button type="button" class="btn" data-format-examples="' + id + '">Show real examples</button>';
-    }
-    return html;
-  }
-
-  /* While a script is being written the page reads the studio again every five seconds,
-     for at most five minutes, and never while he is typing in a line. */
-  var formatWatch = null;
-  function watchFormatScripts(data) {
-    if (formatWatch) clearTimeout(formatWatch.timer);
-    var writing = (data && data.formats || []).some(function (f) {
-      return f.pick && f.pick.script && f.pick.script.state === "writing";
-    });
-    if (!writing) { formatWatch = null; return; }
-    var tries = formatWatch ? formatWatch.tries + 1 : 0;
-    if (tries > 60) {
-      formatWatch = null;
-      status("The script is still being written. Reload the page in a minute.");
-      return;
-    }
-    formatWatch = { tries: tries, timer: setTimeout(async function () {
-      if (state.route !== "hooks") { formatWatch = null; return; }
-      var typing = document.activeElement && document.activeElement.matches
-        && document.activeElement.matches("[data-format-line]");
-      if (hookBusy || typing) { watchFormatScripts(state.hooks); return; }
-      try {
-        var fresh = await api("/hooks", { retry: false });
-        if (state.route === "hooks") paintHooks(fresh);
-      } catch (error) {
-        watchFormatScripts(state.hooks);
-      }
-    }, 5000) };
-  }
-
-  async function formatExamples(id, again) {
-    var box = $("formatExamples-" + id);
-    if (!box || hookBusy) return;
-    hookBusy = true;
-    box.setAttribute("aria-busy", "true");
-    box.innerHTML = '<p class="hook-trending-said" role="status">Looking up real videos in this format on YouTube</p>';
-    status("Looking up real videos in this format on YouTube");
+  async function trendDecide(id, choice) {
+    if (trendBusy) return;
+    trendBusy = true;
+    status(choice === "want" ? "Putting it on your big ideas list" : choice === "pass" ? "Saving your no" : "Taking your choice back");
     try {
-      var found = await api("/hooks/formats/" + encodeURIComponent(id) + "/examples" + (again ? "?again=1" : ""));
-      var fmt = (state.hooks && state.hooks.formats || []).filter(function (f) { return f.id === id; })[0];
-      if (fmt) fmt.examples = found.videos;
-      if ($("formatExamples-" + id) && fmt) $("formatExamples-" + id).innerHTML = formatExamplesHtml(fmt, found);
-      status(found.said);
+      var data = await api("/hooks/formats/" + encodeURIComponent(id) + "/decide", { method: "POST", body: { choice: choice || null } });
+      if (state.route === "trends") paintTrends(data);
     } catch (error) {
-      if ($("formatExamples-" + id)) {
-        $("formatExamples-" + id).innerHTML = '<p class="hook-trending-said">'
-          + esc(error && error.message ? error.message : "The lookup did not answer. Try again.") + "</p>";
-      }
+      status(error && error.message ? error.message : "That did not save. Try again.");
     } finally {
-      hookBusy = false;
-      if ($("formatExamples-" + id)) $("formatExamples-" + id).removeAttribute("aria-busy");
+      trendBusy = false;
     }
   }
 
   document.addEventListener("click", function (event) {
-    var target = event.target.closest("[data-format-pick],[data-format-unpick],[data-format-again],[data-format-accept],[data-format-examples]");
-    if (!target || state.route !== "hooks") return;
+    var target = event.target.closest("[data-trend-decide],[data-trend-play]");
+    if (!target || state.route !== "trends") return;
     var d = target.dataset;
-    if (d.formatExamples !== undefined) {
-      formatExamples(d.formatExamples, d.again === "1");
-    } else if (d.formatPick !== undefined) {
-      hookAction("/hooks/formats/" + encodeURIComponent(d.formatPick) + "/pick", "POST", {},
-                 "Putting the format on a video of this week");
-    } else if (d.formatUnpick !== undefined) {
-      hookAction("/hooks/formats/" + encodeURIComponent(d.formatUnpick) + "/pick", "DELETE", undefined,
-                 "Taking the format out of this week");
-    } else if (d.formatAgain !== undefined) {
-      hookAction("/hooks/formats/" + encodeURIComponent(d.formatAgain) + "/script", "POST", { action: "again" },
-                 "Asking TCE to write the script again");
-    } else if (d.formatAccept !== undefined) {
-      var card = target.closest("[data-format-card]");
-      var lines = {};
-      Array.prototype.forEach.call(card.querySelectorAll("[data-format-line]"), function (field) {
-        lines[field.dataset.formatLine] = field.value;
-      });
-      hookAction("/hooks/formats/" + encodeURIComponent(d.formatAccept) + "/script", "POST",
-                 { action: "accept", lines: lines }, "Saving the script you accepted");
+    if (d.trendDecide !== undefined) {
+      trendDecide(d.trendDecide, d.choice);
+      return;
     }
+    // The stills become the real video in place, playing, with YouTube's own controls.
+    var fmt = (state.hooks && state.hooks.formats || []).filter(function (f) { return f.id === d.trendPlay; })[0];
+    var real = fmt && (fmt.real || [])[0];
+    if (!real) return;
+    var frame = document.createElement("iframe");
+    frame.className = "trend-video";
+    frame.src = real.embed;
+    frame.title = real.title + " by " + real.channel;
+    frame.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture; fullscreen");
+    frame.setAttribute("allowfullscreen", "");
+    target.replaceWith(frame);
   });
 
-  /* T-26039: each script line box is as tall as its own text, so the last line of a long
-     Better or Best line is never half cut inside a two-line box on a phone. It grows as he
-     types and fits again when the screen turns or the window changes width. */
-  function fitFormatLine(field) {
-    field.style.height = "auto";
-    field.style.height = (field.scrollHeight + field.offsetHeight - field.clientHeight) + "px";
-  }
-
-  function fitFormatLines() {
-    Array.prototype.forEach.call(document.querySelectorAll("[data-format-line]"), fitFormatLine);
-  }
-
-  document.addEventListener("input", function (event) {
-    if (event.target.matches && event.target.matches("[data-format-line]")) fitFormatLine(event.target);
-  });
-
-  var fitWidth = window.innerWidth;
-  window.addEventListener("resize", function () {
-    if (window.innerWidth === fitWidth || state.route !== "hooks") return;
-    fitWidth = window.innerWidth;
-    fitFormatLines();
-  });
-
-  document.addEventListener("change", function (event) {
-    var select = event.target.closest("[data-format-move]");
-    if (!select || state.route !== "hooks") return;
-    hookAction("/hooks/formats/" + encodeURIComponent(select.dataset.formatMove) + "/pick", "POST",
-               { candidate_id: select.value }, "Moving the format to that video");
-  });
+  /* T-26074: the format script boxes, the "Show real examples" word search and moving a
+     format between videos left the page with the trend card above (T-25834, T-26039). The
+     server still keeps a pick and its script for the recording cards. */
 
   /* T-25711: his color for every hook and headline in the Creatorz edit. Swatches only:
      each stays readable as the editor's 3D letters. */
@@ -5437,6 +5352,7 @@
       else if (route.name === "topics") await renderTopics();
       else if (route.name === "week") await renderWeek();
       else if (route.name === "hooks") await renderHooks();
+      else if (route.name === "trends") await renderTrends();
       else if (route.name === "library") await renderLibrary();
       else if (route.name === "rules") await renderRules();
       else if (route.name === "settings") await renderSettings();

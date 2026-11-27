@@ -397,8 +397,68 @@ def test_the_pages_wire_the_formats():
         assert f'id="{el}"' in html, el
     assert html.index('id="visualHook"') < html.index('id="trendFormat"') < html.index('id="hookChooser"')
     assert "paintTrendFormat(idea);" in js and "idea.trend_formats" in js and "tce-format-seen-" in js
+    # T-26074: the trend page is understand and decide only. The script boxes, the word search
+    # for examples and moving a format between videos are off it; a yes or no and the real clip are on it.
     for attr in ("data-format-pick", "data-format-unpick", "data-format-again", "data-format-accept",
-                 "data-format-examples", "data-format-move"):
+                 "data-format-examples", "data-format-move", "data-format-line", "<textarea"):
+        assert attr not in ws_js[ws_js.index("function renderTrends"):ws_js.index("function hookStyle")], attr
+    for attr in ("data-trend-decide", "data-trend-play"):
         assert ws_js.count(attr) >= 2, attr  # drawn and handled
-    assert "formatsHtml(data)" in ws_js and "watchFormatScripts(data)" in ws_js
+    assert "paintTrends(data)" in ws_js and 'name: "trends"' in ws_js
+    for page in ("workspace.html", "recording.html"):
+        nav = (API / page).read_text(encoding="utf-8")
+        assert 'href="/trends"  data-route="trends" class="hooks-entry"' in nav, page  # the owner's only
     assert "/api/v1/hooks/formats" not in ws_js  # the prefix comes from the page (the /tce trap)
+
+
+# ------------------------------------------------- T-26074: understand and decide
+
+
+def test_every_trend_has_a_real_example_someone_looked_at():
+    for fmt in formats.FORMATS:
+        assert fmt.real, fmt.id  # a hand-picked creator doing it, never only the word search
+        for ex in fmt.real:
+            assert re.fullmatch(r"[A-Za-z0-9_-]{11}", ex.video_id), ex
+            assert ex.url == f"https://www.youtube.com/shorts/{ex.video_id}"
+            assert ex.channel.startswith("@") and ex.title and ex.watch.endswith(".")
+            assert "\u2014" not in ex.watch and "--" not in ex.watch
+
+
+def test_a_yes_goes_on_big_ideas_and_survives_a_hook_save(store):
+    assert format_library.wanted(WS) == []
+    kept = run(format_library.decide(WS, GBB.id, "want"))
+    assert kept["choice"] == "want"
+    run(library.toggle_favorite(WS, "big-number", True))  # a hook write must not erase the yes
+    ideas = format_library.wanted(WS)
+    assert [i["id"] for i in ideas] == [GBB.id] and ideas[0]["name"] == GBB.name
+    run(format_library.decide(WS, GBB.id, "pass"))
+    assert format_library.wanted(WS) == []  # a no is kept, but it is not a big idea
+    assert library.read_store(WS)["format_wants"][GBB.id]["choice"] == "pass"
+    run(format_library.decide(WS, GBB.id, None))
+    assert GBB.id not in library.read_store(WS)["format_wants"]
+    with pytest.raises(library.HookError):
+        run(format_library.decide(WS, GBB.id, "maybe"))
+    with pytest.raises(library.HookError):
+        run(format_library.decide(WS, "nope", "want"))
+
+
+def test_api_decide_answers_with_the_page_and_writes_nothing_on_a_video(monkeypatch, store):
+    tasks = []
+    client = _client(monkeypatch, tasks=tasks)
+    page = client.get("/api/v1/hooks").json()
+    card = page["formats"][0]
+    assert page["big_ideas"] == [] and card["decision"] is None
+    real = card["real"][0]
+    assert real["url"].startswith("https://www.youtube.com/shorts/") and len(real["frames"]) == 3
+    assert real["embed"].startswith("https://www.youtube-nocookie.com/embed/" + real["video_id"])
+    got = client.post(f"/api/v1/hooks/formats/{GBB.id}/decide", json={"choice": "want"})
+    assert got.status_code == 200
+    body = got.json()
+    assert body["formats"][0]["decision"] == "want" and [i["id"] for i in body["big_ideas"]] == [GBB.id]
+    assert body["formats"][0]["pick"] is None and tasks == []  # no video and no script from a yes
+    assert client.post(f"/api/v1/hooks/formats/{GBB.id}/decide", json={"choice": "dance"}).status_code == 400
+    assert client.post("/api/v1/hooks/formats/nope/decide", json={"choice": "want"}).status_code == 404
+    back = client.post(f"/api/v1/hooks/formats/{GBB.id}/decide", json={"choice": None}).json()
+    assert back["formats"][0]["decision"] is None and back["big_ideas"] == []
+    scoped = _client(monkeypatch, scoped=True)
+    assert scoped.post(f"/api/v1/hooks/formats/{GBB.id}/decide", json={"choice": "want"}).status_code == 403
