@@ -68,6 +68,7 @@ from tce.production import (
     publishing,
     qc,
     relisten,
+    tail,
     tightcut,
     wordbox,
 )
@@ -4021,6 +4022,76 @@ async def _second_listen(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
         await s.commit()
 
 
+async def _hear_to_the_end(upload_id: uuid.UUID, ws: uuid.UUID) -> int:
+    """Hear the rest of the original when the transcript stopped short of it (27-Nov).
+
+    A walk's transcript ended at 0:07 after its first line while the original ran on;
+    every edit then kept 7 seconds, and Jennifer asked him to upload the walk again
+    though it was on this server. The original's speech after the last word is heard
+    in stretches (tail.unheard_stretches) and the words are added at their place.
+    Returns how many words came back; 0 leaves the transcript and the card as they were.
+    Never stops an edit."""
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        words = list(row.transcript or [])
+        src, duration = row.storage_path, row.duration_s
+        before = (row.status, row.status_detail)
+        through = float(((row.edit_plan or {}).get("heard_to_end") or {}).get("through_s") or 0.0)
+    url = settings.production_transcribe_ws_url
+    if not url or not words or not src or not Path(src).exists():
+        return 0
+    activity = await _speech_activity(src)
+    if activity is None:
+        return 0
+    stretches = tail.unheard_stretches(words, activity.regions, duration, through)
+    if not stretches:
+        return 0
+    until = qc.clock(tail.heard_until(words))
+    heard: list[tuple[float, float, dict[str, Any] | None]] = []
+    failures = 0
+    for n, (a, b) in enumerate(stretches, 1):
+        if failures >= 3:
+            break  # the worker is not answering: the next edit tries again
+        await _note(
+            upload_id, ws, "proofreading",
+            f"The transcript stopped at {until}, before the end of the original. "
+            f"Listening to the rest of the original recording ({n} of {len(stretches)})",
+        )
+        try:
+            heard.append((a, b, await media.transcribe_clip(src, a, b, ws_url=url, **_clip_language(ws))))
+        except Exception:  # noqa: BLE001 - an unheard stretch leaves the words as they were
+            failures += 1
+    added = tail.place(words, heard)
+    fp = library_service.transcript_fingerprint
+    async with session_factory()() as s:
+        row = await _load(s, upload_id, ws)
+        if fp(row.transcript) != fp(words):
+            return 0  # he changed the words meanwhile; his version stands
+        plan = dict(row.edit_plan or {})
+        if heard:
+            # Heard to here: these stretches are not heard again on the next edit.
+            plan["heard_to_end"] = {
+                **(plan.get("heard_to_end") or {}),
+                "through_s": max(through, max(b for _a, b, _r in heard)),
+                "heard_until": round(tail.heard_until(words), 3), "added": len(added),
+                "stretches": len(stretches), "heard": len(heard), "at": _utcnow().isoformat(),
+            }
+            row.edit_plan = plan
+        if not added:
+            if row.status == "proofreading" and (row.status, row.status_detail) != before:
+                row.status, row.status_detail = before  # nothing came back: as it was
+            await s.commit()
+            return 0
+        row.transcript = words + added
+        row.edit_plan = plan
+        row.status_detail = (
+            f"The first transcript stopped at {until}. Heard the rest of the original "
+            f"recording: {len(added)} more words, to {qc.clock(tail.heard_until(added))}."
+        )[:500]
+        await s.commit()
+    return len(added)
+
+
 # 4-Oct review: one automatic edit per video at a time in this process. A second start of
 # the same video (a tap racing the finish's own start, or a restart's resume) finds the
 # first running and leaves it alone: one transcription, one review, one render.
@@ -4052,6 +4123,9 @@ async def auto_edit(upload_id: uuid.UUID, ws: uuid.UUID) -> None:
         # 29-Oct: the laugh detector reads the recording while the second listen and the
         # review run, so the plan finds the answer waiting.
         _start_laughs(upload_id, ws)
+        # 27-Nov: a transcript that stopped before the original did is heard to the end
+        # first, so the edit is made from the whole recording.
+        await _hear_to_the_end(upload_id, ws)
         await _second_listen(upload_id, ws)
         review_state = await _review(upload_id, ws, wait_timeout_s=REVIEW_FIRST_WAIT_S)
         row = await _plan_and_render(upload_id, ws)
@@ -4326,6 +4400,7 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             return
         _request_running(upload_id, request_id, "Reading your request on the subscription")
         moved = 0
+        heard_whole = False
         while True:
             if await _request_gate(request_id, ws, upload_id, settle) != "go":
                 return
@@ -4336,6 +4411,19 @@ async def run_edit_request(request_id: uuid.UUID, ws: uuid.UUID) -> None:
             if not words or not keep:
                 await settle("open", {"status": "Waiting: this recording is not edited yet."})
                 return
+            if not heard_whole:
+                # 27-Nov: "edit the original again, we need the full video" was answered
+                # with "upload it again": her transcript stopped at 0:07, the original
+                # did not. The rest is heard from the original on this server and the
+                # whole video edited, then the note is read against all of it.
+                heard_whole = True
+                if await _hear_to_the_end(upload_id, ws):
+                    status = ("The transcript had stopped early: heard the rest of the original "
+                              "recording, editing the whole video, then reading your request")
+                    _request_running(upload_id, request_id, status)
+                    await settle("in_progress", {"status": status})
+                    await auto_edit(upload_id, ws)
+                    continue
             await settle("in_progress", {"status": "Reading your request on the subscription"})
             marks = await word_marks_for(got["src"], words, keep)
             prompt = autoedit.edit_request_prompt(
