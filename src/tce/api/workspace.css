@@ -718,6 +718,12 @@ input,textarea,select { font-size:max(16px,1rem); }
 @media (min-width: 720px) { .hook-card { grid-template-columns: minmax(140px, 42%) 1fr; } }
 .hook-card.is-picked { border-color: var(--moss); box-shadow: 0 0 0 2px var(--moss) inset; }
 .hook-preview { display: block; width: 100%; aspect-ratio: 9 / 16; object-fit: cover; background: var(--ink); }
+/* T-25911: the moving example on the left. The badge shows only when the phone refused to start it. */
+.hook-clip { position: relative; cursor: pointer; }
+.hook-clip-play { display: none; position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+  white-space: nowrap; padding: 6px 10px; border-radius: 999px; background: rgba(15, 23, 42, .86);
+  color: #ffffff; font-size: 1rem; font-weight: 800; pointer-events: none; }
+.hook-clip.is-still .hook-clip-play { display: block; }
 .hook-body { padding: 10px 12px 12px; min-width: 0; }
 .hook-body .actions .btn { width: 100%; }
 .hook-body .card-title-row { justify-content: space-between; align-items: flex-start; gap: 10px; }

@@ -1101,6 +1101,7 @@
     state.painted = "hooks";
     status(hookTally(data));
     watchFormatScripts(data);
+    startHookClips();
   }
 
   /* T-25834: trend formats. A format is how the whole video goes, not only its first two
@@ -1395,6 +1396,64 @@
     }
   }
 
+  /* T-25911: the autoplay attribute alone left all ten clips frozen on their first frame in
+     a real browser (27 Nov), and a phone saving battery can refuse it too. The page starts
+     each clip itself while it is on screen and stops it once scrolled past, so ten clips
+     never decode at once. A refused start marks the clip still: its badge says Play,
+     and the first touch anywhere on the page starts every clip in view. */
+  var hookClipWatch = null;
+
+  function hookClipState(video, moving) {
+    var box = video.closest(".hook-clip");
+    if (box) box.classList.toggle("is-still", !moving);
+  }
+
+  function playHookClip(video) {
+    if (!video.isConnected) return;
+    video.muted = true;
+    var started;
+    try { started = video.play(); } catch (error) { hookClipState(video, false); return; }
+    if (started && started.then) {
+      started.then(function () { hookClipState(video, true); }, function () { hookClipState(video, false); });
+    }
+  }
+
+  function hookClipOnScreen(video) {
+    var r = video.getBoundingClientRect();
+    return r.bottom > 0 && r.top < (window.innerHeight || document.documentElement.clientHeight);
+  }
+
+  function startHookClips() {
+    if (hookClipWatch) { hookClipWatch.disconnect(); hookClipWatch = null; }
+    var clips = Array.prototype.slice.call(document.querySelectorAll("video.hook-preview"));
+    if (!clips.length) return;
+    clips.forEach(function (video) {
+      video.defaultMuted = true;
+      video.muted = true;
+      video.addEventListener("playing", function () { hookClipState(video, true); });
+      // A pause the page did not make (the phone stopped it) shows the Play badge too.
+      video.addEventListener("pause", function () {
+        if (video.dataset.offscreen !== "1") hookClipState(video, false);
+      });
+    });
+    if (!("IntersectionObserver" in window)) { clips.forEach(playHookClip); return; }
+    hookClipWatch = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        var video = entry.target;
+        if (entry.isIntersecting) { video.dataset.offscreen = ""; playHookClip(video); }
+        else if (!video.paused) { video.dataset.offscreen = "1"; video.pause(); }
+      });
+    }, { threshold: 0.2 });
+    clips.forEach(function (video) { hookClipWatch.observe(video); });
+  }
+
+  function wakeStillHookClips() {
+    Array.prototype.forEach.call(document.querySelectorAll(".hook-clip.is-still video.hook-preview"), function (video) {
+      if (hookClipOnScreen(video)) playHookClip(video);
+    });
+  }
+  document.addEventListener("pointerdown", wakeStillHookClips, { passive: true });
+
   function hookTally(data) {
     return data.picked + " " + plural(data.picked, "hook") + " picked for this week, "
          + data.favorites + " " + plural(data.favorites, "favorite");
@@ -1403,9 +1462,14 @@
   function hookCard(hook, data) {
     var id = esc(hook.id);
     var html = '<article class="card hook-card' + (hook.pick ? " is-picked" : "") + '" data-hook-card="' + id + '">';
-    html += '<video class="hook-preview" src="' + esc(apiV1 + "/" + hook.preview_url)
-         + '" muted loop playsinline autoplay preload="metadata" aria-label="Preview of '
-         + esc(hook.name) + '"></video>';
+    // T-25911: the example on the left loops on its own on a phone. #t=0.6 paints a real
+    // frame while it waits (a dark box read as nothing there), and startHookClips() plays it
+    // as it scrolls into view; a phone that refuses gets a Play badge, not a still.
+    html += '<div class="hook-clip" data-hook-clip="' + id + '">'
+         + '<video class="hook-preview" src="' + esc(apiV1 + "/" + hook.preview_url) + '#t=0.6"'
+         + ' muted loop playsinline autoplay preload="auto" aria-label="Moving example of '
+         + esc(hook.name) + '"></video>'
+         + '<span class="hook-clip-play" aria-hidden="true">&#9654; Play</span></div>';
     html += '<div class="hook-body"><div class="card-title-row"><h3>' + esc(hook.name) + "</h3>";
     html += '<button class="star' + (hook.favorite ? " is-on" : "") + '" type="button" data-hook-fav="' + id
          + '" aria-pressed="' + (hook.favorite ? "true" : "false") + '" aria-label="'
