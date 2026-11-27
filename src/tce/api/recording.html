@@ -109,6 +109,34 @@
       </div>
     </section>
 
+    <section id="visualHookSheet" class="visual-hook-sheet" hidden role="dialog" aria-modal="true" aria-labelledby="visualHookSheetTitle">
+      <div class="visual-hook-sheet-inner">
+        <span class="visual-hook-label">Visual hook for this video</span>
+        <h2 id="visualHookSheetTitle"></h2>
+        <video id="visualHookClip" class="visual-hook-clip" muted loop playsinline preload="metadata"></video>
+        <p id="visualHookWhat" class="visual-hook-what"></p>
+        <strong class="visual-hook-label">Before you press record</strong>
+        <ul id="visualHookCoach" class="visual-hook-coach"></ul>
+        <button id="visualHookReady" type="button" class="visual-hook-ready">Ready to record</button>
+      </div>
+    </section>
+
+    <section id="formatSheet" class="visual-hook-sheet format-sheet" hidden role="dialog" aria-modal="true" aria-labelledby="formatSheetTitle">
+      <div class="visual-hook-sheet-inner">
+        <span class="visual-hook-label" id="formatSheetKicker"></span>
+        <h2 id="formatSheetTitle"></h2>
+        <img id="formatStepDrawing" class="format-step-drawing" alt="">
+        <p id="formatStepSay" class="format-step-say"></p>
+        <p id="formatStepScreen" class="format-step-screen"></p>
+        <strong class="visual-hook-label">On camera</strong>
+        <ul id="formatStepCoach" class="visual-hook-coach"></ul>
+        <div class="format-step-nav">
+          <button id="formatStepBack" type="button" class="visual-hook-how">Back</button>
+          <button id="formatStepNext" type="button" class="visual-hook-ready">Next step</button>
+        </div>
+      </div>
+    </section>
+
     <section id="studioView" class="studio-view" hidden>
       <div class="camera-stage">
         <video id="camera" playsinline muted></video>
@@ -117,6 +145,7 @@
           <strong>Front camera</strong>
           <span>Camera and microphone start only when you press Record.</span>
           <span id="cameraTip" class="record-tip">Framing tip: hold the phone at arm's length on the wide lens, with a little sky or wall above your head. It leaves room for text and keeps your head in the frame.</span>
+          <span id="cameraHookTip" class="record-tip camera-hook-tip" hidden></span>
         </div>
         <div id="recordingFlag" class="recording-flag" hidden><span></span> Recording</div>
         <div id="timer" class="camera-timer" hidden>00:00</div>
@@ -127,6 +156,14 @@
         <h1 id="scriptTitle"></h1>
         <p id="bigIdea"></p>
         <div id="hookPanel" class="hook-panel"></div>
+        <div id="visualHook" class="visual-hook" hidden>
+          <span class="visual-hook-line">Visual hook: <strong id="visualHookTitle"></strong></span>
+          <button id="visualHookHow" type="button" class="visual-hook-how">How to film it</button>
+        </div>
+        <div id="trendFormat" class="visual-hook trend-format-line" hidden>
+          <span class="visual-hook-line">Format: <strong id="trendFormatTitle"></strong></span>
+          <button id="trendFormatHow" type="button" class="visual-hook-how">Step by step</button>
+        </div>
         <section id="hookChooser" class="hook-chooser" hidden aria-labelledby="hookChooserTitle">
           <div class="hook-chooser-head">
             <strong id="hookChooserTitle">Choose the opening</strong>

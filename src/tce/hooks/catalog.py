@@ -28,6 +28,10 @@ class Hook:
     record: str
     fits: tuple[str, ...] = field(default_factory=tuple)
     fit_reason: str = ""
+    # Before he presses record (T-25711): where to stand, hands and body, when to move.
+    coach: tuple[str, ...] = field(default_factory=tuple)
+    # What the first spoken line must give this hook, for the script writer (T-25711).
+    script_need: str = ""
 
     @property
     def preview(self) -> Path:
@@ -40,24 +44,48 @@ HOOKS: tuple[Hook, ...] = (
         "Word behind you",
         "A big word sits in the frame and you end up in front of it, so the word is behind your head.",
         "Hold the camera a little further away so there is room above your head. Say the key word clearly.",
+        coach=(
+            "Stand two steps back, centered, with room above your head.",
+            "Hands low and still, so nothing crosses the word.",
+            "Say the key word clearly and stay in your spot for the first two seconds.",
+        ),
+        script_need="one short, strong key word in the first line that can sit big behind his head",
     ),
     Hook(
         "punch-in",
         "Punch-in zoom on the key word",
         "The picture snaps in close on the one word that matters, then back out.",
         "Say the hook line straight to the lens and lean in a little on the key word.",
+        coach=(
+            "Stand at arm's length, eyes on the lens.",
+            "Keep your hands below your chin so the close frame stays clean.",
+            "Lean in a little on the key word, then settle back.",
+        ),
+        script_need="one key word in the first line worth zooming in on",
     ),
     Hook(
         "word-by-word",
         "Headline word by word",
         "Your opening line appears one word at a time, in time with your voice.",
         "Leave room above your head and say the line clearly, in one breath.",
+        coach=(
+            "Stand at arm's length with a little room above your head.",
+            "Hands relaxed and low; the words appear over that space.",
+            "Say the line clearly in one breath, no pause in the middle.",
+        ),
+        script_need="a first line short enough to read word by word, under twelve words",
     ),
     Hook(
         "whip-in",
         "Whip into the first line",
         "A fast blurred slide with a whoosh lands you on your first word.",
         "Start talking the moment you press record, no pause.",
+        coach=(
+            "Be in your spot and framed before you press record.",
+            "Hands ready, no reaching for the phone after you press.",
+            "Start talking the moment you press record, no pause.",
+        ),
+        script_need="a first word that is already the point, with no warm-up words before it",
     ),
     Hook(
         "freeze-stamp",
@@ -67,6 +95,12 @@ HOOKS: tuple[Hook, ...] = (
         fits=(r"\bmistakes?\b", r"\bwrong\b", r"\bstop\b", r"\bnever\b", r"\bdon'?t\b", r"\bmyths?\b",
               r"\bnot\b", r"\bfail", r"\btrap"),
         fit_reason="it calls something out, and the stamp names it",
+        coach=(
+            "Stand at arm's length, face well lit.",
+            "Make one clear face or gesture on the key word.",
+            "Hold it for half a beat, then carry on talking.",
+        ),
+        script_need="an early word that names the mistake or the wrong belief, short enough for a two or three word stamp",
     ),
     Hook(
         "split-screen",
@@ -76,6 +110,12 @@ HOOKS: tuple[Hook, ...] = (
         fits=(r"\bbefore\b", r"\bafter\b", r"\bused to\b", r"\binstead\b", r"\bvs\.?\b", r"\bversus\b",
               r"\bagain\b", r"\bfrom .{1,40} to\b"),
         fit_reason="it has a before and an after to put side by side",
+        coach=(
+            "Stay in the same spot and framing for the whole take.",
+            "Use your hands when you say the problem and again for the result.",
+            "Say the problem early and the result later; TCE puts them side by side.",
+        ),
+        script_need="a clear before and a clear after, the problem said early and the result said later",
     ),
     Hook(
         "big-number",
@@ -84,12 +124,24 @@ HOOKS: tuple[Hook, ...] = (
         "Say the number out loud and clearly, for example eighty percent.",
         fits=(r"\d[\d,.]*(?:\s?%|\s?percent)?", r"\b(two|three|four|five|six|seven|eight|nine|ten|hundred|thousand|million|percent)\b"),
         fit_reason="it has a number to put on the screen",
+        coach=(
+            "Stand at arm's length, eyes on the lens.",
+            "Hold up the number with your fingers if it is small, otherwise hands low.",
+            "Say the number out loud and clearly, for example eighty percent.",
+        ),
+        script_need="a specific number said out loud in the first line, taken from the evidence, never invented",
     ),
     Hook(
         "bw-to-color",
         "Black and white to color",
         "The opening is black and white and snaps to color on the key word.",
         "Nothing special: say the key word clearly.",
+        coach=(
+            "Stand at arm's length in good light; color shows best in daylight.",
+            "Hands relaxed.",
+            "Say the key word clearly; the color comes on with it.",
+        ),
+        script_need="one key word in the first line where the picture can snap to color",
     ),
     Hook(
         "proof-pop",
@@ -99,6 +151,12 @@ HOOKS: tuple[Hook, ...] = (
         fits=(r"\bproof\b", r"\bprove", r"\bresults?\b", r"\bscreenshots?\b", r"\bdone\b", r"\bbuilt\b",
               r"\bshipped\b", r"\bworks?\b", r"\bdemo\b"),
         fit_reason="it makes a claim a picture of yours can prove",
+        coach=(
+            "Stand a little higher in the frame; the picture pops in under you.",
+            "Point down on the claim, toward where the proof appears.",
+            "Attach the picture that proves it to the take, and say the claim it proves.",
+        ),
+        script_need="a claim in the first lines that one of his own screenshots or results can prove",
     ),
     Hook(
         "background-jump",
@@ -108,6 +166,12 @@ HOOKS: tuple[Hook, ...] = (
         fits=(r"\btravel", r"\bplaces?\b", r"\brooms?\b", r"\bstage\b", r"\boffice\b", r"\bworld\b",
               r"\bmove\b", r"\bstudio\b", r"\bhome\b"),
         fit_reason="it takes you somewhere, and the room can change with it",
+        coach=(
+            "Stand in front of a plain wall or background.",
+            "Keep hands close to your body so the edge around you stays clean.",
+            "Stay still in one spot for the first two seconds.",
+        ),
+        script_need="a place, or a change of place, named in the first line",
     ),
 )
 

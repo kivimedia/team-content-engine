@@ -1235,6 +1235,7 @@ class _Styled:
     keep: list[list[float]]  # what the file was cut on: the edit with the air taken out
     cache: dict[str, Any]
     backdrop: dict[str, Any] | None = None  # 18-Nov: what the new-backgrounds step did
+    opening: str = ""  # T-25711: how the edit opens on the hook picked for this topic
 
     def detail(self, length: str, top_text: str | None, denoise: str | None) -> str:
         # The engine's three short-reel pacing lines (first word on frame 1, a 0.2 s tail, no
@@ -1255,16 +1256,18 @@ class _Styled:
             f"Creatorz style ready: {self.shots} shots, {length} long, checklist {passed} of {len(scored)}"
             + (f". This style leaves out {' and '.join(missing)}" if missing else "")
             + backdrop_config.said(self.backdrop)
+            + (f". {self.opening.rstrip('.')}" if self.opening else "")
         )[:500]
 
 
 async def _render_creatorz(
     upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, src: Path, plan: dict[str, Any], keep: list[list[float]],
     size: tuple[int, int], out: Path, lang: str, transcript: list[dict[str, Any]], report,
-    late_ms: int = 0,
+    late_ms: int = 0, hook: Any = None, fmt: Any = None,
 ) -> tuple[_Styled | None, str | None]:
     """The finished Creatorz file at `out` and what the render needs to say about it, or
     (None, why) so the same render makes the Pill version instead."""
+    from tce.hooks import library as hook_library
     from tce.llm import LLMUnavailable
     from tce.llm.queue import QueueError
 
@@ -1284,6 +1287,10 @@ async def _render_creatorz(
         return None, "there is no voice in this edit"
     pictures = creatorz_reels.pictures_of(plan)
     key = creatorz_reels.moments_key(tight, words, pictures)
+    if hook is not None:  # T-25711: a hook picked for this topic asks the moments again
+        key = f"{key}-{hook.id}"
+    if fmt is not None:  # T-25834: so does a trend format
+        key = f"{key}-{fmt.id}"
 
     async def ask(prompt: str, system: str, schema: dict[str, Any], try_no: int) -> dict[str, Any]:
         try:
@@ -1301,10 +1308,12 @@ async def _render_creatorz(
         saved = plan.get("creatorz") or {}
         if saved.get("key") == key and saved.get("moments"):
             chosen = {"moments": saved["moments"], "punchline": saved.get("punchline")}
+            if saved.get("opening"):
+                chosen["opening"] = saved["opening"]
         else:
             await report("Creatorz style: choosing the words that pop, on the subscription")
             shots = await asyncio.to_thread(creatorz_reels.shots_for, tight, words)
-            chosen = await creatorz_reels.get_moments(shots, lang, ask, pictures=pictures)
+            chosen = await creatorz_reels.get_moments(shots, lang, ask, pictures=pictures, hook=hook, fmt=fmt)
         # 11-Nov: the engine gets each picture as its file; the saved moments keep the ids.
         moments, missing = creatorz_reels.with_picture_files(
             chosen["moments"], pictures, creatorz_reels.pictures_dir(src)
@@ -1322,6 +1331,8 @@ async def _render_creatorz(
             backdrop=backdrop_config.for_render(ws, upload_id, src, plan),
             # 19-Nov: the sound a moment later when this recording's lips trail it.
             **({"sound_delay_ms": late_ms} if late_ms else {}),
+            # T-25711: his color from the hook studio, when he chose one.
+            **({"accent": accent} if (accent := hook_library.accent_rgb(ws)) else {}),
         )
         os.replace(made.voice, creatorz_voice_path(out))
         os.replace(made.out, out)
@@ -1334,7 +1345,7 @@ async def _render_creatorz(
     await media.make_light_copy(out, report)
     return _Styled(made.shots, made.checklist, made.captions, tight, {
         "key": key, "keep": tight, **chosen, "pictures": creatorz_reels.pictures_seen(pictures),
-    }, made.backdrop), None
+    }, made.backdrop, chosen.get("opening", "")), None
 
 
 async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: str, *,
@@ -1346,6 +1357,7 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         async with session_factory()() as s:
             row = await _load(s, upload_id, ws)
             src, plan, duration = Path(row.storage_path), dict(row.edit_plan or {}), row.duration_s
+            candidate_id = row.candidate_id
             words = list(row.transcript or [])
             previous_ref = row.render_ref
             first_preview = not (row.edited_path or previous_ref)
@@ -1391,11 +1403,24 @@ async def _run_render(upload_id: uuid.UUID, ws: uuid.UUID, attempt: str, mode: s
         # stays, only how the edit looks; if it cannot run he gets the Pill version and why.
         styled: _Styled | None = None
         style_failure = None
-        if mode == "cut" and not audio_only and creatorz_reels.style_of(plan) == creatorz_reels.CREATORZ:
+        # T-25711: the hook picked for this topic in the hook library. A video with no style
+        # chosen gets the Creatorz edit when the editor can draw that hook, so it opens with it.
+        # T-25834: so does a trend format on the topic; the edit puts its words on screen.
+        from tce.hooks import edit_open, format_edit
+
+        hook = edit_open.hook_on(ws, candidate_id) if mode == "cut" and not audio_only else None
+        fmt = format_edit.format_on(ws, candidate_id) if mode == "cut" and not audio_only else None
+        chosen_style = (plan.get("overrides") or {}).get("style")
+        wants_creatorz = creatorz_reels.style_of(plan) == creatorz_reels.CREATORZ or (
+            chosen_style is None
+            and ((hook is not None and hook.id in edit_open.DRAWN) or fmt is not None)
+            and creatorz_reels.enabled_for(ws)
+        )
+        if mode == "cut" and not audio_only and wants_creatorz:
             styled, style_failure = await _render_creatorz(
                 upload_id, ws, attempt, src, plan, keep, size, out, lang,
                 [w for w in words if w.get("start_s") is not None and w.get("end_s") is not None], report,
-                late_ms=late_ms,
+                late_ms=late_ms, hook=hook, fmt=fmt,
             )
         if styled is not None:
             # From here on this render's clock is the one it was cut on, for every reader.
@@ -2410,6 +2435,12 @@ async def recording_queue(
         if candidate is not None and packet is not None and candidate.workspace_id == ws:
             rows.append((candidate, packet))
     ideas: list[dict[str, Any]] = []
+    # T-25711: the visual hook picked for each video in the hook library, so the
+    # studio coaches it without a second request. A workspace with no library has none.
+    from tce.hooks import format_library
+    from tce.hooks import library as hook_library
+
+    hook_week = lineup_service.week_start_for(None).date().isoformat()
     for candidate, packet in rows:
         active = (
             await db.execute(
@@ -2440,6 +2471,12 @@ async def recording_queue(
                 "packet_format": "v2" if packet.hook_options and packet.beats else "legacy",
                 "active_session_id": str(active.id) if active else None,
                 "active_session_status": active.status if active else None,
+                "visual_hooks": [
+                    {**hook, "preview_url": f"hooks/{hook['id']}/preview"}
+                    for hook in hook_library.for_video(ws, hook_week, str(candidate.id))
+                ],
+                # T-25834: the trend format on this video, step by step for the recording cards
+                "trend_formats": format_library.for_video(ws, hook_week, str(candidate.id)),
             }
         )
     # 25-Nov: the studio's "To continue recording" tab. Videos he stopped partway

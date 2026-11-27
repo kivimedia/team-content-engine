@@ -118,6 +118,35 @@ main { width: min(100%, 980px); margin: 0 auto; }
 .hook-panel strong, .hook-panel span { display: block; }
 .hook-panel span { margin-top: 4px; color: #58342c; }
 .hook-panel .hook-lock { display: block; margin-top: 4px; color: #7a2626; font-weight: 800; font-size: .76rem; }
+/* T-25711: the visual hook picked for this video. In the studio, one line; the clip
+   and the on-camera steps get their own full screen (opaque, nothing under it shows). */
+.script-heading .visual-hook { order: 2; }
+.visual-hook { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: 0 0 auto; padding: 4px 0 0; }
+.visual-hook[hidden] { display: none; }
+.visual-hook-line { min-width: 0; color: var(--ink); font-size: 0.95rem; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.visual-hook-line strong { color: var(--lake); }
+.visual-hook-how { flex: 0 0 auto; min-height: 44px; padding: 0 12px; border: 2px solid var(--lake); border-radius: 10px; background: var(--white); color: var(--lake); font-weight: 900; font-size: 0.95rem; }
+.visual-hook-sheet { position: fixed; inset: 0; z-index: 50; overflow-y: auto; background: var(--white); color: var(--ink); padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); }
+.visual-hook-sheet[hidden] { display: none; }
+.visual-hook-sheet-inner { max-width: 520px; margin: 0 auto; display: grid; gap: 10px; justify-items: start; }
+.visual-hook-sheet h2 { margin: 0; font-size: 1.35rem; line-height: 1.2; }
+.visual-hook-label { color: var(--lake); font-weight: 900; font-size: 0.95rem; }
+.visual-hook-clip { justify-self: center; height: min(46dvh, 420px); aspect-ratio: 9 / 16; max-width: 100%; border-radius: 12px; background: #101820; object-fit: cover; }
+.visual-hook-what { margin: 0; font-size: 1rem; line-height: 1.45; }
+.visual-hook-coach { margin: 0; padding-inline-start: 20px; font-size: 1rem; line-height: 1.45; }
+.visual-hook-coach li + li { margin-top: 4px; }
+.visual-hook-ready { justify-self: stretch; min-height: 52px; border: 0; border-radius: 12px; background: var(--lake); color: #fff; font-weight: 900; font-size: 1.05rem; }
+.camera-empty .camera-hook-tip { color: #ffffff; font-weight: 800; }
+/* T-25834: a trend format on this video, one step per screen with its drawing */
+.script-heading .trend-format-line { order: 2; }
+.format-step-drawing { justify-self: center; height: min(40dvh, 360px); aspect-ratio: 9 / 16; max-width: 100%; border-radius: 12px; background: #f7fafc; }
+.format-step-say { margin: 0; font-size: 1.15rem; line-height: 1.4; font-weight: 800; color: var(--ink); }
+.format-step-say.is-guide { font-weight: 600; font-size: 1rem; }
+.format-step-screen { margin: 0; color: var(--lake); font-weight: 800; font-size: 0.95rem; }
+.format-step-screen:empty { display: none; }
+.format-step-nav { justify-self: stretch; display: grid; grid-template-columns: auto 1fr; gap: 10px; }
+.format-step-nav .visual-hook-how[disabled] { opacity: 0.55; }
+.camera-empty .camera-hook-tip[hidden] { display: none; }
 .hook-chooser { margin-top: 14px; padding: 12px; border: 2px solid var(--ink); border-radius: 14px; background: #fff8ee; }
 .hook-chooser-head { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .hook-chooser-head strong { font-family: Georgia, serif; font-size: 1.15rem; }

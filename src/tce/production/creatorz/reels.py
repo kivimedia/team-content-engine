@@ -251,11 +251,15 @@ def reel_plan(
     moments: list[dict[str, Any]], punchline: int | None, bed: str | Path | None,
     sound_delay_ms: int = 0,
     caption_gap_s: float = CAPTION_GAP_S, caption_anchors: list[dict[str, Any]] | None = None,
+    accent: list[int] | None = None,
 ) -> dict[str, Any]:
+    # T-25711: his color from the hook studio; without it the engine picks one from the footage.
+    color = {"accent": list(accent)} if accent else {}
     # 19-Nov: only a recording whose lips trail its sound carries the key (media.sound_delay_for).
     late = {"sound_delay_ms": int(sound_delay_ms)} if sound_delay_ms and sound_delay_ms > 0 else {}
     return {
         **late,
+        **color,
         "schema": engine_plan.SCHEMA,
         "source": str(src),
         "words": str(words_path),
@@ -558,12 +562,19 @@ def _hole_sentences(holes: list[tuple[float, float]], shots: list[dict[str, Any]
 
 
 async def get_moments(
-    shots: list[dict[str, Any]], lang: str, ask: Ask, pictures: list[dict[str, Any]] = ()
+    shots: list[dict[str, Any]], lang: str, ask: Ask, pictures: list[dict[str, Any]] = (), hook: Any = None,
+    fmt: Any = None,
 ) -> dict[str, Any]:
     """The writer's moments, checked. Anything wrong goes back once with the exact reasons,
     a stretch with nothing on screen included; after that the good ones go ahead and the
-    rest are dropped."""
-    prompt = moments_prompt(shots, lang, pictures)
+    rest are dropped.
+
+    With `hook` (the hook library's pick for this topic, T-25711) the writer is asked to
+    open with it, and the opening is put in by rule when its answer does not. With `fmt`
+    (a trend format on the topic, T-25834) each of its words goes on screen as he says it."""
+    from tce.hooks import edit_open, format_edit
+
+    prompt = moments_prompt(shots, lang, pictures) + edit_open.directive(hook, list(pictures)) + format_edit.directive(fmt)
     answer = await ask(prompt, MOMENTS_SYSTEM, MOMENTS_SCHEMA, 0)
     moments, problems = clean_moments(answer.get("moments"), shots, lang, pictures)
     holes = quiet_gaps(moments, shots, lang) if moments else []
@@ -585,9 +596,32 @@ async def get_moments(
             now = (len(quiet_gaps(better, shots, lang)) if better else 10**6, -len(better))
             if now <= was:
                 moments, answer = better, second
+    opening = ""
+    if hook is not None:
+        opened, opening = edit_open.ensure_opening(moments, shots, hook, list(pictures))
+        if opened != moments:
+            # what the rule put in goes through the same checks as the writer's answer
+            checked, _ = clean_moments(opened, shots, lang, pictures)
+            if checked and checked[0] == opened[0]:
+                moments = checked
+            elif opening.startswith("Opens with"):
+                opening = f"The edit could not open with {hook.name}: it did not fit the opening lines."
+    if fmt is not None:
+        followed, sentence, words = format_edit.ensure_beats(
+            moments, shots, fmt, keep_first=opening.startswith("Opens with")
+        )
+        if words:
+            # the rule's words go through the same checks; any the engine refuses are said
+            checked, _ = clean_moments(followed, shots, lang, pictures)
+            kept = [w for w in words if any(format_edit._is_beat(m, w) for m in checked)]
+            if checked:
+                moments = checked
+            missing = [b.word.upper() for b in fmt.beats if b.word.upper() not in kept]
+            sentence = format_edit.said(fmt, kept, missing)
+        opening = f"{opening.rstrip('.')}. {sentence}" if opening and sentence else (opening or sentence)
     if not moments:
         raise CreatorzFailed("the writer of the text moments gave nothing that fits this video")
-    return {"moments": moments, "punchline": _punchline(answer, shots)}
+    return {"moments": moments, "punchline": _punchline(answer, shots), **({"opening": opening} if opening else {})}
 
 
 # ---------------------------------------------------------------- the engine
@@ -743,6 +777,7 @@ async def render_reel(
     moments: list[dict[str, Any]], punchline: int | None, bed: str | None, on_status: Status,
     backdrop: dict[str, Any] | None = None, sound_delay_ms: int = 0,
     caption_gap_s: float = CAPTION_GAP_S, caption_anchors: list[dict[str, Any]] | None = None,
+    accent: list[int] | None = None,
 ) -> ReelResult:
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -754,7 +789,7 @@ async def render_reel(
             reel_plan(
                 src=src, words_path=words_path, keep=keep, lang=lang, work=work, moments=moments,
                 punchline=punchline, bed=bed, sound_delay_ms=sound_delay_ms,
-                caption_gap_s=caption_gap_s, caption_anchors=caption_anchors,
+                caption_gap_s=caption_gap_s, caption_anchors=caption_anchors, accent=accent,
             ),
             ensure_ascii=False,
         ),
