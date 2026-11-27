@@ -1557,7 +1557,87 @@
     view.innerHTML = roomHtml(state.room, state.roomVoice);
     state.painted = "room:" + candidateId;
     status(roomStatus(state.room));
+    paintRoomHook(candidateId);
   }
+
+  /* T-26074 (Ziv, 27-Nov): "when I actually go into a specific video then I should have an
+     option add a visual hook if it doesn't have an assigned hook and then I can choose for
+     that specific video ... choosing a hook on a specific script before I record that
+     actually does make some sense to me." Read after the topic is drawn, so a slow read
+     never holds the page; a failed read leaves the topic exactly as it was. Owner only. */
+  var roomHookOpen = false;
+
+  function paintRoomHook(candidateId, data) {
+    var box = $("roomHook");
+    if (!box || window.TCE_SCOPED) return;
+    var read = data ? Promise.resolve(data) : api("/hooks", { retry: false });
+    read.then(function (lib) {
+      if (!box.isConnected) return;
+      state.roomHooks = lib;
+      var inWeek = (lib.videos || []).some(function (v) { return v.candidate_id === candidateId; });
+      var on = (lib.hooks || []).filter(function (h) { return h.pick && h.pick.candidate_id === candidateId; });
+      var html = "<h2>Visual hook</h2>";
+      if (on.length) {
+        on.forEach(function (hook) {
+          html += '<p class="room-hook-on"><span class="tag is-ready">Opens with</span> <strong>' + esc(hook.name)
+               + "</strong>. " + esc(hook.what) + "</p>";
+          if (hook.pick.script && hook.pick.script.detail) {
+            html += '<p class="section-hint" data-room-hook-script="' + esc(hook.pick.script.state || "") + '">'
+                 + esc(hook.pick.script.detail) + "</p>";
+          }
+        });
+      } else if (inWeek) {
+        html += '<p class="section-hint">No visual hook on this video yet. Choose one before you record and '
+             + "TCE writes the opening line for it.</p>";
+      } else {
+        html += '<p class="section-hint">Visual hooks go on this week\'s videos. Put this topic in this week first, '
+             + "then add one here.</p>";
+      }
+      if (inWeek) {
+        html += '<div class="actions"><button class="btn' + (on.length ? "" : " primary") + '" type="button" data-room-hook-open="1"'
+             + ' aria-expanded="' + (roomHookOpen ? "true" : "false") + '">'
+             + (on.length ? "Change the visual hook" : "Add a visual hook") + "</button></div>";
+        if (roomHookOpen) {
+          html += '<ul class="room-hook-list" aria-label="Visual hooks to choose from">';
+          (lib.hooks || []).forEach(function (hook) {
+            var here = hook.pick && hook.pick.candidate_id === candidateId;
+            html += '<li class="room-hook-item"><div><strong>' + esc(hook.name) + (hook.favorite ? " &#9733;" : "")
+                 + "</strong><span>" + esc(hook.what) + "</span></div>"
+                 + (here ? '<span class="tag is-ready">On this video</span>'
+                         : '<button class="btn" type="button" data-room-hook-pick="' + esc(hook.id) + '">Use this one</button>')
+                 + "</li>";
+          });
+          html += "</ul>";
+          html += '<p class="section-hint"><a href="hooks" data-go="/hooks">See every hook play on the Hooks page</a></p>';
+        }
+      }
+      box.innerHTML = html;
+      box.hidden = false;
+    }).catch(function () { /* the topic stands without it */ });
+  }
+
+  document.addEventListener("click", function (event) {
+    var target = event.target.closest("[data-room-hook-open],[data-room-hook-pick]");
+    if (!target || state.route !== "room" || !state.room) return;
+    var candidateId = state.room.candidate_id;
+    if (target.dataset.roomHookOpen !== undefined) {
+      roomHookOpen = !roomHookOpen;
+      paintRoomHook(candidateId, state.roomHooks);
+      return;
+    }
+    if (hookBusy) return;
+    hookBusy = true;
+    status("Putting the hook on this video and writing its opening");
+    api("/hooks/" + encodeURIComponent(target.dataset.roomHookPick) + "/pick",
+        { method: "POST", body: { candidate_id: candidateId } })
+      .then(function (data) {
+        roomHookOpen = false;
+        if (state.route === "room" && state.room && state.room.candidate_id === candidateId) paintRoomHook(candidateId, data);
+        status("Hook added. TCE is writing the opening line for it.");
+      })
+      .catch(function (error) { status(error && error.message ? error.message : "That did not save. Try again."); })
+      .then(function () { hookBusy = false; });
+  });
 
   function roomStatus(data) { return "Version " + ((data.brief || {}).version || 1); }
 
@@ -1613,6 +1693,9 @@
              + esc(data.candidate_id) + '">Prepare the script</button></div>';
       }
     }
+
+    // T-26074: the video's own visual hook, filled in by paintRoomHook (owner only).
+    html += '<section class="room-hook hooks-entry" id="roomHook" aria-live="polite" hidden></section>';
 
     if ((data.history || []).length > 1) {
       html += "<h2>History</h2>";

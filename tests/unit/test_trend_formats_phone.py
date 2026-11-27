@@ -154,7 +154,7 @@ TREND_MEASURE = """
 () => {
   const r = (el) => el.getBoundingClientRect();
   const card = document.querySelector('[data-trend-card]');
-  const texty = [...card.querySelectorAll("h2, p, a, button, summary, figcaption span")].filter((e) => r(e).width);
+  const texty = [...card.querySelectorAll("h2, p, a, button, summary, figcaption span, .tag")].filter((e) => r(e).width);
   const buttons = [...card.querySelectorAll('button, summary')].filter((e) => r(e).width);
   const overlaps = [];
   for (let i = 0; i < buttons.length; i++) for (let j = i + 1; j < buttons.length; j++) {
@@ -255,6 +255,7 @@ def test_trends_page_real_example_then_a_yes_goes_on_big_ideas(studio, tmp_path,
             m = page.evaluate(TREND_MEASURE)
             page.screenshot(path=str(out / f"trends-wanted-{name}.png"))
             assert m["ideas"] == [GBB.name] and m["decideButtons"] == ["Take it off the list"], m
+            assert m["smallest"] >= 15 and not m["overflowX"] and m["cardInside"], m
             assert format_library.wanted(WS)[0]["id"] == GBB.id and picked == []
             assert format_library.current(WS, hooks_router._week_key(), GBB.id) is None  # no video, no script
             page.click("[data-trend-play]")

@@ -842,3 +842,19 @@ input,textarea,select { font-size:max(16px,1rem); }
 .trend-said { margin: 0; color: var(--ink); font-size: 1rem; }
 .trend-more { margin: 0; color: var(--body); font-size: 1rem; line-height: 1.45; }
 .trend-more a { color: var(--lake); }
+
+/* T-26074: a video's own visual hook, in its topic page. */
+.room-hook { margin: 18px 0 0; }
+.room-hook h2 { margin: 0 0 6px; }
+.room-hook-on { margin: 0 0 6px; color: var(--ink); font-size: 1rem; line-height: 1.45; }
+.room-hook-list { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 8px; }
+.room-hook-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--white); }
+.room-hook-item > div { min-width: 0; }
+.room-hook-item strong, .room-hook-item span { display: block; line-height: 1.4; }
+.room-hook-item strong { color: var(--ink); }
+.room-hook-item > div span { color: var(--body); font-size: 1rem; }
+.room-hook-item .btn { flex: 0 0 auto; min-height: 44px; }
+/* Nothing under 15px on these two new surfaces (the shared hint and tag sizes are smaller). */
+.room-hook .section-hint, .room-hook .tag, .trend-card .tag { font-size: 1rem; }
+.room-hook .tag, .trend-card .tag { margin-top: 0; }
