@@ -281,6 +281,12 @@ def _client(monkeypatch, scoped=False, tasks=None):
     monkeypatch.setattr(hooks_router, "_week_key", lambda: WEEK)
     monkeypatch.setattr(hooks_router, "_lineup", lineup)
     monkeypatch.setattr(hooks_router.format_script, "fill", fill)
+
+    async def think(*args):
+        if tasks is not None:
+            tasks.append(("think",) + args)
+
+    monkeypatch.setattr(hooks_router.trend_idea, "think", think)
     monkeypatch.setattr(hooks_router, "scoped_editor_workspace", lambda key: WS if scoped else None)
     app = FastAPI()
     app.include_router(hooks_router.router, prefix="/api/v1")
@@ -454,11 +460,91 @@ def test_api_decide_answers_with_the_page_and_writes_nothing_on_a_video(monkeypa
     got = client.post(f"/api/v1/hooks/formats/{GBB.id}/decide", json={"choice": "want"})
     assert got.status_code == 200
     body = got.json()
-    assert body["formats"][0]["decision"] == "want" and [i["id"] for i in body["big_ideas"]] == [GBB.id]
-    assert body["formats"][0]["pick"] is None and tasks == []  # no video and no script from a yes
+    assert body["formats"][0]["decision"] == "want" and [i["trend_id"] for i in body["big_ideas"]] == [GBB.id]
+    assert body["big_ideas"][0]["idea_state"] == "writing"
+    # no video and no script from a yes: only TCE's idea, in the background
+    assert body["formats"][0]["pick"] is None and [t[0] for t in tasks] == ["think"] and tasks[0][3] == GBB.id
+    assert client.get("/api/v1/hooks/trend-ideas").json()["trends"][0]["trend"] == GBB.name
     assert client.post(f"/api/v1/hooks/formats/{GBB.id}/decide", json={"choice": "dance"}).status_code == 400
     assert client.post("/api/v1/hooks/formats/nope/decide", json={"choice": "want"}).status_code == 404
     back = client.post(f"/api/v1/hooks/formats/{GBB.id}/decide", json={"choice": None}).json()
     assert back["formats"][0]["decision"] is None and back["big_ideas"] == []
     scoped = _client(monkeypatch, scoped=True)
     assert scoped.post(f"/api/v1/hooks/formats/{GBB.id}/decide", json={"choice": "want"}).status_code == 403
+
+
+# ------------------------------------------------- T-26074: TCE's idea after a yes
+
+
+IDEA = {
+    "pillar": "Coaching", "topic": "How to price a package", "existing_topic": True,
+    "why": "Three ways to price fits three steps.",
+    "idea": "Three ways to price a coaching package, from an hourly rate to a monthly plan.",
+    "steps": [{"step": s.id, "line": f"Line for {s.label}"} for s in GBB.steps],
+    "confirm": ["That you moved clients to a monthly plan this year"],
+}
+
+
+def test_the_idea_writer_reads_pillars_and_topics_and_is_batch_work():
+    from tce.llm import queue
+    from tce.hooks import trend_idea
+
+    assert trend_idea.JOB_TYPE not in queue.INTERACTIVE_JOB_TYPES  # nobody waits on it
+    prompt = trend_idea.build_prompt(GBB, ["Build", "Coaching"], ["How to price a package"])
+    assert "Good, better, best" in prompt and "- Coaching" in prompt and "- How to price a package" in prompt
+    assert all(f'"step": "{s.id}"' in prompt for s in GBB.steps)
+    assert trend_idea.pillars_for(WS) == ["Build", "Coaching", "News that excites Ziv"]
+    assert "Never invent facts" in trend_idea.SYSTEM and "confirm" in trend_idea.SYSTEM
+
+
+def test_clean_keeps_a_whole_idea_and_refuses_a_missing_step():
+    from tce.hooks import trend_idea
+
+    got = trend_idea.clean(GBB, {**IDEA, "idea": "Three ways \u2014 to price."})
+    assert got["topic"] == "How to price a package" and "\u2014" not in got["idea"]
+    assert [s["step"] for s in got["steps"]] == [s.id for s in GBB.steps] and got["confirm"]
+    assert trend_idea.clean(GBB, {**IDEA, "steps": IDEA["steps"][:-1]}) is None
+    assert trend_idea.clean(GBB, {**IDEA, "topic": ""}) is None
+    assert trend_idea.clean(GBB, "not json") is None
+
+
+def test_think_keeps_the_idea_on_the_yes_and_a_no_meanwhile_wins(store, monkeypatch):
+    from tce.hooks import trend_idea
+
+    seen = {}
+
+    async def complete(request):
+        seen["job"] = request.job_type
+        return types.SimpleNamespace(structured=IDEA, text="")
+
+    async def topics(_sm, _ws):
+        return ["How to price a package"]
+
+    monkeypatch.setattr(trend_idea._llm, "complete", complete)
+    monkeypatch.setattr(trend_idea, "recent_topics", topics)
+    run(format_library.decide(WS, GBB.id, "want"))
+    idea = run(trend_idea.think(None, WS, GBB.id))
+    assert idea["state"] == "ready" and seen["job"] == "trend_idea"
+    ready = trend_idea.ready_ideas(WS)
+    assert ready[0]["idea_state"] == "ready" and ready[0]["idea"]["topic"] == "How to price a package"
+    run(library.toggle_favorite(WS, "big-number", True))  # a hook write keeps the idea
+    assert trend_idea.ready_ideas(WS)[0]["idea"]["confirm"] == IDEA["confirm"]
+    run(format_library.decide(WS, GBB.id, "pass"))
+    assert run(trend_idea.save(WS, GBB.id, {"state": "ready"})) is False  # a late writer never revives a no
+    assert trend_idea.ready_ideas(WS) == []
+
+
+def test_think_says_a_failure_plainly(store, monkeypatch):
+    from tce.hooks import trend_idea
+
+    async def broken(request):
+        raise RuntimeError("busy")
+
+    async def topics(_sm, _ws):
+        return []
+
+    monkeypatch.setattr(trend_idea._llm, "complete", broken)
+    monkeypatch.setattr(trend_idea, "recent_topics", topics)
+    run(format_library.decide(WS, GBB.id, "want"))
+    assert run(trend_idea.think(None, WS, GBB.id))["state"] == "failed"
+    assert trend_idea.ready_ideas(WS)[0]["idea_state"] == "failed"

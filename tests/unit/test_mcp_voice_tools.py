@@ -303,6 +303,36 @@ def test_the_week_says_the_order_the_script_states_and_what_needs_deciding():
     assert "Next: Start recording." in text
 
 
+def test_the_week_brings_up_a_trend_he_said_yes_to_with_tces_idea():
+    """T-26074 (Ziv, 27-Nov): "The next time I talk with TCE, it tells me ... I noticed you
+    wanted to do this trend, so after research, I came up with an idea about how we would
+    do it." The week read carries each yes and, when ready, the idea to say and confirm."""
+    week = {"ok": True, "status": 200, "data": {"week": {"primary": [], "reserve": []},
+                                                "attention": {"waiting": 0, "pending_reviews": 0}}}
+    trends = {"ok": True, "status": 200, "data": {"trends": [
+        {"trend": "Good, better, best", "trend_id": "good-better-best", "idea_state": "ready",
+         "idea": {"state": "ready", "pillar": "Coaching", "topic": "How to price a package",
+                  "why": "Three prices fit three steps.", "idea": "Three ways to price a package.",
+                  "steps": [{"step": "good", "label": "Good", "line": "An hourly rate."}],
+                  "confirm": ["That you moved to a monthly plan"]}},
+        {"trend": "Another trend", "trend_id": "another", "idea_state": "writing"},
+    ]}}
+    out = run({"steps": [step("tce_week")], "responses": {
+        "GET /editorial/today": week, "GET /editorial/topics": {"ok": True, "status": 200, "data": {"topics": []}},
+        "GET /hooks/trend-ideas": trends,
+    }})
+    text = out["texts"][0]
+    assert "Trends he said yes to on the Trends page" in text
+    assert "- Good, better, best: Three ways to price a package. Topic: How to price a package (Coaching)." in text
+    assert "Steps: Good: An hourly rate." in text and "To confirm with him: That you moved to a monthly plan." in text
+    assert "- Another trend: the idea is still being worked out." in text
+    # a client's key is refused there: the week reads exactly as before
+    out = run({"steps": [step("tce_week")], "responses": {
+        "GET /editorial/today": week, "GET /editorial/topics": {"ok": True, "status": 200, "data": {"topics": []}},
+    }})
+    assert "Trends he said yes to" not in out["texts"][0]
+
+
 def test_the_week_counts_the_waiting_ideas_per_pillar_for_a_lane_client():
     """3-Nov, Tim's call: "My list doesn't tell me which lane each idea is in, so I
     can't split that count by lane for you." A lane client hears the count per

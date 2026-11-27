@@ -222,6 +222,11 @@ def test_trends_page_real_example_then_a_yes_goes_on_big_ideas(studio, tmp_path,
     monkeypatch.setattr(dashboard, "_workspace_enabled", enabled)  # the flag lives in the real database
     monkeypatch.setattr(hooks_router, "_lineup", fake_lineup)
     monkeypatch.setattr(hooks_router.format_script, "fill", fake_fill)
+
+    async def fake_think(_sm, _ws, format_id):
+        picked.append("idea:" + format_id)
+
+    monkeypatch.setattr(hooks_router.trend_idea, "think", fake_think)
     real = GBB.real[0]
     with sync_playwright() as pw:
         browser = _browser(pw)
@@ -256,7 +261,10 @@ def test_trends_page_real_example_then_a_yes_goes_on_big_ideas(studio, tmp_path,
             page.screenshot(path=str(out / f"trends-wanted-{name}.png"))
             assert m["ideas"] == [GBB.name] and m["decideButtons"] == ["Take it off the list"], m
             assert m["smallest"] >= 15 and not m["overflowX"] and m["cardInside"], m
-            assert format_library.wanted(WS)[0]["id"] == GBB.id and picked == []
+            assert format_library.wanted(WS)[0]["id"] == GBB.id and picked == ["idea:" + GBB.id]
+            picked.clear()
+            said = page.text_content("[data-big-idea]")
+            assert "working out how you would do it" in said, said
             assert format_library.current(WS, hooks_router._week_key(), GBB.id) is None  # no video, no script
             page.click("[data-trend-play]")
             page.wait_for_selector("iframe.trend-video")

@@ -451,7 +451,8 @@ export function register(server, call, { reply, failure, shortId }) {
     'This week at a glance: the recording list in order with each script\'s state (or that he '
       + 'filmed it already: never offer to record a filmed one again), and the ideas '
       + 'still waiting for a decision, each with its id (and, for a client with pillars, each one\'s '
-      + 'pillar and how many wait in each pillar). Read-only. Start here when he says "the week"; '
+      + 'pillar and how many wait in each pillar), and the trends he said yes to with TCE\'s idea for each. '
+      + 'Read-only. Start here when he says "the week"; '
       + 'a change to one of them takes the id listed here.',
     { type: 'object', properties: {} },
     async () => {
@@ -503,7 +504,27 @@ export function register(server, call, { reply, failure, shortId }) {
       const reviews = today.data.attention?.pending_reviews || 0;
       if (reviews) lines.push(`${reviews} proposed change${reviews === 1 ? ' is' : 's are'} waiting for a yes or no.`);
       if (today.data.next_action?.label) lines.push(`Next: ${today.data.next_action.label}. ${today.data.next_action.detail || ''}`.trim());
+      // T-26074 (Ziv, 27-Nov): a trend he said yes to on the Trends page comes back on his
+      // next talk with TCE's idea for it. Owner only: a client's key is refused, and the
+      // week reads exactly as before.
+      const trendRead = await call('GET', '/hooks/trend-ideas');
+      const trends = (trendRead.ok ? trendRead.data.trends : []) || [];
+      if (trends.length) {
+        lines.push('Trends he said yes to on the Trends page (bring a ready idea up early in the call):');
+        trends.forEach((t) => {
+          const idea = t.idea || {};
+          if (t.idea_state !== 'ready') {
+            lines.push(`- ${t.trend}: the idea is ${t.idea_state === 'failed' ? 'not worked out yet' : 'still being worked out'}.`);
+            return;
+          }
+          const steps = (idea.steps || []).map((s) => `${s.label}: ${s.line}`).join('; ');
+          const confirm = (idea.confirm || []).length ? ` To confirm with him: ${idea.confirm.join('; ')}.` : '';
+          lines.push(`- ${t.trend}: ${idea.idea} Topic: ${idea.topic}${idea.pillar ? ` (${idea.pillar})` : ''}. `
+            + `Why it fits: ${idea.why} Steps: ${steps}.${confirm}`);
+        });
+      }
       return reply(lines.join('\n'), {
+        trend_ideas: trends,
         week: primary.map((t) => ({ candidate_id: t.candidate_id, title: t.title, rank: t.rank, script_state: t.script_state, packet_id: t.packet_id, filmed: Boolean(t.filmed) })),
         reserve: reserve.map((t) => ({ candidate_id: t.candidate_id, title: t.title, filmed: Boolean(t.filmed) })),
         needs_decision: undecided.map((t) => ({ candidate_id: t.candidate_id, title: t.title, ...(t.lane ? { lane: t.lane, pillar: t.lane_label } : {}) })),

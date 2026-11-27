@@ -23,6 +23,8 @@ POST   /hooks/formats/{id}/script  {"action": "again"} write it again, or
                                    {"action": "accept", "lines": {step: line}} accept it
 POST   /hooks/formats/{id}/decide  {"choice": "want" | "pass" | null} his yes (it goes on his
                                      big ideas list), his no, or taking it back (T-26074)
+GET    /hooks/trend-ideas          the trends he said yes to and TCE's idea for each, for his
+                                     next talk (T-26074; read only)
 GET    /hooks/formats/{id}/examples?again=1  real short videos in the format (YouTube)
 GET    /hooks/formats/{id}/drawing/{step}.svg  the recording card's drawing
 
@@ -42,7 +44,7 @@ from tce.api.private_access import require_private_workspace, scoped_editor_work
 from tce.api.routers.editorial import get_editorial_sessionmaker
 from tce.editorial import lineup as lineup_service
 from tce.editorial.common import open_session
-from tce.hooks import ai_match, format_library, format_script, formats, library, script_fit, trending
+from tce.hooks import ai_match, format_library, format_script, formats, library, script_fit, trend_idea, trending
 from tce.hooks.catalog import BY_ID
 
 router = APIRouter(prefix="/hooks", tags=["hooks"])
@@ -102,7 +104,7 @@ async def _page(ws: uuid.UUID, week: str, lineup: dict[str, Any]) -> dict[str, A
     """The studio's whole read: the hook library and, beside it, the trend formats (T-25834)."""
     data = await library.library(ws, week, lineup, _preview_url)
     data["formats"] = await format_library.page(ws, week, library.week_videos(lineup))
-    data["big_ideas"] = format_library.wanted(ws)  # T-26074: the trends he said yes to
+    data["big_ideas"] = trend_idea.ready_ideas(ws)  # T-26074: the trends he said yes to, with TCE's idea
     return data
 
 
@@ -216,17 +218,28 @@ async def format_script_action(
 async def decide_format(
     format_id: str,
     body: DecideRequest,
+    background: BackgroundTasks,
     ws: uuid.UUID = Depends(require_owner),
     sm: Any = Depends(get_editorial_sessionmaker),
 ) -> dict[str, Any]:
     """T-26074: the trend page's only choice. A yes puts the trend on his big ideas
-    list; nothing is put on a video and no script is written here."""
+    list and TCE works out how he would do it in the background, for his next talk;
+    nothing is put on a video and no script is written here."""
     try:
-        await format_library.decide(ws, format_id, body.choice)
+        kept = await format_library.decide(ws, format_id, body.choice)
     except library.HookError as error:
         raise _http(error) from None
+    if kept and kept.get("choice") == "want":
+        await trend_idea.save(ws, format_id, {"state": "writing", "detail": "TCE is working out how you would do it."})
+        background.add_task(trend_idea.think, sm, ws, format_id)
     lineup = await _lineup(sm, ws)
     return await _page(ws, _week_key(), lineup)
+
+
+@router.get("/trend-ideas")
+async def get_trend_ideas(ws: uuid.UUID = Depends(require_owner)) -> dict[str, Any]:
+    """T-26074: what TCE's talk opens with: each trend he said yes to and its idea."""
+    return {"trends": trend_idea.ready_ideas(ws)}
 
 
 @router.get("/formats/{format_id}/examples")

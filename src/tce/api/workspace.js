@@ -1141,8 +1141,14 @@
     html += '<section class="card big-ideas" aria-labelledby="bigIdeasTitle"><h2 id="bigIdeasTitle">Your big ideas</h2>';
     if (ideas.length) {
       html += '<ul class="big-ideas-list">';
-      ideas.forEach(function (idea) {
-        html += "<li><strong>" + esc(idea.name) + "</strong> <span>" + esc(idea.what) + "</span></li>";
+      ideas.forEach(function (item) {
+        var idea = item.idea || {};
+        var line = item.idea_state === "ready"
+          ? "TCE's idea: " + idea.topic + ". It brings it to you on your next TCE talk."
+          : item.idea_state === "failed" ? "TCE could not work out an idea yet. It tries again when you talk."
+          : "TCE is working out how you would do it, from your pillars and recent topics.";
+        html += '<li data-big-idea="' + esc(item.trend_id) + '" data-idea-state="' + esc(item.idea_state) + '"><strong>'
+             + esc(item.trend) + "</strong> <span>" + esc(line) + "</span></li>";
       });
       html += "</ul>";
     } else {
