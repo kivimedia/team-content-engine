@@ -343,7 +343,7 @@
     var nav = $("bottomNav");
     var active = { today: "today", topics: "topics", week: "week", library: "library",
                    room: "topics", workshop: "week", talk: "library", rules: "library",
-                   hooks: "week" }[route.name];
+                   hooks: "hooks" }[route.name];
     Array.prototype.forEach.call(nav.querySelectorAll("a"), function (a) {
       if (a.dataset.route === active) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
