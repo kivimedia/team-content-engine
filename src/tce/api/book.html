@@ -33,10 +33,9 @@
     <div class="topbar-actions">
       <!-- 25-Nov-2026 (T-25211), Ziv: "they put a button for chatting, it is super weird, it should have been
            just a microphone on the top." The microphone is the one button: it starts the call and the editor
-           speaks first. Typing stays one small keyboard beside it. -->
+           speaks first. 27-Nov (release 2): typing is a keyboard inside the call, and on the chapters page
+           one line in Everything else; Film this session sits there too, and up here only on a chapter. -->
       <button id="bookMic" class="book-mic" type="button" aria-pressed="false" aria-label="Talk to the editor" aria-controls="editorPanel"><svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></button>
-      <button id="listTalk" class="icon-button chat-icon type-icon" type="button" aria-label="Type to the editor" aria-controls="editorPanel" aria-expanded="false"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path fill="currentColor" d="M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zM11 8h2v2h-2zm0 3h2v2h-2zM8 8h2v2H8zm0 3h2v2H8zm-1 2H5v-2h2zm0-3H5V8h2zm9 7H8v-2h8zm0-4h-2v-2h2zm0-3h-2V8h2zm3 3h-2v-2h2zm0-3h-2V8h2z"/></svg></button>
-      <button id="filmButton" class="film-button" type="button" aria-pressed="false" hidden>Film this session</button>
     </div>
     <!-- 18-Nov-2026 (T-22863): while the chat is hidden and the editor call is still on, this
          line stays in the top bar, like a Zoom call with its chat closed. It is a row of the bar,
@@ -82,6 +81,8 @@
       <p id="editorState" class="editor-state" role="status" aria-live="polite">Type a question, or tap the mic and talk.</p>
       <a id="editorSignin" class="editor-signin" href="/voice" hidden>Sign in to KM BOT</a>
       <div id="editorLog" class="editor-log" hidden></div>
+      <!-- 27-Nov-2026 (T-25211): the keyboard lives inside the call, under the editor's words. -->
+      <button id="editorType" class="type-toggle" type="button" aria-controls="editorForm" hidden><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path fill="currentColor" d="M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zM11 8h2v2h-2zm0 3h2v2h-2zM8 8h2v2H8zm0 3h2v2H8zm-1 2H5v-2h2zm0-3H5V8h2zm9 7H8v-2h8zm0-4h-2v-2h2zm0-3h-2V8h2zm3 3h-2v-2h2zm0-3h-2V8h2z"/></svg>Type instead</button>
       <form id="editorForm" class="editor-form">
         <label class="sr-only" for="editorText">Message to the editor</label>
         <input id="editorText" type="text" autocomplete="off" enterkeyhint="send" placeholder="Ask the editor">
@@ -97,14 +98,24 @@
          episodes come first, in his layout's order; the Part one he wrote himself is
          folded underneath. -->
     <section id="listView" aria-label="Chapters">
-      <!-- 18-Nov-2026 (T-22864): the book editor as an agent, like KM BOT. -->
-      <div id="agentCatchup" class="agent-catchup" hidden></div>
-      <nav id="agentList" class="agent-list" aria-label="The editor's list" hidden></nav>
+      <!-- 27-Nov-2026 (T-25211 release 2), Ziv: "Something about the UI is very overwhelming and it
+           needs to be simple: I go in, I start a conversation". The first screen is the chapter that
+           is next, one line about the microphone, and one fold; everything else is inside it. -->
       <section id="reviewFocus" class="review-focus" aria-labelledby="reviewTitle" hidden>
         <p id="reviewContext" class="part"></p>
         <h1 id="reviewTitle"></h1>
+        <p id="micHint" class="mic-hint">Tap the microphone at the top to talk it through with the editor. It catches you up first.</p>
         <a id="reviewNext" class="review-link" hidden></a>
       </section>
+      <details id="everythingElse" class="book-disclosure everything-else">
+      <summary id="everythingSummary">Everything else</summary>
+      <div class="everything-tools">
+        <button id="listTalk" class="type-toggle" type="button" aria-controls="editorPanel" aria-expanded="false"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path fill="currentColor" d="M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zM11 8h2v2h-2zm0 3h2v2h-2zM8 8h2v2H8zm0 3h2v2H8zm-1 2H5v-2h2zm0-3H5V8h2zm9 7H8v-2h8zm0-4h-2v-2h2zm0-3h-2V8h2zm3 3h-2v-2h2zm0-3h-2V8h2z"/></svg>Type to the editor, no call</button>
+        <button id="filmButton" class="film-button" type="button" aria-pressed="false" hidden>Film this session</button>
+      </div>
+      <!-- 18-Nov-2026 (T-22864): the book editor as an agent, like KM BOT. -->
+      <div id="agentCatchup" class="agent-catchup" hidden></div>
+      <nav id="agentList" class="agent-list" aria-label="The editor's list" hidden></nav>
       <details id="chapterDirectory" class="book-disclosure" hidden>
         <summary id="directorySummary">Browse chapters</summary>
         <h2 id="newHead" class="list-head" hidden>New chapters, in your layout's order</h2>
@@ -119,6 +130,7 @@
         <p id="progressLine" class="progress" hidden></p>
         <p id="stepsLine" class="steps" hidden>Approve a layout, ask for the chapter to be written, then read or listen and approve the chapter.</p>
         <p id="narrationNote" class="steps"></p>
+      </details>
       </details>
     </section>
 
@@ -184,8 +196,8 @@
     <button id="backPara" class="ctl" type="button" aria-label="Back one paragraph">&#9198;</button>
     <button id="playButton" class="ctl play" type="button" aria-label="Play">&#9654;</button>
     <button id="nextPara" class="ctl" type="button" aria-label="Forward one paragraph">&#9197;</button>
-    <!-- 10-Nov-2026 (T-19955): a small icon; the chat opens inside the book, never a new tab. -->
-    <button id="talkButton" class="ctl talk type-icon" type="button" aria-label="Type to the editor about this paragraph" aria-controls="editorPanel" aria-expanded="false"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path fill="currentColor" d="M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zM11 8h2v2h-2zm0 3h2v2h-2zM8 8h2v2H8zm0 3h2v2H8zm-1 2H5v-2h2zm0-3H5V8h2zm9 7H8v-2h8zm0-4h-2v-2h2zm0-3h-2V8h2zm3 3h-2v-2h2zm0-3h-2V8h2z"/></svg></button>
+    <!-- 27-Nov-2026 (T-25211 release 2): no chat button in the player; the microphone at the top
+         pauses the reading and the editor hears the paragraph he is on. -->
     <div class="reading-action">
       <button id="approveButton" class="btn approve" type="button">Approve this chapter</button>
       <button id="unapproveButton" class="btn quiet" type="button" hidden>Undo approval</button>

@@ -28,7 +28,7 @@ const os=require('os'),out=process.env.TCE_SHOT_DIR||fs.mkdtempSync(path.join(os
   check(width+' saved reading position',await p.locator('#paragraphs p.now').getAttribute('data-i')==='1');
   check(width+' version always visible',(await p.locator('#chapterPart').innerText()).includes('version 1'));
   check(width+' approval shares player dock',await p.locator('#player #approveButton').count()===1);
-  await p.locator('#talkButton').click();await p.locator('#editorText').fill('Please clarify this paragraph.');
+  await p.locator('#bookMic').click();await p.locator('#editorType').click();await p.locator('#editorText').fill('Please clarify this paragraph.');
   await p.locator('#editorForm button[type=submit]').click();await p.waitForTimeout(250);
    check(width+' failed editor connection retains comment',await p.locator('#editorText').inputValue()==='Please clarify this paragraph.');
    await p.evaluate(()=>{window.fixtureSent=[];window.KmVoice={start:({on})=>{window.fixtureCall=on;setTimeout(()=>on('realtime',{}),0);return {send:text=>fixtureSent.push(text),stop:()=>on('closed',{})};}};});
