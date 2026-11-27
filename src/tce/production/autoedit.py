@@ -34,7 +34,7 @@ from tce.production.retakes import (
 )
 
 EDIT_REQUEST_JOB = "video_edit_request"
-EDIT_REQUEST_PROMPT_VERSION = "edit-request-v2"
+EDIT_REQUEST_PROMPT_VERSION = "edit-request-v3"
 AGENT_NAME = "video_editor"
 PROMPT_VERSION = "autoedit-v1"
 MAX_CORRECTIONS = 12
@@ -845,7 +845,9 @@ EDIT_REQUEST_SYSTEM = (
     "Times in the transcript are where each line lands in the EDITED video, the clock he "
     "watches. Do exactly what he asked and nothing more. If the request cannot be done "
     "with these tools, or you cannot tell what he means, set needs_you true and ask ONE "
-    "short question naming what you checked. reply: one or two plain sentences to him "
+    "short question naming what you checked. The original recording is always on this "
+    "server and is heard to its end before you read a note: never ask him to upload, "
+    "re-upload or find the original again. reply: one or two plain sentences to him "
     "saying what you changed, quoting the new words where you fixed captions."
 )
 
