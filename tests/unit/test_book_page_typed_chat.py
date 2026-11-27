@@ -114,8 +114,21 @@ def _open(pw, editor, path="/book", wait=True):
     page.route("https://book.test/**", editor)
     page.goto(f"https://book.test{path}")
     if wait:
-        page.locator("#listTalk").wait_for()
+        page.locator("#bookMic").wait_for()
     return browser, page
+
+
+def _everything(page):
+    """Open the chapters page's Everything else fold (27-Nov, T-25211 release 2), where the
+    editor's catch-up, its list and the no-call typing line now live."""
+    if not page.evaluate("() => document.getElementById('everythingElse').open"):
+        page.click("#everythingSummary")
+
+
+def _type_to_editor(page):
+    """The typed chat with no call: its line in Everything else."""
+    _everything(page)
+    page.click("#listTalk")
 
 
 def _type(page, text):
@@ -127,9 +140,10 @@ def test_a_typed_comment_goes_to_the_editors_chat_and_its_answer_streams_back_wi
     editor = Editor([_view(14), _view(16, **READY_16)])
     with sync_playwright() as pw:
         browser, page = _open(pw, editor)
+        _everything(page)
         page.locator("#agentCatchup").wait_for()
         _until(page, lambda: editor.count("VOICE") == 1)  # fetched once, behind the page
-        page.click("#listTalk")
+        _type_to_editor(page)
         _type(page, "Where are we?")
         _until(page, lambda: "ready to listen" in page.inner_text("#editorLog"))
         body = editor.messages[0]
@@ -165,7 +179,7 @@ def test_the_mic_dials_the_call_and_a_line_typed_on_it_goes_on_the_call():
     with sync_playwright() as pw:
         browser, page = _open(pw, editor)
         _until(page, lambda: editor.count("VOICE") == 1)
-        page.click("#listTalk")
+        _type_to_editor(page)
         page.click("#editorMic")
         _until(page, lambda: page.evaluate("window.__voice.sent.length") == 1)
         start = page.evaluate("window.__voice.starts")
@@ -187,7 +201,7 @@ def test_a_busy_editor_takes_it_in_turn_and_the_answer_comes_from_its_chat():
         {"queued": True, "id": "q1", "position": 1, "note": "queued - it goes as its own message the moment this turn ends"}))
     with sync_playwright() as pw:
         browser, page = _open(pw, editor)
-        page.click("#listTalk")
+        _type_to_editor(page)
         _type(page, "Where are we?")
         _until(page, lambda: "busy with another job" in page.inner_text("#editorState"))
         assert page.inner_text("#editorState") == (
@@ -212,7 +226,7 @@ def test_a_stream_that_drops_after_it_was_taken_is_answered_from_the_chat():
         ("first", {"text": "Looking now.", "smart": True})))
     with sync_playwright() as pw:
         browser, page = _open(pw, editor)
-        page.click("#listTalk")
+        _type_to_editor(page)
         _type(page, "Where are we?")
         _until(page, lambda: "dropped while it was answering" in page.inner_text("#editorState"))
         sent = editor.messages[0]["text"]
@@ -232,7 +246,7 @@ def test_signed_out_of_km_bot_nothing_is_fetched_behind_the_page_and_the_comment
         browser, page = _open(pw, editor)
         page.wait_for_timeout(2500)
         assert editor.count("VOICE") == 0  # no probe that could raise a sign-in box
-        page.click("#listTalk")
+        _type_to_editor(page)
         _type(page, "Where are we?")
         _until(page, lambda: page.locator("#editorSignin").is_visible())
         assert page.inner_text("#editorState") == "Sign in to KM BOT on this phone once, then come back and tap the icon again."
@@ -251,6 +265,8 @@ def test_km_bot_is_read_while_the_book_opens_not_after():
         assert editor.count("KMBOT", "/kmbot-api/tasks") == 1  # both while the chapters are still out
         editor.hold_list = False
         editor(editor.held.pop())
+        page.locator("#bookMic").wait_for()
+        _everything(page)
         page.locator("#agentCatchup").wait_for()
         assert "Writing episode 15" in page.inner_text("#agentCatchup")
         browser.close()

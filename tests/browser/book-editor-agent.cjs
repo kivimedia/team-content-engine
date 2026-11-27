@@ -39,7 +39,7 @@ const out=process.env.TCE_SHOT_DIR||fs.mkdtempSync(path.join(os.tmpdir(),'tce-bo
   });
   // He last opened the Book two hours ago: the day-old exchange is seen, the two newer rows are not.
   await p.addInitScript(()=>{try{localStorage.setItem('tce-book-editor-seen',String(Date.now()-72e5));}catch{}});
-  await p.goto('https://book.invalid/book');await p.locator('#agentCatchup').waitFor({state:'visible',timeout:4000}).catch(()=>{});
+  await p.goto('https://book.invalid/book');await p.locator('#everythingSummary').click();await p.locator('#agentCatchup').waitFor({state:'visible',timeout:4000}).catch(()=>{});
   const cu=await p.locator('#agentCatchup').innerText().catch(()=>'');
   check(width+' catch-up names last chapter and what waits, chapters to review included',/Last worked on/.test(cu)&&/2 things wait on you/.test(cu)&&/1 chapter to review/.test(cu));
   check(width+' catch-up says what the editor is on',/Writing chapter 13/.test(cu));

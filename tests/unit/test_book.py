@@ -267,7 +267,7 @@ def test_a_client_login_never_reaches_the_book(api):
 def test_the_book_page_and_its_files_are_served(api):
     page = api.get("/book/3", headers=OWNER)
     assert page.status_code == 200
-    for element in ("playButton", "talkButton", "approveButton", "filmButton", "chapterList", "filmDone"):
+    for element in ("playButton", "bookMic", "approveButton", "filmButton", "chapterList", "filmDone"):
         assert f'id="{element}"' in page.text
     assert api.get("/book.js").status_code == 200
     assert api.get("/book.css").status_code == 200
@@ -458,7 +458,7 @@ def test_the_editor_chat_is_an_icon_inside_the_book_never_a_new_tab():
     js = (BOOK_DIR / "book.js").read_text(encoding="utf-8")
     html = (BOOK_DIR / "book.html").read_text(encoding="utf-8")
     assert "window.open(" not in js and "/voice?seat=" not in js
-    for element in ("talkButton", "listTalk", "editorPanel", "editorForm", "editorMic"):
+    for element in ("editorType", "listTalk", "editorPanel", "editorForm", "editorMic"):
         assert f'id="{element}"' in html
     assert ">Talk to the editor<" not in html
     assert 'const EDITOR_AGENT = "book-editor"' in js and "greet: false" in js
