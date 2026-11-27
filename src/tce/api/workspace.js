@@ -1099,6 +1099,7 @@
     html += "</div>";
     $("view").innerHTML = html;
     state.painted = "hooks";
+    fitFormatLines();
     status(hookTally(data));
     watchFormatScripts(data);
     startHookClips();
@@ -1317,6 +1318,29 @@
       hookAction("/hooks/formats/" + encodeURIComponent(d.formatAccept) + "/script", "POST",
                  { action: "accept", lines: lines }, "Saving the script you accepted");
     }
+  });
+
+  /* T-26039: each script line box is as tall as its own text, so the last line of a long
+     Better or Best line is never half cut inside a two-line box on a phone. It grows as he
+     types and fits again when the screen turns or the window changes width. */
+  function fitFormatLine(field) {
+    field.style.height = "auto";
+    field.style.height = (field.scrollHeight + field.offsetHeight - field.clientHeight) + "px";
+  }
+
+  function fitFormatLines() {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-format-line]"), fitFormatLine);
+  }
+
+  document.addEventListener("input", function (event) {
+    if (event.target.matches && event.target.matches("[data-format-line]")) fitFormatLine(event.target);
+  });
+
+  var fitWidth = window.innerWidth;
+  window.addEventListener("resize", function () {
+    if (window.innerWidth === fitWidth || state.route !== "hooks") return;
+    fitWidth = window.innerWidth;
+    fitFormatLines();
   });
 
   document.addEventListener("change", function (event) {
