@@ -693,6 +693,14 @@ input,textarea,select { font-size:max(16px,1rem); }
 .hooks-tally { margin: 0 0 12px; color: var(--body); font-weight: 600; }
 /* T-25711: the trending video studio */
 .hook-trending { margin: 16px 0 0; padding: 14px; }
+.hook-waiting { margin: 16px 0 0; padding: 14px; }
+.hook-waiting h2 { margin: 0 0 6px; font-size: 1.15rem; }
+.hook-waiting-lede { margin: 0 0 10px; color: var(--ink); line-height: 1.45; font-size: 1rem; }
+.hook-waiting-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.hook-waiting-list li { padding-block-start: 12px; border-block-start: 1px solid var(--line); }
+.hook-waiting-list li:first-child { padding-block-start: 0; border-block-start: 0; }
+.hook-waiting-list h3 { margin: 0; font-size: 1.05rem; }
+.hook-needs { margin: 0; color: var(--body); line-height: 1.45; }
 .hook-trending h2 { margin: 0 0 6px; font-size: 1.15rem; }
 .hook-trending-lede, .hook-trending-said, .hook-trending-note { margin: 0 0 10px; color: var(--ink); line-height: 1.45; font-size: 1rem; }
 .hook-trending-list { margin: 0 0 10px; padding-inline-start: 22px; display: grid; gap: 12px; }

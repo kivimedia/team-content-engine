@@ -1095,6 +1095,7 @@
     html += '<div class="hook-grid">';
     data.hooks.forEach(function (hook) { html += hookCard(hook, data); });
     html += "</div>";
+    html += hookWaiting(data.waiting || []);
     // T-25711: the trending video studio, looked up only when he asks (YouTube's daily allowance).
     html += '<section class="card hook-trending" aria-labelledby="hookTrendingTitle">'
          + '<h2 id="hookTrendingTitle">Trending this week</h2>'
@@ -1402,6 +1403,23 @@
   function hookTally(data) {
     return data.picked + " " + plural(data.picked, "hook") + " picked for this week, "
          + data.favorites + " " + plural(data.favorites, "favorite");
+  }
+
+  /* 28-Nov (T-26347): openings not proved yet, so he can see what take each one needs.
+     Read only: nothing here can be picked until its proof clip passes and it moves up. */
+  function hookWaiting(list) {
+    if (!list.length) return "";
+    var html = '<section class="card hook-waiting" aria-labelledby="hookWaitingTitle">'
+      + '<h2 id="hookWaitingTitle">Coming next: ' + list.length + " openings</h2>"
+      + '<p class="hook-waiting-lede">Each joins the openings above once a proof clip is made from one of your takes and passes the frame check.</p>'
+      + '<ul class="hook-waiting-list">';
+    list.forEach(function (hook) {
+      html += '<li data-hook-waiting="' + esc(hook.id) + '"><h3>' + esc(hook.name) + "</h3>"
+        + '<p class="hook-what">' + esc(hook.what) + "</p>"
+        + '<p class="hook-record"><strong>On camera: </strong>' + esc(hook.record) + "</p>"
+        + '<p class="hook-needs"><strong>Needs: </strong>' + esc(hook.waiting_for) + "</p></li>";
+    });
+    return html + "</ul></section>";
   }
 
   function hookCard(hook, data) {

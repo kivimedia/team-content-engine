@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from tce.hooks.catalog import BY_ID, HOOKS, Hook, matches
+from tce.hooks.catalog import BY_ID, HOOKS, WAITING, Hook, matches
 from tce.settings import settings
 
 _LOCK = asyncio.Lock()
@@ -313,6 +313,12 @@ async def library(ws: uuid.UUID, week: str, lineup: dict[str, Any], preview_url:
         "favorites": len(favorites),
         "videos": [{"candidate_id": v["candidate_id"], "title": v.get("title") or ""} for v in videos],
         "proved": len(HOOKS),
+        # T-26347: openings still waiting for a proof clip; read only, never pickable.
+        "waiting": [
+            {"id": h.id, "name": h.name, "what": h.what, "record": h.record,
+             "coach": list(h.coach), "waiting_for": h.waiting_for}
+            for h in WAITING
+        ],
         "style": {
             "accent": (data.get("style") or {}).get("accent"),
             "swatches": [{"hex": h, "name": n} for h, n in SWATCHES],

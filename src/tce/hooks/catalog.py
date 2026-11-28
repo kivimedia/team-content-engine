@@ -1,9 +1,10 @@
 """The ten visual hooks proved on the owner's own takes (T-25210, 25 and 26 Nov 2026).
 
 A hook is in this list only after its proof clip rendered from one of his recorded
-takes and passed a frame check (timing, safe area, contrast). The six that still
-need a fresh take from him (speed ramp, beside yourself, out of a frame, throw and
-catch, hand cover, high five on the beat) join when they are proved.
+takes and passed a frame check (timing, safe area, contrast). The ones still waiting
+for that proof are in WAITING (T-26347, 28 Nov 2026: six from the first round plus
+four from a reel he sent): the Hooks page lists them so he knows what take each
+needs, and none can be picked for a video until it moves up into HOOKS.
 
 `fits` is the plain rule TCE uses to put a picked hook on one of the week's
 videos: words in the topic that make this opening the natural one. A hook with no
@@ -32,6 +33,8 @@ class Hook:
     coach: tuple[str, ...] = field(default_factory=tuple)
     # What the first spoken line must give this hook, for the script writer (T-25711).
     script_need: str = ""
+    # A waiting hook only (T-26347): what its proof clip still needs, in his words.
+    waiting_for: str = ""
 
     @property
     def preview(self) -> Path:
@@ -176,6 +179,143 @@ HOOKS: tuple[Hook, ...] = (
 )
 
 BY_ID: dict[str, Hook] = {h.id: h for h in HOOKS}
+
+# Not proved yet (T-26347). Never in BY_ID: a waiting hook cannot be picked, starred
+# or put on a video. When its proof clip passes the frame check, move it up into HOOKS
+# with its preview and, where it has one, its fit rule.
+_TAKE = "A fresh take from you: "
+WAITING: tuple[Hook, ...] = (
+    Hook(
+        "hand-title",
+        "Hand to the lens with a title",
+        "You push your open hand at the lens, a bold title lands on your palm as it fills the screen, then your hand drops and you talk.",
+        "Push one open palm slowly at the lens until it fills the frame, then drop it and start talking.",
+        coach=(
+            "Stand at arm's length with the phone on a stand, so it does not move.",
+            "Push one open palm straight at the lens until it fills the frame, then pull it away.",
+            "Start your first line the moment your hand drops.",
+        ),
+        script_need="a bold title of three to five words for the palm, and a first line that follows straight from it",
+        waiting_for=_TAKE + "your hand pushed at the lens. The same take can also prove the hand cover.",
+    ),
+    Hook(
+        "color-wipe",
+        "Colored wipe between shots",
+        "A band in your hook color sweeps across the screen and reveals the next shot.",
+        "Nothing special: say your first point, pause for a beat, then say the next one.",
+        coach=(
+            "Stand at arm's length and keep the same spot for the whole take.",
+            "Hands relaxed.",
+            "Leave a short pause after your first point; the wipe runs in that pause.",
+        ),
+        script_need="a first line in two parts, with a natural pause between them where the wipe can run",
+        waiting_for="A proof clip only: it can be made from one of your existing takes.",
+    ),
+    Hook(
+        "object-mic",
+        "Talking into an object as a mic",
+        "You open by talking into something unexpected held like a microphone, a banana or a stapler, then put it down and carry on.",
+        "Hold an everyday object like a microphone close to your mouth for the first line.",
+        coach=(
+            "Stand at arm's length with the object in one hand at chin height.",
+            "Talk into it like a microphone for the first line, eyes on the lens.",
+            "Put it down on the next line and carry on talking.",
+        ),
+        script_need="a first line that sounds like an announcement, said into the object",
+        waiting_for=_TAKE + "you talking into an object as if it were a microphone.",
+    ),
+    Hook(
+        "title-drop",
+        "Title swipes down",
+        "Your title slides down from the top of the screen and settles above your head as you start.",
+        "Leave room above your head and start with the line the title says.",
+        coach=(
+            "Stand at arm's length with room above your head.",
+            "Hands low, so nothing crosses the title.",
+            "Say the title line first, clearly.",
+        ),
+        script_need="a title of under six words at the very start that can drop in from the top",
+        waiting_for="A proof clip only: it can be made from one of your existing takes.",
+    ),
+    Hook(
+        "speed-ramp",
+        "Speed ramp walk-in",
+        "You walk in fast toward the camera, the picture slows right as you start to talk.",
+        "Start a few steps back and walk toward the lens, stopping in your spot on the first word.",
+        coach=(
+            "Start four or five steps back from your spot.",
+            "Walk toward the lens with your arms natural.",
+            "Stop in your spot and start talking on the first word.",
+        ),
+        script_need="a first word that lands the moment he stops walking, with no warm-up",
+        waiting_for=_TAKE + "you walking in toward the camera.",
+    ),
+    Hook(
+        "beside-yourself",
+        "You beside yourself",
+        "A second copy of you appears beside you and reacts to what you say.",
+        "Record the reaction as a second short take in the same spot.",
+        coach=(
+            "Phone on a stand; it must not move between the two takes.",
+            "Take one: say your line standing on the left of the frame.",
+            "Take two: stand on the right and react to the line.",
+        ),
+        script_need="a first line worth reacting to, a claim or a question",
+        waiting_for=_TAKE + "two short takes in the same spot, the line and the reaction.",
+    ),
+    Hook(
+        "out-of-frame",
+        "Stepping out of a frame",
+        "You appear inside a picture frame and lean out over its border.",
+        "Lean toward the camera on the first word.",
+        coach=(
+            "Stand at arm's length, centered.",
+            "Hands low to start.",
+            "Lean toward the lens on the first word.",
+        ),
+        script_need="a first word strong enough to lean in on",
+        waiting_for=_TAKE + "you leaning in toward the lens on the first word.",
+    ),
+    Hook(
+        "throw-catch",
+        "Throw to the camera, catch in the next scene",
+        "You toss something at the lens, it covers the screen, and the next shot opens with it landing.",
+        "Throw an object straight at the lens so it fills the frame; in the next take start with it in your hand.",
+        coach=(
+            "Phone on a stand, and something soft to throw.",
+            "Take one: throw it straight at the lens so it fills the frame.",
+            "Take two: start with it in your hand and say your first line.",
+        ),
+        script_need="a first line that follows a change, a new place or a new idea",
+        waiting_for=_TAKE + "two takes, the throw and the catch.",
+    ),
+    Hook(
+        "hand-cover",
+        "Hand cover transition",
+        "Your palm covers the lens and uncovers into a new place or outfit.",
+        "Cover the lens fully with your palm at the end of take one, start take two covered.",
+        coach=(
+            "Phone on a stand at the same height for both takes.",
+            "End take one by covering the lens fully with your palm.",
+            "Start take two with the lens covered, then pull your hand away and talk.",
+        ),
+        script_need="a first line that follows a change, a new place or a new look",
+        waiting_for=_TAKE + "two takes, ending and starting with your palm on the lens.",
+    ),
+    Hook(
+        "beat-high-five",
+        "High five on the beat, with music",
+        "A trending sound plays and you high five or clap right on its beat to open.",
+        "Play the sound while recording and hit the gesture on the beat.",
+        coach=(
+            "Stand at arm's length with the sound playing out loud.",
+            "Hands ready at chest height.",
+            "High five or clap right on the beat, then start talking.",
+        ),
+        script_need="a first line short enough to land right after the beat",
+        waiting_for=_TAKE + "you clapping or high fiving on the beat of a sound.",
+    ),
+)
 
 
 def matches(hook: Hook, text: str) -> str | None:
