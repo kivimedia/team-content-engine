@@ -39,7 +39,7 @@ def test_each_waiting_hook_has_coach_lines_script_need_and_what_it_needs():
         assert len(hook.coach) == 3, hook.id
         assert hook.script_need and hook.waiting_for and hook.record and hook.what, hook.id
         for text in (hook.name, hook.what, hook.record, hook.script_need, hook.waiting_for, *hook.coach):
-            assert "—" not in text and "–" not in text and "--" not in text, hook.id
+            assert "\u2014" not in text and "\u2013" not in text and "--" not in text, hook.id
     # The two the reel's style allows from a take he already has say so; the other two ask for a fresh one.
     by_id = {h.id: h for h in catalog.WAITING}
     for hook_id in ("color-wipe", "title-drop"):
